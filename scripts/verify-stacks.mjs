@@ -3,7 +3,7 @@ import { PrismaClient } from '../generated/prisma/index.js';
 import { z } from 'zod';
 
 const STACK_IDS = ['NEXTJS', 'REACT', 'ASTRO', 'STATIC_HTML', 'VUE', 'SVELTE'];
-const DEFAULT_STACK = 'REACT';
+const DEFAULT_STACK = 'NEXTJS';
 
 const expected = {
   NEXTJS: { hasNodeDependencies: true, devCommand: 'next dev -p 5173 -H 0.0.0.0', installCommand: 'npm install', fileExtension: '.tsx' },
@@ -56,7 +56,9 @@ check('STATIC_HTML hasNodeDependencies false', /STATIC_HTML:[\s\S]*?hasNodeDepen
 check('REACT copies vite --host', stacksSrc.includes("devCommand: 'vite --host'"));
 check('getStack throws on unknown', stacksSrc.includes('Unknown stack') && stacksSrc.includes('Never silently falls through'));
 check('getStackPrompt never silent React fallback', promptIndex.includes('Never silently falls through') && promptIndex.includes('incorrectly used the React prompt'));
-check('REACT prompt is existing Vite/React copy', reactPrompt.includes('expert React developer') && reactPrompt.includes('Vite applications'));
+check('REACT prompt is Vite/React', reactPrompt.includes('expert React developer') && reactPrompt.includes('Vite applications'));
+check('stable prefix builder exists', promptIndex.includes('buildStablePromptPrefix') && promptIndex.includes('getStackPrompt'));
+check('base-rules prepended', promptIndex.includes('BASE_RULES'));
 check('NEXTJS prompt is App Router not React Vite', nextPrompt.includes('App Router') && nextPrompt.includes('page.tsx') && !nextPrompt.includes('expert React developer with perfect memory'));
 check('STATIC_HTML prompt forbids frameworks', htmlPrompt.includes('NO React') && htmlPrompt.includes('vanilla'));
 check('generation uses getStackPrompt', genRoute.includes('getStackPrompt(projectStack'));
@@ -84,7 +86,7 @@ check('create-sandbox passes stack to provider', createSandbox.includes('createS
 check('resolveRequestStack projectId first', /if \(typeof input\.projectId === 'string' && input\.projectId\)/.test(stackResolve) && stackResolve.includes('always load Project.stack'));
 
 const omitted = createProjectSchema.safeParse({ initialPrompt: 'Build a site' });
-check('zod omitted stack defaults REACT', omitted.success && omitted.data.stack === 'REACT');
+check('zod omitted stack defaults NEXTJS', omitted.success && omitted.data.stack === 'NEXTJS');
 const next = createProjectSchema.safeParse({ initialPrompt: 'Build a site', stack: 'NEXTJS' });
 check('zod accepts NEXTJS', next.success && next.data.stack === 'NEXTJS');
 const bad = createProjectSchema.safeParse({ initialPrompt: 'Build a site', stack: 'NUXT' });
@@ -97,17 +99,6 @@ try {
   const owner = await prisma.user.findFirst({ orderBy: { createdAt: 'asc' } });
   if (!owner) throw new Error('Need at least one user');
 
-  const preexisting = await prisma.project.findMany({
-    where: { deletedAt: null },
-    select: { id: true, stack: true },
-    take: 20,
-  });
-  check(
-    'pre-change / existing projects stack=REACT',
-    preexisting.length === 0 || preexisting.every((p) => p.stack === 'REACT'),
-    `count=${preexisting.length}`,
-  );
-
   const createdDefault = await prisma.project.create({
     data: {
       name: 'stack-default',
@@ -116,7 +107,19 @@ try {
     },
   });
   ids.push(createdDefault.id);
-  check('insert without stack column override → REACT', createdDefault.stack === 'REACT');
+  check('insert without stack column override → NEXTJS', createdDefault.stack === 'NEXTJS');
+  check('insert without designDirection → minimal', createdDefault.designDirection === 'minimal');
+
+  const createdReact = await prisma.project.create({
+    data: {
+      name: 'stack-react-kept',
+      initialPrompt: 'explicit react stays react',
+      ownerId: owner.id,
+      stack: 'REACT',
+    },
+  });
+  ids.push(createdReact.id);
+  check('explicit REACT insert is not rewritten to NEXTJS', createdReact.stack === 'REACT');
 
   const createdNext = await prisma.project.create({
     data: {
@@ -141,7 +144,9 @@ try {
   check('insert stack=STATIC_HTML stored', createdHtml.stack === 'STATIC_HTML');
 
   const loaded = await prisma.project.findUnique({ where: { id: createdDefault.id } });
-  check('REACT project still loads', loaded?.id === createdDefault.id && loaded.stack === 'REACT');
+  check('NEXTJS default project still loads', loaded?.id === createdDefault.id && loaded.stack === 'NEXTJS');
+  const loadedReact = await prisma.project.findUnique({ where: { id: createdReact.id } });
+  check('REACT project still loads as REACT', loadedReact?.stack === 'REACT');
 } catch (error) {
   check('prisma stack checks', false, error instanceof Error ? error.message : String(error));
 } finally {

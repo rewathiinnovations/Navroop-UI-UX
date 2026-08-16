@@ -124,6 +124,7 @@ export default function ApiKeysPage() {
           items={[
             { href: '/settings/profile', label: 'Profile' },
             { href: '/settings/api-keys', label: 'API Keys', active: true },
+            { href: '/settings/skills', label: 'Skills' },
           ]}
         />
         <p className="mb-24 text-[14px] leading-6 text-[var(--studio-muted)]">

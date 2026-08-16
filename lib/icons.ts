@@ -16,6 +16,6 @@ export {
 export { 
   SiJavascript, 
   SiReact, 
-  SiCss3, 
+  SiCss, 
   SiJson 
 } from 'react-icons/si';

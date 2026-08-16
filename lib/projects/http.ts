@@ -12,13 +12,17 @@ export function readCreateInput(body: Record<string, unknown>) {
   const initialPrompt = String(body.initialPrompt ?? body.prompt ?? '').trim();
   const rawName = body.name ?? body.title;
   const name = typeof rawName === 'string' ? rawName : undefined;
-  // Omit stack when callers leave it off so zod can default to REACT.
+  // Omit stack / designDirection when callers leave them off so zod can default.
   // Do not invent a stack here — invalid values must fail validation.
   return {
     name,
     initialPrompt,
     skipPlanning: body.skipPlanning === true,
     ...(typeof body.stack === 'string' && body.stack ? { stack: body.stack } : {}),
+    ...(typeof body.designDirection === 'string' && body.designDirection
+      ? { designDirection: body.designDirection }
+      : {}),
+    ...(typeof body.importMode === 'string' && body.importMode ? { importMode: body.importMode } : {}),
   };
 }
 
@@ -48,6 +52,7 @@ export function readGenerationInput(body: Record<string, unknown>) {
     generationStatus,
     progressMessage: body.progressMessage as string | null | undefined,
     sourceMessage: typeof body.sourceMessage === 'string' ? body.sourceMessage : undefined,
+    source: typeof body.source === 'string' ? body.source : undefined,
   };
 }
 

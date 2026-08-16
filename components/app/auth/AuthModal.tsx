@@ -66,7 +66,12 @@ export default function AuthModal({
     const draft = readDraftStorage(PENDING_PROMPT_KEY);
     const prompt = draft?.text.trim() || "";
     if (draft && prompt) {
-      const created = await createProjectFromPrompt(prompt, draft.stack);
+      const created = await createProjectFromPrompt(
+        prompt,
+        draft.stack,
+        draft.designDirection,
+        draft.importMode,
+      );
       if (created.ok) {
         clearDraftStorage(PENDING_PROMPT_KEY);
         onClose();

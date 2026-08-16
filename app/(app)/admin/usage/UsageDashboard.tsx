@@ -5,6 +5,8 @@ import StudioShell from '@/components/app/studio/StudioShell';
 import StudioButton from '@/components/app/studio/StudioButton';
 import StudioField from '@/components/app/studio/StudioField';
 import PageTabs from '@/components/app/studio/PageTabs';
+import { listSkills, type PublicSkill } from '@/lib/skills/actions';
+import { getMemoryExtractionSetting, updateMemoryExtractionSetting } from '@/lib/memory/actions';
 
 type Summary = {
   totalProjects: number;
@@ -27,6 +29,12 @@ type ProjectEvent = {
   cost: number;
   createdAt: string;
   userName: string;
+};
+
+type RecurringIssue = {
+  category: string;
+  count: number;
+  sampleTitle: string;
 };
 
 function currentMonthInputs(now = new Date()) {
@@ -60,6 +68,10 @@ export default function UsageDashboard() {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [eventsByProject, setEventsByProject] = useState<Record<string, ProjectEvent[]>>({});
   const [loadingProjects, setLoadingProjects] = useState(false);
+  const [qualityIssues, setQualityIssues] = useState<RecurringIssue[]>([]);
+  const [skills, setSkills] = useState<PublicSkill[]>([]);
+  const [memoryExtractionEnabled, setMemoryExtractionEnabled] = useState(true);
+  const [savingExtraction, setSavingExtraction] = useState(false);
 
   const query = `from=${encodeURIComponent(applied.from)}&to=${encodeURIComponent(applied.to)}`;
 
@@ -69,9 +81,10 @@ export default function UsageDashboard() {
       setLoading(true);
       setError('');
       try {
-        const [summaryRes, membersRes] = await Promise.all([
+        const [summaryRes, membersRes, qualityRes] = await Promise.all([
           fetch(`/api/admin/usage/summary?${query}`),
           fetch(`/api/admin/usage/by-member?${query}`),
+          fetch('/api/admin/usage/quality'),
         ]);
         if (summaryRes.status === 403 || membersRes.status === 403) {
           window.location.replace('/dashboard');
@@ -90,6 +103,14 @@ export default function UsageDashboard() {
         if (!cancelled) {
           setSummary(summaryData);
           setMembers(membersData.members || []);
+          if (qualityRes.ok) {
+            const qualityData = await qualityRes.json();
+            setQualityIssues(qualityData.issues || []);
+          }
+          const skillsResult = await listSkills();
+          if (skillsResult.ok) setSkills(skillsResult.data);
+          const extraction = await getMemoryExtractionSetting();
+          if (extraction.ok) setMemoryExtractionEnabled(extraction.data.enabled);
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -143,6 +164,7 @@ export default function UsageDashboard() {
           items={[
             { href: '/admin/team', label: 'Team' },
             { href: '/admin/usage', label: 'Usage', active: true },
+            { href: '/admin/quality', label: 'Quality' },
           ]}
         />
 
@@ -196,6 +218,26 @@ export default function UsageDashboard() {
             </div>
           ))}
         </div>
+
+        {qualityIssues.length > 0 && (
+          <section className="mb-24 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-16">
+            <h2 className="text-[16px] font-medium text-[var(--studio-fg)]">Recurring code-quality issues</h2>
+            <p className="mt-4 text-[12px] text-[var(--studio-muted)]">
+              Frequent finding categories across recent CodeAudits — use these to tighten base-rules.
+            </p>
+            <ul className="mt-12 space-y-8">
+              {qualityIssues.map((issue) => (
+                <li key={issue.category} className="flex items-baseline justify-between gap-12 text-[13px]">
+                  <span className="text-[var(--studio-fg)]">
+                    {issue.category}
+                    <span className="ml-8 text-[var(--studio-muted)]">{issue.sampleTitle}</span>
+                  </span>
+                  <span className="text-[var(--studio-faint)]">{issue.count}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
 
         <div className="overflow-hidden rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)]">
           <table className="w-full text-left text-[14px]">
@@ -260,6 +302,66 @@ export default function UsageDashboard() {
             </tbody>
           </table>
         </div>
+
+        <section className="mt-24 overflow-hidden rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)]">
+          <div className="border-b border-[var(--studio-line)] px-16 py-14">
+            <h2 className="text-[16px] font-medium text-[var(--studio-fg)]">Skills</h2>
+            <p className="mt-4 text-[12px] text-[var(--studio-muted)]">
+              Sorted by usage. Zero-usage skills never matched or are unused.
+            </p>
+          </div>
+          <table className="w-full text-left text-[14px]">
+            <thead className="border-b border-[var(--studio-line)] text-[12px] uppercase tracking-[0.08em] text-[var(--studio-faint)]">
+              <tr>
+                <th className="px-16 py-12 font-medium">Skill</th>
+                <th className="px-16 py-12 font-medium">Enabled</th>
+                <th className="px-16 py-12 font-medium">Usage</th>
+              </tr>
+            </thead>
+            <tbody>
+              {skills.map((skill) => (
+                <tr key={skill.id} className="border-b border-[var(--studio-line)] last:border-0">
+                  <td className="px-16 py-14">
+                    <div className="font-medium text-[var(--studio-fg)]">{skill.name}</div>
+                    <div className="text-[12px] text-[var(--studio-muted)]">{skill.description}</div>
+                  </td>
+                  <td className="px-16 py-14 text-[var(--studio-muted)]">{skill.enabled ? 'On' : 'Off'}</td>
+                  <td className="px-16 py-14 text-[var(--studio-muted)]">{skill.usageCount}</td>
+                </tr>
+              ))}
+              {!loading && skills.length === 0 && (
+                <tr>
+                  <td colSpan={3} className="px-16 py-18 text-[13px] text-[var(--studio-muted)]">
+                    No workspace skills yet.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </section>
+
+        <section className="mt-24 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-14">
+          <h2 className="text-[16px] font-medium text-[var(--studio-fg)]">Brain memory</h2>
+          <p className="mt-4 text-[12px] text-[var(--studio-muted)]">
+            When off, auto-extraction after a generation does not run. Manual memory still injects.
+          </p>
+          <label className="mt-12 inline-flex items-center gap-8 text-[13px] text-[var(--studio-fg)]">
+            <input
+              type="checkbox"
+              checked={memoryExtractionEnabled}
+              disabled={savingExtraction}
+              onChange={(event) => {
+                const next = event.target.checked;
+                setSavingExtraction(true);
+                void updateMemoryExtractionSetting(next).then((result) => {
+                  setSavingExtraction(false);
+                  if (result.ok) setMemoryExtractionEnabled(result.data.enabled);
+                });
+              }}
+            />
+            memoryExtractionEnabled
+          </label>
+        </section>
       </main>
     </StudioShell>
   );

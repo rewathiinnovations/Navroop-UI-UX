@@ -118,14 +118,14 @@ export default function PreviewPanel({
               'h-[min(100%,720px)] w-[390px] self-center overflow-hidden rounded-16 border border-[var(--studio-line)] bg-white shadow-sm',
           )}
         >
-          {showEmptyPlan ? (
+          {view === 'seo' || view === 'assets' || view === 'brain' || !showEmptyPlan ? (
+            children
+          ) : (
             <div className="flex h-full w-full items-center justify-center px-24 text-center">
               <p className="max-w-[280px] text-[14px] leading-6 text-[var(--studio-muted)]">
                 Nothing built yet — review the plan and approve to get started
               </p>
             </div>
-          ) : (
-            children
           )}
           {showTools && (
             <VisualEditsToolbar

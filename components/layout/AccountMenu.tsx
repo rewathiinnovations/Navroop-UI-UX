@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useTheme } from 'next-themes';
-import { BookOpen, KeyRound, LogOut, Monitor, Moon, Sun, UserRound, Users } from 'lucide-react';
+import { BookOpen, KeyRound, LogOut, Monitor, Moon, Sparkles, Sun, UserRound, Users } from 'lucide-react';
 import { signOut } from 'next-auth/react';
 import { useAuth } from '@/components/app/auth/AuthProvider';
 import { cn } from '@/utils/cn';
@@ -123,6 +123,9 @@ export default function AccountMenu() {
             </MenuLink>
             <MenuLink href="/settings/api-keys" icon={<KeyRound className="size-16" />} onClick={() => setOpen(false)}>
               API Keys
+            </MenuLink>
+            <MenuLink href="/settings/skills" icon={<Sparkles className="size-16" />} onClick={() => setOpen(false)}>
+              Skills
             </MenuLink>
             {user.role === 'ADMIN' && (
               <MenuLink href="/admin/team" icon={<Users className="size-16" />} onClick={() => setOpen(false)}>

@@ -22,6 +22,18 @@ function messageKey(message: ChatMessage, index: number) {
   return `${stamp}-${index}`;
 }
 
+async function persistThumbs(projectId: string, rating: 'up' | 'down') {
+  try {
+    await fetch(`/api/projects/${projectId}/quality-signals`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'thumbs', rating }),
+    });
+  } catch {
+    /* signal collection must never break chat */
+  }
+}
+
 export default function ChatPanel({
   messages,
   projectId,
@@ -105,6 +117,23 @@ export default function ChatPanel({
                         {message.metadata.source === 'comment' ? 'Comment' : 'Visual edit'}
                       </span>
                     )}
+                  {message.metadata?.skillNames && message.metadata.skillNames.length > 0 && (
+                    <div className="mb-6 flex flex-wrap gap-6">
+                      {message.metadata.skillNames.map((name) => (
+                        <span
+                          key={name}
+                          className={cn(
+                            'inline-flex rounded-full px-8 py-2 text-[10px] font-medium tracking-wide',
+                            message.type === 'user'
+                              ? 'bg-[var(--studio-bg)]/15 text-[var(--studio-bg)]'
+                              : 'bg-[var(--studio-accent-soft)] text-[var(--studio-accent)]',
+                          )}
+                        >
+                          Skill: {name}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                   <p className="whitespace-pre-wrap">{message.content}</p>
                 </div>
               </div>
@@ -131,7 +160,7 @@ export default function ChatPanel({
                     onClick={() => {
                       const next = rating === 'up' ? null : 'up';
                       setFeedback((prev) => ({ ...prev, [key]: next }));
-                      console.info('[navroop] message-feedback', { key, rating: next, projectId });
+                      if (next && projectId) void persistThumbs(projectId, next);
                     }}
                     className={cn(
                       'inline-flex size-28 items-center justify-center rounded-8',
@@ -146,7 +175,7 @@ export default function ChatPanel({
                     onClick={() => {
                       const next = rating === 'down' ? null : 'down';
                       setFeedback((prev) => ({ ...prev, [key]: next }));
-                      console.info('[navroop] message-feedback', { key, rating: next, projectId });
+                      if (next && projectId) void persistThumbs(projectId, next);
                     }}
                     className={cn(
                       'inline-flex size-28 items-center justify-center rounded-8',

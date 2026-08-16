@@ -13,10 +13,16 @@ import { appConfig } from '@/config/app.config';
 import { buildUiUxProMaxBrief } from '@/lib/ui-ux-pro-max/build-design-brief';
 import { getSessionUser } from '@/lib/auth';
 import { looksLikeUrl } from '@/lib/projects/prompt';
-import { logGenerationEvent } from '@/lib/usage-costs';
-import { getStackInitialPackageRule, getStackPrompt } from '@/lib/stack-prompts';
-import { resolveRequestStack } from '@/lib/stack-resolve';
+import { attachGenerationInputTokens, logGenerationEvent } from '@/lib/usage-costs';
+import { buildCachedMessages } from '@/lib/generation/prompt-cache';
+import { selectFileContext } from '@/lib/generation/selective-context';
+import { resolveInputTokens } from '@/lib/generation/token-estimate';
+import { buildStablePromptPrefix, buildVolatilePromptSuffix, getStackPrompt } from '@/lib/stack-prompts';
+import { resolveRequestGenerationProfile } from '@/lib/stack-resolve';
 import { packageNameFromImport, shouldSkipPackageInstall } from '@/lib/stacks';
+import { loadAssetManifest } from '@/lib/assets/load-manifest';
+import { injectMatchedSkills } from '@/lib/skills/inject';
+import { buildMemoryBlock } from '@/lib/memory/build-context';
 
 // Force dynamic route to enable streaming
 export const dynamic = 'force-dynamic';
@@ -97,17 +103,21 @@ declare global {
 
 export async function POST(request: NextRequest) {
   try {
-    const { prompt, model = 'openai/gpt-oss-20b', context, isEdit = false, styleHint, projectId: requestProjectId, stack: requestStack } = await request.json();
+    const { prompt, model = 'openai/gpt-oss-20b', context, isEdit = false, styleHint, projectId: requestProjectId, stack: requestStack, designDirection: requestDirection } = await request.json();
     
-    const projectStack = await resolveRequestStack({
+    const generationProfile = await resolveRequestGenerationProfile({
       stack: requestStack,
+      designDirection: requestDirection,
       projectId: requestProjectId || context?.projectId,
     });
+    const projectStack = generationProfile.stack;
+    const projectDirection = generationProfile.designDirection;
 
     console.log('[generate-ai-code-stream] Received request:');
     console.log('[generate-ai-code-stream] - prompt:', prompt);
     console.log('[generate-ai-code-stream] - isEdit:', isEdit);
     console.log('[generate-ai-code-stream] - stack:', projectStack);
+    console.log('[generate-ai-code-stream] - designDirection:', projectDirection);
     console.log('[generate-ai-code-stream] - context.sandboxId:', context?.sandboxId);
     console.log('[generate-ai-code-stream] - context.currentFiles:', context?.currentFiles ? Object.keys(context.currentFiles) : 'none');
     console.log('[generate-ai-code-stream] - currentFiles count:', context?.currentFiles ? Object.keys(context.currentFiles).length : 0);
@@ -610,18 +620,59 @@ Remember: You are a SURGEON making a precise incision, not an artist repainting 
           isEdit,
         });
 
-        // Build system prompt from the project's stack registry. Never silent-React-fallback.
-        let systemPrompt = getStackPrompt(projectStack, {
+        const memoryProjectId =
+          (typeof requestProjectId === 'string' && requestProjectId) ||
+          (typeof context?.projectId === 'string' && context.projectId) ||
+          '';
+        let memoryBlock = '';
+        if (memoryProjectId) {
+          try {
+            memoryBlock = (await buildMemoryBlock(memoryProjectId)).block;
+          } catch (error) {
+            console.warn('[memory] build block failed', error);
+          }
+        }
+        // Stable prefix is byte-identical for the same stack + direction + ACTIVE memory.
+        const stablePrefix = buildStablePromptPrefix(projectStack, projectDirection, { memoryBlock });
+        // Skills are conditional and sit AFTER the cacheable prefix, never inside it.
+        const injectedSkills = await injectMatchedSkills(prompt, conversationContext || '');
+        if (injectedSkills.names.length > 0) {
+          await sendProgress({ type: 'skills', names: injectedSkills.names });
+        }
+        const promptEditContext = editContext
+          ? {
+              editIntent: {
+                type: String(editContext.editIntent?.type ?? ''),
+                confidence: Number(editContext.editIntent?.confidence ?? 0),
+              },
+              primaryFiles: editContext.primaryFiles ?? [],
+            }
+          : null;
+        const assetProjectId =
+          (typeof requestProjectId === 'string' && requestProjectId) ||
+          (typeof context?.projectId === 'string' && context.projectId) ||
+          '';
+        const assetManifest = await loadAssetManifest(assetProjectId || null);
+        let volatileSuffix = buildVolatilePromptSuffix({
           conversationContext,
           uiUxBrief,
           isEdit,
-          editContext,
+          editContext: promptEditContext,
+          assetManifest,
         });
+        // Keep getStackPrompt as the composed builder used by plan + this route.
+        let systemPrompt = getStackPrompt(projectStack, projectDirection, {
+          conversationContext,
+          uiUxBrief,
+          isEdit,
+          editContext: promptEditContext,
+          assetManifest,
+        }, { memoryBlock });
 
         // If Morph Fast Apply is enabled (edit mode + MORPH_API_KEY), force <edit> block output
         const morphFastApplyEnabled = Boolean(isEdit && process.env.MORPH_API_KEY);
         if (morphFastApplyEnabled) {
-          systemPrompt += `
+          const morphRules = `
 
 MORPH FAST APPLY MODE (EDIT-ONLY):
 - Output edits as <edit> blocks, not full <file> blocks, for files that already exist.
@@ -634,6 +685,8 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
 - Prefer ONE edit block for a simple change; multiple edits only if absolutely needed for separate files.
 - Keep updates minimal and precise; do not rewrite entire files.
 `;
+          volatileSuffix += morphRules;
+          systemPrompt += morphRules;
         }
 
         // Build full prompt with context
@@ -754,75 +807,50 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
               // Get contents of primary and context files
               const primaryFileContents = await getFileContents(editContext.primaryFiles, global.sandboxState!.fileCache!.manifest!);
               const contextFileContents = await getFileContents(editContext.contextFiles, global.sandboxState!.fileCache!.manifest!);
-              
-              // Format files for AI
-              const formattedFiles = formatFilesForAI(primaryFileContents, contextFileContents);
+              const formattedFiles = formatFilesForAI(primaryFileContents, {});
               contextParts.push(formattedFiles);
+              const selectedRest = selectFileContext({
+                files: contextFileContents,
+                userMessage: prompt,
+                recentlyModifiedPaths: editContext.primaryFiles,
+              });
+              if (selectedRest.formatted) {
+                contextParts.push(selectedRest.formatted);
+              }
               
               contextParts.push('\nIMPORTANT: Only modify the files listed under "Files to Edit". The context files are provided for reference only.');
             } else {
-              // Fallback to showing all files if no edit context
-              console.log('[generate-ai-code-stream] WARNING: Using fallback mode - no edit context available');
+              console.log('[generate-ai-code-stream] Selective file context (no edit-context primary set)');
               contextParts.push('\nEXISTING APPLICATION - TARGETED EDIT REQUIRED');
               contextParts.push('\nYou MUST analyze the user request and determine which specific file(s) to edit.');
-              contextParts.push('\nCurrent project files (DO NOT regenerate all of these):');
-              
-              const fileEntries = Object.entries(backendFiles);
-              console.log(`[generate-ai-code-stream] Using backend cache: ${fileEntries.length} files`);
-              
-              // Show file list first for reference
-              contextParts.push('\n### File List:');
-              for (const [path] of fileEntries) {
-                contextParts.push(`- ${path}`);
-              }
-              
-              // Include ALL files as context in fallback mode
-              contextParts.push('\n### File Contents (ALL FILES FOR CONTEXT):');
-              for (const [path, fileData] of fileEntries) {
-                const content = fileData.content;
-                if (typeof content === 'string') {
-                  contextParts.push(`\n<file path="${path}">\n${content}\n</file>`);
-                }
-              }
-              
-              contextParts.push('\n🚨 CRITICAL INSTRUCTIONS - VIOLATION = FAILURE 🚨');
-              contextParts.push('1. Analyze the user request: "' + prompt + '"');
-              contextParts.push('2. Identify the MINIMUM number of files that need editing (usually just ONE)');
-              contextParts.push('3. PRESERVE ALL EXISTING CONTENT in those files');
-              contextParts.push('4. ONLY ADD/MODIFY the specific part requested');
-              contextParts.push('5. DO NOT regenerate entire components from scratch');
-              contextParts.push('6. DO NOT change unrelated parts of any file');
-              contextParts.push('7. Generate ONLY the files that MUST be changed - NO EXTRAS');
-              contextParts.push('\n⚠️ FILE COUNT RULE:');
-              contextParts.push('- Simple change (color, text, spacing) = 1 file ONLY');
-              contextParts.push('- Adding new component = 2 files MAX (new component + parent that imports it)');
-              contextParts.push('- DO NOT exceed these limits unless absolutely necessary');
-              contextParts.push('\nEXAMPLES OF CORRECT BEHAVIOR:');
-              contextParts.push('✅ "add a chart to the hero" → Edit ONLY Hero.jsx, ADD the chart, KEEP everything else');
-              contextParts.push('✅ "change header to black" → Edit ONLY Header.jsx, change ONLY the color');
-              contextParts.push('✅ "fix spacing in footer" → Edit ONLY Footer.jsx, adjust ONLY spacing');
-              contextParts.push('\nEXAMPLES OF FAILURES:');
-              contextParts.push('❌ "change header color" → You edit Header, Footer, and App "for consistency"');
-              contextParts.push('❌ "add chart to hero" → You regenerate the entire Hero component');
-              contextParts.push('❌ "fix button" → You update 5 different component files');
-              contextParts.push('\n⚠️ FINAL WARNING:');
-              contextParts.push('If you generate MORE files than necessary, you have FAILED');
-              contextParts.push('If you DELETE or REWRITE existing functionality, you have FAILED');
-              contextParts.push('ONLY change what was EXPLICITLY requested - NOTHING MORE');
+              const recentPaths = (global.conversationState?.context.edits ?? [])
+                .flatMap((edit) => edit.targetFiles || [])
+                .slice(-12);
+              const selected = selectFileContext({
+                files: backendFiles,
+                userMessage: prompt,
+                recentlyModifiedPaths: recentPaths,
+              });
+              console.log(
+                `[generate-ai-code-stream] Selective context: ${selected.fullPaths.length} full, ${selected.pathOnly.length} path-only, ~${selected.estimatedTokens} tokens`,
+              );
+              contextParts.push(selected.formatted);
+              contextParts.push('\nEdit only the files required. Path-only entries are listed for orientation — do not regenerate them.');
             }
           } else if (context.currentFiles && Object.keys(context.currentFiles).length > 0) {
-            // Fallback to frontend-provided files if backend cache is empty
-            console.log('[generate-ai-code-stream] Warning: Backend cache empty, using frontend files');
+            console.log('[generate-ai-code-stream] Warning: Backend cache empty, using selective frontend files');
             contextParts.push('\nEXISTING APPLICATION - DO NOT REGENERATE FROM SCRATCH');
-            contextParts.push('Current project files (modify these, do not recreate):');
-            
-            const fileEntries = Object.entries(context.currentFiles);
-            for (const [path, content] of fileEntries) {
-              if (typeof content === 'string') {
-                contextParts.push(`\n<file path="${path}">\n${content}\n</file>`);
-              }
-            }
-            contextParts.push('\nThe above files already exist. When the user asks to modify something (like "change the header color to black"), find the relevant file above and generate ONLY that file with the requested changes.');
+            const recentPaths = (global.conversationState?.context.edits ?? [])
+              .flatMap((edit) => edit.targetFiles || [])
+              .slice(-12);
+            const selected = selectFileContext({
+              files: context.currentFiles as Record<string, string>,
+              userMessage: prompt,
+              recentlyModifiedPaths: recentPaths,
+              primaryPaths: editContext?.primaryFiles,
+            });
+            contextParts.push(selected.formatted);
+            contextParts.push('\nThe listed full files already exist. Generate ONLY files that must change.');
           }
           
           // Add explicit edit mode indicator
@@ -933,69 +961,14 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
         console.log(`[generate-ai-code-stream] AI Gateway enabled: ${isUsingAIGateway}`);
         console.log(`[generate-ai-code-stream] Model string: ${model}`);
 
-        // Make streaming API call with appropriate provider
+        // Stable prefix first (cacheable). Volatile user + file context last.
         const streamOptions: any = {
           model: modelProvider(actualModel),
-          messages: [
-            { 
-              role: 'system', 
-              content: systemPrompt + `
-
-🚨 CRITICAL CODE GENERATION RULES - VIOLATION = FAILURE 🚨:
-1. NEVER truncate ANY code - ALWAYS write COMPLETE files
-2. NEVER use "..." anywhere in your code - this causes syntax errors
-3. NEVER cut off strings mid-sentence - COMPLETE every string
-4. NEVER leave incomplete class names or attributes
-5. ALWAYS close ALL tags, quotes, brackets, and parentheses
-6. If you run out of space, prioritize completing the current file
-
-CRITICAL STRING RULES TO PREVENT SYNTAX ERRORS:
-- NEVER write: className="px-8 py-4 bg-black text-white font-bold neobrut-border neobr...
-- ALWAYS write: className="px-8 py-4 bg-black text-white font-bold neobrut-border neobrut-shadow"
-- COMPLETE every className attribute
-- COMPLETE every string literal
-- NO ellipsis (...) ANYWHERE in code
-
-PACKAGE RULES:
-- ${getStackInitialPackageRule(projectStack)}
-- For EDITS: You may use packages, specify them with <package> tags
-- NEVER install packages like @mendable/firecrawl-js unless explicitly requested
-
-Examples of SYNTAX ERRORS (NEVER DO THIS):
-❌ className="px-4 py-2 bg-blue-600 hover:bg-blue-7...
-❌ <button className="btn btn-primary btn-...
-❌ const title = "Welcome to our...
-❌ import { useState, useEffect, ... } from 'react'
-
-Examples of CORRECT CODE (ALWAYS DO THIS):
-✅ className="px-4 py-2 bg-blue-600 hover:bg-blue-700"
-✅ <button className="btn btn-primary btn-large">
-✅ const title = "Welcome to our application"
-✅ import { useState, useEffect, useCallback } from 'react'
-
-REMEMBER: It's better to generate fewer COMPLETE files than many INCOMPLETE files.`
-            },
-            { 
-              role: 'user', 
-              content: fullPrompt + `
-
-CRITICAL: You MUST complete EVERY file you start. If you write:
-<file path="src/components/Hero.jsx">
-
-You MUST include the closing </file> tag and ALL the code in between.
-
-NEVER write partial code like:
-<h1>Build and deploy on the AI Cloud.</h1>
-<p>Some text...</p>  ❌ WRONG
-
-ALWAYS write complete code:
-<h1>Build and deploy on the AI Cloud.</h1>
-<p>Some text here with full content</p>  ✅ CORRECT
-
-If you're running out of space, generate FEWER files but make them COMPLETE.
-It's better to have 3 complete files than 10 incomplete files.`
-            }
-          ],
+          messages: buildCachedMessages({
+            stablePrefix,
+            volatileUser: [injectedSkills.block, volatileSuffix, fullPrompt].filter(Boolean).join('\n\n'),
+            enableAnthropicCache: isAnthropic,
+          }),
           maxTokens: 8192, // Reduce to ensure completion
           stopSequences: [] // Don't stop early
           // Note: Neither Groq nor Anthropic models support tool/function calling in this context
@@ -1494,6 +1467,23 @@ Provide the complete file content without any truncation. Include all necessary 
           }
         }
         
+        const usageProjectId =
+          (typeof requestProjectId === 'string' && requestProjectId) ||
+          (typeof context?.projectId === 'string' && context.projectId) ||
+          '';
+        try {
+          const usage = await result?.usage;
+          const inputTokens = resolveInputTokens(
+            usage,
+            `${stablePrefix}\n${injectedSkills.block}\n${volatileSuffix}\n${fullPrompt}`,
+          );
+          if (usageProjectId) {
+            await attachGenerationInputTokens(usageProjectId, inputTokens);
+          }
+        } catch (tokenError) {
+          console.error('[generate-ai-code-stream] Failed to record input tokens', tokenError);
+        }
+
         // Send completion with packages info
         await sendProgress({ 
           type: 'complete', 
@@ -1503,7 +1493,8 @@ Provide the complete file content without any truncation. Include all necessary 
           components: componentCount,
           model,
           packagesToInstall: packagesToInstall.length > 0 ? packagesToInstall : undefined,
-          warnings: truncationWarnings.length > 0 ? truncationWarnings : undefined
+          warnings: truncationWarnings.length > 0 ? truncationWarnings : undefined,
+          skillNames: injectedSkills.names,
         });
         
         // Track edit in conversation history

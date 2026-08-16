@@ -14,13 +14,24 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   RefreshCw,
+  Search,
+  Images,
+  Brain,
   Smartphone,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import { pushProjectToGitHub } from '@/lib/github/actions';
 import { relativeTime } from '@/lib/projects/prompt';
 import Hint from './Hint';
-import type { SaveStatus, ViewportSize, WorkspacePage, WorkspaceView } from './types';
+import { WORKSPACE_TABS, type SaveStatus, type ViewportSize, type WorkspacePage, type WorkspaceView } from './types';
+
+const TAB_ICONS: Partial<Record<WorkspaceView, typeof Globe>> = {
+  preview: Globe,
+  code: Code2,
+  seo: Search,
+  assets: Images,
+  brain: Brain,
+};
 
 function NavroopMark() {
   return (
@@ -74,6 +85,7 @@ export default function WorkspaceTopBar({
   projectId,
   githubConnected = false,
   githubRepoUrl = null,
+  sourceUrl = null,
 }: {
   projectName: string;
   saveState: SaveStatus;
@@ -94,6 +106,7 @@ export default function WorkspaceTopBar({
   projectId?: string | null;
   githubConnected?: boolean;
   githubRepoUrl?: string | null;
+  sourceUrl?: string | null;
 }) {
   const router = useRouter();
   const [draft, setDraft] = useState(projectName);
@@ -157,6 +170,16 @@ export default function WorkspaceTopBar({
             'focus-visible:border-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]',
           )}
         />
+        {sourceUrl && (
+          <a
+            href={sourceUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="hidden max-w-[180px] truncate text-[12px] text-[var(--studio-accent)] hover:underline lg:inline"
+          >
+            {sourceUrl.replace(/^https?:\/\//i, "")}
+          </a>
+        )}
         {status && (
           <span className="hidden truncate text-[12px] text-[var(--studio-faint)] lg:inline">
             {saveState === 'signin' ? (
@@ -192,32 +215,25 @@ export default function WorkspaceTopBar({
 
       <div className="flex items-center gap-8">
         <div className="inline-flex rounded-10 bg-[var(--studio-bg)] p-2">
-          <button
-            type="button"
-            onClick={() => onViewChange('preview')}
-            className={cn(
-              'inline-flex items-center gap-6 rounded-8 px-10 py-6 text-[12px] font-medium transition-colors',
-              view === 'preview'
-                ? 'bg-[var(--studio-surface)] text-[var(--studio-fg)] shadow-sm'
-                : 'text-[var(--studio-muted)] hover:text-[var(--studio-fg)]',
-            )}
-          >
-            <Globe className="size-14" />
-            Preview
-          </button>
-          <button
-            type="button"
-            onClick={() => onViewChange('code')}
-            className={cn(
-              'inline-flex items-center gap-6 rounded-8 px-10 py-6 text-[12px] font-medium transition-colors',
-              view === 'code'
-                ? 'bg-[var(--studio-surface)] text-[var(--studio-fg)] shadow-sm'
-                : 'text-[var(--studio-muted)] hover:text-[var(--studio-fg)]',
-            )}
-          >
-            <Code2 className="size-14" />
-            Code
-          </button>
+          {WORKSPACE_TABS.map((tab) => {
+            const Icon = TAB_ICONS[tab.id] ?? Globe;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => onViewChange(tab.id)}
+                className={cn(
+                  'inline-flex items-center gap-6 rounded-8 px-10 py-6 text-[12px] font-medium transition-colors',
+                  view === tab.id
+                    ? 'bg-[var(--studio-surface)] text-[var(--studio-fg)] shadow-sm'
+                    : 'text-[var(--studio-muted)] hover:text-[var(--studio-fg)]',
+                )}
+              >
+                <Icon className="size-14" />
+                {tab.label}
+              </button>
+            );
+          })}
         </div>
         <label className="sr-only" htmlFor="workspace-page">
           Page

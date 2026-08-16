@@ -19,13 +19,15 @@ import {
   BsFolder2Open,
   SiJavascript, 
   SiReact, 
-  SiCss3, 
+  SiCss, 
   SiJson 
 } from '@/lib/icons';
 import { motion } from 'framer-motion';
 import CodeApplicationProgress from '@/components/CodeApplicationProgress';
 import { persistProject } from '@/lib/projects/persist-client';
 import { projectDisplayName } from '@/lib/projects/prompt';
+import { streamProjectImport } from '@/lib/import/client';
+import { DEFAULT_IMPORT_MODE, resolveImportMode, type ImportMode } from '@/lib/import/mode';
 import { useGeneration } from '@/components/app/generation/GenerationProvider';
 import { getGenerationState } from '@/lib/generation/generation-runtime';
 import { isActiveGenerationStatus } from '@/lib/generation/types';
@@ -124,7 +126,7 @@ function AISandboxPage({
   const [homeScreenFading, setHomeScreenFading] = useState(false);
   const [homeUrlInput, setHomeUrlInput] = useState('');
   const [homeContextInput, setHomeContextInput] = useState('');
-  const [activeTab, setActiveTab] = useState<'generation' | 'preview'>('preview');
+  const [activeTab, setActiveTab] = useState<'generation' | WorkspaceView>('preview');
   const [showStyleSelector, setShowStyleSelector] = useState(false);
   const [selectedStyle, setSelectedStyle] = useState<string | null>(null);
   const [showLoadingBackground, setShowLoadingBackground] = useState(false);
@@ -162,6 +164,8 @@ function AISandboxPage({
 
   // Store flag to trigger generation after component mounts
   const [shouldAutoGenerate, setShouldAutoGenerate] = useState(false);
+  const [sourceUrl, setSourceUrl] = useState<string | null>(null);
+  const [importMode, setImportMode] = useState<ImportMode>(DEFAULT_IMPORT_MODE);
   const [projectTitle, setProjectTitle] = useState('Untitled project');
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'signin'>('idle');
   const [projectUpdatedAt, setProjectUpdatedAt] = useState<string | null>(null);
@@ -249,6 +253,14 @@ function AISandboxPage({
                 ...prev,
                 lastGeneratedCode: project.lastCode
               }));
+            }
+            if (project.importSource?.sourceUrl) {
+              setSourceUrl(project.importSource.sourceUrl);
+              setHomeUrlInput(project.importSource.sourceUrl);
+              setImportMode(resolveImportMode(project.importSource.mode));
+              if (!project.lastCode && !isJobActive) {
+                setShouldAutoGenerate(true);
+              }
             }
             if (isActiveGenerationStatus(project.generationStatus ?? project.status) && !isJobActive) {
               addChatMessage(
@@ -766,6 +778,7 @@ Tip: I automatically detect and install npm packages from your code imports (lik
         status: getGenerationState().status,
         progressMessage: getGenerationState().generationProgress.status || null,
         sourceMessage: [...getGenerationState().messages].reverse().find((entry) => entry.type === 'user' && entry.content.trim())?.content,
+        source: [...getGenerationState().messages].reverse().find((entry) => entry.type === 'user' && entry.content.trim())?.metadata?.source,
       });
 
       if (!result.saved) {
@@ -1895,13 +1908,15 @@ Tip: I automatically detect and install npm packages from your code imports (lik
             explanation || `Updated ${editedFileNames}`,
             'ai',
             {
-              appliedFiles: [generatedFiles[0]] // Only show the first edited file
+              appliedFiles: [generatedFiles[0]], // Only show the first edited file
+              skillNames: streamResult.skillNames,
             }
           );
         } else {
           // For new generation, show all files
           addChatMessage(explanation || 'Code generated!', 'ai', {
-            appliedFiles: generatedFiles
+            appliedFiles: generatedFiles,
+            skillNames: streamResult.skillNames,
           });
         }
         
@@ -2072,7 +2087,7 @@ Tip: I automatically detect and install npm packages from your code imports (lik
     } else if (ext === 'tsx' || ext === 'ts') {
       return <SiReact style={{ width: '16px', height: '16px' }} className="text-blue-500" />;
     } else if (ext === 'css') {
-      return <SiCss3 style={{ width: '16px', height: '16px' }} className="text-blue-500" />;
+      return <SiCss style={{ width: '16px', height: '16px' }} className="text-blue-500" />;
     } else if (ext === 'json') {
       return <SiJson style={{ width: '16px', height: '16px' }} className="text-gray-600" />;
     } else {
@@ -2543,6 +2558,7 @@ Tip: I automatically detect and install npm packages from your code imports (lik
 
         let scrapeData: ScrapeData | undefined;
         let brandGuidelines: any;
+        let importedCode: string | undefined;
 
         if (brandExtensionMode) {
           // === BRAND EXTENSION MODE ===
@@ -2580,37 +2596,30 @@ Tip: I automatically detect and install npm packages from your code imports (lik
           sessionStorage.removeItem('brandExtensionPrompt');
 
         } else {
-          // === NORMAL CLONE MODE ===
-          // Check if we have pre-scraped markdown content from search results
-          const storedMarkdown = sessionStorage.getItem('siteMarkdown');
-        if (storedMarkdown) {
-          // Use the pre-scraped content
+          let id = projectId || projectIdFromPath;
+          if (!id) {
+            await saveCurrentProject({ prompt: url });
+            id = getGenerationState().projectId ?? projectId;
+          }
+          if (!id) {
+            throw new Error('Could not create project for URL import');
+          }
+          const storedMode = sessionStorage.getItem('navroopImportMode');
+          if (storedMode) sessionStorage.removeItem('navroopImportMode');
+          const imported = await streamProjectImport({
+            projectId: id,
+            sourceUrl: url,
+            mode: resolveImportMode(storedMode || importMode),
+            onProgress: (message) => addChatMessage(message, 'system'),
+          });
+          imported.warnings.forEach((warning) => addChatMessage(warning, 'system'));
+          setSourceUrl(imported.sourceUrl);
+          importedCode = imported.filesXml;
           scrapeData = {
             success: true,
-            content: storedMarkdown,
-            title: new URL(url).hostname,
-            source: 'search-result'
+            url: imported.sourceUrl,
+            content: imported.usedFallback ? 'fallback' : 'multi-pass',
           };
-          sessionStorage.removeItem('siteMarkdown'); // Clear after use
-          addChatMessage('Using cached content from search results...', 'system');
-        } else {
-          // Perform fresh scraping
-          const scrapeResponse = await fetch('/api/scrape-url-enhanced', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url })
-          });
-          
-          if (!scrapeResponse.ok) {
-            throw new Error('Failed to scrape website');
-          }
-          
-          scrapeData = await scrapeResponse.json() as ScrapeData;
-          
-          if (!scrapeData.success) {
-            throw new Error(scrapeData.error || 'Failed to scrape website');
-          }
-        }
         }
 
         setUrlStatus(brandExtensionMode ? ['Brand styles extracted!', 'Building your component...'] : ['Website scraped successfully!', 'Generating React app...']);
@@ -2833,20 +2842,24 @@ Focus on the key sections and content, making it clean and modern.`;
         }
 
         const activeSandbox = createdSandbox || getGenerationState().sandboxData;
-        const streamResult = await startGenerationStream({
-          prompt,
-          model: aiModel,
-          styleHint: selectedStyle || homeContextInput,
-          context: {
-            sandboxId: activeSandbox?.sandboxId,
-            structure: structureContent,
-            conversationContext: conversationContext,
-            styleName: selectedStyle || homeContextInput
-          },
-          sandboxData: activeSandbox,
-        });
-        const generatedCode = streamResult.generatedCode;
-        const explanation = streamResult.explanation;
+        let generatedCode = importedCode || '';
+        let explanation = '';
+        if (!importedCode) {
+          const streamResult = await startGenerationStream({
+            prompt,
+            model: aiModel,
+            styleHint: selectedStyle || homeContextInput,
+            context: {
+              sandboxId: activeSandbox?.sandboxId,
+              structure: structureContent,
+              conversationContext: conversationContext,
+              styleName: selectedStyle || homeContextInput
+            },
+            sandboxData: activeSandbox,
+          });
+          generatedCode = streamResult.generatedCode;
+          explanation = streamResult.explanation;
+        }
         
         if (generatedCode) {
           addChatMessage('AI recreation generated!', 'system');
@@ -2927,7 +2940,7 @@ Focus on the key sections and content, making it clean and modern.`;
     return pagesFromFiles([...fromSandbox, ...fromProgress]);
   }, [sandboxFiles, generationProgress.files]);
 
-  const workspaceView: WorkspaceView = activeTab === 'generation' ? 'code' : 'preview';
+  const workspaceView: WorkspaceView = activeTab === 'generation' ? 'code' : activeTab;
 
   const refreshPreview = () => {
     if (!iframeRef.current || !sandboxData?.url) return;
@@ -2982,7 +2995,10 @@ Focus on the key sections and content, making it clean and modern.`;
         }
       }}
       view={workspaceView}
-      onViewChange={(next) => setActiveTab(next === 'code' ? 'generation' : 'preview')}
+      onViewChange={(next) => {
+        if (next === 'code') setActiveTab('generation');
+        else setActiveTab(next);
+      }}
       viewport={viewport}
       onViewportChange={setViewport}
       onRefresh={refreshPreview}
@@ -3018,6 +3034,7 @@ Focus on the key sections and content, making it clean and modern.`;
       preview={renderMainContent()}
       githubConnected={githubConnected}
       githubRepoUrl={githubRepoUrl}
+      sourceUrl={sourceUrl}
       initialPhase={initialPhase}
       initialPlan={initialPlan}
       isJobActive={isJobActive}

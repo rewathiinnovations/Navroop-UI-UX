@@ -32,5 +32,11 @@ Prefer **one owner** per change set. Do not split the same file across parallel 
 - **Plan/Build + stacks:** `lib/projects/plan`, `/api/projects/[id]/plan`, `lib/stacks`.
 - **Visual Edits:** `lib/visual-edits`, workspace preview toolbar.
 - **Checkpoints:** `lib/checkpoints`, `/api/projects/[id]/checkpoints`.
+- **SEO audit:** `lib/seo`, `lib/stack-prompts/seo-rules.ts`, `/api/projects/[id]/seo`, workspace Quality → SEO & AI search.
+- **Code quality audit:** `lib/audit`, `/api/projects/[id]/audit`, workspace Quality → Code & performance. Reuse the SEO fix pipeline; do not fork a second generation path.
 - **Connectors / GitHub:** `app/(app)/connectors`, `lib/github`, `/api/github`.
 - **Generation engine:** `lib/generation`, `generate-ai-code-stream`, `apply-ai-code-stream`.
+- **URL import:** `lib/import`, Prisma `ImportSource`, `/api/projects/[id]/import`. Merge TopBar with a source-URL link only; do not rewrite SEO/Assets tabs.
+- **Workspace Skills:** `lib/skills`, `/settings/skills`, Prisma `Skill`. Conditional inject after the cacheable prefix. Do not fold into Brain memory.
+- **Brain memory:** `lib/memory`, Prisma `MemoryEntry`, workspace Brain tab. Always-on; inside the cacheable prefix. Do not put skill content in the memory block.
+- **Quality measurement:** `lib/signals`, `lib/prompts/version.ts`, `/admin/quality`. Merge hooks only into audits/checkpoints/persist. Do not auto-change prompts.

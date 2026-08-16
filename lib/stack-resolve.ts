@@ -1,3 +1,8 @@
+import {
+  DEFAULT_DESIGN_DIRECTION,
+  resolveDirectionId,
+  type DesignDirectionId,
+} from '@/lib/design/directions';
 import { prisma } from '@/lib/db';
 import {
   DEFAULT_STACK,
@@ -9,7 +14,7 @@ import {
 
 /**
  * Resolve the stack stored on a Project.
- * Missing projectId → REACT (legacy generation without a project row).
+ * Missing projectId → NEXTJS (legacy generation without a project row).
  * Unknown stored value throws — never coerce another stack to React.
  */
 export async function resolveProjectStack(projectId?: string | null): Promise<StackId> {
@@ -29,7 +34,7 @@ export async function resolveProjectStack(projectId?: string | null): Promise<St
  *
  * 1. If `projectId` is present, always load Project.stack from the DB and use it.
  * 2. Else if `stack` is present, use that (validated — unknown ids throw).
- * 3. Else default REACT — only when neither stack nor projectId is provided.
+ * 3. Else default NEXTJS — only when neither stack nor projectId is provided.
  *
  * Invalid stack strings throw — no silent React fallback.
  */
@@ -47,4 +52,30 @@ export async function resolveRequestStack(input: {
     return getStack(input.stack).id;
   }
   return resolveStackOrDefault(undefined);
+}
+
+export async function resolveRequestGenerationProfile(input: {
+  stack?: unknown;
+  designDirection?: unknown;
+  projectId?: unknown;
+}): Promise<{ stack: StackId; designDirection: DesignDirectionId }> {
+  if (typeof input.projectId === 'string' && input.projectId) {
+    const project = await prisma.project.findUnique({
+      where: { id: input.projectId },
+      select: { stack: true, designDirection: true },
+    });
+    if (!project) {
+      throw new Error(`Cannot resolve generation profile: project ${input.projectId} not found`);
+    }
+    return {
+      stack: getStack(project.stack).id,
+      designDirection: resolveDirectionId(project.designDirection),
+    };
+  }
+  return {
+    stack: await resolveRequestStack({ stack: input.stack }),
+    designDirection: input.designDirection
+      ? resolveDirectionId(input.designDirection)
+      : DEFAULT_DESIGN_DIRECTION,
+  };
 }

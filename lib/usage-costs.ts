@@ -1,23 +1,25 @@
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
+import { stampActivePromptHash } from '@/lib/prompts/version';
+import { maybeSettleFollowups } from '@/lib/signals/collect';
+import { calculateEventCost, type GenerationEventKind } from './usage-estimates';
 
-/**
- * ASSUMPTION: these are rough fixed-constant estimates, NOT live
- * Firecrawl / E2B / AI billing. Not a source of truth for invoicing.
- */
-export const FIRECRAWL_SCRAPE_ESTIMATE = 0.001;
-export const E2B_SANDBOX_ESTIMATE = 0.02;
-export const AI_GENERATION_ESTIMATE = 0.05;
-/** Approximation only — plan-only AI call, no E2B/Firecrawl. Not live billing. */
-export const PLAN_GENERATION_ESTIMATE = 0.02;
-
-export type GenerationEventKind = 'initial' | 'followup' | 'plan';
+export {
+  AI_GENERATION_ESTIMATE,
+  E2B_SANDBOX_ESTIMATE,
+  FIRECRAWL_SCRAPE_ESTIMATE,
+  IMAGE_GENERATION_ESTIMATE,
+  PLAN_GENERATION_ESTIMATE,
+  calculateEventCost,
+  type GenerationEventKind,
+} from './usage-estimates';
 
 export type LogGenerationEventInput = {
   projectId: string;
   userId: string;
   kind: GenerationEventKind;
   isUrlClone: boolean;
+  inputTokens?: number | null;
 };
 
 const isoDateSchema = z.string().refine((value) => !Number.isNaN(Date.parse(value)), {
@@ -29,18 +31,6 @@ export const usageRangeQuerySchema = z.object({
   to: isoDateSchema.optional(),
 });
 
-export function calculateEventCost(kind: GenerationEventKind, isUrlClone: boolean) {
-  if (kind === 'plan') {
-    return PLAN_GENERATION_ESTIMATE;
-  }
-  // initial/followup share the same sandbox+AI estimate today.
-  const raw =
-    AI_GENERATION_ESTIMATE +
-    E2B_SANDBOX_ESTIMATE +
-    (isUrlClone ? FIRECRAWL_SCRAPE_ESTIMATE : 0);
-  return Math.round(raw * 10000) / 10000;
-}
-
 export function decimalToNumber(value: { toString(): string } | number | null | undefined) {
   if (value == null) return 0;
   const n = typeof value === 'number' ? value : Number(value.toString());
@@ -50,12 +40,16 @@ export function decimalToNumber(value: { toString(): string } | number | null | 
 /** Logging failure must never block generation. */
 export async function logGenerationEvent(input: LogGenerationEventInput) {
   try {
+    await maybeSettleFollowups(input.projectId);
+    const promptVersion = await stampActivePromptHash();
     await prisma.generationEvent.create({
       data: {
         projectId: input.projectId,
         userId: input.userId,
         kind: input.kind,
         estimatedCost: calculateEventCost(input.kind, input.isUrlClone),
+        promptVersion,
+        ...(input.inputTokens != null ? { inputTokens: input.inputTokens } : {}),
       },
     });
   } catch (error) {
@@ -77,6 +71,24 @@ function parseBound(value: string, edge: 'start' | 'end') {
       : new Date(Date.UTC(year, month - 1, day + 1));
   }
   return new Date(value);
+}
+
+/** Attach measured/estimated input tokens to the latest event for this project. */
+export async function attachGenerationInputTokens(projectId: string, inputTokens: number) {
+  try {
+    const latest = await prisma.generationEvent.findFirst({
+      where: { projectId },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, inputTokens: true },
+    });
+    if (!latest || latest.inputTokens != null) return;
+    await prisma.generationEvent.update({
+      where: { id: latest.id },
+      data: { inputTokens },
+    });
+  } catch (error) {
+    console.error('[usage] Failed to attach input tokens', error);
+  }
 }
 
 export function parseUsageRange(searchParams: URLSearchParams) {

@@ -10,6 +10,8 @@ export const updateProfileSchema = z.object({
   avatarUrl: z
     .union([
       z.string().trim().url('Enter a valid URL'),
+      z.string().trim().regex(/^\/uploads\//, 'Enter a valid URL'),
+      z.string().startsWith('data:'),
       z.literal(''),
       z.null(),
     ])

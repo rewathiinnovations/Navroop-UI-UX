@@ -91,6 +91,7 @@ export default function TeamTable({ initialMembers }: { initialMembers: Member[]
           items={[
             { href: '/admin/team', label: 'Team', active: true },
             { href: '/admin/usage', label: 'Usage' },
+            { href: '/admin/quality', label: 'Quality' },
           ]}
         />
 

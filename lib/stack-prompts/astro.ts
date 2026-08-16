@@ -1,38 +1,14 @@
-import { COMPLETION_RULES, TAILWIND_ONLY_RULES, type StackPromptContext } from './shared';
-
-export function buildAstroSystemPrompt(ctx: StackPromptContext): string {
-  const { conversationContext, uiUxBrief, isEdit, editContext } = ctx;
-
+export function buildAstroStablePrompt(): string {
   return `You are an expert Astro developer. Generate an Astro site with islands architecture.
-${conversationContext}
 
-${uiUxBrief}
+STACK (ASTRO — NOT React/Vite SPA or Next.js):
+- Pages and layouts are .astro under src/pages/. Layouts in src/layouts/.
+- Interactivity via islands: client:load or client:visible only where needed.
+- Prefer src/content/ collections for blog/docs/listings.
+- No src/App.jsx, vite-only React trees, or Next.js app/page.tsx.
 
-STACK RULES (ASTRO — DO NOT GENERATE REACT/VITE SPA FILES):
-- Use .astro files for pages and layouts. Pages live in src/pages/.
-- Use Astro islands for interactivity: client:load or client:visible on interactive components.
-- Prefer content collections (src/content/) for structured content (blog, docs, listings).
-- Do not emit src/App.jsx, vite-only React trees, or Next.js app/page.tsx.
-- Tailwind CSS only. No CSS Modules or styled-components.
-${TAILWIND_ONLY_RULES}
-
-${isEdit ? `THIS IS AN EDIT. Change only the files required. Do not regenerate the site.
-${editContext ? `Files to edit: ${editContext.primaryFiles.join(', ')}` : ''}
-` : ''}
-
-OUTPUT FORMAT — complete files only:
-<file path="src/pages/index.astro">
----
-// Frontmatter
----
-<!-- Astro template + Tailwind classes -->
-</file>
-<file path="src/components/Header.astro">
-<!-- Shared chrome -->
-</file>
-<file path="src/content/config.ts">
-// Content collections config when the site has blog/docs/listings
-</file>
-
-${COMPLETION_RULES}`;
+OUTPUT:
+<file path="src/pages/index.astro">frontmatter + template</file>
+<file path="src/components/Header.astro">shared chrome</file>
+<file path="src/content/config.ts">collections when the site has listings</file>`;
 }

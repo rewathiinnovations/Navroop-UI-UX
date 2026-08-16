@@ -53,6 +53,7 @@ model User {
   generationEvents GenerationEvent[]
   stars            ProjectStar[]
   githubConnection GitHubConnection?
+  skillsCreated    Skill[]
 }
 
 model Account {
@@ -112,7 +113,8 @@ model Project {
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
   phase            ProjectPhase @default(PLANNING)
-  stack            Stack        @default(REACT)
+  stack            Stack        @default(NEXTJS)
+  designDirection  String       @default("minimal")
   githubRepoFullName String?
   githubRepoUrl      String?
   lastPushedAt       DateTime?
@@ -120,9 +122,66 @@ model Project {
   plans            ProjectPlan[]
   stars            ProjectStar[]
   checkpoints      Checkpoint[]
+  projectAssets    ProjectAsset[]
+  seoAudits        SeoAudit[]
+  codeAudits       CodeAudit[]
+  qualitySignals   QualitySignal[]
+  importSource     ImportSource?
+  memories         MemoryEntry[]
 
   @@index([ownerId])
   @@index([deletedAt])
+}
+
+model ImportSource {
+  id           String   @id @default(cuid())
+  projectId    String   @unique
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sourceUrl    String
+  mode         String
+  designTokens Json
+  sections     Json
+  capturedAt   DateTime
+}
+
+model ProjectAsset {
+  id         String   @id @default(cuid())
+  projectId  String
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  url        String
+  storageKey String
+  kind       String
+  prompt     String?
+  altText    String
+  width      Int
+  height     Int
+  sizeBytes  Int
+  createdAt  DateTime @default(now())
+
+  @@index([projectId])
+}
+
+model SeoAudit {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  findings  Json
+  scannedAt DateTime @default(now())
+
+  @@index([projectId])
+  @@index([projectId, scannedAt])
+}
+
+model CodeAudit {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  findings  Json
+  metrics   Json
+  scannedAt DateTime @default(now())
+
+  @@index([projectId])
+  @@index([projectId, scannedAt])
 }
 
 model Checkpoint {
@@ -211,6 +270,45 @@ model GitHubConnection {
   connectedAt          DateTime @default(now())
 }
 
+// Workspace-scoped conditional instruction sets. Project Brain memory is a separate concern.
+model Skill {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String
+  content     String   @db.Text
+  enabled     Boolean  @default(true)
+  createdById String
+  createdBy   User     @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  usageCount  Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([enabled])
+  @@index([usageCount])
+}
+
+model MemoryEntry {
+  id          String   @id @default(cuid())
+  scope       String
+  projectId   String?
+  project     Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  category    String
+  content     String
+  source      String
+  status      String   @default("ACTIVE")
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([scope, projectId, status])
+}
+
+model AppSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
 model GenerationEvent {
   id            String   @id @default(cuid())
   projectId     String
@@ -219,9 +317,38 @@ model GenerationEvent {
   user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   kind          String
   estimatedCost Decimal  @db.Decimal(10, 4)
+  inputTokens   Int?
+  promptVersion String?
   createdAt     DateTime @default(now())
 
   @@index([userId])
   @@index([projectId])
   @@index([createdAt])
+}
+
+model QualitySignal {
+  id                String   @id @default(cuid())
+  projectId         String
+  project           Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  generationEventId String?
+  kind              String
+  value             Float
+  rawValue          Json?
+  promptVersion     String
+  createdAt         DateTime @default(now())
+
+  @@index([kind, createdAt])
+  @@index([promptVersion])
+  @@index([projectId])
+}
+
+model PromptVersion {
+  id        String   @id @default(cuid())
+  hash      String   @unique
+  label     String
+  config    Json
+  isActive  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([isActive])
 }

@@ -61,6 +61,9 @@ e2b-template-*
 .cursor/skills/**/cache/
 .cursor/**/.sync-manifest.json
 
+# Local object storage (STORAGE_DRIVER=local)
+/public/uploads
+
 # Temporary files
 *.tmp
 *.temp

@@ -6,6 +6,9 @@ import '@/components/app/studio/studio.css';
 import ChatInput from './ChatInput';
 import ChatPanel from './ChatPanel';
 import PreviewPanel from './PreviewPanel';
+import AssetsPanel from './AssetsPanel';
+import BrainPanel from './BrainPanel';
+import QualityPanel from './QualityPanel';
 import VersionHistoryPanel from './VersionHistoryPanel';
 import WorkspaceTopBar from './WorkspaceTopBar';
 import { useCheckpoints } from './useCheckpoints';
@@ -46,6 +49,7 @@ export default function ProjectWorkspace({
   onRestoreCheckpoint,
   githubConnected = false,
   githubRepoUrl = null,
+  sourceUrl = null,
   initialPhase = null,
   initialPlan = null,
   isJobActive = false,
@@ -77,6 +81,7 @@ export default function ProjectWorkspace({
   onRestoreCheckpoint?: (id: string) => void;
   githubConnected?: boolean;
   githubRepoUrl?: string | null;
+  sourceUrl?: string | null;
   initialPhase?: ProjectPhase | null;
   initialPlan?: WorkspacePlan | null;
   isJobActive?: boolean;
@@ -159,6 +164,7 @@ export default function ProjectWorkspace({
         projectId={projectId}
         githubConnected={githubConnected}
         githubRepoUrl={githubRepoUrl}
+        sourceUrl={sourceUrl}
       />
 
       <div className="relative flex min-h-0 flex-1 overflow-hidden">
@@ -212,7 +218,20 @@ export default function ProjectWorkspace({
             });
           }}
         >
-          {preview}
+          {view === 'seo' && projectId ? (
+            <QualityPanel
+              projectId={projectId}
+              projectUpdatedAt={updatedAt}
+              onSend={handleSend}
+              sending={sending}
+            />
+          ) : view === 'assets' && projectId ? (
+            <AssetsPanel projectId={projectId} />
+          ) : view === 'brain' && projectId ? (
+            <BrainPanel projectId={projectId} />
+          ) : (
+            preview
+          )}
         </PreviewPanel>
 
         <VersionHistoryPanel

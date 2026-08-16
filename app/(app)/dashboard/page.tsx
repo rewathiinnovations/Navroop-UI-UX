@@ -9,7 +9,10 @@ import PromptHero from "@/components/dashboard/PromptHero";
 import ProjectCard from "@/components/dashboard/ProjectCard";
 import { loginModalHref } from "@/lib/auth/public-login";
 import { PENDING_PROMPT_KEY, clearDraftStorage } from "@/hooks/useDraftStorage";
+import type { DesignDirectionId } from "@/lib/design/directions";
+import type { ImportMode } from "@/lib/import/mode";
 import { createProject } from "@/lib/projects/actions";
+import { armProjectGeneration } from "@/lib/projects/start-from-prompt";
 import type { StackId } from "@/lib/stacks";
 import {
   fetchProjectList,
@@ -70,9 +73,14 @@ export default function DashboardPage() {
   const recent = useMemo(() => projects.slice(0, 8), [projects]);
   const visible = tab === "mine" ? mine : recent;
 
-  const onSubmit = async (text: string, stack: StackId) => {
+  const onSubmit = async (
+    text: string,
+    stack: StackId,
+    designDirection: DesignDirectionId,
+    importMode: ImportMode,
+  ) => {
     setError("");
-    const created = await createProject({ initialPrompt: text, stack });
+    const created = await createProject({ initialPrompt: text, stack, designDirection, importMode });
     if (!created.ok) {
       if (created.status === 401) {
         router.push(loginModalHref("/dashboard"));
@@ -82,6 +90,7 @@ export default function DashboardPage() {
       return;
     }
     clearDraftStorage(PENDING_PROMPT_KEY);
+    armProjectGeneration(text, importMode);
     router.push(`/project/${created.data.id}`);
   };
 

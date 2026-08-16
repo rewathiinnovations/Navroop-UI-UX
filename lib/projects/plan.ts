@@ -9,9 +9,14 @@ import { buildUiUxProMaxBrief } from '@/lib/ui-ux-pro-max/build-design-brief';
 import { looksLikeUrl } from '@/lib/projects/prompt';
 import { parseWithZod, refinePlanSchema, followUpPlanSchema } from '@/lib/projects/schema';
 import { logGenerationEvent } from '@/lib/usage-costs';
-import { getStackPrompt } from '@/lib/stack-prompts';
+import { buildCachedMessages } from '@/lib/generation/prompt-cache';
+import { resolveInputTokens } from '@/lib/generation/token-estimate';
+import { buildStablePromptPrefix, getStackPrompt } from '@/lib/stack-prompts';
 import { getStack } from '@/lib/stacks';
+import { resolveDirectionId } from '@/lib/design/directions';
 import { getCurrentProjectFiles } from '@/lib/github/current-files';
+import { injectMatchedSkills } from '@/lib/skills/inject';
+import { buildMemoryBlock } from '@/lib/memory/build-context';
 
 type ActionErr = {
   ok: false;
@@ -40,6 +45,7 @@ export type GenerationStart = {
 export type PlanCompleter = (input: {
   promptContext: string;
   systemPrompt: string;
+  stablePrefix?: string;
 }) => Promise<PlanContent>;
 
 const planContentSchema = z.object({
@@ -94,14 +100,19 @@ async function requireActor() {
   return { user, err: null };
 }
 
-function buildPlanSystemPrompt(promptContext: string, stack: string) {
+function buildPlanSystemPrompt(
+  promptContext: string,
+  stack: string,
+  designDirection?: string | null,
+  extras?: { memoryBlock?: string },
+) {
   const stackId = getStack(stack).id;
   const brief = buildUiUxProMaxBrief({ prompt: promptContext, isEdit: false });
-  const stackPrompt = getStackPrompt(stackId, {
+  const stackPrompt = getStackPrompt(stackId, designDirection, {
     conversationContext: '',
     uiUxBrief: brief,
     isEdit: false,
-  });
+  }, extras);
   return `${stackPrompt}
 
 You are planning a website for the ${stackId} stack. Output a structured plan only. Do NOT write application code, file contents, markup, or diffs.
@@ -127,26 +138,52 @@ function parsePlanJson(raw: string): PlanContent {
 async function defaultCompletePlan(input: {
   promptContext: string;
   systemPrompt: string;
+  stablePrefix?: string;
 }): Promise<PlanContent> {
   const { client, actualModel } = getProviderForModel(appConfig.ai.defaultModel);
   const model = client(actualModel);
   const userPrompt = `Create a website plan (no code) for:\n\n${input.promptContext}`;
+  const enableAnthropicCache = appConfig.ai.defaultModel.startsWith('anthropic/');
+  const cached = input.stablePrefix
+    ? buildCachedMessages({
+        stablePrefix: input.stablePrefix,
+        volatileUser: `${input.systemPrompt.replace(input.stablePrefix, '').trim()}\n\n${userPrompt}`,
+        enableAnthropicCache,
+      })
+    : null;
 
   try {
-    const result = await generateObject({
-      model,
-      schema: planContentSchema,
-      system: input.systemPrompt,
-      prompt: userPrompt,
-    });
+    const result = cached
+      ? await generateObject({
+          model,
+          schema: planContentSchema,
+          messages: cached,
+        })
+      : await generateObject({
+          model,
+          schema: planContentSchema,
+          system: input.systemPrompt,
+          prompt: userPrompt,
+        });
     return result.object;
   } catch {
     const runText = async () => {
-      const result = await generateText({
-        model,
-        system: input.systemPrompt,
-        prompt: `${userPrompt}\n\nReturn ONLY valid JSON for the plan shape. No code.`,
-      });
+      const result = cached
+        ? await generateText({
+            model,
+            messages: cached.map((message) => ({
+              ...message,
+              content:
+                message.role === 'user'
+                  ? `${message.content}\n\nReturn ONLY valid JSON for the plan shape. No code.`
+                  : message.content,
+            })),
+          })
+        : await generateText({
+            model,
+            system: input.systemPrompt,
+            prompt: `${userPrompt}\n\nReturn ONLY valid JSON for the plan shape. No code.`,
+          });
       return parsePlanJson(result.text);
     };
     try {
@@ -157,9 +194,9 @@ async function defaultCompletePlan(input: {
   }
 }
 
-async function completePlan(promptContext: string, systemPrompt: string) {
+async function completePlan(promptContext: string, systemPrompt: string, stablePrefix?: string) {
   const completer = planCompleterOverride ?? defaultCompletePlan;
-  return completer({ promptContext, systemPrompt });
+  return completer({ promptContext, systemPrompt, stablePrefix });
 }
 
 export function combineBuildContext(initialPrompt: string, content: PlanContent) {
@@ -255,14 +292,26 @@ export async function generatePlan(
 ) {
   const project = await prisma.project.findFirst({
     where: { id: projectId, deletedAt: null },
-    select: { id: true, ownerId: true, initialPrompt: true, stack: true },
+    select: { id: true, ownerId: true, initialPrompt: true, stack: true, designDirection: true },
   });
   if (!project) {
     throw new Error('Project not found');
   }
 
-  const systemPrompt = buildPlanSystemPrompt(promptContext, project.stack);
-  const content = await completePlan(promptContext, systemPrompt);
+  const directionId = resolveDirectionId(project.designDirection);
+  let memoryBlock = '';
+  try {
+    memoryBlock = (await buildMemoryBlock(projectId)).block;
+  } catch (error) {
+    console.warn('[memory] plan block failed', error);
+  }
+  const stablePrefix = buildStablePromptPrefix(project.stack, directionId, { memoryBlock });
+  const injected = await injectMatchedSkills(sourceMessage, promptContext);
+  let systemPrompt = buildPlanSystemPrompt(promptContext, project.stack, directionId, { memoryBlock });
+  if (injected.block) {
+    systemPrompt = `${stablePrefix}\n\n${injected.block}\n\n${systemPrompt.replace(stablePrefix, '').trim()}`;
+  }
+  const content = await completePlan(promptContext, systemPrompt, stablePrefix);
 
   const latest = await prisma.projectPlan.findFirst({
     where: { projectId },
@@ -293,6 +342,7 @@ export async function generatePlan(
     userId: project.ownerId,
     kind: 'plan',
     isUrlClone: false,
+    inputTokens: resolveInputTokens(null, `${systemPrompt}\n${promptContext}`),
   });
 
   return created;

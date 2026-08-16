@@ -39,12 +39,20 @@ Nested Firecrawl/home rules under `components/` and `styles/` are unchanged. Mer
 
 - **Projects API** — `/api/projects`, Prisma `Project` (`lib/projects`)
 - **Plan/Build** — `ProjectPhase` + `/api/projects/[id]/plan`; workspace chat `plan` \| `build`
-- **Stacks** — Prisma `Stack` + `lib/stacks`. PromptHero / pending-prompt persist `{ text, stack }` (UI default NEXTJS)
+- **Stacks** — Prisma `Stack` + `lib/stacks`. New projects default NEXTJS. PromptHero / pending-prompt persist `{ text, stack, designDirection, importMode }` (defaults NEXTJS + minimal + reimagine)
+- **Design directions / generation prompts** — `lib/design/directions.ts`, `lib/stack-prompts/` (base-rules + seo-rules + stack). Cacheable stable prefix + selective follow-up context in `lib/generation/`
+- **SEO / AEO** — `lib/seo/`, Prisma `SeoAudit`, `/api/projects/[id]/seo`, Quality → SEO & AI search
+- **Code quality** — `lib/audit/`, Prisma `CodeAudit`, `/api/projects/[id]/audit`, Quality → Code & performance; `getTopRecurringIssues` on `/admin/usage` and `/admin/quality`
 - **Sidebar / workspace** — `components/layout/Sidebar`, `components/workspace/`
 - **Visual Edits** — `lib/visual-edits` + workspace preview toolbar
 - **Connectors / GitHub** — `/connectors`, `/api/github`
 - **Checkpoints** — `/api/projects/[id]/checkpoints`
-- **Team / usage** — `/admin/team`, `/admin/usage` (ADMIN)
+- **Assets** — `ProjectAsset`, `lib/assets`, `lib/storage`, workspace Assets tab, `/api/projects/[id]/assets`
+- **URL import** — `ImportSource`, `lib/import/`, `POST /api/projects/[id]/import`. Reimagine (default) or replicate. Multi-pass capture → rehost → segment → generate.
+- **Skills** — Prisma `Skill`, `lib/skills/`, `/settings/skills` + Brain tab section. Conditional; after cacheable prefix; ADMIN mutations. Distinct from Brain memory.
+- **Brain memory** — `MemoryEntry`, `lib/memory/`, workspace Brain tab. Always-on; inside cacheable prefix. Extraction toggle on `/admin/usage`.
+- **Quality signals** — `QualitySignal`, `PromptVersion`, `lib/signals/`, `/admin/quality` (ADMIN). Measurement only — no auto prompt changes.
+- **Team / usage** — `/admin/team`, `/admin/usage`, `/admin/quality` (ADMIN)
 - **Coolify** — `docker-compose.yml` + `Dockerfile` (see `docs/coolify.md`); local Postgres `docker-compose.dev.yml` on `5433`
 
 ## Superpowers

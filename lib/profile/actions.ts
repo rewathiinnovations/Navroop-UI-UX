@@ -9,6 +9,9 @@ import {
   updateProfileSchema,
   type UpdateProfileInput,
 } from '@/lib/profile/schema';
+import { avatarStorageKey } from '@/lib/assets/keys';
+import { optimizeImage } from '@/lib/assets/optimize';
+import { upload } from '@/lib/storage';
 
 export type ActionOk<T> = { ok: true; data: T };
 export type ActionErr = {
@@ -50,6 +53,26 @@ export async function updateProfile(input: UpdateProfileInput) {
   }
 
   return { ok: true as const, data: toPublicUser(updated) };
+}
+
+export async function uploadAvatar(formData: FormData) {
+  const { user, error, status } = await requireSessionUser();
+  if (!user) return { ok: false as const, error, status };
+
+  const file = formData.get('file');
+  if (!(file instanceof File) || file.size === 0) {
+    return { ok: false as const, error: 'Choose an image to upload', status: 400 as const };
+  }
+
+  const buffer = Buffer.from(await file.arrayBuffer());
+  const optimized = await optimizeImage(buffer, { width: 512, height: 512 });
+  const key = avatarStorageKey(user.id, optimized.ext);
+  const stored = await upload(optimized.buffer, {
+    key,
+    contentType: optimized.contentType,
+  });
+
+  return updateProfile({ avatarUrl: stored.url });
 }
 
 export async function changePassword(currentPassword: string, newPassword: string) {

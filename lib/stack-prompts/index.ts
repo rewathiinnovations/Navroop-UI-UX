@@ -1,48 +1,89 @@
+import { getDirection, toPromptBlock } from '@/lib/design/directions';
 import { getStack, isStackId, type StackId } from '@/lib/stacks';
-import { buildAstroSystemPrompt } from './astro';
-import { buildNextjsSystemPrompt } from './nextjs';
-import { buildReactSystemPrompt } from './react';
-import { buildStaticHtmlSystemPrompt } from './static-html';
-import { buildSvelteSystemPrompt } from './svelte';
-import { buildVueSystemPrompt } from './vue';
-import type { StackPromptContext } from './shared';
+import { BASE_RULES } from './base-rules';
+import { buildAstroStablePrompt } from './astro';
+import { buildNextjsStablePrompt } from './nextjs';
+import { buildReactStablePrompt } from './react';
+import { buildStaticHtmlStablePrompt } from './static-html';
+import { buildSvelteStablePrompt } from './svelte';
+import { buildVueStablePrompt } from './vue';
+import { COMPLETION_RULES, buildVolatilePromptSuffix, type StackPromptContext } from './shared';
+import { getSeoRules } from './seo-rules';
 
 export type { StackPromptContext, StackPromptEditContext } from './shared';
+export { buildVolatilePromptSuffix } from './shared';
+export { BASE_RULES } from './base-rules';
+export { getSeoRules } from './seo-rules';
 
-type PromptBuilder = (ctx: StackPromptContext) => string;
+type StableBuilder = () => string;
 
-const STACK_PROMPTS: Record<StackId, PromptBuilder> = {
-  NEXTJS: buildNextjsSystemPrompt,
-  REACT: buildReactSystemPrompt,
-  ASTRO: buildAstroSystemPrompt,
-  STATIC_HTML: buildStaticHtmlSystemPrompt,
-  VUE: buildVueSystemPrompt,
-  SVELTE: buildSvelteSystemPrompt,
+const STACK_STABLE: Record<StackId, StableBuilder> = {
+  NEXTJS: buildNextjsStablePrompt,
+  REACT: buildReactStablePrompt,
+  ASTRO: buildAstroStablePrompt,
+  STATIC_HTML: buildStaticHtmlStablePrompt,
+  VUE: buildVueStablePrompt,
+  SVELTE: buildSvelteStablePrompt,
+};
+
+export type StablePromptExtras = {
+  /** ACTIVE workspace + project Brain memory. Inside the cacheable prefix. Not skills. */
+  memoryBlock?: string | null;
 };
 
 /**
- * Look up the system prompt for a stack.
- * Throws if the stack id is unknown or the prompt builder is missing.
- * Never silently falls through to the React prompt for a non-REACT stack.
+ * Byte-identical for the same stack + direction + memory set.
+ * Order is fixed: base-rules → seo-rules → memory → design direction → stack → completion.
+ * Skills stay outside this prefix.
  */
-export function getStackPrompt(stack: string, ctx: StackPromptContext): string {
+export function buildStablePromptPrefix(
+  stack: string,
+  directionId?: string | null,
+  extras?: StablePromptExtras,
+): string {
   if (!isStackId(stack)) {
     throw new Error(`Missing stack prompt for "${stack}" — not a known stack`);
   }
-  // Validate the registry entry exists (throws on holes).
   getStack(stack);
-  const builder = STACK_PROMPTS[stack];
+  const builder = STACK_STABLE[stack];
   if (!builder) {
     throw new Error(`Missing stack prompt for "${stack}"`);
   }
-  const prompt = builder(ctx);
-  if (!prompt || !prompt.trim()) {
+  const stackBody = builder();
+  if (!stackBody || !stackBody.trim()) {
     throw new Error(`Empty stack prompt for "${stack}"`);
   }
-  if (stack !== 'REACT' && prompt.startsWith('You are an expert React developer')) {
+  if (stack !== 'REACT' && /You are an expert React developer/.test(stackBody)) {
     throw new Error(`Stack prompt for "${stack}" incorrectly used the React prompt`);
   }
-  return prompt;
+  const memory = extras?.memoryBlock?.trim();
+  return [
+    BASE_RULES,
+    getSeoRules(stack),
+    memory,
+    toPromptBlock(getDirection(directionId)),
+    stackBody,
+    getStackInitialPackageRule(stack),
+    COMPLETION_RULES,
+  ]
+    .filter((part): part is string => Boolean(part && part.trim()))
+    .join('\n\n');
+}
+
+/**
+ * Look up the system prompt for a stack + design direction.
+ * Throws if the stack id is unknown or the prompt builder is missing.
+ * Never silently falls through to the React prompt for a non-REACT stack.
+ */
+export function getStackPrompt(
+  stack: string,
+  directionId?: string | null,
+  ctx?: StackPromptContext,
+  extras?: StablePromptExtras,
+): string {
+  const stable = buildStablePromptPrefix(stack, directionId, extras);
+  const volatile = buildVolatilePromptSuffix(ctx);
+  return volatile ? `${stable}\n\n${volatile}` : stable;
 }
 
 export function getStackInitialPackageRule(stack: string): string {

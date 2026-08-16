@@ -76,7 +76,16 @@ export function approvedBuildPrompt(plan: WorkspacePlan) {
 
 export type VisualEditTool = 'select' | 'text' | 'instruct' | 'comment';
 
-export type WorkspaceView = 'preview' | 'code';
+/** Append new workspace tabs here so TopBar stays a single mapped row. */
+export const WORKSPACE_TABS = [
+  { id: 'preview', label: 'Preview' },
+  { id: 'code', label: 'Code' },
+  { id: 'seo', label: 'Quality' },
+  { id: 'assets', label: 'Assets' },
+  { id: 'brain', label: 'Brain' },
+] as const;
+
+export type WorkspaceView = (typeof WORKSPACE_TABS)[number]['id'];
 
 export type ViewportSize = 'desktop' | 'mobile';
 

@@ -8,7 +8,7 @@ import StudioButton from '@/components/app/studio/StudioButton';
 import StudioField from '@/components/app/studio/StudioField';
 import PageTabs from '@/components/app/studio/PageTabs';
 import { useAuth } from '@/components/app/auth/AuthProvider';
-import { changePassword, updateProfile } from '@/lib/profile/actions';
+import { changePassword, updateProfile, uploadAvatar } from '@/lib/profile/actions';
 
 function initials(name: string) {
   return (
@@ -36,6 +36,7 @@ export default function ProfileSettingsPage() {
   const [passwordError, setPasswordError] = useState('');
   const [savingProfile, setSavingProfile] = useState(false);
   const [savingPassword, setSavingPassword] = useState(false);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
 
   useEffect(() => {
     if (!user) return;
@@ -102,6 +103,7 @@ export default function ProfileSettingsPage() {
           items={[
             { href: '/settings/profile', label: 'Profile', active: true },
             { href: '/settings/api-keys', label: 'API Keys' },
+            { href: '/settings/skills', label: 'Skills' },
           ]}
         />
 
@@ -120,12 +122,45 @@ export default function ProfileSettingsPage() {
                 initials(name || user?.name || 'N')
               )}
             </div>
-            <p className="text-[13px] text-[var(--studio-muted)]">
-              Paste an image URL for your avatar.
-              <span className="mt-4 block text-[12px] text-[var(--studio-faint)]">
-                TODO: real upload needs storage provider.
-              </span>
-            </p>
+            <div className="space-y-8">
+              <p className="text-[13px] text-[var(--studio-muted)]">
+                Upload an image for your avatar. Existing data URLs still display.
+              </p>
+              <label className="inline-flex cursor-pointer items-center rounded-full border border-[var(--studio-line-strong)] px-12 py-6 text-[13px] font-medium text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)]">
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="sr-only"
+                  disabled={uploadingAvatar}
+                  onChange={async (event) => {
+                    const file = event.target.files?.[0];
+                    event.target.value = '';
+                    if (!file) return;
+                    setProfileError('');
+                    setProfileMessage('');
+                    setUploadingAvatar(true);
+                    try {
+                      const formData = new FormData();
+                      formData.set('file', file);
+                      const result = await uploadAvatar(formData);
+                      if (!result.ok) {
+                        setProfileError(result.error);
+                        return;
+                      }
+                      await update({
+                        user: { name: result.data.name, avatarUrl: result.data.avatarUrl },
+                      });
+                      setAvatarUrl(result.data.avatarUrl || '');
+                      setPreviewBroken(false);
+                      setProfileMessage('Avatar uploaded.');
+                    } finally {
+                      setUploadingAvatar(false);
+                    }
+                  }}
+                />
+                {uploadingAvatar ? 'Uploading…' : 'Upload image'}
+              </label>
+            </div>
           </div>
 
           <StudioField

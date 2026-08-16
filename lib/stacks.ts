@@ -57,6 +57,10 @@ export type StackDefinition = {
   listExtensions: string[];
   /** Default entry file for the file manifest. */
   entryPoint: string;
+  /** Production build used by the code-quality audit. Null when there is no bundler. */
+  buildCommand: string | null;
+  /** Compact PromptHero hint. Omit when neither SPA nor SSR applies. */
+  seoHint?: string;
 };
 
 const STACKS: Record<StackId, StackDefinition> = {
@@ -82,6 +86,8 @@ const STACKS: Record<StackId, StackDefinition> = {
     frameworkPackages: ['react', 'react-dom', 'next'],
     listExtensions: ['.tsx', '.ts', '.jsx', '.js', '.css', '.json'],
     entryPoint: 'app/page.tsx',
+    buildCommand: 'npx next build',
+    seoHint: 'SSR — best for SEO',
   },
   REACT: {
     id: 'REACT',
@@ -103,6 +109,8 @@ const STACKS: Record<StackId, StackDefinition> = {
     frameworkPackages: ['react', 'react-dom'],
     listExtensions: ['.jsx', '.js', '.tsx', '.ts', '.css', '.json'],
     entryPoint: 'src/main.jsx',
+    buildCommand: 'npx vite build',
+    seoHint: 'SPA — weaker SEO',
   },
   ASTRO: {
     id: 'ASTRO',
@@ -123,6 +131,8 @@ const STACKS: Record<StackId, StackDefinition> = {
     frameworkPackages: ['astro'],
     listExtensions: ['.astro', '.ts', '.js', '.css', '.json', '.md', '.mdx'],
     entryPoint: 'src/pages/index.astro',
+    buildCommand: 'npx astro build',
+    seoHint: 'SSR — best for SEO',
   },
   STATIC_HTML: {
     id: 'STATIC_HTML',
@@ -137,6 +147,7 @@ const STACKS: Record<StackId, StackDefinition> = {
     frameworkPackages: [],
     listExtensions: ['.html', '.css', '.js'],
     entryPoint: 'index.html',
+    buildCommand: null,
   },
   VUE: {
     id: 'VUE',
@@ -158,6 +169,8 @@ const STACKS: Record<StackId, StackDefinition> = {
     frameworkPackages: ['vue'],
     listExtensions: ['.vue', '.ts', '.js', '.css', '.json'],
     entryPoint: 'src/main.js',
+    buildCommand: 'npx vite build',
+    seoHint: 'SPA — weaker SEO',
   },
   SVELTE: {
     id: 'SVELTE',
@@ -179,10 +192,12 @@ const STACKS: Record<StackId, StackDefinition> = {
     frameworkPackages: ['svelte', '@sveltejs/kit'],
     listExtensions: ['.svelte', '.ts', '.js', '.css', '.json'],
     entryPoint: 'src/routes/+page.svelte',
+    buildCommand: 'npx vite build',
+    seoHint: 'SPA — weaker SEO',
   },
 };
 
-export const DEFAULT_STACK: StackId = 'REACT';
+export const DEFAULT_STACK: StackId = 'NEXTJS';
 
 export function isStackId(value: unknown): value is StackId {
   return typeof value === 'string' && (STACK_IDS as readonly string[]).includes(value);
@@ -204,7 +219,7 @@ export function getStack(stack: string): StackDefinition {
 }
 
 /**
- * HTTP / legacy callers may omit stack. Only this helper defaults to REACT.
+ * HTTP / legacy callers may omit stack. Only this helper defaults to NEXTJS.
  * Invalid values still throw — never coerce a typo to React.
  */
 export function resolveStackOrDefault(value: unknown): StackId {

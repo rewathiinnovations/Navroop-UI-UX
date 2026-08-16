@@ -65,6 +65,7 @@ export interface ChatMessage {
     brandingData?: BrandingData;
     sourceUrl?: string;
     source?: 'chat' | 'visual-edit' | 'comment';
+    skillNames?: string[];
   };
 }
 
@@ -127,6 +128,7 @@ export type GenerateResult = {
   explanation: string;
   packagesToInstall: string[];
   alreadyRunning?: boolean;
+  skillNames?: string[];
 };
 
 export type ApplyResult = {

@@ -10,6 +10,8 @@ import StudioLogo from "@/components/app/studio/StudioLogo";
 import ThemeToggle from "@/components/app/studio/ThemeToggle";
 import "@/components/app/studio/studio.css";
 import { PENDING_PROMPT_KEY, clearDraftStorage } from "@/hooks/useDraftStorage";
+import type { DesignDirectionId } from "@/lib/design/directions";
+import type { ImportMode } from "@/lib/import/mode";
 import { createProjectFromPrompt } from "@/lib/projects/start-from-prompt";
 import type { StackId } from "@/lib/stacks";
 
@@ -42,7 +44,12 @@ export default function HomeLanding({
     setAuthOpen(true);
   };
 
-  const onSubmit = async (value: string, stack: StackId) => {
+  const onSubmit = async (
+    value: string,
+    stack: StackId,
+    designDirection: DesignDirectionId,
+    importMode: ImportMode,
+  ) => {
     setError("");
     if (!session?.user) {
       openAuth("signup");
@@ -50,7 +57,7 @@ export default function HomeLanding({
     }
 
     try {
-      const created = await createProjectFromPrompt(value, stack);
+      const created = await createProjectFromPrompt(value, stack, designDirection, importMode);
       if (!created.ok) {
         setError(created.error);
         return;

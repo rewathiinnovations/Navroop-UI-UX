@@ -9,6 +9,7 @@ import {
 } from './snapshot';
 import { captureThumbnail } from './thumbnail';
 import { writeSnapshotToSandbox } from './write-sandbox';
+import { recordRevertRate } from '@/lib/signals/collect';
 
 export type CheckpointTrigger = 'initial' | 'followup' | 'restore';
 
@@ -117,7 +118,7 @@ export async function createCheckpoint(
 
   let thumbnailUrl: string | null = null;
   try {
-    thumbnailUrl = await captureThumbnail(input.previewUrl);
+    thumbnailUrl = await captureThumbnail(input.previewUrl, projectId);
   } catch (error) {
     console.warn('[checkpoints] thumbnail failed', error);
   }
@@ -286,6 +287,8 @@ export async function restoreCheckpoint(projectId: string, checkpointId: string)
     previewUrl: project.previewUrl,
     restoredFromAt: checkpoint.createdAt,
   });
+
+  void recordRevertRate(projectId);
 
   return { ok: true as const, data: toPublic(created) };
 }

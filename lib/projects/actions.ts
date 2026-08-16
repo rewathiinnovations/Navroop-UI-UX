@@ -11,6 +11,10 @@ import {
 } from '@/lib/projects/schema';
 import { applyCreateProjectPlanFlow, peekActor } from '@/lib/projects/plan';
 import { createCheckpointAfterGeneration } from '@/lib/checkpoints/actions';
+import { extractMemoriesAfterGeneration } from '@/lib/memory/extract';
+import { countVisualEditsFromSource, maybeSettleFollowups, recordVisualEditRate } from '@/lib/signals/collect';
+import { decideUrlImportFlow } from '@/lib/import/pipeline';
+import { upsertImportSource } from '@/lib/import/persist';
 
 export type ActionOk<T> = { ok: true; data: T };
 export type ActionErr = {
@@ -59,6 +63,8 @@ export async function createProject(input: {
   initialPrompt: string;
   skipPlanning?: boolean;
   stack?: string;
+  designDirection?: string;
+  importMode?: string;
 }) {
   const stored = peekActor();
   const { user, err } = stored ? { user: stored, err: null } : await requireUser();
@@ -67,7 +73,12 @@ export async function createProject(input: {
   const parsed = parseWithZod(createProjectSchema, input);
   if (!parsed.ok) return parsed;
 
-  const skipPlanning = parsed.data.skipPlanning === true;
+  const flow = decideUrlImportFlow({
+    initialPrompt: parsed.data.initialPrompt,
+    skipPlanning: parsed.data.skipPlanning === true,
+    importMode: parsed.data.importMode,
+  });
+  const skipPlanning = flow.skipPlanning;
   const name = parsed.data.name ?? nameFromPrompt(parsed.data.initialPrompt);
   const project = await prisma.project.create({
     data: {
@@ -75,12 +86,22 @@ export async function createProject(input: {
       initialPrompt: parsed.data.initialPrompt,
       ownerId: user.id,
       status: 'draft',
-      generationStatus: 'idle',
+      generationStatus: flow.isUrlImport ? 'generating' : 'idle',
+      progressMessage: flow.isUrlImport ? 'Capturing page…' : null,
       phase: skipPlanning ? 'BUILDING' : 'PLANNING',
       stack: parsed.data.stack,
+      designDirection: parsed.data.designDirection,
     },
     include: { owner: { select: ownerSelect } },
   });
+
+  if (flow.isUrlImport) {
+    await upsertImportSource({
+      projectId: project.id,
+      sourceUrl: flow.sourceUrl,
+      mode: flow.importMode,
+    });
+  }
 
   const { plan } = await applyCreateProjectPlanFlow({
     projectId: project.id,
@@ -97,6 +118,9 @@ export async function createProject(input: {
       name: project.name,
       phase: project.phase,
       stack: project.stack,
+      designDirection: project.designDirection,
+      urlImport: flow.isUrlImport,
+      importMode: flow.isUrlImport ? flow.importMode : undefined,
       plan,
       project,
     },
@@ -243,7 +267,7 @@ export async function getProject(id: string) {
 
   const project = await prisma.project.findFirst({
     where: { id, deletedAt: null },
-    include: { owner: { select: ownerSelect } },
+    include: { owner: { select: ownerSelect }, importSource: true },
   });
 
   if (!project) return { ok: true as const, data: null };
@@ -322,7 +346,7 @@ export async function duplicateProject(id: string) {
 
   const source = await prisma.project.findFirst({
     where: { id, deletedAt: null },
-    select: { name: true, initialPrompt: true, ownerId: true, stack: true },
+    select: { name: true, initialPrompt: true, ownerId: true, stack: true, designDirection: true },
   });
   if (!source) return notFound();
   if (!canMutate(user, source.ownerId)) return forbidden();
@@ -336,6 +360,7 @@ export async function duplicateProject(id: string) {
       status: 'draft',
       generationStatus: 'idle',
       stack: source.stack,
+      designDirection: source.designDirection,
     },
     include: { owner: { select: ownerSelect } },
   });
@@ -353,6 +378,7 @@ export type GenerationPersistInput = {
   generationStatus?: string | null;
   progressMessage?: string | null;
   sourceMessage?: string | null;
+  source?: string | null;
 };
 
 export async function persistProjectGeneration(id: string, input: GenerationPersistInput) {
@@ -396,6 +422,9 @@ export async function persistProjectGeneration(id: string, input: GenerationPers
     } catch (error) {
       console.error('[checkpoints] create after generation failed', error);
     }
+    void recordVisualEditRate(id, countVisualEditsFromSource(input.source, input.sourceMessage));
+    void maybeSettleFollowups(id);
+    void extractMemoriesAfterGeneration(id, { sourceMessage: input.sourceMessage });
   }
 
   return { ok: true as const, data: project };

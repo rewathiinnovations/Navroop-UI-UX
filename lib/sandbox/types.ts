@@ -43,7 +43,7 @@ export abstract class SandboxProvider {
 
   /**
    * Create the sandbox VM. Pass the resolved stack so the provider can select
-   * `getStack(stack).sandboxTemplate`. Omitting stack defaults to REACT only
+   * `getStack(stack).sandboxTemplate`. Omitting stack defaults to NEXTJS only
    * when neither a stack nor a projectId was provided by the caller.
    */
   abstract createSandbox(stack?: string): Promise<SandboxInfo>;

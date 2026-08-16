@@ -10,5 +10,5 @@ Navroop is an invite-only admin shell around Open Lovable. Brand the product as 
 - Access is invite-only. New accounts come from an admin invite (`/admin/team`, `/api/admin/invite`). Login copy should stay invite-only.
 - Roles are `ADMIN` and `MEMBER` (Prisma `Role`). Admin pages (`/admin/*`) are for `ADMIN` only.
 - Product chrome lives in `components/app/studio/` (`StudioShell`, `AppHeader`, `PageTabs`). Authenticated app pages also use `components/layout/Sidebar` and `StudioShell variant="workspace"`. Auth, dashboard, projects, workspace, connectors, generation, and admin screens stay in that shell.
-- Do not rebrand generated websites as Navroop. Generated sites follow the per-request UI/UX brief in `lib/ui-ux-pro-max/`.
+- Do not rebrand generated websites as Navroop. Generated sites follow the per-request UI/UX brief in `lib/ui-ux-pro-max/` plus the PromptHero design direction (`lib/design/directions.ts`).
 - Keep the existing nested rules under `components/` and `styles/` (home, flame, design-system). Merge; do not delete them.

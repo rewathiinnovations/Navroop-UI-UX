@@ -426,6 +426,7 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
   let generatedCode = '';
   let explanation = '';
   let packagesToInstall: string[] = [];
+  let skillNames: string[] = [];
   let buffer = '';
 
   while (true) {
@@ -440,7 +441,22 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
       if (!line.startsWith('data: ')) continue;
       try {
         const data = JSON.parse(line.slice(6));
-        if (data.type === 'status') {
+        if (data.type === 'skills' && Array.isArray(data.names)) {
+          skillNames = data.names.filter((name: unknown): name is string => typeof name === 'string' && Boolean(name.trim()));
+          setGenerationMessages((prev) => {
+            const next = [...prev];
+            for (let i = next.length - 1; i >= 0; i -= 1) {
+              if (next[i].type === 'user') {
+                next[i] = {
+                  ...next[i],
+                  metadata: { ...next[i].metadata, skillNames },
+                };
+                break;
+              }
+            }
+            return next;
+          });
+        } else if (data.type === 'status') {
           setGenerationProgressState((prev) => ({ ...prev, status: data.message }));
         } else if (data.type === 'thinking') {
           setGenerationProgressState((prev) => ({
@@ -487,6 +503,9 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
           generatedCode = data.generatedCode || '';
           explanation = data.explanation || '';
           packagesToInstall = data.packagesToInstall || [];
+          if (Array.isArray(data.skillNames) && data.skillNames.length > 0) {
+            skillNames = data.skillNames.filter((name: unknown): name is string => typeof name === 'string');
+          }
           if (packagesToInstall.length > 0 && typeof window !== 'undefined') {
             (window as unknown as { pendingPackages?: string[] }).pendingPackages = packagesToInstall;
           }
@@ -545,7 +564,7 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
     status: 'Generation complete!',
   }));
 
-  return { generatedCode, explanation, packagesToInstall };
+  return { generatedCode, explanation, packagesToInstall, skillNames };
 }
 
 async function runApplyStream(input: StartApplyInput): Promise<ApplyResult> {

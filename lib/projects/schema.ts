@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { DEFAULT_DESIGN_DIRECTION, DESIGN_DIRECTION_IDS } from '@/lib/design/directions';
+import { DEFAULT_IMPORT_MODE, IMPORT_MODES } from '@/lib/import/mode';
 import { DEFAULT_STACK, STACK_IDS } from '@/lib/stacks';
 
 export const PROJECT_STATUSES = ['draft', 'published'] as const;
@@ -12,8 +14,7 @@ const optionalName = z.preprocess(
 );
 
 /**
- * `stack` is part of the create contract (one of 6). Zod defaults to REACT so
- * existing POST /api/projects callers that omit stack keep working.
+ * `stack` is part of the create contract (one of 6). Zod defaults to NEXTJS.
  * Invalid values are rejected — never coerced to React.
  */
 export const createProjectSchema = z.object({
@@ -21,6 +22,8 @@ export const createProjectSchema = z.object({
   initialPrompt: z.string().trim().min(1, 'initialPrompt is required'),
   skipPlanning: z.boolean().optional().default(false),
   stack: z.enum(STACK_IDS).default(DEFAULT_STACK),
+  designDirection: z.enum(DESIGN_DIRECTION_IDS).default(DEFAULT_DESIGN_DIRECTION),
+  importMode: z.enum(IMPORT_MODES).default(DEFAULT_IMPORT_MODE),
 });
 
 export const refinePlanSchema = z.object({

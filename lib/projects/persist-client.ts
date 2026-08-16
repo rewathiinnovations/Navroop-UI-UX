@@ -13,6 +13,7 @@ export type PersistProjectInput = {
   status?: string | null;
   progressMessage?: string | null;
   sourceMessage?: string | null;
+  source?: string | null;
 };
 
 export async function persistProject(input: PersistProjectInput) {
@@ -32,6 +33,7 @@ export async function persistProject(input: PersistProjectInput) {
     status: input.status,
     progressMessage: input.progressMessage,
     sourceMessage: input.sourceMessage,
+    source: input.source,
   };
 
   const response = await fetch(input.id ? `/api/projects/${input.id}` : '/api/projects', {

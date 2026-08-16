@@ -12,6 +12,8 @@ import {
   shouldForceSrcPrefix,
   shouldSkipPackageInstall,
 } from '@/lib/stacks';
+import { fulfillNeedImages } from '@/lib/assets/fulfill';
+import { getSessionUser } from '@/lib/auth';
 
 declare global {
   var conversationState: ConversationState | null;
@@ -551,6 +553,24 @@ export async function POST(request: NextRequest) {
           if (!file || typeof file !== 'object') return false;
           return !isStackConfigFile(stackDef.id, file.path || '');
         });
+
+        if (projectId && filteredFiles.some((file) => file.content?.includes('NEED_IMAGE:'))) {
+          try {
+            const sessionUser = await getSessionUser();
+            await sendProgress({ type: 'status', message: 'Resolving requested images…' });
+            filteredFiles = await fulfillNeedImages({
+              projectId,
+              userId: sessionUser?.id,
+              files: filteredFiles,
+            });
+          } catch (error) {
+            console.warn('[apply-ai-code-stream] NEED_IMAGE fulfill failed', error);
+            await sendProgress({
+              type: 'warning',
+              message: `Image generation failed: ${(error as Error).message}`,
+            });
+          }
+        }
 
         // If Morph is enabled and we have edits, apply them before file writes
         const morphUpdatedPaths = new Set<string>();
