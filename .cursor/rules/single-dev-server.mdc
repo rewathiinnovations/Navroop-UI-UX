@@ -1,0 +1,39 @@
+---
+description: One Next.js/pnpm dev server on localhost:3000; only the dedicated agent may start or restart it
+alwaysApply: true
+---
+
+# Single development server
+
+Always use **ONE** Next.js / pnpm development server for this repo at `http://localhost:3000`. Never print `.env` secrets.
+
+## Ownership
+
+One dedicated **dev server** agent owns start and restart. That agent is the only process allowed to run `pnpm dev` / `next dev`, kill the listener on port 3000, or restart the server in place.
+
+All other agents **MUST NOT**:
+
+- Run `pnpm dev`, `next dev`, or any equivalent start command
+- Kill, taskkill, or otherwise stop the process on port 3000
+- Spawn a second server on 3001, 3002, or any other port
+
+If the server is dead, stale, or needs a Prisma/client refresh: tell the coordinator or the dedicated **dev server** agent. Do not restart it yourself.
+
+## Restart in place (owner only)
+
+Before starting: check if something already listens on 3000. If it is this app and healthy, leave it. If a zombie holds 3000, kill only that next/node process, then start once on 3000. Never start a second port.
+
+```text
+# BAD — any non-owner agent starts or kills the server
+pnpm dev
+pnpm dev --port 3001
+taskkill /PID <3000> /F
+
+# GOOD — non-owner
+# Ask the coordinator / dedicated dev-server agent: "restart please"
+
+# GOOD — owner only
+# 1. Check listeners on 3000
+# 2. Reuse if this app is already Ready
+# 3. Or kill that next/node only, then `pnpm dev` once on 3000
+```

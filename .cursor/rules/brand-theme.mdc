@@ -1,0 +1,21 @@
+---
+description: Navroop brand and light theme default for product chrome
+globs: "{app,components,styles}/**/*.{tsx,css}"
+alwaysApply: false
+---
+
+# Brand and theme
+
+- Product name is **Navroop**. Default theme is **light** (`ThemeProvider` in `app/providers.tsx`: `defaultTheme="light"`, `enableSystem={false}`).
+- Do not flip the default to dark or `system`. Theme toggle may still switch to dark.
+- Product chrome: white cards on `background-base`, Inter / Geist, Lucide or existing SVGs (never emoji), 44px minimum controls, visible focus rings.
+- Heat/orange (`#FA4500`, `--heat-*`) is the existing accent. Keep it for product chrome; do not restyle generated sites with Navroop chrome.
+- Motion: 150–200ms color/opacity/transform only.
+
+```tsx
+// ❌ BAD
+<ThemeProvider defaultTheme="dark" enableSystem>
+
+// ✅ GOOD
+<ThemeProvider attribute="class" defaultTheme="light" enableSystem={false}>
+```

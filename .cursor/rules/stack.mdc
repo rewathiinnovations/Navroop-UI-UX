@@ -1,0 +1,24 @@
+---
+description: Navroop stack — Next.js App Router, React 19, Tailwind, Prisma/Postgres, E2B, Firecrawl
+globs: "{app,components,lib,prisma}/**/*.{ts,tsx,js,jsx,prisma}"
+alwaysApply: false
+---
+
+# Stack
+
+- **Next.js App Router** (`app/`). Do not introduce Pages Router. Do not bump the Next.js version unless the user explicitly asks.
+- **React 19** with client components only where needed (`"use client"`). Prefer Server Components for data that does not need browser APIs.
+- **Tailwind** plus existing studio CSS (`components/app/studio/studio.css`) and design tokens. Do not add a second CSS framework.
+- **Prisma + PostgreSQL** (`prisma/schema.prisma`, client in `generated/prisma`). Use migrations (`npm run db:migrate`); do not hand-edit generated Prisma client.
+- **E2B / Vercel sandbox** for code execution. Sandbox provider is env-driven (`SANDBOX_PROVIDER`).
+- **Firecrawl** for scrape/import. Keep Firecrawl calls in existing lib/API routes.
+
+```ts
+// ❌ BAD — new pages router or ad-hoc SQL
+// pages/dashboard.tsx
+await pool.query("SELECT * FROM User");
+
+// ✅ GOOD — App Router + Prisma
+// app/dashboard/page.tsx
+const projects = await prisma.project.findMany({ where: { userId } });
+```

@@ -4,6 +4,14 @@ import { parseMorphEdits, applyMorphEditToFile } from '@/lib/morph-fast-apply';
 import type { SandboxState } from '@/types/sandbox';
 import type { ConversationState } from '@/types/conversation';
 import { sandboxManager } from '@/lib/sandbox/sandbox-manager';
+import { resolveRequestStack } from '@/lib/stack-resolve';
+import {
+  getStack,
+  isStackConfigFile,
+  packageNameFromImport,
+  shouldForceSrcPrefix,
+  shouldSkipPackageInstall,
+} from '@/lib/stacks';
 
 declare global {
   var conversationState: ConversationState | null;
@@ -21,7 +29,7 @@ interface ParsedResponse {
   structure: string | null;
 }
 
-function parseAIResponse(response: string): ParsedResponse {
+function parseAIResponse(response: string, stack: string): ParsedResponse {
   const sections = {
     files: [] as Array<{ path: string; content: string }>,
     commands: [] as string[],
@@ -40,14 +48,8 @@ function parseAIResponse(response: string): ParsedResponse {
 
     while ((importMatch = importRegex.exec(content)) !== null) {
       const importPath = importMatch[1];
-      // Skip relative imports and built-in React
-      if (!importPath.startsWith('.') && !importPath.startsWith('/') &&
-        importPath !== 'react' && importPath !== 'react-dom' &&
-        !importPath.startsWith('@/')) {
-        // Extract package name (handle scoped packages like @heroicons/react)
-        const packageName = importPath.startsWith('@')
-          ? importPath.split('/').slice(0, 2).join('/')
-          : importPath.split('/')[0];
+      if (!shouldSkipPackageInstall(stack, importPath)) {
+        const packageName = packageNameFromImport(importPath);
 
         if (!packages.includes(packageName)) {
           packages.push(packageName);
@@ -263,7 +265,14 @@ function parseAIResponse(response: string): ParsedResponse {
 
 export async function POST(request: NextRequest) {
   try {
-    const { response, isEdit = false, packages = [], sandboxId } = await request.json();
+    const {
+      response,
+      isEdit = false,
+      packages = [],
+      sandboxId,
+      projectId,
+      stack: requestStack,
+    } = await request.json();
 
     if (!response) {
       return NextResponse.json({
@@ -271,15 +280,26 @@ export async function POST(request: NextRequest) {
       }, { status: 400 });
     }
 
+    const storedStack =
+      typeof (global as { sandboxData?: { stack?: unknown } }).sandboxData?.stack === 'string'
+        ? (global as { sandboxData?: { stack?: string } }).sandboxData?.stack
+        : undefined;
+    const activeStack = await resolveRequestStack({
+      stack: requestStack ?? storedStack,
+      projectId,
+    });
+    const stackDef = getStack(activeStack);
+
     // Debug log the response
     console.log('[apply-ai-code-stream] Received response to parse:');
     console.log('[apply-ai-code-stream] Response length:', response.length);
     console.log('[apply-ai-code-stream] Response preview:', response.substring(0, 500));
     console.log('[apply-ai-code-stream] isEdit:', isEdit);
     console.log('[apply-ai-code-stream] packages:', packages);
+    console.log('[apply-ai-code-stream] stack:', stackDef.id);
 
     // Parse the AI response
-    const parsed = parseAIResponse(response);
+    const parsed = parseAIResponse(response, stackDef.id);
     const morphEnabled = Boolean(isEdit && process.env.MORPH_API_KEY);
     const morphEdits = morphEnabled ? parseMorphEdits(response) : [];
     console.log('[apply-ai-code-stream] Morph Fast Apply mode:', morphEnabled);
@@ -320,8 +340,8 @@ export async function POST(request: NextRequest) {
         // If we got a new provider (not reconnected), we need to create a new sandbox
         if (!provider.getSandboxInfo()) {
           console.log(`[apply-ai-code-stream] Creating new sandbox since reconnection failed for ${sandboxId}`);
-          await provider.createSandbox();
-          await provider.setupViteApp();
+          await provider.createSandbox(stackDef.id);
+          await provider.setupViteApp(stackDef.id);
           sandboxManager.registerSandbox(sandboxId, provider);
         }
 
@@ -353,8 +373,8 @@ export async function POST(request: NextRequest) {
       try {
         const { SandboxFactory } = await import('@/lib/sandbox/factory');
         provider = SandboxFactory.create();
-        const sandboxInfo = await provider.createSandbox();
-        await provider.setupViteApp();
+        const sandboxInfo = await provider.createSandbox(stackDef.id);
+        await provider.setupViteApp(stackDef.id);
 
         // Register with sandbox manager
         sandboxManager.registerSandbox(sandboxInfo.sandboxId, provider);
@@ -363,7 +383,8 @@ export async function POST(request: NextRequest) {
         global.activeSandboxProvider = provider;
         global.sandboxData = {
           sandboxId: sandboxInfo.sandboxId,
-          url: sandboxInfo.url
+          url: sandboxInfo.url,
+          stack: stackDef.id,
         };
 
         console.log(`[apply-ai-code-stream] Created new sandbox successfully`);
@@ -434,7 +455,7 @@ export async function POST(request: NextRequest) {
         // Use Set to remove duplicates, then filter out pre-installed packages
         const uniquePackages = [...new Set(allPackages)]
           .filter(pkg => pkg && typeof pkg === 'string' && pkg.trim() !== '') // Remove empty strings
-          .filter(pkg => pkg !== 'react' && pkg !== 'react-dom'); // Filter pre-installed
+          .filter(pkg => !shouldSkipPackageInstall(stackDef.id, pkg));
 
         // Log if we found duplicates
         if (allPackages.length !== uniquePackages.length) {
@@ -525,12 +546,10 @@ export async function POST(request: NextRequest) {
           message: `Creating ${filesArray.length} files...`
         });
 
-        // Filter out config files that shouldn't be created
-        const configFiles = ['tailwind.config.js', 'vite.config.js', 'package.json', 'package-lock.json', 'tsconfig.json', 'postcss.config.js'];
+        // Filter out config files that shouldn't be created (per-stack registry).
         let filteredFiles = filesArray.filter(file => {
           if (!file || typeof file !== 'object') return false;
-          const fileName = (file.path || '').split('/').pop() || '';
-          return !configFiles.includes(fileName);
+          return !isStackConfigFile(stackDef.id, file.path || '');
         });
 
         // If Morph is enabled and we have edits, apply them before file writes
@@ -578,10 +597,11 @@ export async function POST(request: NextRequest) {
             if (!file?.path) return true;
             let normalizedPath = file.path.startsWith('/') ? file.path.slice(1) : file.path;
             const fileName = normalizedPath.split('/').pop() || '';
-            if (!normalizedPath.startsWith('src/') &&
+            if (shouldForceSrcPrefix(stackDef.id) &&
+                !normalizedPath.startsWith('src/') &&
                 !normalizedPath.startsWith('public/') &&
                 normalizedPath !== 'index.html' &&
-                !configFiles.includes(fileName)) {
+                !isStackConfigFile(stackDef.id, fileName)) {
               normalizedPath = 'src/' + normalizedPath;
             }
             return !morphUpdatedPaths.has(normalizedPath);
@@ -604,10 +624,11 @@ export async function POST(request: NextRequest) {
             if (normalizedPath.startsWith('/')) {
               normalizedPath = normalizedPath.substring(1);
             }
-            if (!normalizedPath.startsWith('src/') &&
+            if (shouldForceSrcPrefix(stackDef.id) &&
+              !normalizedPath.startsWith('src/') &&
               !normalizedPath.startsWith('public/') &&
               normalizedPath !== 'index.html' &&
-              !configFiles.includes(normalizedPath.split('/').pop() || '')) {
+              !isStackConfigFile(stackDef.id, normalizedPath)) {
               normalizedPath = 'src/' + normalizedPath;
             }
 

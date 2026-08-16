@@ -1,0 +1,36 @@
+---
+description: Multiple agents must never overwrite each other's files; wait, re-read, then merge
+alwaysApply: true
+---
+
+# Multi-agent file ownership
+
+Multiple agents must **never replace** each other's files. Extends the one-owner idea in `admin-ownership.mdc` (admin team/usage/invite). Do not vendor or delete other rules.
+
+## Wait, then merge
+
+Before editing a file another agent may be writing: **WAIT** until that agent finishes, re-read the file, then apply only your delta. If two tasks touch the same file, serialize. Never wholesale-rewrite a shared file to "fix conflicts."
+
+```text
+# ❌ BAD — clobber a file another agent just wrote
+rewrite SharedFile.tsx from scratch to resolve a merge
+
+# ✅ GOOD — wait, re-read, apply only your delta
+# 1. Wait until the other agent finishes
+# 2. Re-read SharedFile.tsx
+# 3. Patch only the lines your task needs
+```
+
+## One owner per overlapping area
+
+Prefer **one owner** per change set. Do not split the same file across parallel agents.
+
+- **Studio/admin chrome:** `components/app/studio/*`, dashboard and admin pages. Shared chrome (`StudioShell`, `AppHeader`, `PageTabs`) is the studio owner's file; other screens import it.
+- **App sidebar / workspace:** `components/layout/Sidebar`, `components/workspace/*`.
+- **Auth/home:** login, `AuthModal`, public home, register.
+- **Projects backend:** Prisma `Project`, `lib/projects`, `/api/projects`.
+- **Plan/Build + stacks:** `lib/projects/plan`, `/api/projects/[id]/plan`, `lib/stacks`.
+- **Visual Edits:** `lib/visual-edits`, workspace preview toolbar.
+- **Checkpoints:** `lib/checkpoints`, `/api/projects/[id]/checkpoints`.
+- **Connectors / GitHub:** `app/(app)/connectors`, `lib/github`, `/api/github`.
+- **Generation engine:** `lib/generation`, `generate-ai-code-stream`, `apply-ai-code-stream`.

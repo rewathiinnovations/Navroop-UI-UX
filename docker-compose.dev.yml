@@ -1,0 +1,17 @@
+# Local Postgres only (host 5433). Production Coolify stack is docker-compose.yml.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: open-lovable-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: openlovable
+      POSTGRES_PASSWORD: openlovable
+      POSTGRES_DB: openlovable
+    ports:
+      - '5433:5432'
+    volumes:
+      - open_lovable_pg:/var/lib/postgresql/data
+
+volumes:
+  open_lovable_pg:

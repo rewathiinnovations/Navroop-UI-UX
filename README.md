@@ -62,6 +62,10 @@ pnpm dev  # or npm run dev / yarn dev
 
 Open [http://localhost:3000](http://localhost:3000)
 
+## Coolify
+
+Create a Coolify **Docker Compose** service from `docker-compose.yml`, set env from `.env.example`, deploy. Details: [docs/coolify.md](docs/coolify.md).
+
 ## License
 
 MIT

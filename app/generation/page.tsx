@@ -1,13 +1,12 @@
 'use client';
 
-import { useState, useEffect, useRef, Suspense } from 'react';
-import { useSearchParams, useRouter } from 'next/navigation';
-import Image from 'next/image';
+import { useState, useEffect, useMemo, useRef, Suspense } from 'react';
+import { useSearchParams, useRouter, useParams } from 'next/navigation';
 import { appConfig } from '@/config/app.config';
-import HeroInput from '@/components/HeroInput';
 import SidebarInput from '@/components/app/generation/SidebarInput';
-import HeaderBrandKit from '@/components/shared/header/BrandKit/BrandKit';
-import { HeaderProvider } from '@/components/shared/header/HeaderContext';
+import ProjectWorkspace from '@/components/workspace/ProjectWorkspace';
+import { pagesFromFiles } from '@/components/workspace/pages-from-files';
+import { shouldRequestFollowUpPlan, type ChatMode, type MessageSource, type ProjectPhase, type ViewportSize, type WorkspacePlan, type WorkspaceView } from '@/components/workspace/types';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 // Import icons from centralized module to avoid Turbopack chunk issues
@@ -24,7 +23,12 @@ import {
   SiJson 
 } from '@/lib/icons';
 import { motion } from 'framer-motion';
-import CodeApplicationProgress, { type CodeApplicationState } from '@/components/CodeApplicationProgress';
+import CodeApplicationProgress from '@/components/CodeApplicationProgress';
+import { persistProject } from '@/lib/projects/persist-client';
+import { projectDisplayName } from '@/lib/projects/prompt';
+import { useGeneration } from '@/components/app/generation/GenerationProvider';
+import { getGenerationState } from '@/lib/generation/generation-runtime';
+import { isActiveGenerationStatus } from '@/lib/generation/types';
 
 interface SandboxData {
   sandboxId: string;
@@ -60,24 +64,53 @@ interface ScrapeData {
   error?: string;
 }
 
-function AISandboxPage() {
-  const [sandboxData, setSandboxData] = useState<SandboxData | null>(null);
+function AISandboxPage({
+  githubConnected = false,
+  githubRepoUrl = null,
+  initialPhase = null,
+  initialPlan = null,
+}: {
+  githubConnected?: boolean;
+  githubRepoUrl?: string | null;
+  initialPhase?: ProjectPhase | null;
+  initialPlan?: WorkspacePlan | null;
+}) {
+  const generation = useGeneration();
+  const {
+    sandboxData,
+    setSandboxData,
+    messages: chatMessages,
+    setChatMessages,
+    addChatMessage,
+    generationProgress,
+    setGenerationProgress,
+    projectId,
+    setProjectId,
+    codeApplicationState,
+    setCodeApplicationState,
+    lastGeneratedCode,
+    isJobActive,
+    startGeneration: startGenerationStream,
+    startApply,
+    attachToProject,
+    clear: clearGeneration,
+    markError,
+    markReady,
+    status: generationJobStatus,
+  } = generation;
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState({ text: 'Not connected', active: false });
   const [responseArea, setResponseArea] = useState<string[]>([]);
   const [structureContent, setStructureContent] = useState('No sandbox created yet');
   const [promptInput, setPromptInput] = useState('');
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
-    {
-      content: 'Welcome! I can help you generate code with full context of your sandbox files and structure. Just start chatting - I\'ll automatically create a sandbox for you if needed!\n\nTip: If you see package errors like "react-router-dom not found", just type "npm install" or "check packages" to automatically install missing packages.',
-      type: 'system',
-      timestamp: new Date()
-    }
-  ]);
   const [aiChatInput, setAiChatInput] = useState('');
   const [aiEnabled] = useState(true);
   const searchParams = useSearchParams();
+  const routeParams = useParams();
   const router = useRouter();
+  const projectIdFromPath = typeof routeParams?.id === 'string' ? routeParams.id : null;
+  const reconnectedRef = useRef(false);
+  const pendingChatPromptRef = useRef<string | null>(null);
   const [aiModel, setAiModel] = useState(() => {
     const modelParam = searchParams.get('model');
     return appConfig.ai.availableModels.includes(modelParam || '') ? modelParam! : appConfig.ai.defaultModel;
@@ -126,39 +159,16 @@ function AISandboxPage() {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
   const codeDisplayRef = useRef<HTMLDivElement>(null);
-  
-  const [codeApplicationState, setCodeApplicationState] = useState<CodeApplicationState>({
-    stage: null
-  });
-  
-  const [generationProgress, setGenerationProgress] = useState<{
-    isGenerating: boolean;
-    status: string;
-    components: Array<{ name: string; path: string; completed: boolean }>;
-    currentComponent: number;
-    streamedCode: string;
-    isStreaming: boolean;
-    isThinking: boolean;
-    thinkingText?: string;
-    thinkingDuration?: number;
-    currentFile?: { path: string; content: string; type: string };
-    files: Array<{ path: string; content: string; type: string; completed: boolean; edited?: boolean }>;
-    lastProcessedPosition: number;
-    isEdit?: boolean;
-  }>({
-    isGenerating: false,
-    status: '',
-    components: [],
-    currentComponent: 0,
-    streamedCode: '',
-    isStreaming: false,
-    isThinking: false,
-    files: [],
-    lastProcessedPosition: 0
-  });
 
   // Store flag to trigger generation after component mounts
   const [shouldAutoGenerate, setShouldAutoGenerate] = useState(false);
+  const [projectTitle, setProjectTitle] = useState('Untitled project');
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'signin'>('idle');
+  const [projectUpdatedAt, setProjectUpdatedAt] = useState<string | null>(null);
+  const [selectedPage, setSelectedPage] = useState('/');
+  const [viewport, setViewport] = useState<ViewportSize>('desktop');
+  const pendingRestoreCodeRef = useRef<string | null>(null);
+  const sendModeRef = useRef<ChatMode>('build');
 
   // Clear old conversation data on component mount and create/restore sandbox
   useEffect(() => {
@@ -180,6 +190,90 @@ function AISandboxPage() {
       const storedModel = sessionStorage.getItem('selectedModel');
       const storedInstructions = sessionStorage.getItem('additionalInstructions');
       
+      const projectIdParam = projectIdFromPath || searchParams.get('project');
+      const live = attachToProject(projectIdParam);
+      const liveMatches =
+        isJobActive &&
+        (projectIdParam
+          ? live.projectId === projectIdParam
+          : !storedUrl);
+
+      if (liveMatches) {
+        reconnectedRef.current = true;
+        if (live.projectId) {
+          setProjectId(live.projectId);
+          router.replace(`/project/${live.projectId}`, { scroll: false });
+        }
+        setHasInitialSubmission(true);
+        setShowHomeScreen(false);
+        setHomeScreenFading(false);
+        setActiveTab(live.status === 'generating' ? 'generation' : 'preview');
+        if (live.sandboxData) {
+          updateStatus('Sandbox active', true);
+        }
+        if (live.lastGeneratedCode) {
+          setConversationContext(prev => ({
+            ...prev,
+            lastGeneratedCode: live.lastGeneratedCode || undefined
+          }));
+        }
+        setLoading(false);
+        return;
+      }
+
+      if (getGenerationState().messages.length === 0) {
+        addChatMessage(
+          'Welcome! I can help you generate code with full context of your sandbox files and structure. Just start chatting - I\'ll automatically create a sandbox for you if needed!\n\nTip: If you see package errors like "react-router-dom not found", just type "npm install" or "check packages" to automatically install missing packages.',
+          'system'
+        );
+      }
+
+      if (projectIdParam) {
+        setProjectId(projectIdParam);
+        setHasInitialSubmission(true);
+        setShowHomeScreen(false);
+        setHomeScreenFading(false);
+        try {
+          const projectRes = await fetch(`/api/projects/${projectIdParam}`);
+          if (projectRes.ok) {
+            const { project } = await projectRes.json();
+            const loadedTitle = projectDisplayName(project) || 'Untitled project';
+            setProjectTitle(loadedTitle);
+            if (project.updatedAt) setProjectUpdatedAt(project.updatedAt);
+            setHomeContextInput(project.style || '');
+            setSelectedStyle(project.style || null);
+            if (project.model) setAiModel(project.model);
+            if (project.lastCode) {
+              pendingRestoreCodeRef.current = project.lastCode;
+              setConversationContext(prev => ({
+                ...prev,
+                lastGeneratedCode: project.lastCode
+              }));
+            }
+            if (isActiveGenerationStatus(project.generationStatus ?? project.status) && !isJobActive) {
+              addChatMessage(
+                project.progressMessage
+                  ? `Previous generation stopped: ${project.progressMessage}`
+                  : 'Previous generation was interrupted. Send a message to continue.',
+                'system'
+              );
+            } else {
+              addChatMessage(`Opened saved project: ${loadedTitle}`, 'system');
+            }
+          } else if (projectRes.status === 401) {
+            router.push(`/?auth=login&next=/project/${projectIdParam}`);
+            return;
+          }
+        } catch (error) {
+          console.error('[generation] Failed to load project', error);
+        }
+        const pendingPrompt = sessionStorage.getItem('navroopPrompt');
+        if (pendingPrompt) {
+          sessionStorage.removeItem('navroopPrompt');
+          pendingChatPromptRef.current = pendingPrompt;
+        }
+      }
+
       if (storedUrl) {
         // Mark that we have an initial submission since we're loading with a URL
         setHasInitialSubmission(true);
@@ -334,6 +428,7 @@ function AISandboxPage() {
 
   // Auto-start generation if flagged
   useEffect(() => {
+    if (reconnectedRef.current || isJobActive) return;
     const autoStart = sessionStorage.getItem('autoStart');
     if (autoStart === 'true' && !showHomeScreen && homeUrlInput) {
       sessionStorage.removeItem('autoStart');
@@ -363,6 +458,7 @@ function AISandboxPage() {
 
   // Auto-trigger generation when flag is set (from home page navigation)
   useEffect(() => {
+    if (reconnectedRef.current || isJobActive) return;
     if (shouldAutoGenerate && homeUrlInput && !showHomeScreen) {
       // Reset the flag
       setShouldAutoGenerate(false);
@@ -378,6 +474,31 @@ function AISandboxPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shouldAutoGenerate, homeUrlInput, showHomeScreen]);
 
+  useEffect(() => {
+    if (lastGeneratedCode) {
+      setConversationContext(prev => (
+        prev.lastGeneratedCode === lastGeneratedCode
+          ? prev
+          : { ...prev, lastGeneratedCode }
+      ));
+    }
+  }, [lastGeneratedCode]);
+
+  useEffect(() => {
+    if (sandboxData?.url && iframeRef.current) {
+      const currentSrc = iframeRef.current.src || '';
+      if (!currentSrc.includes(sandboxData.url)) {
+        iframeRef.current.src = sandboxData.url;
+      }
+    }
+  }, [sandboxData?.url]);
+
+  useEffect(() => {
+    if (reconnectedRef.current && isJobActive) {
+      setActiveTab(generationJobStatus === 'generating' ? 'generation' : 'preview');
+    }
+  }, [generationJobStatus, isJobActive]);
+
   const updateStatus = (text: string, active: boolean) => {
     setStatus({ text, active });
   };
@@ -386,19 +507,6 @@ function AISandboxPage() {
     setResponseArea(prev => [...prev, `[${type}] ${message}`]);
   };
 
-  const addChatMessage = (content: string, type: ChatMessage['type'], metadata?: ChatMessage['metadata']) => {
-    setChatMessages(prev => {
-      // Skip duplicate consecutive system messages
-      if (type === 'system' && prev.length > 0) {
-        const lastMessage = prev[prev.length - 1];
-        if (lastMessage.type === 'system' && lastMessage.content === content) {
-          return prev; // Skip duplicate
-        }
-      }
-      return [...prev, { content, type, timestamp: new Date(), metadata }];
-    });
-  };
-  
   const checkAndInstallPackages = async () => {
     // This function is only called when user explicitly requests it
     // Don't show error if no sandbox - it's likely being created
@@ -567,7 +675,10 @@ function AISandboxPage() {
         const newParams = new URLSearchParams(searchParams.toString());
         newParams.set('sandbox', data.sandboxId);
         newParams.set('model', aiModel);
-        router.push(`/generation?${newParams.toString()}`, { scroll: false });
+        const sandboxProjectId = getGenerationState().projectId ?? projectId ?? projectIdFromPath;
+        if (sandboxProjectId) {
+          router.push(`/project/${sandboxProjectId}?${newParams.toString()}`, { scroll: false });
+        }
         
         // Fade out loading background after sandbox loads
         setTimeout(() => {
@@ -580,6 +691,12 @@ function AISandboxPage() {
         
         // Fetch sandbox files after creation
         setTimeout(fetchSandboxFiles, 1000);
+
+        if (pendingRestoreCodeRef.current) {
+          const codeToRestore = pendingRestoreCodeRef.current;
+          pendingRestoreCodeRef.current = null;
+          await applyGeneratedCode(codeToRestore, false, data);
+        }
         
         // For Vercel sandboxes, Vite is already started during setupViteApp
         // No need to restart it immediately after creation
@@ -599,6 +716,12 @@ Tip: I automatically detect and install npm packages from your code imports (lik
           }
         }, 100);
         
+        void saveCurrentProject({
+          sandboxId: data.sandboxId,
+          previewUrl: data.url,
+          prompt: homeUrlInput || homeContextInput || 'New website',
+        });
+
         // Return the sandbox data so it can be used immediately
         return data;
       } else {
@@ -613,6 +736,52 @@ Tip: I automatically detect and install npm packages from your code imports (lik
     } finally {
       setLoading(false);
       sandboxCreationRef.current = false; // Reset the ref
+    }
+  };
+
+  const saveCurrentProject = async (overrides?: {
+    sandboxId?: string;
+    previewUrl?: string;
+    prompt?: string;
+  }) => {
+    const prompt =
+      overrides?.prompt ||
+      homeUrlInput ||
+      homeContextInput ||
+      conversationContext.lastGeneratedCode?.slice(0, 80) ||
+      'Untitled project';
+
+    setSaveState('saving');
+    try {
+      const result = await persistProject({
+        id: getGenerationState().projectId ?? projectId,
+        title: projectTitle === 'Untitled project' ? prompt : projectTitle,
+        prompt,
+        style: selectedStyle || homeContextInput || null,
+        model: aiModel,
+        sandboxId: overrides?.sandboxId || sandboxData?.sandboxId || null,
+        previewUrl: overrides?.previewUrl || sandboxData?.url || null,
+        screenshot: urlScreenshot,
+        lastCode: getGenerationState().lastGeneratedCode || conversationContext.lastGeneratedCode || lastGeneratedCode || null,
+        status: getGenerationState().status,
+        progressMessage: getGenerationState().generationProgress.status || null,
+        sourceMessage: [...getGenerationState().messages].reverse().find((entry) => entry.type === 'user' && entry.content.trim())?.content,
+      });
+
+      if (!result.saved) {
+        setSaveState('signin');
+        return;
+      }
+
+      setProjectId(result.project.id);
+      setProjectTitle(projectDisplayName(result.project) || 'Untitled project');
+      if (result.project.updatedAt) setProjectUpdatedAt(result.project.updatedAt);
+      else setProjectUpdatedAt(new Date().toISOString());
+      setSaveState('saved');
+      router.replace(`/project/${result.project.id}`, { scroll: false });
+    } catch (error) {
+      console.error('[generation] Failed to save project', error);
+      setSaveState('idle');
     }
   };
 
@@ -640,146 +809,17 @@ Tip: I automatically detect and install npm packages from your code imports (lik
         (window as any).pendingPackages = [];
       }
       
-      // Use streaming endpoint for real-time feedback
+      // Stream is owned by GenerationProvider so leaving /generation does not abort it
       const effectiveSandboxData = overrideSandboxData || sandboxData;
-      const response = await fetch('/api/apply-ai-code-stream', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          response: code,
-          isEdit: isEdit,
-          packages: pendingPackages,
-          sandboxId: effectiveSandboxData?.sandboxId // Pass the sandbox ID to ensure proper connection
-        })
+      const applyResult = await startApply({
+        code,
+        isEdit,
+        packages: pendingPackages,
+        sandboxId: effectiveSandboxData?.sandboxId,
       });
-      
-      if (!response.ok) {
-        throw new Error(`Failed to apply code: ${response.statusText}`);
-      }
-      
-      // Handle streaming response
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-      let finalData: any = null;
-      
-      while (reader) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        
-        const chunk = decoder.decode(value);
-        const lines = chunk.split('\n');
-        
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              const data = JSON.parse(line.slice(6));
-              
-              switch (data.type) {
-                case 'start':
-                  // Don't add as chat message, just update state
-                  setCodeApplicationState({ stage: 'analyzing' });
-                  break;
-                  
-                case 'step':
-                  // Update progress state based on step
-                  if (data.message.includes('Installing') && data.packages) {
-                    setCodeApplicationState({ 
-                      stage: 'installing', 
-                      packages: data.packages 
-                    });
-                  } else if (data.message.includes('Creating files') || data.message.includes('Applying')) {
-                    setCodeApplicationState({ 
-                      stage: 'applying',
-                      filesGenerated: [] // Files will be populated when complete
-                    });
-                  }
-                  break;
-                  
-                case 'package-progress':
-                  // Handle package installation progress
-                  if (data.installedPackages) {
-                    setCodeApplicationState(prev => ({ 
-                      ...prev,
-                      installedPackages: data.installedPackages 
-                    }));
-                  }
-                  break;
-                  
-                case 'command':
-                  // Don't show npm install commands - they're handled by info messages
-                  if (data.command && !data.command.includes('npm install')) {
-                    addChatMessage(data.command, 'command', { commandType: 'input' });
-                  }
-                  break;
-                  
-                case 'success':
-                  if (data.installedPackages) {
-                    setCodeApplicationState(prev => ({ 
-                      ...prev,
-                      installedPackages: data.installedPackages 
-                    }));
-                  }
-                  break;
-                  
-                case 'file-progress':
-                  // Skip file progress messages, they're noisy
-                  break;
-                  
-                case 'file-complete':
-                  // Could add individual file completion messages if desired
-                  break;
-                  
-                case 'command-progress':
-                  addChatMessage(`${data.action} command: ${data.command}`, 'command', { commandType: 'input' });
-                  break;
-                  
-                case 'command-output':
-                  addChatMessage(data.output, 'command', { 
-                    commandType: data.stream === 'stderr' ? 'error' : 'output' 
-                  });
-                  break;
-                  
-                case 'command-complete':
-                  if (data.success) {
-                    addChatMessage(`Command completed successfully`, 'system');
-                  } else {
-                    addChatMessage(`Command failed with exit code ${data.exitCode}`, 'system');
-                  }
-                  break;
-                  
-                case 'complete':
-                  finalData = data;
-                  setCodeApplicationState({ stage: 'complete' });
-                  // Clear the state after a delay
-                  setTimeout(() => {
-                    setCodeApplicationState({ stage: null });
-                  }, 3000);
-                  // Reset loading state when complete
-                  setLoading(false);
-                  break;
-                  
-                case 'error':
-                  addChatMessage(`Error: ${data.message || data.error || 'Unknown error'}`, 'system');
-                  // Reset loading state on error
-                  setLoading(false);
-                  break;
-                  
-                case 'warning':
-                  addChatMessage(`${data.message}`, 'system');
-                  break;
-                  
-                case 'info':
-                  // Show info messages, especially for package installation
-                  if (data.message) {
-                    addChatMessage(data.message, 'system');
-                  }
-                  break;
-              }
-            } catch {
-              // Ignore parse errors
-            }
-          }
-        }
+      const finalData: any = applyResult.finalData;
+      if (finalData?.type === 'complete') {
+        setLoading(false);
       }
       
       // Process final data
@@ -884,6 +924,7 @@ Tip: I automatically detect and install npm packages from your code imports (lik
         }
         
         log('Code applied successfully!');
+        void saveCurrentProject();
         console.log('[applyGeneratedCode] Response data:', data);
         console.log('[applyGeneratedCode] Debug info:', data.debug);
         console.log('[applyGeneratedCode] Current sandboxData:', sandboxData);
@@ -1055,6 +1096,7 @@ Tip: I automatically detect and install npm packages from your code imports (lik
         addChatMessage('Code application may have partially succeeded. Check the preview.', 'system');
       }
     } catch (error: any) {
+      if (error?.name === 'AbortError') return;
       log(`Failed to apply code: ${error.message}`, 'error');
     } finally {
       setLoading(false);
@@ -1598,7 +1640,7 @@ Tip: I automatically detect and install npm packages from your code imports (lik
               ref={iframeRef}
               src={sandboxData.url}
               className="w-full h-full border-none"
-              title="Open Lovable Sandbox"
+              title="Navroop Sandbox"
               allow="clipboard-write"
               sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
             />
@@ -1716,8 +1758,10 @@ Tip: I automatically detect and install npm packages from your code imports (lik
     return null;
   };
 
-  const sendChatMessage = async () => {
-    const message = aiChatInput.trim();
+  const sendChatMessage = async (override?: string, options?: { mode?: ChatMode; source?: MessageSource; silent?: boolean }) => {
+    const message = (typeof override === 'string' ? override : aiChatInput).trim();
+    const mode = options?.mode || sendModeRef.current;
+    if (options?.mode) sendModeRef.current = options.mode;
     if (!message) return;
     
     if (!aiEnabled) {
@@ -1725,7 +1769,10 @@ Tip: I automatically detect and install npm packages from your code imports (lik
       return;
     }
     
-    addChatMessage(message, 'user');
+    const source = options?.source && options.source !== 'chat' ? options.source : undefined;
+    if (!options?.silent) {
+      addChatMessage(message, 'user', source ? { source } : undefined);
+    }
     setAiChatInput('');
     
     // Check for special commands
@@ -1737,6 +1784,30 @@ Tip: I automatically detect and install npm packages from your code imports (lik
         return;
       }
       await checkAndInstallPackages();
+      return;
+    }
+
+    if (shouldRequestFollowUpPlan(mode)) {
+      const id = projectId || projectIdFromPath;
+      if (!id) {
+        addChatMessage('Project is not ready for planning yet.', 'system');
+        return;
+      }
+      try {
+        const response = await fetch(`/api/projects/${id}/plan/followup`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message }),
+        });
+        const data = await response.json().catch(() => null);
+        if (!response.ok) {
+          addChatMessage((data && data.error) || 'Could not start a plan.', 'system');
+          return;
+        }
+        addChatMessage('Plan ready. Review and approve to apply these changes.', 'ai');
+      } catch (error: any) {
+        addChatMessage(`Error: ${error.message}`, 'system');
+      }
       return;
     }
     
@@ -1795,256 +1866,17 @@ Tip: I automatically detect and install npm packages from your code imports (lik
       console.log('[chat] - sandboxId:', fullContext.sandboxId);
       console.log('[chat] - isEdit:', conversationContext.appliedCode.length > 0);
       
-      const response = await fetch('/api/generate-ai-code-stream', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt: message,
-          model: aiModel,
-          context: fullContext,
-          isEdit: conversationContext.appliedCode.length > 0
-        })
+      const streamResult = await startGenerationStream({
+        prompt: message,
+        model: aiModel,
+        styleHint: selectedStyle || homeContextInput,
+        context: { ...fullContext, styleName: selectedStyle || homeContextInput, mode },
+        isEdit: conversationContext.appliedCode.length > 0,
+        projectId,
+        sandboxData,
       });
-      
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-      
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-      let generatedCode = '';
-      let explanation = '';
-      let buffer = ''; // Buffer for incomplete lines
-      
-      if (reader) {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          
-          const chunk = decoder.decode(value, { stream: true });
-          console.log('[chat] Received chunk:', chunk.length, 'bytes');
-          buffer += chunk;
-          const lines = buffer.split('\n');
-          
-          // Keep the last line in buffer if it's incomplete
-          buffer = lines.pop() || '';
-          
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              try {
-                const data = JSON.parse(line.slice(6));
-                
-                if (data.type === 'status') {
-                  setGenerationProgress(prev => ({ ...prev, status: data.message }));
-                } else if (data.type === 'thinking') {
-                  setGenerationProgress(prev => ({ 
-                    ...prev, 
-                    isThinking: true,
-                    thinkingText: (prev.thinkingText || '') + data.text
-                  }));
-                } else if (data.type === 'thinking_complete') {
-                  setGenerationProgress(prev => ({ 
-                    ...prev, 
-                    isThinking: false,
-                    thinkingDuration: data.duration
-                  }));
-                } else if (data.type === 'conversation') {
-                  // Add conversational text to chat only if it's not code
-                  let text = data.text || '';
-                  
-                  // Remove package tags from the text
-                  text = text.replace(/<package>[^<]*<\/package>/g, '');
-                  text = text.replace(/<packages>[^<]*<\/packages>/g, '');
-                  
-                  // Filter out any XML tags and file content that slipped through
-                  if (!text.includes('<file') && !text.includes('import React') && 
-                      !text.includes('export default') && !text.includes('className=') &&
-                      text.trim().length > 0) {
-                    addChatMessage(text.trim(), 'ai');
-                  }
-                } else if (data.type === 'stream' && data.raw) {
-                  setGenerationProgress(prev => {
-                    const newStreamedCode = prev.streamedCode + data.text;
-                    
-                    // Tab is already switched after scraping
-                    
-                    const updatedState = { 
-                      ...prev, 
-                      streamedCode: newStreamedCode,
-                      isStreaming: true,
-                      isThinking: false,
-                      status: 'Generating code...'
-                    };
-                    
-                    // Process complete files from the accumulated stream
-                    const fileRegex = /<file path="([^"]+)">([^]*?)<\/file>/g;
-                    let match;
-                    const processedFiles = new Set(prev.files.map(f => f.path));
-                    
-                    while ((match = fileRegex.exec(newStreamedCode)) !== null) {
-                      const filePath = match[1];
-                      const fileContent = match[2];
-                      
-                      // Only add if we haven't processed this file yet
-                      if (!processedFiles.has(filePath)) {
-                        const fileExt = filePath.split('.').pop() || '';
-                        const fileType = fileExt === 'jsx' || fileExt === 'js' ? 'javascript' :
-                                        fileExt === 'css' ? 'css' :
-                                        fileExt === 'json' ? 'json' :
-                                        fileExt === 'html' ? 'html' : 'text';
-                        
-                        // Check if file already exists
-                        const existingFileIndex = updatedState.files.findIndex(f => f.path === filePath);
-                        
-                        if (existingFileIndex >= 0) {
-                          // Update existing file and mark as edited
-                          updatedState.files = [
-                            ...updatedState.files.slice(0, existingFileIndex),
-                            {
-                              ...updatedState.files[existingFileIndex],
-                              content: fileContent.trim(),
-                              type: fileType,
-                              completed: true,
-                              edited: true
-                            },
-                            ...updatedState.files.slice(existingFileIndex + 1)
-                          ];
-                        } else {
-                          // Add new file
-                          updatedState.files = [...updatedState.files, {
-                            path: filePath,
-                            content: fileContent.trim(),
-                            type: fileType,
-                            completed: true,
-                            edited: false
-                          }];
-                        }
-                        
-                        // Only show file status if not in edit mode
-                        if (!prev.isEdit) {
-                          updatedState.status = `Completed ${filePath}`;
-                        }
-                        processedFiles.add(filePath);
-                      }
-                    }
-                    
-                    // Check for current file being generated (incomplete file at the end)
-                    const lastFileMatch = newStreamedCode.match(/<file path="([^"]+)">([^]*?)$/);
-                    if (lastFileMatch && !lastFileMatch[0].includes('</file>')) {
-                      const filePath = lastFileMatch[1];
-                      const partialContent = lastFileMatch[2];
-                      
-                      if (!processedFiles.has(filePath)) {
-                        const fileExt = filePath.split('.').pop() || '';
-                        const fileType = fileExt === 'jsx' || fileExt === 'js' ? 'javascript' :
-                                        fileExt === 'css' ? 'css' :
-                                        fileExt === 'json' ? 'json' :
-                                        fileExt === 'html' ? 'html' : 'text';
-                        
-                        updatedState.currentFile = { 
-                          path: filePath, 
-                          content: partialContent, 
-                          type: fileType 
-                        };
-                        // Only show file status if not in edit mode
-                        if (!prev.isEdit) {
-                          updatedState.status = `Generating ${filePath}`;
-                        }
-                      }
-                    } else {
-                      updatedState.currentFile = undefined;
-                    }
-                    
-                    return updatedState;
-                  });
-                } else if (data.type === 'app') {
-                  setGenerationProgress(prev => ({ 
-                    ...prev, 
-                    status: 'Generated App.jsx structure'
-                  }));
-                } else if (data.type === 'component') {
-                  setGenerationProgress(prev => ({
-                    ...prev,
-                    status: `Generated ${data.name}`,
-                    components: [...prev.components, { 
-                      name: data.name, 
-                      path: data.path, 
-                      completed: true 
-                    }],
-                    currentComponent: data.index
-                  }));
-                } else if (data.type === 'package') {
-                  // Handle package installation from tool calls
-                  setGenerationProgress(prev => ({
-                    ...prev,
-                    status: data.message || `Installing ${data.name}`
-                  }));
-                } else if (data.type === 'complete') {
-                  generatedCode = data.generatedCode;
-                  explanation = data.explanation;
-                  
-                  // Save the last generated code
-                  setConversationContext(prev => ({
-                    ...prev,
-                    lastGeneratedCode: generatedCode
-                  }));
-                  
-                  // Clear thinking state when generation completes
-                  setGenerationProgress(prev => ({
-                    ...prev,
-                    isThinking: false,
-                    thinkingText: undefined,
-                    thinkingDuration: undefined
-                  }));
-                  
-                  // Store packages to install from tool calls
-                  if (data.packagesToInstall && data.packagesToInstall.length > 0) {
-                    console.log('[generate-code] Packages to install from tools:', data.packagesToInstall);
-                    // Store packages globally for later installation
-                    (window as any).pendingPackages = data.packagesToInstall;
-                  }
-                  
-                  // Parse all files from the completed code if not already done
-                  const fileRegex = /<file path="([^"]+)">([^]*?)<\/file>/g;
-                  const parsedFiles: Array<{path: string; content: string; type: string; completed: boolean}> = [];
-                  let fileMatch;
-                  
-                  while ((fileMatch = fileRegex.exec(data.generatedCode)) !== null) {
-                    const filePath = fileMatch[1];
-                    const fileContent = fileMatch[2];
-                    const fileExt = filePath.split('.').pop() || '';
-                    const fileType = fileExt === 'jsx' || fileExt === 'js' ? 'javascript' :
-                                    fileExt === 'css' ? 'css' :
-                                    fileExt === 'json' ? 'json' :
-                                    fileExt === 'html' ? 'html' : 'text';
-                    
-                    parsedFiles.push({
-                      path: filePath,
-                      content: fileContent.trim(),
-                      type: fileType,
-                      completed: true
-                    });
-                  }
-                  
-                  setGenerationProgress(prev => ({
-                    ...prev,
-                    status: `Generated ${parsedFiles.length > 0 ? parsedFiles.length : prev.files.length} file${(parsedFiles.length > 0 ? parsedFiles.length : prev.files.length) !== 1 ? 's' : ''}!`,
-                    isGenerating: false,
-                    isStreaming: false,
-                    isEdit: prev.isEdit,
-                    // Keep the files that were already parsed during streaming
-                    files: prev.files.length > 0 ? prev.files : parsedFiles
-                  }));
-                } else if (data.type === 'error') {
-                  throw new Error(data.error);
-                }
-              } catch (e) {
-                console.error('Failed to parse SSE data:', e);
-              }
-            }
-          }
-        }
-      }
+      const generatedCode = streamResult.generatedCode;
+      const explanation = streamResult.explanation;
       
       if (generatedCode) {
         // Parse files from generated code for metadata
@@ -2127,26 +1959,23 @@ Tip: I automatically detect and install npm packages from your code imports (lik
         setActiveTab('preview');
       }, 1000); // Reduced from 3000ms to 1000ms
     } catch (error: any) {
+      if (error?.name === 'AbortError') return;
       setChatMessages(prev => prev.filter(msg => msg.content !== 'Thinking...'));
       addChatMessage(`Error: ${error.message}`, 'system');
-      // Reset generation progress and switch back to preview on error
-      setGenerationProgress({
-        isGenerating: false,
-        status: '',
-        components: [],
-        currentComponent: 0,
-        streamedCode: '',
-        isStreaming: false,
-        isThinking: false,
-        thinkingText: undefined,
-        thinkingDuration: undefined,
-        files: [],
-        currentFile: undefined,
-        lastProcessedPosition: 0
-      });
+      markError(error.message);
       setActiveTab('preview');
     }
   };
+
+  useEffect(() => {
+    const pending = pendingChatPromptRef.current;
+    if (!pending || !projectId) return;
+    pendingChatPromptRef.current = null;
+    const timer = setTimeout(() => {
+      void sendChatMessage(pending);
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [projectId]);
 
 
   const downloadZip = async () => {
@@ -2633,6 +2462,11 @@ Tip: I automatically detect and install npm packages from your code imports (lik
 
   const startGeneration = async () => {
     if (!homeUrlInput.trim()) return;
+    if (isJobActive && generation.projectId && generation.projectId === projectId && generationProgress.isGenerating) {
+      return;
+    }
+
+    clearGeneration();
     
     setHomeScreenFading(true);
     
@@ -2666,7 +2500,7 @@ Tip: I automatically detect and install npm packages from your code imports (lik
     );
     
     // Start creating sandbox and capturing screenshot immediately in parallel
-    const sandboxPromise = !sandboxData ? createSandbox(true) : Promise.resolve(null);
+    const sandboxPromise = createSandbox(true);
     
     // Set loading stage immediately before hiding home screen
     setLoadingStage('gathering');
@@ -2998,203 +2832,21 @@ ${filteredContext ? '- Apply the user\'s context/theme requirements throughout t
 Focus on the key sections and content, making it clean and modern.`;
         }
 
-        setGenerationProgress(prev => ({
-          isGenerating: true,
-          status: 'Initializing AI...',
-          components: [],
-          currentComponent: 0,
-          streamedCode: '',
-          isStreaming: true,
-          isThinking: false,
-          thinkingText: undefined,
-          thinkingDuration: undefined,
-          // Keep previous files until new ones are generated
-          files: prev.files || [],
-          currentFile: undefined,
-          lastProcessedPosition: 0
-        }));
-        
-        const aiResponse = await fetch('/api/generate-ai-code-stream', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            prompt,
-            model: aiModel,
-            context: {
-              sandboxId: sandboxData?.sandboxId,
-              structure: structureContent,
-              conversationContext: conversationContext
-            }
-          })
+        const activeSandbox = createdSandbox || getGenerationState().sandboxData;
+        const streamResult = await startGenerationStream({
+          prompt,
+          model: aiModel,
+          styleHint: selectedStyle || homeContextInput,
+          context: {
+            sandboxId: activeSandbox?.sandboxId,
+            structure: structureContent,
+            conversationContext: conversationContext,
+            styleName: selectedStyle || homeContextInput
+          },
+          sandboxData: activeSandbox,
         });
-        
-        if (!aiResponse.ok || !aiResponse.body) {
-          throw new Error('Failed to generate code');
-        }
-        
-        const reader = aiResponse.body.getReader();
-        const decoder = new TextDecoder();
-        let generatedCode = '';
-        let explanation = '';
-        
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          
-          const chunk = decoder.decode(value);
-          const lines = chunk.split('\n');
-          
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              try {
-                const data = JSON.parse(line.slice(6));
-                
-                if (data.type === 'status') {
-                  setGenerationProgress(prev => ({ ...prev, status: data.message }));
-                } else if (data.type === 'thinking') {
-                  setGenerationProgress(prev => ({ 
-                    ...prev, 
-                    isThinking: true,
-                    thinkingText: (prev.thinkingText || '') + data.text
-                  }));
-                } else if (data.type === 'thinking_complete') {
-                  setGenerationProgress(prev => ({ 
-                    ...prev, 
-                    isThinking: false,
-                    thinkingDuration: data.duration
-                  }));
-                } else if (data.type === 'conversation') {
-                  // Add conversational text to chat only if it's not code
-                  let text = data.text || '';
-                  
-                  // Remove package tags from the text
-                  text = text.replace(/<package>[^<]*<\/package>/g, '');
-                  text = text.replace(/<packages>[^<]*<\/packages>/g, '');
-                  
-                  // Filter out any XML tags and file content that slipped through
-                  if (!text.includes('<file') && !text.includes('import React') && 
-                      !text.includes('export default') && !text.includes('className=') &&
-                      text.trim().length > 0) {
-                    addChatMessage(text.trim(), 'ai');
-                  }
-                } else if (data.type === 'stream' && data.raw) {
-                  setGenerationProgress(prev => {
-                    const newStreamedCode = prev.streamedCode + data.text;
-                    
-                    // Tab is already switched after scraping
-                    
-                    const updatedState = { 
-                      ...prev, 
-                      streamedCode: newStreamedCode,
-                      isStreaming: true,
-                      isThinking: false,
-                      status: 'Generating code...'
-                    };
-                    
-                    // Process complete files from the accumulated stream
-                    const fileRegex = /<file path="([^"]+)">([^]*?)<\/file>/g;
-                    let match;
-                    const processedFiles = new Set(prev.files.map(f => f.path));
-                    
-                    while ((match = fileRegex.exec(newStreamedCode)) !== null) {
-                      const filePath = match[1];
-                      const fileContent = match[2];
-                      
-                      // Only add if we haven't processed this file yet
-                      if (!processedFiles.has(filePath)) {
-                        const fileExt = filePath.split('.').pop() || '';
-                        const fileType = fileExt === 'jsx' || fileExt === 'js' ? 'javascript' :
-                                        fileExt === 'css' ? 'css' :
-                                        fileExt === 'json' ? 'json' :
-                                        fileExt === 'html' ? 'html' : 'text';
-                        
-                        // Check if file already exists
-                        const existingFileIndex = updatedState.files.findIndex(f => f.path === filePath);
-                        
-                        if (existingFileIndex >= 0) {
-                          // Update existing file and mark as edited
-                          updatedState.files = [
-                            ...updatedState.files.slice(0, existingFileIndex),
-                            {
-                              ...updatedState.files[existingFileIndex],
-                              content: fileContent.trim(),
-                              type: fileType,
-                              completed: true,
-                              edited: true
-                            },
-                            ...updatedState.files.slice(existingFileIndex + 1)
-                          ];
-                        } else {
-                          // Add new file
-                          updatedState.files = [...updatedState.files, {
-                            path: filePath,
-                            content: fileContent.trim(),
-                            type: fileType,
-                            completed: true,
-                            edited: false
-                          }];
-                        }
-                        
-                        // Only show file status if not in edit mode
-                        if (!prev.isEdit) {
-                          updatedState.status = `Completed ${filePath}`;
-                        }
-                        processedFiles.add(filePath);
-                      }
-                    }
-                    
-                    // Check for current file being generated (incomplete file at the end)
-                    const lastFileMatch = newStreamedCode.match(/<file path="([^"]+)">([^]*?)$/);
-                    if (lastFileMatch && !lastFileMatch[0].includes('</file>')) {
-                      const filePath = lastFileMatch[1];
-                      const partialContent = lastFileMatch[2];
-                      
-                      if (!processedFiles.has(filePath)) {
-                        const fileExt = filePath.split('.').pop() || '';
-                        const fileType = fileExt === 'jsx' || fileExt === 'js' ? 'javascript' :
-                                        fileExt === 'css' ? 'css' :
-                                        fileExt === 'json' ? 'json' :
-                                        fileExt === 'html' ? 'html' : 'text';
-                        
-                        updatedState.currentFile = { 
-                          path: filePath, 
-                          content: partialContent, 
-                          type: fileType 
-                        };
-                        // Only show file status if not in edit mode
-                        if (!prev.isEdit) {
-                          updatedState.status = `Generating ${filePath}`;
-                        }
-                      }
-                    } else {
-                      updatedState.currentFile = undefined;
-                    }
-                    
-                    return updatedState;
-                  });
-                } else if (data.type === 'complete') {
-                  generatedCode = data.generatedCode;
-                  explanation = data.explanation;
-                  
-                  // Save the last generated code
-                  setConversationContext(prev => ({
-                    ...prev,
-                    lastGeneratedCode: generatedCode
-                  }));
-                }
-              } catch (e) {
-                console.error('Failed to parse SSE data:', e);
-              }
-            }
-          }
-        }
-        
-        setGenerationProgress(prev => ({
-          ...prev,
-          isGenerating: false,
-          isStreaming: false,
-          status: 'Generation complete!'
-        }));
+        const generatedCode = streamResult.generatedCode;
+        const explanation = streamResult.explanation;
         
         if (generatedCode) {
           addChatMessage('AI recreation generated!', 'system');
@@ -3207,7 +2859,11 @@ Focus on the key sections and content, making it clean and modern.`;
           setPromptInput(generatedCode);
 
           // Apply the code (first time is not edit mode)
-          await applyGeneratedCode(generatedCode, false);
+          await applyGeneratedCode(
+            generatedCode,
+            false,
+            activeSandbox || undefined
+          );
 
           addChatMessage(
             brandExtensionMode
@@ -3237,13 +2893,7 @@ Focus on the key sections and content, making it clean and modern.`;
         setUrlStatus([]);
         setHomeContextInput('');
         
-        // Clear generation progress and all screenshot/design states
-        setGenerationProgress(prev => ({
-          ...prev,
-          isGenerating: false,
-          isStreaming: false,
-          status: 'Generation complete!'
-        }));
+        markReady();
         
         // Clear screenshot and preparing design states to prevent them from showing on next run
         setIsScreenshotLoaded(false); // Reset loaded state
@@ -3260,105 +2910,96 @@ Focus on the key sections and content, making it clean and modern.`;
           setActiveTab('preview');
         }, 1000); // Show completion briefly then switch
       } catch (error: any) {
+        if (error?.name === 'AbortError') return;
         addChatMessage(`Failed to clone website: ${error.message}`, 'system');
         setUrlStatus([]);
         setIsPreparingDesign(false);
         setIsStartingNewGeneration(false); // Clear new generation flag on error
         setLoadingStage(null);
-        // Also clear generation progress on error
-        setGenerationProgress(prev => ({
-          ...prev,
-          isGenerating: false,
-          isStreaming: false,
-          status: '',
-          // Keep files to display in sidebar
-          files: prev.files
-        }));
+        markError(error.message);
       }
     }, 500);
   };
 
-  return (
-    <HeaderProvider>
-      <div className="font-sans bg-background text-foreground h-screen flex flex-col">
-      <div className="bg-white py-[15px] py-[8px] border-b border-border-faint flex items-center justify-between shadow-sm">
-        <HeaderBrandKit />
-        <div className="flex items-center gap-2">
-          {/* Model Selector - Left side */}
-          <select
-            value={aiModel}
-            onChange={(e) => {
-              const newModel = e.target.value;
-              setAiModel(newModel);
-              const params = new URLSearchParams(searchParams);
-              params.set('model', newModel);
-              if (sandboxData?.sandboxId) {
-                params.set('sandbox', sandboxData.sandboxId);
-              }
-              router.push(`/generation?${params.toString()}`);
-            }}
-            className="px-3 py-1.5 text-sm text-gray-900 bg-gray-50 border border-gray-200 rounded-lg focus:outline-none focus:border-gray-300 transition-colors"
-          >
-            {appConfig.ai.availableModels.map(model => (
-              <option key={model} value={model}>
-                {appConfig.ai.modelDisplayNames?.[model] || model}
-              </option>
-            ))}
-          </select>
-          <button 
-            onClick={() => createSandbox()}
-            className="p-8 rounded-lg transition-colors bg-gray-50 border border-gray-200 text-gray-700 hover:bg-gray-100"
-            title="Create new sandbox"
-          >
-            <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-            </svg>
-          </button>
-          <button 
-            onClick={reapplyLastGeneration}
-            className="p-8 rounded-lg transition-colors bg-gray-50 border border-gray-200 text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
-            title="Re-apply last generation"
-            disabled={!conversationContext.lastGeneratedCode || !sandboxData}
-          >
-            <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-            </svg>
-          </button>
-          <button 
-            onClick={downloadZip}
-            disabled={!sandboxData}
-            className="p-8 rounded-lg transition-colors bg-gray-50 border border-gray-200 text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
-            title="Download your Vite app as ZIP"
-          >
-            <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10" />
-            </svg>
-          </button>
-       
-        </div>
-      </div>
+  const workspacePages = useMemo(() => {
+    const fromSandbox = Object.keys(sandboxFiles);
+    const fromProgress = generationProgress.files.map((file) => file.path);
+    return pagesFromFiles([...fromSandbox, ...fromProgress]);
+  }, [sandboxFiles, generationProgress.files]);
 
-      <div className="flex-1 flex overflow-hidden">
-        {/* Center Panel - AI Chat (1/3 of remaining width) */}
-        <div className="flex-1 max-w-[400px] flex flex-col border-r border-border bg-background">
-          {/* Sidebar Input Component */}
+  const workspaceView: WorkspaceView = activeTab === 'generation' ? 'code' : 'preview';
+
+  const refreshPreview = () => {
+    if (!iframeRef.current || !sandboxData?.url) return;
+    const base = sandboxData.url.replace(/\/$/, '');
+    const path = selectedPage === '/' ? '' : selectedPage;
+    iframeRef.current.src = `${base}${path}?t=${Date.now()}`;
+  };
+
+  const renameProject = async (nextTitle: string) => {
+    setProjectTitle(nextTitle);
+    const id = projectId || projectIdFromPath;
+    if (!id) return;
+    setSaveState('saving');
+    try {
+      const response = await fetch(`/api/projects/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: nextTitle }),
+      });
+      if (!response.ok) {
+        setSaveState('idle');
+        return;
+      }
+      const data = await response.json().catch(() => null);
+      if (data?.project?.updatedAt) setProjectUpdatedAt(data.project.updatedAt);
+      else setProjectUpdatedAt(new Date().toISOString());
+      setSaveState('saved');
+    } catch {
+      setSaveState('idle');
+    }
+  };
+
+  return (
+    <ProjectWorkspace
+      projectId={projectId || projectIdFromPath}
+      projectName={projectTitle}
+      saveState={saveState}
+      updatedAt={projectUpdatedAt}
+      onRename={renameProject}
+      messages={chatMessages}
+      onSend={(text, options) => {
+        void sendChatMessage(text, options);
+      }}
+      sending={isJobActive || generationProgress.isGenerating || loading}
+      pages={workspacePages}
+      selectedPage={selectedPage}
+      onSelectPage={(path) => {
+        setSelectedPage(path);
+        if (iframeRef.current && sandboxData?.url) {
+          const base = sandboxData.url.replace(/\/$/, '');
+          iframeRef.current.src = path === '/' ? sandboxData.url : `${base}${path}`;
+        }
+      }}
+      view={workspaceView}
+      onViewChange={(next) => setActiveTab(next === 'code' ? 'generation' : 'preview')}
+      viewport={viewport}
+      onViewportChange={setViewport}
+      onRefresh={refreshPreview}
+      iframeRef={iframeRef}
+      sandboxUrl={sandboxData?.url}
+      chatHeader={
+        <>
           {!hasInitialSubmission ? (
-            <div className="p-4 border-b border-border">
+            <div className="border-b border-[var(--studio-line)] p-12">
               <SidebarInput
                 onSubmit={(url, style, model, instructions) => {
-                  // Mark that we've had an initial submission
                   setHasInitialSubmission(true);
-                  
-                  // Store the configuration in sessionStorage (same as home page)
                   sessionStorage.setItem('targetUrl', url);
                   sessionStorage.setItem('selectedStyle', style);
                   sessionStorage.setItem('selectedModel', model);
-                  if (instructions) {
-                    sessionStorage.setItem('additionalInstructions', instructions);
-                  }
+                  if (instructions) sessionStorage.setItem('additionalInstructions', instructions);
                   sessionStorage.setItem('autoStart', 'true');
-                  
-                  // Start generation using the existing logic
                   setHomeUrlInput(url);
                   setHomeContextInput(instructions || '');
                   startGeneration();
@@ -3367,592 +3008,49 @@ Focus on the key sections and content, making it clean and modern.`;
               />
             </div>
           ) : null}
-
-          {conversationContext.scrapedWebsites.length > 0 && (
-            <div className="p-4 bg-card border-b border-gray-200">
-              <div className="flex flex-col gap-4">
-                {conversationContext.scrapedWebsites.map((site, idx) => {
-                  // Extract favicon and site info from the scraped data
-                  const metadata = site.content?.metadata || {};
-                  const sourceURL = metadata.sourceURL || site.url;
-                  const favicon = metadata.favicon || `https://www.google.com/s2/favicons?domain=${new URL(sourceURL).hostname}&sz=128`;
-                  const siteName = metadata.ogSiteName || metadata.title || new URL(sourceURL).hostname;
-                  const screenshot = site.content?.screenshot || sessionStorage.getItem('websiteScreenshot');
-                  
-                  return (
-                    <div key={idx} className="flex flex-col gap-3">
-                      {/* Site info with favicon */}
-                      <div className="flex items-center gap-4 text-sm">
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img 
-                          src={favicon} 
-                          alt={siteName}
-                          className="w-16 h-16 rounded"
-                          onError={(e) => {
-                            e.currentTarget.src = `https://www.google.com/s2/favicons?domain=${new URL(sourceURL).hostname}&sz=128`;
-                          }}
-                        />
-                        <a 
-                          href={sourceURL} 
-                          target="_blank" 
-                          rel="noopener noreferrer"
-                          className="text-black hover:text-gray-700 truncate max-w-[250px] font-medium"
-                          title={sourceURL}
-                        >
-                          {siteName}
-                        </a>
-                      </div>
-                      
-                      {/* Pinned screenshot */}
-                      {screenshot && (
-                        <div className="w-full">
-                          <div className="flex items-center justify-between mb-2">
-                            <span className="text-xs font-medium text-gray-600">Screenshot Preview</span>
-                            <button
-                              onClick={() => setScreenshotCollapsed(!screenshotCollapsed)}
-                              className="text-gray-500 hover:text-gray-700 transition-colors p-1"
-                              aria-label={screenshotCollapsed ? 'Expand screenshot' : 'Collapse screenshot'}
-                            >
-                              <svg
-                                width="16"
-                                height="16"
-                                viewBox="0 0 16 16"
-                                fill="none"
-                                xmlns="http://www.w3.org/2000/svg"
-                                className={`transition-transform duration-300 ${screenshotCollapsed ? 'rotate-180' : ''}`}
-                              >
-                                <path d="M4 6L8 10L12 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                              </svg>
-                            </button>
-                          </div>
-                          <div
-                            className="w-full rounded-lg overflow-hidden border border-gray-200 transition-all duration-300"
-                            style={{
-                              opacity: screenshotCollapsed ? 0 : 1,
-                              transform: screenshotCollapsed ? 'translateY(-20px)' : 'translateY(0)',
-                              pointerEvents: screenshotCollapsed ? 'none' : 'auto',
-                              maxHeight: screenshotCollapsed ? '0' : '200px'
-                            }}
-                          >
-                            {/* eslint-disable-next-line @next/next/no-img-element */}
-                            <img
-                              src={screenshot}
-                              alt={`${siteName} preview`}
-                              className="w-full h-auto object-cover"
-                              style={{ maxHeight: '200px' }}
-                            />
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          <div
-            className="flex-1 overflow-y-auto p-6 flex flex-col gap-4 scrollbar-hide"
-            ref={chatMessagesRef}>
-            {chatMessages.map((msg, idx) => {
-              // Check if this message is from a successful generation
-              const isGenerationComplete = msg.content.includes('Successfully recreated') || 
-                                         msg.content.includes('AI recreation generated!') ||
-                                         msg.content.includes('Code generated!');
-              
-              // Get the files from metadata if this is a completion message
-              // const completedFiles = msg.metadata?.appliedFiles || [];
-              
-              return (
-                <div key={idx} className="block">
-                  <div className={`flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'}`}>
-                    <div className="block">
-                      <div className={`block rounded-[10px] px-14 py-8 ${
-                        msg.type === 'user' ? 'bg-[#36322F] text-white ml-auto max-w-[80%]' :
-                        msg.type === 'ai' ? 'bg-gray-100 text-gray-900 mr-auto max-w-[80%]' :
-                        msg.type === 'system' ? 'bg-[#36322F] text-white text-sm' :
-                        msg.type === 'command' ? 'bg-[#36322F] text-white font-mono text-sm' :
-                        msg.type === 'error' ? 'bg-red-900 text-red-100 text-sm border border-red-700' :
-                        'bg-[#36322F] text-white text-sm'
-                      }`}>
-                    {msg.type === 'command' ? (
-                      <div className="flex items-start gap-2">
-                        <span className={`text-xs ${
-                          msg.metadata?.commandType === 'input' ? 'text-blue-400' :
-                          msg.metadata?.commandType === 'error' ? 'text-red-400' :
-                          msg.metadata?.commandType === 'success' ? 'text-green-400' :
-                          'text-gray-400'
-                        }`}>
-                          {msg.metadata?.commandType === 'input' ? '$' : '>'}
-                        </span>
-                        <span className="flex-1 whitespace-pre-wrap text-white">{msg.content}</span>
-                      </div>
-                    ) : msg.type === 'error' ? (
-                      <div className="flex items-start gap-3">
-                        <div className="flex-shrink-0">
-                          <div className="w-8 h-8 bg-red-800 rounded-full flex items-center justify-center">
-                            <svg className="w-6 h-6 text-red-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                            </svg>
-                          </div>
-                        </div>
-                        <div className="flex-1">
-                          <div className="font-semibold mb-1">Build Errors Detected</div>
-                          <div className="whitespace-pre-wrap text-sm">{msg.content}</div>
-                          <div className="mt-2 text-xs opacity-70">Press 'F' or click the Fix button above to resolve</div>
-                        </div>
-                      </div>
-                    ) : (
-                      <span className="text-sm">{msg.content}</span>
-                    )}
-                      </div>
-                  
-                      {/* Show branding data if this is a brand extraction message */}
-                      {msg.metadata?.brandingData && (
-                        <div className="mt-3 bg-gradient-to-br from-gray-50 to-white border-2 border-gray-200 rounded-xl overflow-hidden max-w-[500px] shadow-sm">
-                          <div className="bg-[#36322F] px-16 py-12">
-                            <div className="flex items-center gap-8">
-                              <Image
-                                src={`https://www.google.com/s2/favicons?domain=${msg.metadata.sourceUrl}&sz=32`}
-                                alt=""
-                                width={64}
-                                height={64}
-                                className="w-16 h-16"
-                              />
-                              <div className="text-sm font-semibold text-white">
-                                Brand Guidelines
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="p-16">
-                            {/* Color Scheme Mode */}
-                            {msg.metadata.brandingData.colorScheme && (
-                              <div className="mb-16">
-                                <div className="text-sm">
-                                  <span className="text-gray-600 font-medium">Mode:</span>{' '}
-                                  <span className="font-semibold text-gray-900 capitalize">{msg.metadata.brandingData.colorScheme}</span>
-                                </div>
-                              </div>
-                            )}
-
-                            {/* Colors */}
-                            {msg.metadata.brandingData.colors && (
-                              <div className="mb-16">
-                                <div className="text-sm font-semibold text-gray-900 mb-8">Colors</div>
-                                <div className="flex flex-wrap gap-12">
-                                  {msg.metadata.brandingData.colors.primary && (
-                                    <div className="flex items-center gap-8">
-                                      <div className="w-32 h-32 rounded border border-gray-300" style={{ backgroundColor: msg.metadata.brandingData.colors.primary }} />
-                                      <div className="text-sm">
-                                        <div className="font-semibold text-gray-900">Primary</div>
-                                        <div className="text-gray-600 font-mono text-xs">{msg.metadata.brandingData.colors.primary}</div>
-                                      </div>
-                                    </div>
-                                  )}
-                                  {msg.metadata.brandingData.colors.accent && (
-                                    <div className="flex items-center gap-8">
-                                      <div className="w-32 h-32 rounded border border-gray-300" style={{ backgroundColor: msg.metadata.brandingData.colors.accent }} />
-                                      <div className="text-sm">
-                                        <div className="font-semibold text-gray-900">Accent</div>
-                                        <div className="text-gray-600 font-mono text-xs">{msg.metadata.brandingData.colors.accent}</div>
-                                      </div>
-                                    </div>
-                                  )}
-                                  {msg.metadata.brandingData.colors.background && (
-                                    <div className="flex items-center gap-8">
-                                      <div className="w-32 h-32 rounded border border-gray-300" style={{ backgroundColor: msg.metadata.brandingData.colors.background }} />
-                                      <div className="text-sm">
-                                        <div className="font-semibold text-gray-900">Background</div>
-                                        <div className="text-gray-600 font-mono text-xs">{msg.metadata.brandingData.colors.background}</div>
-                                      </div>
-                                    </div>
-                                  )}
-                                  {msg.metadata.brandingData.colors.textPrimary && (
-                                    <div className="flex items-center gap-8">
-                                      <div className="w-32 h-32 rounded border border-gray-300" style={{ backgroundColor: msg.metadata.brandingData.colors.textPrimary }} />
-                                      <div className="text-sm">
-                                        <div className="font-semibold text-gray-900">Text</div>
-                                        <div className="text-gray-600 font-mono text-xs">{msg.metadata.brandingData.colors.textPrimary}</div>
-                                      </div>
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                            )}
-
-                            {/* Typography */}
-                            {msg.metadata.brandingData.typography && (
-                              <div className="mb-16">
-                                <div className="text-sm font-semibold text-gray-900 mb-8">Typography</div>
-                                <div className="grid grid-cols-2 gap-12 text-sm">
-                                  {msg.metadata.brandingData.typography.fontFamilies?.primary && (
-                                    <div>
-                                      <span className="text-gray-600 font-medium">Primary:</span>{' '}
-                                      <span className="font-semibold text-gray-900">{msg.metadata.brandingData.typography.fontFamilies.primary}</span>
-                                    </div>
-                                  )}
-                                  {msg.metadata.brandingData.typography.fontFamilies?.heading && (
-                                    <div>
-                                      <span className="text-gray-600 font-medium">Heading:</span>{' '}
-                                      <span className="font-semibold text-gray-900">{msg.metadata.brandingData.typography.fontFamilies.heading}</span>
-                                    </div>
-                                  )}
-                                  {msg.metadata.brandingData.typography.fontSizes?.h1 && (
-                                    <div>
-                                      <span className="text-gray-600 font-medium">H1 Size:</span>{' '}
-                                      <span className="font-semibold text-gray-900">{msg.metadata.brandingData.typography.fontSizes.h1}</span>
-                                    </div>
-                                  )}
-                                  {msg.metadata.brandingData.typography.fontSizes?.h2 && (
-                                    <div>
-                                      <span className="text-gray-600 font-medium">H2 Size:</span>{' '}
-                                      <span className="font-semibold text-gray-900">{msg.metadata.brandingData.typography.fontSizes.h2}</span>
-                                    </div>
-                                  )}
-                                  {msg.metadata.brandingData.typography.fontSizes?.body && (
-                                    <div>
-                                      <span className="text-gray-600 font-medium">Body Size:</span>{' '}
-                                      <span className="font-semibold text-gray-900">{msg.metadata.brandingData.typography.fontSizes.body}</span>
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                            )}
-
-                            {/* Spacing */}
-                            {msg.metadata.brandingData.spacing && (
-                              <div className="mb-16">
-                                <div className="text-sm font-semibold text-gray-900 mb-8">Spacing</div>
-                                <div className="flex flex-wrap gap-16 text-sm">
-                                  {msg.metadata.brandingData.spacing.baseUnit && (
-                                    <div>
-                                      <span className="text-gray-600 font-medium">Base Unit:</span>{' '}
-                                      <span className="font-semibold text-gray-900">{msg.metadata.brandingData.spacing.baseUnit}px</span>
-                                    </div>
-                                  )}
-                                  {msg.metadata.brandingData.spacing.borderRadius && (
-                                    <div>
-                                      <span className="text-gray-600 font-medium">Border Radius:</span>{' '}
-                                      <span className="font-semibold text-gray-900">{msg.metadata.brandingData.spacing.borderRadius}</span>
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                            )}
-
-                            {/* Button Styles */}
-                            {msg.metadata.brandingData.components?.buttonPrimary && (
-                              <div className="mb-16">
-                                <div className="text-sm font-semibold text-gray-900 mb-8">Button Styles</div>
-                                <div className="flex flex-wrap gap-12">
-                                  <div>
-                                    <div className="text-xs text-gray-600 mb-6 font-medium">Primary Button</div>
-                                    <button
-                                      className="px-16 py-8 text-sm font-medium"
-                                      style={{
-                                        backgroundColor: msg.metadata.brandingData.components.buttonPrimary.background,
-                                        color: msg.metadata.brandingData.components.buttonPrimary.textColor,
-                                        borderRadius: msg.metadata.brandingData.components.buttonPrimary.borderRadius,
-                                        boxShadow: msg.metadata.brandingData.components.buttonPrimary.shadow
-                                      }}
-                                    >
-                                      Sample Button
-                                    </button>
-                                  </div>
-                                  {msg.metadata.brandingData.components?.buttonSecondary && (
-                                    <div>
-                                      <div className="text-xs text-gray-600 mb-6 font-medium">Secondary Button</div>
-                                      <button
-                                        className="px-16 py-8 text-sm font-medium"
-                                        style={{
-                                          backgroundColor: msg.metadata.brandingData.components.buttonSecondary.background,
-                                          color: msg.metadata.brandingData.components.buttonSecondary.textColor,
-                                          borderRadius: msg.metadata.brandingData.components.buttonSecondary.borderRadius,
-                                          boxShadow: msg.metadata.brandingData.components.buttonSecondary.shadow
-                                        }}
-                                      >
-                                        Sample Button
-                                      </button>
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                            )}
-
-                            {/* Personality */}
-                            {msg.metadata.brandingData.personality && (
-                              <div className="text-sm">
-                                <span className="text-gray-600 font-medium">Personality:</span>{' '}
-                                <span className="font-semibold text-gray-900 capitalize">
-                                  {msg.metadata.brandingData.personality.tone} tone, {msg.metadata.brandingData.personality.energy} energy
-                                </span>
-                              </div>
-                            )}
-
-                            {/* Target Audience */}
-                            {msg.metadata.brandingData.personality?.targetAudience && (
-                              <div className="text-sm mt-8">
-                                <span className="text-gray-600 font-medium">Target:</span>{' '}
-                                <span className="text-gray-900">{msg.metadata.brandingData.personality.targetAudience}</span>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Show applied files if this is an apply success message */}
-                      {msg.metadata?.appliedFiles && msg.metadata.appliedFiles.length > 0 && (
-                    <div className="mt-3 inline-block bg-gray-100 rounded-[10px] p-5">
-                      <div className="text-sm font-medium mb-3 text-gray-700">
-                        {msg.content.includes('Applied') ? 'Files Updated:' : 'Generated Files:'}
-                      </div>
-                      <div className="flex flex-wrap items-start gap-2">
-                        {msg.metadata.appliedFiles.map((filePath, fileIdx) => {
-                          const fileName = filePath.split('/').pop() || filePath;
-                          const fileExt = fileName.split('.').pop() || '';
-                          const fileType = fileExt === 'jsx' || fileExt === 'js' ? 'javascript' :
-                                          fileExt === 'css' ? 'css' :
-                                          fileExt === 'json' ? 'json' : 'text';
-
-                          return (
-                            <div
-                              key={`applied-${fileIdx}`}
-                              className="inline-flex items-center gap-1.5 px-6 py-1.5 bg-[#36322F] text-white rounded-[10px] text-sm animate-fade-in-up"
-                              style={{ animationDelay: `${fileIdx * 30}ms` }}
-                            >
-                              <span className={`inline-block w-1.5 h-1.5 rounded-full ${
-                                fileType === 'css' ? 'bg-blue-400' :
-                                fileType === 'javascript' ? 'bg-yellow-400' :
-                                fileType === 'json' ? 'bg-green-400' :
-                                'bg-gray-400'
-                              }`} />
-                              {fileName}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-                  
-                      {/* Show generated files for completion messages - but only if no appliedFiles already shown */}
-                      {isGenerationComplete && generationProgress.files.length > 0 && idx === chatMessages.length - 1 && !msg.metadata?.appliedFiles && !chatMessages.some(m => m.metadata?.appliedFiles) && (
-                    <div className="mt-2 inline-block bg-gray-100 rounded-[10px] p-3">
-                      <div className="text-xs font-medium mb-1 text-gray-700">Generated Files:</div>
-                      <div className="flex flex-wrap items-start gap-1">
-                        {generationProgress.files.map((file, fileIdx) => (
-                          <div
-                            key={`complete-${fileIdx}`}
-                            className="inline-flex items-center gap-1.5 px-6 py-1.5 bg-[#36322F] text-white rounded-[10px] text-xs animate-fade-in-up"
-                            style={{ animationDelay: `${fileIdx * 30}ms` }}
-                          >
-                            <span className={`inline-block w-1.5 h-1.5 rounded-full ${
-                              file.type === 'css' ? 'bg-blue-400' :
-                              file.type === 'javascript' ? 'bg-yellow-400' :
-                              file.type === 'json' ? 'bg-green-400' :
-                              'bg-gray-400'
-                            }`} />
-                            {file.path.split('/').pop()}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                    </div>
-                    </div>
-                  </div>
-              );
-            })}
-            
-            {/* Code application progress */}
-            {codeApplicationState.stage && (
+          {codeApplicationState.stage ? (
+            <div className="px-12 pt-8">
               <CodeApplicationProgress state={codeApplicationState} />
-            )}
-            
-            {/* File generation progress - inline display (during generation) */}
-            {generationProgress.isGenerating && (
-              <div className="inline-block bg-gray-100 rounded-lg p-3">
-                <div className="text-sm font-medium mb-2 text-gray-700">
-                  {generationProgress.status}
-                </div>
-                <div className="flex flex-wrap items-start gap-1">
-                  {/* Show completed files */}
-                  {generationProgress.files.map((file, idx) => (
-                    <div
-                      key={`file-${idx}`}
-                      className="inline-flex items-center gap-1.5 px-6 py-1.5 bg-[#36322F] text-white rounded-[10px] text-xs animate-fade-in-up"
-                      style={{ animationDelay: `${idx * 30}ms` }}
-                    >
-                      <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                      </svg>
-                      {file.path.split('/').pop()}
-                    </div>
-                  ))}
-                  
-                  {/* Show current file being generated */}
-                  {generationProgress.currentFile && (
-                    <div className="flex items-center gap-1 px-2 py-1 bg-[#36322F]/70 text-white rounded-[10px] text-sm animate-pulse"
-                      style={{ animationDelay: `${generationProgress.files.length * 30}ms` }}>
-                      <div className="w-16 h-16 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                      {generationProgress.currentFile.path.split('/').pop()}
-                    </div>
-                  )}
-                </div>
-                
-                {/* Live streaming response display */}
-                {generationProgress.streamedCode && (
-                  <motion.div 
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: 'auto' }}
-                    exit={{ opacity: 0, height: 0 }}
-                    transition={{ duration: 0.3 }}
-                    className="mt-3 border-t border-gray-300 pt-3"
-                  >
-                    <div className="flex items-center gap-2 mb-2">
-                      <div className="flex items-center gap-1">
-                        <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse" />
-                        <span className="text-xs font-medium text-gray-600">AI Response Stream</span>
-                      </div>
-                      <div className="flex-1 h-px bg-gradient-to-r from-gray-300 to-transparent" />
-                    </div>
-                    <div className="bg-gray-900 border border-gray-700 rounded max-h-128 overflow-y-auto scrollbar-hide">
-                      <SyntaxHighlighter
-                        language="jsx"
-                        style={vscDarkPlus}
-                        customStyle={{
-                          margin: 0,
-                          padding: '0.75rem',
-                          fontSize: '11px',
-                          lineHeight: '1.5',
-                          background: 'transparent',
-                          maxHeight: '8rem',
-                          overflow: 'hidden'
-                        }}
-                      >
-                        {(() => {
-                          const lastContent = generationProgress.streamedCode.slice(-1000);
-                          // Show the last part of the stream, starting from a complete tag if possible
-                          const startIndex = lastContent.indexOf('<');
-                          return startIndex !== -1 ? lastContent.slice(startIndex) : lastContent;
-                        })()}
-                      </SyntaxHighlighter>
-                      <span className="inline-block w-3 h-4 bg-orange-400 ml-3 mb-3 animate-pulse" />
-                    </div>
-                  </motion.div>
-                )}
-              </div>
-            )}
-          </div>
-
-          <div className="p-4 border-t border-border bg-background-base">
-            <HeroInput
-              value={aiChatInput}
-              onChange={setAiChatInput}
-              onSubmit={sendChatMessage}
-              placeholder="Describe what you want to build..."
-              showSearchFeatures={false}
-            />
-          </div>
-        </div>
-
-        {/* Right Panel - Preview or Generation (2/3 of remaining width) */}
-        <div className="flex-1 flex flex-col overflow-hidden">
-          <div className="px-3 pt-4 pb-4 bg-white border-b border-gray-200 flex justify-between items-center">
-            <div className="flex items-center gap-2">
-              {/* Toggle-style Code/View switcher */}
-              <div className="inline-flex bg-gray-100 border border-gray-200 rounded-md p-0.5">
-                <button
-                  onClick={() => setActiveTab('generation')}
-                  className={`px-3 py-1 rounded transition-all text-xs font-medium ${
-                    activeTab === 'generation' 
-                      ? 'bg-white text-gray-900 shadow-sm' 
-                      : 'bg-transparent text-gray-600 hover:text-gray-900'
-                  }`}
-                >
-                  <div className="flex items-center gap-1.5">
-                    <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
-                    </svg>
-                    <span>Code</span>
-                  </div>
-                </button>
-                <button
-                  onClick={() => setActiveTab('preview')}
-                  className={`px-3 py-1 rounded transition-all text-xs font-medium ${
-                    activeTab === 'preview' 
-                      ? 'bg-white text-gray-900 shadow-sm' 
-                      : 'bg-transparent text-gray-600 hover:text-gray-900'
-                  }`}
-                >
-                  <div className="flex items-center gap-1.5">
-                    <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                    </svg>
-                    <span>View</span>
-                  </div>
-                </button>
-              </div>
             </div>
-            <div className="flex gap-2 items-center">
-              {/* Files generated count */}
-              {activeTab === 'generation' && !generationProgress.isEdit && generationProgress.files.length > 0 && (
-                <div className="text-gray-500 text-xs font-medium">
-                  {generationProgress.files.length} files generated
-                </div>
-              )}
-              
-              {/* Live Code Generation Status */}
-              {activeTab === 'generation' && generationProgress.isGenerating && (
-                <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-gray-100 border border-gray-200 rounded-md text-xs font-medium text-gray-700">
-                  <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
-                  {generationProgress.isEdit ? 'Editing code' : 'Live generation'}
-                </div>
-              )}
-              
-              {/* Sandbox Status Indicator */}
-              {sandboxData && (
-                <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-gray-100 border border-gray-200 rounded-md text-xs font-medium text-gray-700">
-                  <div className="w-1.5 h-1.5 bg-green-500 rounded-full" />
-                  Sandbox active
-                </div>
-              )}
-              
-              {/* Open in new tab button */}
-              {sandboxData && (
-                <a 
-                  href={sandboxData.url} 
-                  target="_blank" 
-                  rel="noopener noreferrer"
-                  title="Open in new tab"
-                  className="p-1.5 rounded-md transition-all text-gray-600 hover:text-gray-900 hover:bg-gray-100"
-                >
-                  <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                  </svg>
-                </a>
-              )}
-            </div>
-          </div>
-          <div className="flex-1 relative overflow-hidden">
-            {renderMainContent()}
-          </div>
-        </div>
-      </div>
-
-
-
-
-    </div>
-    </HeaderProvider>
+          ) : null}
+        </>
+      }
+      preview={renderMainContent()}
+      githubConnected={githubConnected}
+      githubRepoUrl={githubRepoUrl}
+      initialPhase={initialPhase}
+      initialPlan={initialPlan}
+      isJobActive={isJobActive}
+      generationStatus={generationJobStatus}
+      onStartApprovedBuild={(promptContext) => {
+        void sendChatMessage(promptContext, { mode: 'build', silent: true });
+      }}
+      onThreadMessage={(content, type) => {
+        addChatMessage(content, type);
+      }}
+    />
   );
 }
 
-export default function Page() {
+export default function Page({
+  githubConnected = false,
+  githubRepoUrl = null,
+  initialPhase = null,
+  initialPlan = null,
+}: {
+  githubConnected?: boolean;
+  githubRepoUrl?: string | null;
+  initialPhase?: ProjectPhase | null;
+  initialPlan?: WorkspacePlan | null;
+}) {
   return (
     <Suspense fallback={<div className="flex items-center justify-center min-h-screen">Loading...</div>}>
-      <AISandboxPage />
+      <AISandboxPage
+        githubConnected={githubConnected}
+        githubRepoUrl={githubRepoUrl}
+        initialPhase={initialPhase}
+        initialPlan={initialPlan}
+      />
     </Suspense>
   );
 }

@@ -1,0 +1,29 @@
+---
+description: After meaningful product/schema/API/layout changes, update .cursor docs in the same session without waiting for a reminder
+alwaysApply: true
+---
+
+# Keep Cursor docs current
+
+After meaningful product, schema, API, or layout changes, update `.cursor` docs in the **same session** (or at the next natural pause). Do not wait for the user to ask again.
+
+## Keep in sync
+
+- `AGENTS.md`
+- `.cursor/README.md`
+- Relevant `*.mdc` rules: `navroop-product`, `multi-agent-ownership`, `single-dev-server`, `secrets`
+
+## Rules
+
+- Reflect what actually exists. Do not invent features.
+- Merge short deltas. Do not rewrite whole guides.
+- Do not dump `omni-*` / `gstack-*` / Coolify / WHM skill trees into this repo.
+- Do not commit unless asked. Never write secrets.
+
+```text
+# ❌ BAD — ship a new API and leave the map stale
+add /api/projects/[id]/plan, skip AGENTS.md
+
+# ✅ GOOD — same session
+add the route, then note Plan/Build in AGENTS.md / .cursor/README.md
+```

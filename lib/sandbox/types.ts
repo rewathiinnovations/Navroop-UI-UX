@@ -41,7 +41,12 @@ export abstract class SandboxProvider {
     this.config = config;
   }
 
-  abstract createSandbox(): Promise<SandboxInfo>;
+  /**
+   * Create the sandbox VM. Pass the resolved stack so the provider can select
+   * `getStack(stack).sandboxTemplate`. Omitting stack defaults to REACT only
+   * when neither a stack nor a projectId was provided by the caller.
+   */
+  abstract createSandbox(stack?: string): Promise<SandboxInfo>;
   abstract runCommand(command: string): Promise<CommandResult>;
   abstract writeFile(path: string, content: string): Promise<void>;
   abstract readFile(path: string): Promise<string>;
@@ -53,7 +58,7 @@ export abstract class SandboxProvider {
   abstract isAlive(): boolean;
   
   // Optional methods that providers can override
-  async setupViteApp(): Promise<void> {
+  async setupViteApp(_stack?: string): Promise<void> {
     // Default implementation for setting up a Vite React app
     throw new Error('setupViteApp not implemented for this provider');
   }

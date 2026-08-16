@@ -35,7 +35,7 @@ export default function HeaderBrandKit() {
     <div className="relative">
       <Link
         className="flex items-center gap-2 relative brand-kit-menu"
-        href="/"
+        href="/dashboard"
         onContextMenu={(e) => {
           e.preventDefault();
           setOpen(!open);

@@ -1,0 +1,14 @@
+---
+description: Where project skills live, and which global profile skills were not copied
+alwaysApply: true
+---
+
+# Skills in this repo
+
+Project skills live under `.cursor/skills/`. Read `SKILL.md` before using a skill. Superpowers process skills come first (brainstorming, systematic-debugging, TDD), then implementation skills.
+
+**In this repo:** Superpowers, Cursor core (`create-rule`, `create-skill`, canvas, …), and UI/design (`ui-ux-pro-max`, `ui-styling`, `design`, `design-system`).
+
+**Not copied (still available from the user profile `~/.cursor/skills/`):** `omni-*`, `gstack-*`, `coolify*`, `whm-cpanel`, `cloudflare*`, `cli-*`, `banner-design`, `brand`, `slides`, `omniroute`, `ponytail`. Do not vendor those trees into this repo.
+
+See `.cursor/README.md` and `AGENTS.md` for the directory map.

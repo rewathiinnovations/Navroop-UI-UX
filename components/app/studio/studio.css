@@ -1,0 +1,95 @@
+.studio-shell {
+  --studio-bg: #f7f7f8;
+  --studio-fg: #18181b;
+  --studio-muted: #52525b;
+  --studio-faint: #71717a;
+  --studio-line: rgba(24, 24, 27, 0.08);
+  --studio-line-strong: rgba(24, 24, 27, 0.14);
+  --studio-surface: #ffffff;
+  --studio-surface-hover: #f4f4f5;
+  --studio-header-bg: rgb(247 247 248 / 0.86);
+  --studio-accent: #e0315a;
+  --studio-accent-hover: #c42a4e;
+  --studio-accent-soft: rgba(224, 49, 90, 0.12);
+  --studio-ring: #e0315a;
+  --studio-cta-fg: #ffffff;
+  --studio-danger: #be123c;
+  --studio-skeleton: rgba(24, 24, 27, 0.06);
+  color: var(--studio-fg);
+  background-color: var(--studio-bg);
+  color-scheme: light;
+}
+
+.dark .studio-shell {
+  --studio-bg: #0c0c0e;
+  --studio-fg: #f4f4f5;
+  --studio-muted: #a1a1aa;
+  --studio-faint: #a1a1aa;
+  --studio-line: rgba(255, 255, 255, 0.08);
+  --studio-line-strong: rgba(255, 255, 255, 0.14);
+  --studio-surface: rgba(255, 255, 255, 0.045);
+  --studio-surface-hover: rgba(255, 255, 255, 0.075);
+  --studio-header-bg: rgb(12 12 14 / 0.82);
+  --studio-accent: #e0315a;
+  --studio-accent-hover: #f0436a;
+  --studio-accent-soft: rgba(224, 49, 90, 0.16);
+  --studio-ring: #ff6b8a;
+  --studio-cta-fg: #ffffff;
+  --studio-danger: #fda4af;
+  --studio-skeleton: rgba(255, 255, 255, 0.05);
+  color-scheme: dark;
+}
+
+.studio-glow {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.studio-glow::before,
+.studio-glow::after {
+  content: "";
+  position: absolute;
+  border-radius: 999px;
+  filter: blur(80px);
+  opacity: 0.22;
+}
+
+.dark .studio-glow::before,
+.dark .studio-glow::after {
+  opacity: 0.45;
+}
+
+.studio-glow::before {
+  width: 52vw;
+  height: 38vh;
+  left: -8%;
+  bottom: -12%;
+  background: radial-gradient(circle, rgba(255, 92, 122, 0.55), transparent 68%);
+}
+
+.studio-glow::after {
+  width: 46vw;
+  height: 34vh;
+  right: -6%;
+  bottom: -18%;
+  background: radial-gradient(circle, rgba(99, 102, 241, 0.42), transparent 70%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .studio-glow::before,
+  .studio-glow::after {
+    opacity: 0.16;
+  }
+
+  .dark .studio-glow::before,
+  .dark .studio-glow::after {
+    opacity: 0.28;
+  }
+
+  .studio-motion {
+    transition: none !important;
+    animation: none !important;
+  }
+}

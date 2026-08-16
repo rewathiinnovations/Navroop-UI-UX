@@ -2,9 +2,15 @@ import { Sandbox } from '@e2b/code-interpreter';
 import { SandboxProvider, SandboxInfo, CommandResult } from '../types';
 // SandboxProviderConfig available through parent class
 import { appConfig } from '@/config/app.config';
+import { DEFAULT_STACK, getSandboxTemplate, getStack, shouldInstallPackages, type StackId } from '@/lib/stacks';
+import {
+  getStackSetupPlan,
+  stackScaffoldFiles,
+} from '@/lib/sandbox/stack-setup';
 
 export class E2BProvider extends SandboxProvider {
   private existingFiles: Set<string> = new Set();
+  private currentStack: StackId = DEFAULT_STACK;
 
   /**
    * Attempt to reconnect to an existing E2B sandbox
@@ -24,8 +30,11 @@ export class E2BProvider extends SandboxProvider {
     }
   }
 
-  async createSandbox(): Promise<SandboxInfo> {
+  async createSandbox(stack: string = DEFAULT_STACK): Promise<SandboxInfo> {
     try {
+      const definition = getStack(stack);
+      this.currentStack = definition.id;
+      const template = getSandboxTemplate(definition.id);
       
       // Kill existing sandbox if any
       if (this.sandbox) {
@@ -40,8 +49,9 @@ export class E2BProvider extends SandboxProvider {
       // Clear existing files tracking
       this.existingFiles.clear();
 
-      // Create base sandbox
-      this.sandbox = await Sandbox.create({ 
+      // Official generic Node image (code-interpreter-v1). Looked up from the
+      // stack registry — not a hardcoded create() default, not an invented template.
+      this.sandbox = await Sandbox.create(template.e2b, { 
         apiKey: this.config.e2b?.apiKey || process.env.E2B_API_KEY,
         timeoutMs: this.config.e2b?.timeoutMs || appConfig.e2b.timeoutMs
       });
@@ -187,6 +197,15 @@ export class E2BProvider extends SandboxProvider {
       throw new Error('No active sandbox');
     }
 
+    if (!shouldInstallPackages(this.currentStack)) {
+      return {
+        stdout: `skip install: ${this.currentStack} has no node dependencies`,
+        stderr: '',
+        exitCode: 0,
+        success: true,
+      };
+    }
+
     const packageList = packages.join(' ');
     const flags = appConfig.packages.useLegacyPeerDeps ? '--legacy-peer-deps' : '';
     
@@ -228,9 +247,15 @@ export class E2BProvider extends SandboxProvider {
     };
   }
 
-  async setupViteApp(): Promise<void> {
+  async setupViteApp(stack: string = DEFAULT_STACK): Promise<void> {
     if (!this.sandbox) {
       throw new Error('No active sandbox');
+    }
+
+    this.currentStack = getStack(stack).id;
+    if (this.currentStack !== 'REACT') {
+      await this.setupRegistryApp(this.currentStack);
+      return;
     }
 
     
@@ -451,9 +476,85 @@ print('Waiting for server to be ready...')
     this.existingFiles.add('postcss.config.js');
   }
 
+  /**
+   * Non-REACT stacks: write registry scaffold files, then registry install/dev.
+   * Image is getStack().sandboxTemplate.e2b (generic Node). STATIC_HTML skips install.
+   */
+  private async setupRegistryApp(stack: StackId): Promise<void> {
+    if (!this.sandbox) {
+      throw new Error('No active sandbox');
+    }
+
+    const plan = getStackSetupPlan(stack);
+    const files = stackScaffoldFiles(stack);
+
+    await this.sandbox.runCode(`
+import os
+os.makedirs('/home/user/app', exist_ok=True)
+    `);
+
+    for (const file of files) {
+      await this.writeFile(file.path, file.content);
+    }
+
+    const installArgs = plan.installArgs ? JSON.stringify(plan.installArgs) : 'None';
+    const startArgs = plan.skipInstall
+      ? JSON.stringify(plan.devArgs)
+      : JSON.stringify(['npm', 'run', 'dev']);
+    const devLabel = JSON.stringify(plan.devCommand);
+
+    await this.sandbox.runCode(`
+import os
+import subprocess
+import time
+
+os.chdir('/home/user/app')
+
+if ${plan.skipInstall ? 'True' : 'False'}:
+    print('skip install: hasNodeDependencies is false')
+else:
+    result = subprocess.run(${installArgs}, cwd='/home/user/app', capture_output=True, text=True)
+    if result.returncode == 0:
+        print('✓ Dependencies installed')
+    else:
+        print(f'⚠ npm install issues: {result.stderr}')
+
+subprocess.run(['pkill', '-f', ${JSON.stringify(plan.devArgs[0])}], capture_output=True)
+time.sleep(1)
+env = os.environ.copy()
+env['FORCE_COLOR'] = '0'
+process = subprocess.Popen(${startArgs}, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+print('✓ Dev server started (' + ${devLabel} + f' PID {process.pid})')
+    `);
+
+    await new Promise((resolve) => setTimeout(resolve, appConfig.e2b.viteStartupDelay));
+    for (const file of files) {
+      this.existingFiles.add(file.path);
+    }
+  }
+
   async restartViteServer(): Promise<void> {
     if (!this.sandbox) {
       throw new Error('No active sandbox');
+    }
+
+    if (this.currentStack !== 'REACT') {
+      const plan = getStackSetupPlan(this.currentStack);
+      await this.sandbox.runCode(`
+import subprocess
+import time
+import os
+
+os.chdir('/home/user/app')
+subprocess.run(['pkill', '-f', ${JSON.stringify(plan.devArgs[0])}], capture_output=True)
+time.sleep(2)
+env = os.environ.copy()
+env['FORCE_COLOR'] = '0'
+process = subprocess.Popen(${JSON.stringify(plan.devArgs)}, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+print('✓ Dev server restarted (' + ${JSON.stringify(plan.devCommand)} + f' PID {process.pid})')
+      `);
+      await new Promise((resolve) => setTimeout(resolve, appConfig.e2b.viteStartupDelay));
+      return;
     }
 
     

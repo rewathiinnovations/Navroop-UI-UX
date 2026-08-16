@@ -1,8 +1,10 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { SandboxFactory } from '@/lib/sandbox/factory';
 // SandboxProvider type is used through SandboxFactory
 import type { SandboxState } from '@/types/sandbox';
 import { sandboxManager } from '@/lib/sandbox/sandbox-manager';
+import { resolveRequestStack } from '@/lib/stack-resolve';
+import { getStack } from '@/lib/stacks';
 
 // Store active sandbox globally
 declare global {
@@ -12,9 +14,23 @@ declare global {
   var sandboxState: SandboxState;
 }
 
-export async function POST() {
+export async function POST(request: NextRequest) {
   try {
+    const body = (await request.json().catch(() => ({}))) as {
+      stack?: unknown;
+      projectId?: unknown;
+    };
+    // projectId present → always Project.stack from DB.
+    // stack present (no projectId) → that stack.
+    // neither → REACT. Invalid ids throw; no silent React fallback.
+    const stack = await resolveRequestStack({
+      stack: body.stack,
+      projectId: body.projectId,
+    });
+    const stackDef = getStack(stack);
+
     console.log('[create-ai-sandbox-v2] Creating sandbox...');
+    console.log('[create-ai-sandbox-v2] stack:', stackDef.id, 'dev:', stackDef.devCommand, 'template:', stackDef.sandboxTemplate);
     
     // Clean up all existing sandboxes
     console.log('[create-ai-sandbox-v2] Cleaning up existing sandboxes...');
@@ -39,10 +55,10 @@ export async function POST() {
 
     // Create new sandbox using factory
     const provider = SandboxFactory.create();
-    const sandboxInfo = await provider.createSandbox();
+    const sandboxInfo = await provider.createSandbox(stackDef.id);
     
-    console.log('[create-ai-sandbox-v2] Setting up Vite React app...');
-    await provider.setupViteApp();
+    console.log('[create-ai-sandbox-v2] Setting up stack app...', stackDef.id);
+    await provider.setupViteApp(stackDef.id);
     
     // Register with sandbox manager
     sandboxManager.registerSandbox(sandboxInfo.sandboxId, provider);
@@ -51,7 +67,8 @@ export async function POST() {
     global.activeSandboxProvider = provider;
     global.sandboxData = {
       sandboxId: sandboxInfo.sandboxId,
-      url: sandboxInfo.url
+      url: sandboxInfo.url,
+      stack: stackDef.id,
     };
     
     // Initialize sandbox state
@@ -75,7 +92,8 @@ export async function POST() {
       sandboxId: sandboxInfo.sandboxId,
       url: sandboxInfo.url,
       provider: sandboxInfo.provider,
-      message: 'Sandbox created and Vite React app initialized'
+      stack: stackDef.id,
+      message: `Sandbox created and ${stackDef.label} app initialized`,
     });
 
   } catch (error) {

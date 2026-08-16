@@ -1,10 +1,36 @@
 import { NextResponse } from 'next/server';
 import { parseJavaScriptFile, buildComponentTree } from '@/lib/file-parser';
-import { FileManifest, FileInfo, RouteInfo } from '@/types/file-manifest';
+import { FileManifest, FileInfo } from '@/types/file-manifest';
+import { extractStackRoutes } from '@/lib/stacks/routes';
+import {
+  DEFAULT_STACK,
+  getStack,
+  getStackEntryPoint,
+  getStackListExtensions,
+  isStackId,
+} from '@/lib/stacks';
 // SandboxState type used implicitly through global.activeSandbox
 
 declare global {
   var activeSandbox: any;
+}
+
+function resolveListedStack(): string {
+  const stored = (global as { sandboxData?: { stack?: unknown } }).sandboxData?.stack;
+  if (typeof stored === 'string' && isStackId(stored)) {
+    return getStack(stored).id;
+  }
+  return DEFAULT_STACK;
+}
+
+function findNameArgs(extensions: string[]): string[] {
+  const args: string[] = ['('];
+  extensions.forEach((ext, index) => {
+    if (index > 0) args.push('-o');
+    args.push('-name', `*${ext}`);
+  });
+  args.push(')');
+  return args;
 }
 
 export async function GET() {
@@ -16,9 +42,11 @@ export async function GET() {
       }, { status: 404 });
     }
 
-    console.log('[get-sandbox-files] Fetching and analyzing file structure...');
+    const stack = resolveListedStack();
+    const stackDef = getStack(stack);
+    console.log('[get-sandbox-files] Fetching and analyzing file structure...', stackDef.id);
     
-    // Get list of all relevant files
+    // Get list of all relevant files (extensions from the stack registry)
     const findResult = await global.activeSandbox.runCommand({
       cmd: 'find',
       args: [
@@ -28,14 +56,7 @@ export async function GET() {
         '-name', 'dist', '-prune', '-o',
         '-name', 'build', '-prune', '-o',
         '-type', 'f',
-        '(',
-        '-name', '*.jsx',
-        '-o', '-name', '*.js',
-        '-o', '-name', '*.tsx',
-        '-o', '-name', '*.ts',
-        '-o', '-name', '*.css',
-        '-o', '-name', '*.json',
-        ')',
+        ...findNameArgs(getStackListExtensions(stackDef.id)),
         '-print'
       ]
     });
@@ -123,14 +144,16 @@ export async function GET() {
         const parseResult = parseJavaScriptFile(content, fullPath);
         Object.assign(fileInfo, parseResult);
         
-        // Identify entry point
-        if (relativePath === 'src/main.jsx' || relativePath === 'src/index.jsx') {
+        if (relativePath === stackDef.entryPoint || relativePath === getStackEntryPoint(stackDef.id)) {
           fileManifest.entryPoint = fullPath;
         }
-        
-        // Identify App.jsx
-        if (relativePath === 'src/App.jsx' || relativePath === 'App.jsx') {
-          fileManifest.entryPoint = fileManifest.entryPoint || fullPath;
+        if (stackDef.id === 'REACT') {
+          if (relativePath === 'src/main.jsx' || relativePath === 'src/index.jsx') {
+            fileManifest.entryPoint = fullPath;
+          }
+          if (relativePath === 'src/App.jsx' || relativePath === 'App.jsx') {
+            fileManifest.entryPoint = fileManifest.entryPoint || fullPath;
+          }
         }
       }
       
@@ -146,8 +169,14 @@ export async function GET() {
     // Build component tree
     fileManifest.componentTree = buildComponentTree(fileManifest.files);
     
-    // Extract routes (simplified - looks for Route components or page pattern)
-    fileManifest.routes = extractRoutes(fileManifest.files);
+    if (!fileManifest.entryPoint) {
+      const entry = getStackEntryPoint(stackDef.id);
+      if (filesContent[entry]) {
+        fileManifest.entryPoint = `/${entry}`;
+      }
+    }
+
+    fileManifest.routes = extractStackRoutes(stackDef.id, fileManifest.files);
     
     // Update global file cache with manifest
     if (global.sandboxState?.fileCache) {
@@ -169,40 +198,4 @@ export async function GET() {
       error: (error as Error).message
     }, { status: 500 });
   }
-}
-
-function extractRoutes(files: Record<string, FileInfo>): RouteInfo[] {
-  const routes: RouteInfo[] = [];
-  
-  // Look for React Router usage
-  for (const [path, fileInfo] of Object.entries(files)) {
-    if (fileInfo.content.includes('<Route') || fileInfo.content.includes('createBrowserRouter')) {
-      // Extract route definitions (simplified)
-      const routeMatches = fileInfo.content.matchAll(/path=["']([^"']+)["'].*(?:element|component)={([^}]+)}/g);
-      
-      for (const match of routeMatches) {
-        const [, routePath] = match;
-        // componentRef available in match but not used currently
-        routes.push({
-          path: routePath,
-          component: path,
-        });
-      }
-    }
-    
-    // Check for Next.js style pages
-    if (fileInfo.relativePath.startsWith('pages/') || fileInfo.relativePath.startsWith('src/pages/')) {
-      const routePath = '/' + fileInfo.relativePath
-        .replace(/^(src\/)?pages\//, '')
-        .replace(/\.(jsx?|tsx?)$/, '')
-        .replace(/index$/, '');
-        
-      routes.push({
-        path: routePath,
-        component: path,
-      });
-    }
-  }
-  
-  return routes;
 }

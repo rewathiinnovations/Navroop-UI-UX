@@ -1,12 +1,21 @@
 import { Sandbox } from '@vercel/sandbox';
 import { SandboxProvider, SandboxInfo, CommandResult } from '../types';
 // SandboxProviderConfig available through parent class
+import { DEFAULT_STACK, getSandboxTemplate, getStack, shouldInstallPackages, type StackId } from '@/lib/stacks';
+import {
+  getStackSetupPlan,
+  stackScaffoldFiles,
+} from '@/lib/sandbox/stack-setup';
 
 export class VercelProvider extends SandboxProvider {
   private existingFiles: Set<string> = new Set();
+  private currentStack: StackId = DEFAULT_STACK;
 
-  async createSandbox(): Promise<SandboxInfo> {
+  async createSandbox(stack: string = DEFAULT_STACK): Promise<SandboxInfo> {
     try {
+      const definition = getStack(stack);
+      this.currentStack = definition.id;
+      const template = getSandboxTemplate(definition.id);
       
       // Kill existing sandbox if any
       if (this.sandbox) {
@@ -21,11 +30,12 @@ export class VercelProvider extends SandboxProvider {
       // Clear existing files tracking
       this.existingFiles.clear();
 
-      // Create Vercel sandbox
+      // Create Vercel sandbox. Runtime comes from the stack registry
+      // (generic node22 for every stack — no per-stack image).
       
       const sandboxConfig: any = {
         timeout: 300000, // 5 minutes in ms
-        runtime: 'node22', // Use node22 runtime for Vercel sandboxes
+        runtime: template.vercelRuntime,
         ports: [5173] // Vite port
       };
 
@@ -268,6 +278,15 @@ export class VercelProvider extends SandboxProvider {
       throw new Error('No active sandbox');
     }
 
+    if (!shouldInstallPackages(this.currentStack)) {
+      return {
+        stdout: `skip install: ${this.currentStack} has no node dependencies`,
+        stderr: '',
+        exitCode: 0,
+        success: true,
+      };
+    }
+
     const flags = process.env.NPM_FLAGS || '';
     
     // Installing packages
@@ -322,9 +341,15 @@ export class VercelProvider extends SandboxProvider {
     };
   }
 
-  async setupViteApp(): Promise<void> {
+  async setupViteApp(stack: string = DEFAULT_STACK): Promise<void> {
     if (!this.sandbox) {
       throw new Error('No active sandbox');
+    }
+
+    this.currentStack = getStack(stack).id;
+    if (this.currentStack !== 'REACT') {
+      await this.setupRegistryApp(this.currentStack);
+      return;
     }
 
     // Setting up Vite app for sandbox
@@ -544,9 +569,64 @@ body {
     this.existingFiles.add('postcss.config.js');
   }
 
+  /** Non-REACT stacks: registry scaffold + install/dev. Runtime is sandboxTemplate.vercelRuntime. */
+  private async setupRegistryApp(stack: StackId): Promise<void> {
+    if (!this.sandbox) {
+      throw new Error('No active sandbox');
+    }
+    const plan = getStackSetupPlan(stack);
+    const files = stackScaffoldFiles(stack);
+    await this.sandbox.runCommand({
+      cmd: 'mkdir',
+      args: ['-p', '/vercel/sandbox'],
+    });
+    for (const file of files) {
+      await this.writeFile(file.path, file.content);
+    }
+    if (!plan.skipInstall && plan.installArgs) {
+      await this.sandbox.runCommand({
+        cmd: plan.installArgs[0],
+        args: plan.installArgs.slice(1),
+        cwd: '/vercel/sandbox',
+      });
+    }
+    await this.sandbox.runCommand({
+      cmd: 'sh',
+      args: ['-c', `pkill -f ${plan.devArgs[0]} || true`],
+      cwd: '/',
+    });
+    const startCmd = plan.skipInstall ? plan.devCommand : 'npm run dev';
+    await this.sandbox.runCommand({
+      cmd: 'sh',
+      args: ['-c', `nohup ${startCmd} > /tmp/dev.log 2>&1 &`],
+      cwd: '/vercel/sandbox',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 7000));
+    for (const file of files) {
+      this.existingFiles.add(file.path);
+    }
+  }
+
   async restartViteServer(): Promise<void> {
     if (!this.sandbox) {
       throw new Error('No active sandbox');
+    }
+
+    if (this.currentStack !== 'REACT') {
+      const plan = getStackSetupPlan(this.currentStack);
+      await this.sandbox.runCommand({
+        cmd: 'sh',
+        args: ['-c', `pkill -f ${plan.devArgs[0]} || true`],
+        cwd: '/',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      await this.sandbox.runCommand({
+        cmd: 'sh',
+        args: ['-c', `nohup ${plan.devCommand} > /tmp/dev.log 2>&1 &`],
+        cwd: '/vercel/sandbox',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 7000));
+      return;
     }
 
     // Restarting Vite server

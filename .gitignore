@@ -20,6 +20,7 @@
 
 # production
 /build
+/generated
 
 # misc
 .DS_Store
@@ -50,6 +51,15 @@ e2b-template-*
 # IDE
 .vscode/
 .idea/
+
+# Cursor: commit project rules and skills; ignore caches/secrets only
+# (.cursor/rules and .cursor/skills are NOT ignored)
+.cursor/**/.env
+.cursor/**/.env.*
+.cursor/**/node_modules/
+.cursor/**/*.pem
+.cursor/skills/**/cache/
+.cursor/**/.sync-manifest.json
 
 # Temporary files
 *.tmp

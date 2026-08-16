@@ -56,9 +56,9 @@ export default function SidebarInput({ onSubmit, disabled = false }: SidebarInpu
       <div >
         <div className="p-4 border-b border-gray-100">
          {/* link to home page with button */}
-         <Link href="/">
+         <Link href="/dashboard">
           <button className="w-full px-3 py-2 text-xs font-medium text-gray-700 bg-white rounded border border-gray-200 focus:border-orange-500 focus:outline-none focus:ring-1 focus:ring-orange-500">
-            Generate a new website
+            Back to projects
           </button>
          </Link>
         </div>

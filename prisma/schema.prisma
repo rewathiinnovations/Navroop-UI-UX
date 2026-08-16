@@ -1,0 +1,227 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  MEMBER
+}
+
+enum ProjectPhase {
+  PLANNING
+  BUILDING
+  COMPLETE
+}
+
+enum ProjectPlanStatus {
+  PENDING
+  APPROVED
+  SUPERSEDED
+}
+
+enum Stack {
+  NEXTJS
+  REACT
+  ASTRO
+  STATIC_HTML
+  VUE
+  SVELTE
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String
+  passwordHash  String
+  role          Role      @default(MEMBER)
+  isActive      Boolean   @default(true)
+  avatarUrl     String?
+  emailVerified DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  accounts         Account[]
+  sessions         Session[]
+  projects         Project[]
+  apiKeys          ApiKey[]
+  invitesSent      Invite[]  @relation("InvitedBy")
+  generationEvents GenerationEvent[]
+  stars            ProjectStar[]
+  githubConnection GitHubConnection?
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model VerificationToken {
+  identifier String
+  token      String
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model Project {
+  id               String    @id @default(cuid())
+  name             String
+  initialPrompt    String    @db.Text
+  ownerId          String
+  owner            User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  thumbnailUrl     String?   @db.Text
+  status           String    @default("draft")
+  generationStatus String    @default("idle")
+  deletedAt        DateTime?
+  style            String?
+  model            String?
+  sandboxId        String?
+  previewUrl       String?
+  lastCode         String?   @db.Text
+  progressMessage  String?   @db.Text
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  phase            ProjectPhase @default(PLANNING)
+  stack            Stack        @default(REACT)
+  githubRepoFullName String?
+  githubRepoUrl      String?
+  lastPushedAt       DateTime?
+  generationEvents GenerationEvent[]
+  plans            ProjectPlan[]
+  stars            ProjectStar[]
+  checkpoints      Checkpoint[]
+
+  @@index([ownerId])
+  @@index([deletedAt])
+}
+
+model Checkpoint {
+  id            String   @id @default(cuid())
+  projectId     String
+  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  label         String
+  sourceMessage String?  @db.Text
+  trigger       String
+  fileSnapshot  Json
+  thumbnailUrl  String?  @db.Text
+  createdAt     DateTime @default(now())
+
+  @@index([projectId])
+}
+
+model ProjectStar {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, projectId])
+  @@index([userId])
+  @@index([projectId])
+}
+
+model ProjectPlan {
+  id            String            @id @default(cuid())
+  projectId     String
+  project       Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  version       Int
+  content       Json
+  status        ProjectPlanStatus @default(PENDING)
+  sourceMessage String            @db.Text
+  trigger       String
+  createdAt     DateTime          @default(now())
+
+  @@index([projectId])
+}
+
+model Invite {
+  id          String    @id @default(cuid())
+  email       String
+  role        Role      @default(MEMBER)
+  invitedById String
+  invitedBy   User      @relation("InvitedBy", fields: [invitedById], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now())
+  acceptedAt  DateTime?
+
+  @@index([email])
+}
+
+model ApiKey {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider  String
+  last4     String
+  secret    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, provider])
+}
+
+model OrgApiKey {
+  id        String   @id @default(cuid())
+  provider  String   @unique
+  last4     String
+  secret    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model GitHubConnection {
+  id                   String   @id @default(cuid())
+  userId               String   @unique
+  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  githubUserId         String
+  githubUsername       String
+  accessTokenEncrypted String   @db.Text
+  scope                String
+  connectedAt          DateTime @default(now())
+}
+
+model GenerationEvent {
+  id            String   @id @default(cuid())
+  projectId     String
+  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind          String
+  estimatedCost Decimal  @db.Decimal(10, 4)
+  createdAt     DateTime @default(now())
+
+  @@index([userId])
+  @@index([projectId])
+  @@index([createdAt])
+}

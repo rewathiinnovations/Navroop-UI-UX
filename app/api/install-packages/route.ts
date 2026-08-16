@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { shouldInstallPackages } from '@/lib/stacks';
+import { DEFAULT_STACK } from '@/lib/stacks';
 
 declare global {
   var activeSandbox: any;
@@ -47,6 +49,17 @@ export async function POST(request: NextRequest) {
       }, { status: 400 });
     }
     
+    const activeStack =
+      (typeof global.sandboxData?.stack === 'string' && global.sandboxData.stack) ||
+      DEFAULT_STACK;
+    if (!shouldInstallPackages(activeStack)) {
+      return NextResponse.json({
+        success: true,
+        skipped: true,
+        message: `skip install: ${activeStack} has no node dependencies`,
+      });
+    }
+
     console.log('[install-packages] Installing packages:', validPackages);
     
     // Create a response stream for real-time updates

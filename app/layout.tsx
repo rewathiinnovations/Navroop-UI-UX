@@ -1,11 +1,17 @@
 import type { Metadata } from "next";
-import { Inter, Roboto_Mono } from "next/font/google";
+import { Inter, Outfit, Roboto_Mono } from "next/font/google";
 import localFont from "next/font/local";
+import { AppProviders } from "./providers";
 import "./globals.css";
 
 const inter = Inter({ 
   subsets: ["latin"],
   variable: "--font-inter"
+});
+
+const outfit = Outfit({
+  subsets: ["latin"],
+  variable: "--font-wordmark",
 });
 
 const geistSans = localFont({
@@ -26,7 +32,7 @@ const robotoMono = Roboto_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Open Lovable v3",
+  title: "Navroop",
   description: "Re-imagine any website in seconds with AI-powered website builder.",
 };
 
@@ -36,9 +42,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body className={`${inter.variable} ${geistSans.variable} ${geistMono.variable} ${robotoMono.variable} font-sans`}>
-        {children}
+    <html lang="en" suppressHydrationWarning>
+      <body className={`${inter.variable} ${geistSans.variable} ${geistMono.variable} ${robotoMono.variable} ${outfit.variable} font-sans`}>
+        <AppProviders>
+          {children}
+        </AppProviders>
       </body>
     </html>
   );
