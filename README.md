@@ -66,6 +66,33 @@ Open [http://localhost:3000](http://localhost:3000)
 
 Create a Coolify **Docker Compose** service from `docker-compose.yml`, set env from `.env.example`, deploy. Details: [docs/coolify.md](docs/coolify.md).
 
+### Scheduled tasks
+
+Set `CRON_SECRET` on the app service. In Coolify, add three scheduled tasks (HTTP POST, `Authorization: Bearer $CRON_SECRET`). Replace `https://YOUR_HOST` with the public origin.
+
+**Reap idle sandboxes — every 10 minutes**
+
+```bash
+curl -X POST https://YOUR_HOST/api/cron/reap-sandboxes \
+  -H "Authorization: Bearer $CRON_SECRET"
+```
+
+**Thin old checkpoint snapshots — daily**
+
+```bash
+curl -X POST https://YOUR_HOST/api/cron/thin-checkpoints \
+  -H "Authorization: Bearer $CRON_SECRET"
+```
+
+**Purge soft-deleted projects — daily**
+
+```bash
+curl -X POST https://YOUR_HOST/api/cron/purge-projects \
+  -H "Authorization: Bearer $CRON_SECRET"
+```
+
+`CHECKPOINT_RETENTION_DAYS` defaults to 7. `PURGE_DELETED_DAYS` defaults to 30. `SANDBOX_IDLE_MINUTES` defaults to 30.
+
 ## License
 
 MIT

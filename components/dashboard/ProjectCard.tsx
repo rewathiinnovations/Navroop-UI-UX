@@ -88,7 +88,7 @@ export default function ProjectCard({
 
   const remove = async () => {
     setMenuOpen(false);
-    if (!confirm("Delete this project?")) return;
+    if (!confirm("Delete this project? 30 din baad apne aap hamesha ke liye delete ho jayega.")) return;
     setBusy(true);
     try {
       const response = await fetch(`/api/projects/${project.id}`, { method: "DELETE" });

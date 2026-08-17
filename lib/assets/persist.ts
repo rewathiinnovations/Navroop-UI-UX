@@ -2,6 +2,7 @@ import { prisma } from '@/lib/db';
 import { assetStorageKey, fallbackAltText } from '@/lib/assets/keys';
 import { optimizeImage } from '@/lib/assets/optimize';
 import { upload } from '@/lib/storage';
+import { adjustStorageBytes } from '@/lib/storage/usage';
 
 export type ProjectAssetKind = 'generated' | 'stock' | 'uploaded';
 
@@ -22,7 +23,7 @@ export async function persistOptimizedAsset(input: PersistAssetInput) {
     key: storageKey,
     contentType: optimized.contentType,
   });
-  return prisma.projectAsset.create({
+  const created = await prisma.projectAsset.create({
     data: {
       projectId: input.projectId,
       url,
@@ -35,4 +36,6 @@ export async function persistOptimizedAsset(input: PersistAssetInput) {
       sizeBytes: optimized.sizeBytes,
     },
   });
+  await adjustStorageBytes(optimized.sizeBytes);
+  return created;
 }

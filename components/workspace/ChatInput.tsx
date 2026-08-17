@@ -19,12 +19,14 @@ export default function ChatInput({
   sending,
   disabled,
   phase,
+  sandboxLocked = false,
 }: {
   projectId: string | null;
   onSend: (text: string, options: SendMessageOptions) => void;
   sending: boolean;
   disabled?: boolean;
   phase?: ProjectPhase | null;
+  sandboxLocked?: boolean;
 }) {
   const draftKey = `navroop_draft_${projectId || 'pending'}`;
   const { value, setValue, clear } = useDraftStorage(draftKey);
@@ -41,8 +43,11 @@ export default function ChatInput({
   const building = phase === 'BUILDING';
   const planning = phase === 'PLANNING';
   const showMode = !planning && !building;
-  const busy = sending || Boolean(disabled) || building;
+  const busy = sending || Boolean(disabled) || building || sandboxLocked;
   const canSend = Boolean(value.trim()) && !busy;
+  const lockHint = sandboxLocked
+    ? 'Project wapas chalu ho raha hai... Ismein 30-60 second lag sakte hain'
+    : null;
 
   const submit = () => {
     const trimmed = value.trim();
@@ -63,7 +68,7 @@ export default function ChatInput({
     }
   };
 
-  return (
+  const form = (
     <form onSubmit={onFormSubmit} className="border-t border-[var(--studio-line)] bg-[var(--studio-surface)] p-12">
       <div className="rounded-16 border border-[var(--studio-line-strong)] bg-[var(--studio-bg)] focus-within:ring-2 focus-within:ring-[var(--studio-ring)]">
         <label htmlFor="navroop-chat-input" className="sr-only">
@@ -137,4 +142,13 @@ export default function ChatInput({
       </div>
     </form>
   );
+
+  if (lockHint) {
+    return (
+      <Hint label={lockHint} className="block w-full">
+        {form}
+      </Hint>
+    );
+  }
+  return form;
 }

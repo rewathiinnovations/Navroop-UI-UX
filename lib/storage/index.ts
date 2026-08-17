@@ -11,10 +11,18 @@
  * Env for s3: S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_PUBLIC_URL.
  *
  * Key convention: projects/{projectId}/assets/{id}.{ext}
+ * Checkpoint snapshots: snapshots/{projectId}/{checkpointId}.json.gz
  */
-import { DeleteObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
-import { mkdir, stat, unlink, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  ListObjectsV2Command,
+  PutObjectCommand,
+  S3Client,
+} from '@aws-sdk/client-s3';
+import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
+import { dirname, join, relative, sep } from 'node:path';
 
 export type UploadInput = {
   key: string;
@@ -137,6 +145,89 @@ export async function exists(key: string) {
 export async function deleteObject(key: string) {
   if (driver() === 's3') return s3Delete(key);
   return localDelete(key);
+}
+
+async function localGet(key: string): Promise<Buffer | null> {
+  try {
+    return await readFile(join(localRoot(), normalizeKey(key)));
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+async function s3Get(key: string): Promise<Buffer | null> {
+  try {
+    const response = await s3Client().send(
+      new GetObjectCommand({
+        Bucket: requireS3Env('S3_BUCKET'),
+        Key: normalizeKey(key),
+      }),
+    );
+    if (!response.Body) return null;
+    const bytes = await response.Body.transformToByteArray();
+    return Buffer.from(bytes);
+  } catch {
+    return null;
+  }
+}
+
+export async function get(key: string): Promise<Buffer | null> {
+  if (driver() === 's3') return s3Get(key);
+  return localGet(key);
+}
+
+async function localListKeys(prefix: string): Promise<string[]> {
+  const root = localRoot();
+  const start = join(root, normalizeKey(prefix));
+  const keys: string[] = [];
+
+  async function walk(dir: string) {
+    let entries: Awaited<ReturnType<typeof readdir>>;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') return;
+      throw error;
+    }
+    for (const entry of entries) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(full);
+        continue;
+      }
+      keys.push(relative(root, full).split(sep).join('/'));
+    }
+  }
+
+  await walk(start);
+  return keys;
+}
+
+async function s3ListKeys(prefix: string): Promise<string[]> {
+  const keys: string[] = [];
+  let token: string | undefined;
+  do {
+    const response = await s3Client().send(
+      new ListObjectsV2Command({
+        Bucket: requireS3Env('S3_BUCKET'),
+        Prefix: normalizeKey(prefix),
+        ContinuationToken: token,
+      }),
+    );
+    for (const object of response.Contents ?? []) {
+      if (object.Key) keys.push(object.Key);
+    }
+    token = response.IsTruncated ? response.NextContinuationToken : undefined;
+  } while (token);
+  return keys;
+}
+
+export async function listKeys(prefix: string) {
+  if (driver() === 's3') return s3ListKeys(prefix);
+  return localListKeys(prefix);
 }
 
 /** Alias matching the adapter interface name `delete`. */

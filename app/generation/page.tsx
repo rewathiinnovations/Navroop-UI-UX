@@ -668,7 +668,9 @@ function AISandboxPage({
       const response = await fetch('/api/create-ai-sandbox-v2', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({})
+        body: JSON.stringify({
+          projectId: getGenerationState().projectId ?? projectId ?? projectIdFromPath,
+        })
       });
       
       const data = await response.json();

@@ -5,6 +5,8 @@ type CheckpointPayload = {
   label: string;
   thumbnailUrl: string | null;
   createdAt: string;
+  isBookmarked?: boolean;
+  snapshotPruned?: boolean;
 };
 
 function toCheckpoint(row: CheckpointPayload): Checkpoint {
@@ -13,6 +15,8 @@ function toCheckpoint(row: CheckpointPayload): Checkpoint {
     label: row.label,
     thumbnailUrl: row.thumbnailUrl,
     createdAt: row.createdAt,
+    isBookmarked: Boolean(row.isBookmarked),
+    snapshotPruned: Boolean(row.snapshotPruned),
   };
 }
 
@@ -51,6 +55,17 @@ export async function exitCheckpointPreview(projectId: string) {
   const data = await readJson(response);
   if (!response.ok) {
     throw new Error(data?.error || 'Could not return to the current version');
+  }
+  return data?.checkpoint ? toCheckpoint(data.checkpoint) : null;
+}
+
+export async function toggleCheckpointBookmark(projectId: string, checkpointId: string) {
+  const response = await fetch(`/api/projects/${projectId}/checkpoints/${checkpointId}/bookmark`, {
+    method: 'POST',
+  });
+  const data = await readJson(response);
+  if (!response.ok) {
+    throw new Error(data?.error || 'Could not bookmark this version');
   }
   return data?.checkpoint ? toCheckpoint(data.checkpoint) : null;
 }

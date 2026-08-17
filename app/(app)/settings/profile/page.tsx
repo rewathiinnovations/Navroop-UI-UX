@@ -9,6 +9,7 @@ import StudioField from '@/components/app/studio/StudioField';
 import PageTabs from '@/components/app/studio/PageTabs';
 import { useAuth } from '@/components/app/auth/AuthProvider';
 import { changePassword, updateProfile, uploadAvatar } from '@/lib/profile/actions';
+import StorageUsage from '@/components/settings/StorageUsage';
 
 function initials(name: string) {
   return (
@@ -106,6 +107,8 @@ export default function ProfileSettingsPage() {
             { href: '/settings/skills', label: 'Skills' },
           ]}
         />
+
+        <StorageUsage />
 
         <form onSubmit={saveProfile} className="mb-40 space-y-16">
           <div className="flex items-center gap-16">

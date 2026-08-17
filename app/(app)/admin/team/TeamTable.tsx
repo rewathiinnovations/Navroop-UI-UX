@@ -92,6 +92,7 @@ export default function TeamTable({ initialMembers }: { initialMembers: Member[]
             { href: '/admin/team', label: 'Team', active: true },
             { href: '/admin/usage', label: 'Usage' },
             { href: '/admin/quality', label: 'Quality' },
+            { href: '/admin/deploy', label: 'Deploy' },
           ]}
         />
 

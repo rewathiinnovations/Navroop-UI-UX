@@ -34,6 +34,14 @@ enum Stack {
   SVELTE
 }
 
+enum SandboxStatus {
+  NONE
+  BOOTING
+  READY
+  DEAD
+  FAILED
+}
+
 model User {
   id            String    @id @default(cuid())
   email         String    @unique
@@ -106,8 +114,11 @@ model Project {
   deletedAt        DateTime?
   style            String?
   model            String?
-  sandboxId        String?
-  previewUrl       String?
+  sandboxId          String?
+  previewUrl         String?
+  sandboxStatus      SandboxStatus @default(NONE)
+  sandboxStartedAt   DateTime?
+  sandboxLastUsedAt  DateTime?
   lastCode         String?   @db.Text
   progressMessage  String?   @db.Text
   createdAt        DateTime  @default(now())
@@ -131,6 +142,7 @@ model Project {
 
   @@index([ownerId])
   @@index([deletedAt])
+  @@index([sandboxStatus, sandboxLastUsedAt])
 }
 
 model ImportSource {
@@ -185,17 +197,34 @@ model CodeAudit {
 }
 
 model Checkpoint {
-  id            String   @id @default(cuid())
-  projectId     String
-  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  label         String
-  sourceMessage String?  @db.Text
-  trigger       String
-  fileSnapshot  Json
-  thumbnailUrl  String?  @db.Text
-  createdAt     DateTime @default(now())
+  id                String   @id @default(cuid())
+  projectId         String
+  project           Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  label             String
+  sourceMessage     String?  @db.Text
+  trigger           String
+  /// Legacy inline snapshot. New rows leave this null; read via readSnapshot only.
+  fileSnapshot      Json?
+  snapshotKey       String?
+  snapshotBytes     Int?
+  snapshotFileCount Int?
+  isBookmarked      Boolean  @default(false)
+  snapshotPruned    Boolean  @default(false)
+  thumbnailUrl      String?  @db.Text
+  createdAt         DateTime @default(now())
 
   @@index([projectId])
+  @@index([createdAt])
+  @@index([isBookmarked, snapshotPruned, createdAt])
+}
+
+/// Single-row workspace storage ledger (id = "default").
+/// Updated on snapshot write/prune/purge and image store/remove.
+/// Alternative considered: AppSetting keys workspace.storageBytes / workspace.storageLimitBytes.
+model Workspace {
+  id                String @id
+  storageBytes      Int    @default(0)
+  storageLimitBytes Int?
 }
 
 model ProjectStar {

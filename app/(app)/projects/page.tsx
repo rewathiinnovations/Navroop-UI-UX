@@ -295,7 +295,8 @@ function ProjectsContent() {
               No projects yet
             </h2>
             <p className="mx-auto mt-10 max-w-[420px] text-[15px] leading-6 text-[var(--studio-muted)]">
-              Start a blank project and it will show up here.
+              Start a blank project and it will show up here. Deleted projects:
+              30 din baad apne aap hamesha ke liye delete ho jayega.
             </p>
             <StudioButton className="mt-20" href="/dashboard?focus=prompt">
               Go to dashboard

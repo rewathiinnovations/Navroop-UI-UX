@@ -1,6 +1,6 @@
 'use client';
 
-import { X } from 'lucide-react';
+import { Star, X } from 'lucide-react';
 import { relativeTime } from '@/lib/projects/prompt';
 import type { Checkpoint } from './types';
 
@@ -9,11 +9,13 @@ export default function VersionHistoryPanel({
   onClose,
   checkpoints = [],
   onRestore,
+  onBookmark,
 }: {
   open: boolean;
   onClose: () => void;
   checkpoints?: Checkpoint[];
   onRestore?: (id: string) => void;
+  onBookmark?: (id: string) => void;
 }) {
   if (!open) return null;
 
@@ -50,32 +52,58 @@ export default function VersionHistoryPanel({
               No versions yet
             </li>
           )}
-          {checkpoints.map((checkpoint) => (
-            <li
-              key={checkpoint.id}
-              className="mb-8 rounded-12 border border-[var(--studio-line)] p-12"
-            >
-              <div className="mb-10 h-72 overflow-hidden rounded-8 bg-[var(--studio-skeleton)]">
-                {checkpoint.thumbnailUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={checkpoint.thumbnailUrl} alt="" className="size-full object-cover" />
-                ) : (
-                  <div className="flex size-full items-center justify-center bg-gradient-to-br from-zinc-100 to-zinc-200 text-[11px] text-[var(--studio-faint)] dark:from-zinc-800 dark:to-zinc-900">
-                    {checkpoint.label}
-                  </div>
-                )}
-              </div>
-              <p className="text-[13px] font-medium text-[var(--studio-fg)]">{checkpoint.label}</p>
-              <p className="mb-10 text-[11px] text-[var(--studio-faint)]">{relativeTime(checkpoint.createdAt)}</p>
-              <button
-                type="button"
-                onClick={() => onRestore?.(checkpoint.id)}
-                className="inline-flex min-h-[36px] items-center rounded-full border border-[var(--studio-line-strong)] px-12 text-[12px] font-medium text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)]"
+          {checkpoints.map((checkpoint) => {
+            const pruned = Boolean(checkpoint.snapshotPruned);
+            return (
+              <li
+                key={checkpoint.id}
+                className={`mb-8 rounded-12 border border-[var(--studio-line)] p-12 ${
+                  pruned ? 'opacity-50 grayscale' : ''
+                }`}
               >
-                Restore
-              </button>
-            </li>
-          ))}
+                <div className="mb-10 h-72 overflow-hidden rounded-8 bg-[var(--studio-skeleton)]">
+                  {checkpoint.thumbnailUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={checkpoint.thumbnailUrl} alt="" className="size-full object-cover" />
+                  ) : (
+                    <div className="flex size-full items-center justify-center bg-gradient-to-br from-zinc-100 to-zinc-200 text-[11px] text-[var(--studio-faint)] dark:from-zinc-800 dark:to-zinc-900">
+                      {checkpoint.label}
+                    </div>
+                  )}
+                </div>
+                <div className="mb-4 flex items-start justify-between gap-8">
+                  <p className="text-[13px] font-medium text-[var(--studio-fg)]">{checkpoint.label}</p>
+                  <button
+                    type="button"
+                    title="Ise hamesha ke liye rakhein"
+                    aria-label="Ise hamesha ke liye rakhein"
+                    aria-pressed={Boolean(checkpoint.isBookmarked)}
+                    onClick={() => onBookmark?.(checkpoint.id)}
+                    className="inline-flex size-28 shrink-0 items-center justify-center rounded-8 text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)]"
+                  >
+                    <Star
+                      className="size-14"
+                      fill={checkpoint.isBookmarked ? 'currentColor' : 'none'}
+                    />
+                  </button>
+                </div>
+                <p className="mb-10 text-[11px] text-[var(--studio-faint)]">{relativeTime(checkpoint.createdAt)}</p>
+                {pruned ? (
+                  <p className="text-[12px] text-[var(--studio-muted)]">
+                    Purana checkpoint — restore nahi ho sakta
+                  </p>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => onRestore?.(checkpoint.id)}
+                    className="inline-flex min-h-[36px] items-center rounded-full border border-[var(--studio-line-strong)] px-12 text-[12px] font-medium text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)]"
+                  >
+                    Restore
+                  </button>
+                )}
+              </li>
+            );
+          })}
         </ul>
       </aside>
     </div>

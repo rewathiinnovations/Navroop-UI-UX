@@ -1,7 +1,9 @@
 import { prisma } from '@/lib/db';
 import { getCurrentProjectFiles } from '@/lib/github/current-files';
+import { asFileSnapshot, type FileSnapshotEntry } from './snapshot-store';
 
-export type FileSnapshotEntry = { path: string; content: string };
+export type { FileSnapshotEntry, SnapshotRecord, WriteSnapshotResult } from './snapshot-store';
+export { asFileSnapshot, readSnapshot, snapshotObjectKey, writeSnapshot } from './snapshot-store';
 
 /** Same file-tree helper GitHub push uses. Do not add a second reader. */
 export async function captureFileSnapshot(projectId: string): Promise<FileSnapshotEntry[]> {
@@ -24,12 +26,3 @@ export function snapshotsEqual(left: unknown, right: FileSnapshotEntry[]) {
   });
 }
 
-export function asFileSnapshot(value: unknown): FileSnapshotEntry[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((item) => {
-    if (!item || typeof item !== 'object') return [];
-    const row = item as { path?: unknown; content?: unknown };
-    if (typeof row.path !== 'string' || typeof row.content !== 'string') return [];
-    return [{ path: row.path, content: row.content }];
-  });
-}

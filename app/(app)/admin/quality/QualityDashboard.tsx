@@ -116,6 +116,7 @@ export default function QualityDashboard() {
             { href: '/admin/team', label: 'Team' },
             { href: '/admin/usage', label: 'Usage' },
             { href: '/admin/quality', label: 'Quality', active: true },
+            { href: '/admin/deploy', label: 'Deploy' },
           ]}
         />
 

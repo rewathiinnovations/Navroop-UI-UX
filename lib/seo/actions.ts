@@ -12,6 +12,7 @@ import { runLighthouseSeo } from './lighthouse';
 import { runSeoChecks } from './scan';
 import type { PublicSeoAudit, SeoFinding } from './types';
 import { recordSeoScore } from '@/lib/signals/collect';
+import { ensureSandbox, SandboxBootError } from '@/lib/sandbox/manager';
 
 type ActionErr = { ok: false; error: string; status: number };
 type ActionOk<T> = { ok: true; data: T };
@@ -72,7 +73,15 @@ async function performSeoAudit(projectId: string) {
 
   const previous = await latestRow(projectId);
   const files = await captureFileSnapshot(projectId);
-  const previewUrl = project.previewUrl?.trim() || null;
+  let previewUrl = project.previewUrl?.trim() || null;
+  try {
+    const ensured = await ensureSandbox(projectId);
+    previewUrl = ensured.previewUrl;
+  } catch (error) {
+    if (!(error instanceof SandboxBootError && error.code === 'NO_CHECKPOINT')) {
+      console.warn('[seo] ensureSandbox failed, auditing without live preview', error);
+    }
+  }
   const live = previewUrl ? await fetchPreviewDocument(previewUrl) : null;
   const [liveRobots, liveSitemap] = previewUrl
     ? await Promise.all([fetchPreviewText(previewUrl, '/robots.txt'), fetchPreviewText(previewUrl, '/sitemap.xml')])

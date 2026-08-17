@@ -165,6 +165,7 @@ export default function UsageDashboard() {
             { href: '/admin/team', label: 'Team' },
             { href: '/admin/usage', label: 'Usage', active: true },
             { href: '/admin/quality', label: 'Quality' },
+            { href: '/admin/deploy', label: 'Deploy' },
           ]}
         />
 

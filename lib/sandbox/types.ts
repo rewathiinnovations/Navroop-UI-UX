@@ -56,6 +56,19 @@ export abstract class SandboxProvider {
   abstract getSandboxInfo(): SandboxInfo | null;
   abstract terminate(): Promise<void>;
   abstract isAlive(): boolean;
+
+  /** Probe an existing provider VM. Default: not supported. */
+  async reconnect(_sandboxId: string, _timeoutMs?: number): Promise<boolean> {
+    return false;
+  }
+
+  /**
+   * Install (when the stack has node deps) and start the stack dev server
+   * without rewriting scaffold files. Used after checkpoint restore.
+   */
+  async installAndStartDev(_stack?: string): Promise<void> {
+    throw new Error('installAndStartDev not implemented for this provider');
+  }
   
   // Optional methods that providers can override
   async setupViteApp(_stack?: string): Promise<void> {

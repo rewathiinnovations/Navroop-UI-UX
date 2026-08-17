@@ -7,6 +7,7 @@ import { generateImage, type GenerateAspect } from '@/lib/assets/generate-image'
 import { persistOptimizedAsset } from '@/lib/assets/persist';
 import { searchStockPhoto } from '@/lib/assets/stock-photo';
 import { deleteObject } from '@/lib/storage';
+import { adjustStorageBytes } from '@/lib/storage/usage';
 
 export type ActionErr = { ok: false; error: string; status: number };
 export type ActionOk<T> = { ok: true; data: T };
@@ -191,5 +192,6 @@ export async function deleteProjectAsset(projectId: string, assetId: string) {
 
   await deleteObject(existing.storageKey);
   await prisma.projectAsset.delete({ where: { id: assetId } });
+  await adjustStorageBytes(-existing.sizeBytes);
   return { ok: true as const, data: { id: assetId } };
 }

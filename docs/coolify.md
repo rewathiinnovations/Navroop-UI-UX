@@ -17,6 +17,31 @@ Optional aliases: `AUTH_URL`, `NEXTAUTH_SECRET`. Optional first-admin: `SEED_ADM
 
 ## Optional
 
-`POSTGRES_USER`, `POSTGRES_DB` (defaults `navroop`), `PORT` (default `3000`), `NEXT_PUBLIC_WORKSPACE_NAME`, `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET`, `GITHUB_OAUTH_CALLBACK_URL`, `FIRECRAWL_API_KEY`, `SANDBOX_PROVIDER`, `E2B_API_KEY`, `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID`, `AI_GATEWAY_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `MORPH_API_KEY`, `ENCRYPTION_KEY`.
+`POSTGRES_USER`, `POSTGRES_DB` (defaults `navroop`), `PORT` (default `3000`), `NEXT_PUBLIC_WORKSPACE_NAME`, `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET`, `GITHUB_OAUTH_CALLBACK_URL`, `FIRECRAWL_API_KEY`, `SANDBOX_PROVIDER`, `E2B_API_KEY`, `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID`, `AI_GATEWAY_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `MORPH_API_KEY`, `ENCRYPTION_KEY`, `COOLIFY_BASE_URL`, `COOLIFY_API_TOKEN`.
+
+Admin UI: `/admin/deploy` stores the Coolify base URL and an encrypted API token (`AppSetting`). `COOLIFY_API_TOKEN` in env wins. Public host `162.35.99.80`. Local agent logins live in gitignored `.cursor/.env.deploy` — do not commit.
 
 Local Postgres on host **5433** is `docker-compose.dev.yml` (`pnpm db:up`).
+
+## Scheduled tasks
+
+Set `CRON_SECRET`. Add Coolify scheduled tasks (POST + `Authorization: Bearer $CRON_SECRET`):
+
+| Schedule | URL |
+| --- | --- |
+| Every 10 minutes | `POST /api/cron/reap-sandboxes` |
+| Daily | `POST /api/cron/thin-checkpoints` |
+| Daily | `POST /api/cron/purge-projects` |
+
+```bash
+curl -X POST https://YOUR_HOST/api/cron/reap-sandboxes \
+  -H "Authorization: Bearer $CRON_SECRET"
+
+curl -X POST https://YOUR_HOST/api/cron/thin-checkpoints \
+  -H "Authorization: Bearer $CRON_SECRET"
+
+curl -X POST https://YOUR_HOST/api/cron/purge-projects \
+  -H "Authorization: Bearer $CRON_SECRET"
+```
+
+Optional env: `SANDBOX_IDLE_MINUTES` (default 30), `CHECKPOINT_RETENTION_DAYS` (default 7), `PURGE_DELETED_DAYS` (default 30).

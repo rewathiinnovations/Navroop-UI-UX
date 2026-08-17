@@ -6,7 +6,7 @@ alwaysApply: false
 
 # Admin file ownership
 
-Admin UI and APIs overlap (`/admin/team`, `/admin/usage`, `/api/admin/invite`, `/api/admin/team`, `/api/admin/usage`, plus shared studio chrome). Prefer **one owner** per change set.
+Admin UI and APIs overlap (`/admin/team`, `/admin/usage`, `/admin/quality`, `/admin/deploy`, `/api/admin/invite`, `/api/admin/team`, `/api/admin/usage`, `/api/admin/deploy`, plus shared studio chrome). Prefer **one owner** per change set.
 
 - One agent or PR should own a given admin file. Do not split the same page or route across parallel edits.
 - Shared chrome (`StudioShell`, `PageTabs`, `UserMenu` admin link) is the studio owner’s file. Admin pages import it; they do not fork it.

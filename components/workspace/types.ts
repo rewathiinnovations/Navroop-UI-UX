@@ -101,6 +101,8 @@ export type Checkpoint = {
   thumbnailUrl: string | null;
   label: string;
   createdAt: string;
+  isBookmarked?: boolean;
+  snapshotPruned?: boolean;
 };
 
 export type MessageFeedback = 'up' | 'down' | null;

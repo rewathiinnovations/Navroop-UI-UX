@@ -607,6 +607,39 @@ body {
     }
   }
 
+  async installAndStartDev(stack: string = DEFAULT_STACK): Promise<void> {
+    if (!this.sandbox) {
+      throw new Error('No active sandbox');
+    }
+    this.currentStack = getStack(stack).id;
+    const plan = getStackSetupPlan(this.currentStack);
+    await this.sandbox.runCommand({
+      cmd: 'mkdir',
+      args: ['-p', '/vercel/sandbox'],
+    });
+    if (!plan.skipInstall && plan.installArgs) {
+      const result = await this.sandbox.runCommand({
+        cmd: plan.installArgs[0],
+        args: plan.installArgs.slice(1),
+        cwd: '/vercel/sandbox',
+      });
+      if (result.exitCode !== 0) {
+        throw new Error('npm install failed');
+      }
+    }
+    await this.sandbox.runCommand({
+      cmd: 'sh',
+      args: ['-c', `pkill -f ${plan.devArgs[0]} || true`],
+      cwd: '/',
+    });
+    const startCmd = plan.skipInstall ? plan.devCommand : 'npm run dev';
+    await this.sandbox.runCommand({
+      cmd: 'sh',
+      args: ['-c', `nohup ${startCmd} > /tmp/dev.log 2>&1 &`],
+      cwd: '/vercel/sandbox',
+    });
+  }
+
   async restartViteServer(): Promise<void> {
     if (!this.sandbox) {
       throw new Error('No active sandbox');

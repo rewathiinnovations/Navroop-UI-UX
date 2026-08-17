@@ -12,6 +12,7 @@ import QualityPanel from './QualityPanel';
 import VersionHistoryPanel from './VersionHistoryPanel';
 import WorkspaceTopBar from './WorkspaceTopBar';
 import { useCheckpoints } from './useCheckpoints';
+import { useProjectSandbox } from './useProjectSandbox';
 import { useProjectPlan } from './useProjectPlan';
 import type {
   ProjectPhase,
@@ -105,11 +106,17 @@ export default function ProjectWorkspace({
     preview: previewCheckpoint,
     exitPreview,
     restore,
+    bookmark,
   } = useCheckpoints({
     projectId,
     isJobActive,
     generationStatus,
     onRefresh,
+  });
+  const sandbox = useProjectSandbox({
+    projectId,
+    phase,
+    iframeRef,
   });
 
   const handleSend = (text: string, options: SendMessageOptions) => {
@@ -197,12 +204,13 @@ export default function ProjectWorkspace({
             onSend={handleSend}
             sending={sending || refining || approving}
             phase={phase}
+            sandboxLocked={sandbox.chatLocked}
           />
         </section>
 
         <PreviewPanel
           iframeRef={iframeRef}
-          sandboxUrl={sandboxUrl}
+          sandboxUrl={sandbox.previewUrl || sandboxUrl}
           selectedPage={selectedPage}
           viewport={viewport}
           expanded={chatCollapsed}
@@ -216,6 +224,10 @@ export default function ProjectWorkspace({
             void exitPreview().then((result) => {
               if (!result.ok) onThreadMessage?.(result.error, 'system');
             });
+          }}
+          sandboxState={sandbox}
+          onRetrySandbox={() => {
+            void sandbox.boot();
           }}
         >
           {view === 'seo' && projectId ? (
@@ -245,6 +257,11 @@ export default function ProjectWorkspace({
               }
             });
             onRestoreCheckpoint?.(id);
+          }}
+          onBookmark={(id) => {
+            void bookmark(id).then((result) => {
+              if (!result.ok) onThreadMessage?.(result.error, 'system');
+            });
           }}
         />
       </div>

@@ -1,7 +1,9 @@
 import { assetStorageKey } from '@/lib/assets/keys';
 import { optimizeImage } from '@/lib/assets/optimize';
+import { ensureSandbox } from '@/lib/sandbox/manager';
 import { sandboxManager } from '@/lib/sandbox/sandbox-manager';
 import { upload } from '@/lib/storage';
+import { adjustStorageBytes } from '@/lib/storage/usage';
 
 const VIEWPORT = { width: 1280, height: 800 } as const;
 const WAIT_MS = 10_000;
@@ -19,6 +21,7 @@ async function storeThumbnail(buffer: Buffer, projectId?: string) {
       key,
       contentType: optimized.contentType,
     });
+    await adjustStorageBytes(optimized.sizeBytes);
     return stored.url;
   } catch (error) {
     console.warn('[checkpoints] thumbnail upload failed, storing data URL', error);
@@ -106,14 +109,23 @@ export async function captureThumbnail(
   previewUrl?: string | null,
   projectId?: string,
 ): Promise<string | null> {
-  if (!previewUrl?.trim()) return null;
+  let url = previewUrl?.trim() || '';
+  if (!url && projectId) {
+    try {
+      const ensured = await ensureSandbox(projectId);
+      url = ensured.previewUrl || url;
+    } catch {
+      /* keep going — capture is best-effort */
+    }
+  }
+  if (!url) return null;
   try {
-    const buffer = await captureWithPlaywright(previewUrl.trim());
+    const buffer = await captureWithPlaywright(url);
     return storeThumbnail(buffer, projectId);
   } catch (error) {
     console.warn('[checkpoints] Playwright thumbnail failed, trying E2B fallback', error);
     try {
-      const buffer = await captureWithE2B(previewUrl.trim());
+      const buffer = await captureWithE2B(url);
       return storeThumbnail(buffer, projectId);
     } catch (fallbackError) {
       console.warn('[checkpoints] thumbnail capture failed', fallbackError);

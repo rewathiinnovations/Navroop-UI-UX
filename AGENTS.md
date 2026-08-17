@@ -31,13 +31,16 @@ Authenticated app chrome: `components/layout/Sidebar` + studio shell. Generation
 - **Code quality** — Prisma `CodeAudit`, `lib/audit/` (static E2B checks, sandbox bundle estimates, axe-core a11y, optional AI review). `/api/projects/[id]/audit`, Quality → Code & performance. `getTopRecurringIssues()` on `/admin/usage` and `/admin/quality`. Owner/ADMIN mutations; any member can `getLatestCodeAudit`.
 - **Visual Edits** — `lib/visual-edits` + workspace preview toolbar
 - **Connectors / GitHub** — `/connectors`, `/api/github`, Prisma `GitHubConnection`
-- **Checkpoints** — `/api/projects/[id]/checkpoints`, Prisma `Checkpoint`
+- **Checkpoints** — `/api/projects/[id]/checkpoints`, Prisma `Checkpoint`. Latest checkpoint is the source of truth for disposable sandboxes.
+- **Sandbox lifecycle** — `lib/sandbox/manager.ts` `ensureSandbox(projectId)`. Prisma `SandboxStatus` (`NONE|BOOTING|READY|DEAD|FAILED`) on `Project` with `sandboxStartedAt` / `sandboxLastUsedAt`. Keep `sandboxId` + `previewUrl`. POST/GET `/api/projects/[id]/sandbox`. Idle reap: `POST /api/cron/reap-sandboxes` (Bearer `CRON_SECRET`, `SANDBOX_IDLE_MINUTES` default 30). No E2B `Sandbox.create` outside `lib/sandbox/`.. New snapshots are gzip objects at `snapshots/{projectId}/{checkpointId}.json.gz` (`writeSnapshot` / `readSnapshot`). `fileSnapshot` Json is legacy-read only. Bookmark + thin cron (`CHECKPOINT_RETENTION_DAYS`, default 7). Workspace storage ledger: single-row Prisma `Workspace` (`id=default`, `storageBytes` / `storageLimitBytes`).
 - **Assets** — Prisma `ProjectAsset` + `lib/assets` + `lib/storage`; workspace Assets tab; `/api/projects/[id]/assets`. `STORAGE_DRIVER=local|s3`, Unsplash stock, `NEED_IMAGE:` intercept
 - **URL import** — Prisma `ImportSource` + `lib/import/` (Playwright capture, WebP rehost, section segment, per-section generate). `createProject` skips planning for URL input. Modes `reimagine` (default) | `replicate`. Progress in chat. `POST /api/projects/[id]/import`. Workspace top bar shows the source URL.
 - **Skills** — Prisma `Skill` (workspace-scoped, no projectId). Conditional instruction sets matched per message (`lib/skills/`, max 2). Injected AFTER the cacheable prefix, never inside it. CRUD ADMIN-only; members read-only. UI: `/settings/skills` and the Skills section in the workspace Brain tab. Usage table on `/admin/usage`. Distinct from always-on Brain memory.
 - **Brain memory** — Prisma `MemoryEntry` + `AppSetting.memoryExtractionEnabled` (default true). Workspace + project durable context in `lib/memory/`. Injected INSIDE the cacheable prefix (`buildMemoryBlock`). Manual = ACTIVE; extracted = PENDING until approved. Token cap ~1500. ADMIN toggle on `/admin/usage`.
 - **Quality signals** — Prisma `QualitySignal` + `PromptVersion`, `lib/signals/`, `lib/prompts/version.ts`. Collectors swallow errors. ADMIN `/admin/quality`. No self-grading AI signal. Backfill: `npx tsx scripts/backfill-quality-signals.ts`.
-- **Team / usage** — `/admin/team`, `/admin/usage`, `/admin/quality` (ADMIN)
+- **Team / usage** — `/admin/team`, `/admin/usage`, `/admin/quality`, `/admin/deploy` (ADMIN)
+- **Coolify API** — `lib/coolify/` + `getCoolifyClient()`. Env `COOLIFY_API_TOKEN` wins over encrypted `AppSetting`. Admin UI `/admin/deploy`. Local logins in gitignored `.cursor/.env.deploy`.
+- **Crons** — Bearer `CRON_SECRET`: `POST /api/cron/reap-sandboxes` (every 10 min), `POST /api/cron/thin-checkpoints` (daily), `POST /api/cron/purge-projects` (daily, `PURGE_DELETED_DAYS` default 30). See README / `docs/coolify.md`.
 - **Coolify** — `Dockerfile` + `docker-compose.yml` (migrate on boot); local DB `docker-compose.dev.yml`
 
 ## How to use Superpowers here

@@ -10,6 +10,7 @@ import { asCodeFindings, asMetrics, mergeIgnoredFindings } from './findings';
 import { buildFixAllInstruction, buildFixInstruction } from './fix-instruction';
 import { groupRecurringIssues, type RecurringIssue } from './recurring';
 import { resolveSandboxRunner } from './sandbox';
+import { ensureSandbox, SandboxBootError } from '@/lib/sandbox/manager';
 import { runCodeScan } from './scan';
 import type { PublicCodeAudit } from './types';
 import { recordCodeAuditSignals } from '@/lib/signals/collect';
@@ -88,11 +89,22 @@ async function performCodeAudit(projectId: string) {
   ]);
   const files = await captureFileSnapshot(projectId);
   const stack = getStack(project.stack).id;
+  let previewUrl = project.previewUrl?.trim() || null;
+  let sandbox = resolveSandboxRunner(project.sandboxId);
+  try {
+    const ensured = await ensureSandbox(projectId);
+    previewUrl = ensured.previewUrl;
+    sandbox = resolveSandboxRunner(ensured.sandboxId);
+  } catch (error) {
+    if (!(error instanceof SandboxBootError && error.code === 'NO_CHECKPOINT')) {
+      console.warn('[audit] ensureSandbox failed, scanning without live sandbox', error);
+    }
+  }
   const scanned = await runCodeScan({
     stack,
     files,
-    previewUrl: project.previewUrl?.trim() || null,
-    sandbox: resolveSandboxRunner(project.sandboxId),
+    previewUrl,
+    sandbox,
     seoFindings: asFindings(latestSeo?.findings),
     directionId: project.designDirection,
   });

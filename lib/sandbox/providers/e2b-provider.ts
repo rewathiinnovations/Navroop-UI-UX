@@ -13,19 +13,34 @@ export class E2BProvider extends SandboxProvider {
   private currentStack: StackId = DEFAULT_STACK;
 
   /**
-   * Attempt to reconnect to an existing E2B sandbox
+   * Probe / attach to an existing E2B sandbox. Times out in 3s by default.
    */
-  async reconnect(sandboxId: string): Promise<boolean> {
+  async reconnect(sandboxId: string, timeoutMs = 3000): Promise<boolean> {
     try {
-      
-      // Try to connect to existing sandbox
-      // Note: E2B SDK doesn't directly support reconnection, but we can try to recreate
-      // For now, return false to indicate reconnection isn't supported
-      // In the future, E2B may add this capability
-      
-      return false;
+      const apiKey = this.config.e2b?.apiKey || process.env.E2B_API_KEY;
+      const connected = await Promise.race([
+        Sandbox.connect(sandboxId, { apiKey, timeoutMs: this.config.e2b?.timeoutMs || appConfig.e2b.timeoutMs }),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error('E2B probe timed out')), timeoutMs);
+        }),
+      ]);
+
+      this.sandbox = connected;
+      const host = (this.sandbox as { getHost?: (port: number) => string }).getHost?.(appConfig.e2b.vitePort);
+      this.sandboxInfo = {
+        sandboxId,
+        url: host ? `https://${host}` : '',
+        provider: 'e2b',
+        createdAt: new Date(),
+      };
+      if (typeof this.sandbox.setTimeout === 'function') {
+        this.sandbox.setTimeout(this.config.e2b?.timeoutMs || appConfig.e2b.timeoutMs);
+      }
+      return Boolean(host);
     } catch (error) {
-      console.error(`[E2BProvider] Failed to reconnect to sandbox ${sandboxId}:`, error);
+      console.warn(`[E2BProvider] Failed to reconnect to sandbox ${sandboxId}:`, error);
+      this.sandbox = null;
+      this.sandboxInfo = null;
       return false;
     }
   }
@@ -531,6 +546,47 @@ print('✓ Dev server started (' + ${devLabel} + f' PID {process.pid})')
     for (const file of files) {
       this.existingFiles.add(file.path);
     }
+  }
+
+  async installAndStartDev(stack: string = DEFAULT_STACK): Promise<void> {
+    if (!this.sandbox) {
+      throw new Error('No active sandbox');
+    }
+
+    this.currentStack = getStack(stack).id;
+    const plan = getStackSetupPlan(this.currentStack);
+    const installArgs = plan.installArgs ? JSON.stringify(plan.installArgs) : 'None';
+    const startArgs = plan.skipInstall
+      ? JSON.stringify(plan.devArgs)
+      : JSON.stringify(['npm', 'run', 'dev']);
+    const devLabel = JSON.stringify(plan.devCommand);
+
+    await this.sandbox.runCode(`
+import os
+import subprocess
+import time
+
+os.makedirs('/home/user/app', exist_ok=True)
+os.chdir('/home/user/app')
+
+if ${plan.skipInstall ? 'True' : 'False'}:
+    print('skip install: hasNodeDependencies is false')
+else:
+    result = subprocess.run(${installArgs}, cwd='/home/user/app', capture_output=True, text=True)
+    if result.returncode == 0:
+        print('✓ Dependencies installed')
+    else:
+        print(f'⚠ npm install issues: {result.stderr}')
+        if result.returncode != 0:
+            raise RuntimeError('npm install failed: ' + (result.stderr or result.stdout or 'unknown'))
+
+subprocess.run(['pkill', '-f', ${JSON.stringify(plan.devArgs[0])}], capture_output=True)
+time.sleep(1)
+env = os.environ.copy()
+env['FORCE_COLOR'] = '0'
+process = subprocess.Popen(${startArgs}, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+print('✓ Dev server started (' + ${devLabel} + f' PID {process.pid})')
+    `);
   }
 
   async restartViteServer(): Promise<void> {

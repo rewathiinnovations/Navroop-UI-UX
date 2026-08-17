@@ -6,6 +6,7 @@ import {
   fetchCheckpoints,
   previewCheckpoint,
   restoreCheckpoint,
+  toggleCheckpointBookmark,
 } from '@/lib/checkpoints/client';
 import type { Checkpoint } from './types';
 
@@ -109,6 +110,30 @@ export function useCheckpoints({
     [busy, onRefresh, projectId, refresh],
   );
 
+  const bookmark = useCallback(
+    async (id: string) => {
+      if (!projectId || busy) return { ok: false as const, error: 'Project is not ready' };
+      setBusy(true);
+      try {
+        const updated = await toggleCheckpointBookmark(projectId, id);
+        if (updated) {
+          setCheckpoints((current) =>
+            current.map((row) => (row.id === id ? { ...row, ...updated } : row)),
+          );
+        }
+        return { ok: true as const };
+      } catch (error) {
+        return {
+          ok: false as const,
+          error: error instanceof Error ? error.message : 'Could not bookmark this version',
+        };
+      } finally {
+        setBusy(false);
+      }
+    },
+    [busy, projectId],
+  );
+
   return {
     checkpoints,
     latestCheckpoint: checkpoints[0] ?? null,
@@ -116,6 +141,7 @@ export function useCheckpoints({
     preview,
     exitPreview,
     restore,
+    bookmark,
     refresh,
   };
 }

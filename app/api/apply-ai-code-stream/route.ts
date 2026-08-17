@@ -4,6 +4,7 @@ import { parseMorphEdits, applyMorphEditToFile } from '@/lib/morph-fast-apply';
 import type { SandboxState } from '@/types/sandbox';
 import type { ConversationState } from '@/types/conversation';
 import { sandboxManager } from '@/lib/sandbox/sandbox-manager';
+import { ensureSandbox, getLiveProvider, SandboxBootError } from '@/lib/sandbox/manager';
 import { resolveRequestStack } from '@/lib/stack-resolve';
 import {
   getStack,
@@ -271,10 +272,11 @@ export async function POST(request: NextRequest) {
       response,
       isEdit = false,
       packages = [],
-      sandboxId,
+      sandboxId: requestSandboxId,
       projectId,
       stack: requestStack,
     } = await request.json();
+    let sandboxId = requestSandboxId;
 
     if (!response) {
       return NextResponse.json({
@@ -324,89 +326,59 @@ export async function POST(request: NextRequest) {
       global.existingFiles = new Set<string>();
     }
 
-    // Try to get provider from sandbox manager first
     let provider = sandboxId ? sandboxManager.getProvider(sandboxId) : sandboxManager.getActiveProvider();
-
-    // Fall back to global state if not found in manager
     if (!provider) {
       provider = global.activeSandboxProvider;
     }
 
-    // If we have a sandboxId but no provider, try to get or create one
-    if (!provider && sandboxId) {
-      console.log(`[apply-ai-code-stream] No provider found for sandbox ${sandboxId}, attempting to get or create...`);
-
+    if (typeof projectId === 'string' && projectId.trim()) {
       try {
-        provider = await sandboxManager.getOrCreateProvider(sandboxId);
-
-        // If we got a new provider (not reconnected), we need to create a new sandbox
-        if (!provider.getSandboxInfo()) {
-          console.log(`[apply-ai-code-stream] Creating new sandbox since reconnection failed for ${sandboxId}`);
-          await provider.createSandbox(stackDef.id);
-          await provider.setupViteApp(stackDef.id);
-          sandboxManager.registerSandbox(sandboxId, provider);
-        }
-
-        // Update legacy global state
-        global.activeSandboxProvider = provider;
-        console.log(`[apply-ai-code-stream] Successfully got provider for sandbox ${sandboxId}`);
+        const ensured = await ensureSandbox(projectId.trim(), { allowEmpty: true });
+        provider = getLiveProvider(ensured.sandboxId) || provider;
+        sandboxId = ensured.sandboxId;
+        global.sandboxData = {
+          sandboxId: ensured.sandboxId,
+          url: ensured.previewUrl,
+          stack: stackDef.id,
+        };
       } catch (providerError) {
-        console.error(`[apply-ai-code-stream] Failed to get or create provider for sandbox ${sandboxId}:`, providerError);
+        const boot = providerError instanceof SandboxBootError ? providerError : null;
+        console.error(`[apply-ai-code-stream] ensureSandbox failed:`, providerError);
         return NextResponse.json({
           success: false,
-          error: `Failed to create sandbox provider for ${sandboxId}. The sandbox may have expired.`,
+          error: providerError instanceof Error ? providerError.message : 'Failed to start sandbox',
+          step: boot?.step,
+          code: boot?.code,
+          requestId: boot?.requestId,
           results: {
             filesCreated: [],
             packagesInstalled: [],
             commandsExecuted: [],
-            errors: [`Sandbox provider creation failed: ${(providerError as Error).message}`]
+            errors: [providerError instanceof Error ? providerError.message : 'ensureSandbox failed'],
           },
           explanation: parsed.explanation,
           structure: parsed.structure,
           parsedFiles: parsed.files,
-          message: `Parsed ${parsed.files.length} files but couldn't apply them - sandbox reconnection failed.`
-        }, { status: 500 });
+          message: `Parsed ${parsed.files.length} files but couldn't apply them — sandbox is not ready.`,
+        }, { status: boot?.code === 'NO_CHECKPOINT' ? 409 : 500 });
       }
     }
 
-    // If we still don't have a provider, create a new one
     if (!provider) {
-      console.log(`[apply-ai-code-stream] No active provider found, creating new sandbox...`);
-      try {
-        const { SandboxFactory } = await import('@/lib/sandbox/factory');
-        provider = SandboxFactory.create();
-        const sandboxInfo = await provider.createSandbox(stackDef.id);
-        await provider.setupViteApp(stackDef.id);
-
-        // Register with sandbox manager
-        sandboxManager.registerSandbox(sandboxInfo.sandboxId, provider);
-
-        // Store in legacy global state
-        global.activeSandboxProvider = provider;
-        global.sandboxData = {
-          sandboxId: sandboxInfo.sandboxId,
-          url: sandboxInfo.url,
-          stack: stackDef.id,
-        };
-
-        console.log(`[apply-ai-code-stream] Created new sandbox successfully`);
-      } catch (createError) {
-        console.error(`[apply-ai-code-stream] Failed to create new sandbox:`, createError);
-        return NextResponse.json({
-          success: false,
-          error: `Failed to create new sandbox: ${createError instanceof Error ? createError.message : 'Unknown error'}`,
-          results: {
-            filesCreated: [],
-            packagesInstalled: [],
-            commandsExecuted: [],
-            errors: [`Sandbox creation failed: ${createError instanceof Error ? createError.message : 'Unknown error'}`]
-          },
-          explanation: parsed.explanation,
-          structure: parsed.structure,
-          parsedFiles: parsed.files,
-          message: `Parsed ${parsed.files.length} files but couldn't apply them - sandbox creation failed.`
-        }, { status: 500 });
-      }
+      return NextResponse.json({
+        success: false,
+        error: 'No active sandbox. Open the project so it can cold-start from the latest checkpoint.',
+        results: {
+          filesCreated: [],
+          packagesInstalled: [],
+          commandsExecuted: [],
+          errors: ['No sandbox provider'],
+        },
+        explanation: parsed.explanation,
+        structure: parsed.structure,
+        parsedFiles: parsed.files,
+        message: `Parsed ${parsed.files.length} files but couldn't apply them — no sandbox.`,
+      }, { status: 409 });
     }
 
     // Create a response stream for real-time updates

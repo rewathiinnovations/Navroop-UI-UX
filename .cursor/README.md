@@ -26,6 +26,7 @@ Nested Firecrawl/home rules under `components/` and `styles/` are unchanged. Mer
 | --- | --- |
 | `navroop-product.mdc` | Always — invite-only Navroop shell |
 | `secrets.mdc` | Always — never commit `.env.local` |
+| `coolify-local-secrets.mdc` | Always — read `.cursor/.env.deploy` for Coolify/SSH; never commit or echo |
 | `skills-availability.mdc` | Always — what is in-repo vs profile-only |
 | `multi-agent-ownership.mdc` | Always — wait, re-read, merge; one owner per area |
 | `single-dev-server.mdc` | Always — one `:3000` server; dedicated agent only |
@@ -46,14 +47,15 @@ Nested Firecrawl/home rules under `components/` and `styles/` are unchanged. Mer
 - **Sidebar / workspace** — `components/layout/Sidebar`, `components/workspace/`
 - **Visual Edits** — `lib/visual-edits` + workspace preview toolbar
 - **Connectors / GitHub** — `/connectors`, `/api/github`
-- **Checkpoints** — `/api/projects/[id]/checkpoints`
+- **Checkpoints** — `/api/projects/[id]/checkpoints`. Latest snapshot is the source of truth when a sandbox is reaped.
+- **Sandbox lifecycle** — `lib/sandbox/manager.ts`, `Project.sandboxStatus`, `/api/projects/[id]/sandbox`, cron `/api/cron/reap-sandboxes`. Object snapshots via `lib/checkpoints/snapshot-store.ts`; legacy `fileSnapshot` is read-only. `Workspace` single-row storage ledger. Crons: reap-sandboxes / thin-checkpoints / purge-projects.
 - **Assets** — `ProjectAsset`, `lib/assets`, `lib/storage`, workspace Assets tab, `/api/projects/[id]/assets`
 - **URL import** — `ImportSource`, `lib/import/`, `POST /api/projects/[id]/import`. Reimagine (default) or replicate. Multi-pass capture → rehost → segment → generate.
 - **Skills** — Prisma `Skill`, `lib/skills/`, `/settings/skills` + Brain tab section. Conditional; after cacheable prefix; ADMIN mutations. Distinct from Brain memory.
 - **Brain memory** — `MemoryEntry`, `lib/memory/`, workspace Brain tab. Always-on; inside cacheable prefix. Extraction toggle on `/admin/usage`.
 - **Quality signals** — `QualitySignal`, `PromptVersion`, `lib/signals/`, `/admin/quality` (ADMIN). Measurement only — no auto prompt changes.
-- **Team / usage** — `/admin/team`, `/admin/usage`, `/admin/quality` (ADMIN)
-- **Coolify** — `docker-compose.yml` + `Dockerfile` (see `docs/coolify.md`); local Postgres `docker-compose.dev.yml` on `5433`
+- **Team / usage** — `/admin/team`, `/admin/usage`, `/admin/quality`, `/admin/deploy` (ADMIN)
+- **Coolify** — `docker-compose.yml` + `Dockerfile` (see `docs/coolify.md`); local Postgres `docker-compose.dev.yml` on `5433`. API client `lib/coolify/`; token in env or encrypted `AppSetting`. Local logins: `.cursor/.env.deploy` (gitignored).
 
 ## Superpowers
 

@@ -1,4 +1,5 @@
 import '@/types/sandbox';
+import { ensureSandbox, getLiveProvider } from '@/lib/sandbox/manager';
 import { sandboxManager } from '@/lib/sandbox/sandbox-manager';
 import type { FileSnapshotEntry } from './snapshot';
 
@@ -52,7 +53,11 @@ export async function writeSnapshotToSandbox(
     return;
   }
 
-  const provider = activeProvider(sandboxId);
+  let provider = activeProvider(sandboxId);
+  if (!provider?.writeFile && projectId) {
+    const ensured = await ensureSandbox(projectId);
+    provider = getLiveProvider(ensured.sandboxId) || activeProvider(ensured.sandboxId);
+  }
   if (!provider?.writeFile) {
     throw new Error('No active sandbox to write files');
   }

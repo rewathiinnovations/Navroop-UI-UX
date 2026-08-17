@@ -12,6 +12,7 @@ import type { ConversationState, ConversationMessage, ConversationEdit } from '@
 import { appConfig } from '@/config/app.config';
 import { buildUiUxProMaxBrief } from '@/lib/ui-ux-pro-max/build-design-brief';
 import { getSessionUser } from '@/lib/auth';
+import { ensureSandbox, SandboxBootError } from '@/lib/sandbox/manager';
 import { looksLikeUrl } from '@/lib/projects/prompt';
 import { attachGenerationInputTokens, logGenerationEvent } from '@/lib/usage-costs';
 import { buildCachedMessages } from '@/lib/generation/prompt-cache';
@@ -135,6 +136,15 @@ export async function POST(request: NextRequest) {
           kind: 'followup',
           isUrlClone: looksLikeUrl(String(prompt || '')),
         });
+      }
+      if (projectId) {
+        try {
+          await ensureSandbox(projectId, { allowEmpty: true });
+        } catch (error) {
+          if (!(error instanceof SandboxBootError && error.code === 'NO_CHECKPOINT')) {
+            console.warn('[generate-ai-code-stream] ensureSandbox failed', error);
+          }
+        }
       }
     }
     

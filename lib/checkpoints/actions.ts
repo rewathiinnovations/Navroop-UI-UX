@@ -1,15 +1,18 @@
 import { prisma } from '@/lib/db';
 import { getSessionUser, type SessionUser } from '@/lib/auth';
 import { peekActor } from '@/lib/projects/plan';
+import { Prisma } from '@/generated/prisma';
 import {
-  asFileSnapshot,
   captureFileSnapshot,
+  readSnapshot,
   snapshotsEqual,
+  writeSnapshot,
   type FileSnapshotEntry,
 } from './snapshot';
 import { captureThumbnail } from './thumbnail';
 import { writeSnapshotToSandbox } from './write-sandbox';
 import { recordRevertRate } from '@/lib/signals/collect';
+import { adjustStorageBytes } from '@/lib/storage/usage';
 
 export type CheckpointTrigger = 'initial' | 'followup' | 'restore';
 
@@ -20,6 +23,8 @@ export type PublicCheckpoint = {
   createdAt: string;
   trigger: CheckpointTrigger;
   sourceMessage: string | null;
+  isBookmarked: boolean;
+  snapshotPruned: boolean;
 };
 
 type ActionErr = { ok: false; error: string; status: number };
@@ -85,6 +90,8 @@ function toPublic(row: {
   createdAt: Date;
   trigger: string;
   sourceMessage: string | null;
+  isBookmarked?: boolean;
+  snapshotPruned?: boolean;
 }): PublicCheckpoint {
   return {
     id: row.id,
@@ -93,6 +100,8 @@ function toPublic(row: {
     createdAt: row.createdAt.toISOString(),
     trigger: row.trigger === 'restore' ? 'restore' : row.trigger === 'followup' ? 'followup' : 'initial',
     sourceMessage: row.sourceMessage,
+    isBookmarked: Boolean(row.isBookmarked),
+    snapshotPruned: Boolean(row.snapshotPruned),
   };
 }
 
@@ -129,10 +138,26 @@ export async function createCheckpoint(
       label,
       sourceMessage: input.sourceMessage ?? null,
       trigger: input.trigger,
-      fileSnapshot,
+      fileSnapshot: Prisma.DbNull,
       thumbnailUrl,
     },
   });
+
+  try {
+    const written = await writeSnapshot(projectId, created.id, fileSnapshot);
+    await prisma.checkpoint.update({
+      where: { id: created.id },
+      data: {
+        snapshotKey: written.snapshotKey,
+        snapshotBytes: written.snapshotBytes,
+        snapshotFileCount: written.snapshotFileCount,
+      },
+    });
+    await adjustStorageBytes(written.snapshotBytes);
+  } catch (error) {
+    await prisma.checkpoint.delete({ where: { id: created.id } }).catch(() => undefined);
+    throw error;
+  }
 
   if (thumbnailUrl) {
     await prisma.project.update({
@@ -141,7 +166,7 @@ export async function createCheckpoint(
     });
   }
 
-  return created;
+  return prisma.checkpoint.findUniqueOrThrow({ where: { id: created.id } });
 }
 
 export async function createCheckpointAfterGeneration(
@@ -177,9 +202,9 @@ export async function createCheckpointAfterGeneration(
   const latest = await prisma.checkpoint.findFirst({
     where: { projectId },
     orderBy: { createdAt: 'desc' },
-    select: { fileSnapshot: true },
+    select: { snapshotKey: true, fileSnapshot: true },
   });
-  if (latest && snapshotsEqual(latest.fileSnapshot, snapshot)) {
+  if (latest && snapshotsEqual(await readSnapshot(latest), snapshot)) {
     return null;
   }
 
@@ -210,6 +235,8 @@ export async function getCheckpoints(projectId: string) {
       createdAt: true,
       trigger: true,
       sourceMessage: true,
+      isBookmarked: true,
+      snapshotPruned: true,
     },
   });
 
@@ -223,12 +250,15 @@ async function loadProjectForWrite(projectId: string) {
   });
 }
 
-async function writeCheckpointFiles(projectId: string, snapshot: unknown, sandboxId?: string | null) {
-  const files: FileSnapshotEntry[] = asFileSnapshot(snapshot);
+async function writeCheckpointFiles(projectId: string, files: FileSnapshotEntry[], sandboxId?: string | null) {
   if (files.length === 0) {
     throw new Error('Checkpoint has no files to write');
   }
   await writeSnapshotToSandbox(projectId, files, sandboxId);
+}
+
+function prunedError() {
+  return { ok: false as const, error: 'Purana checkpoint — restore nahi ho sakta', status: 409 };
 }
 
 export async function previewCheckpoint(projectId: string, checkpointId: string) {
@@ -242,8 +272,11 @@ export async function previewCheckpoint(projectId: string, checkpointId: string)
     where: { id: checkpointId, projectId },
   });
   if (!checkpoint) return { ok: false as const, error: 'Checkpoint not found', status: 404 };
+  if (checkpoint.snapshotPruned) return prunedError();
 
-  await writeCheckpointFiles(projectId, checkpoint.fileSnapshot, project.sandboxId);
+  const files = await readSnapshot(checkpoint);
+  if (files.length === 0) return prunedError();
+  await writeCheckpointFiles(projectId, files, project.sandboxId);
   return { ok: true as const, data: toPublic(checkpoint) };
 }
 
@@ -262,7 +295,9 @@ export async function exitCheckpointPreview(projectId: string) {
     return { ok: false as const, error: 'No current checkpoint to restore', status: 409 };
   }
 
-  await writeCheckpointFiles(projectId, latest.fileSnapshot, project.sandboxId);
+  const files = await readSnapshot(latest);
+  if (latest.snapshotPruned || files.length === 0) return prunedError();
+  await writeCheckpointFiles(projectId, files, project.sandboxId);
   return { ok: true as const, data: toPublic(latest) };
 }
 
@@ -278,8 +313,11 @@ export async function restoreCheckpoint(projectId: string, checkpointId: string)
     where: { id: checkpointId, projectId },
   });
   if (!checkpoint) return { ok: false as const, error: 'Checkpoint not found', status: 404 };
+  if (checkpoint.snapshotPruned) return prunedError();
 
-  await writeCheckpointFiles(projectId, checkpoint.fileSnapshot, project.sandboxId);
+  const files = await readSnapshot(checkpoint);
+  if (files.length === 0) return prunedError();
+  await writeCheckpointFiles(projectId, files, project.sandboxId);
 
   const created = await createCheckpoint(projectId, {
     trigger: 'restore',
@@ -291,4 +329,26 @@ export async function restoreCheckpoint(projectId: string, checkpointId: string)
   void recordRevertRate(projectId);
 
   return { ok: true as const, data: toPublic(created) };
+}
+
+export async function toggleCheckpointBookmark(projectId: string, checkpointId: string) {
+  const { user, err } = await requireActor();
+  if (!user) return err;
+
+  const project = await prisma.project.findFirst({
+    where: { id: projectId, deletedAt: null },
+    select: { id: true },
+  });
+  if (!project) return notFound();
+
+  const checkpoint = await prisma.checkpoint.findFirst({
+    where: { id: checkpointId, projectId },
+  });
+  if (!checkpoint) return { ok: false as const, error: 'Checkpoint not found', status: 404 };
+
+  const updated = await prisma.checkpoint.update({
+    where: { id: checkpointId },
+    data: { isBookmarked: !checkpoint.isBookmarked },
+  });
+  return { ok: true as const, data: toPublic(updated) };
 }
