@@ -11,6 +11,7 @@ import ExamplePromptCards from "@/components/dashboard/ExamplePromptCards";
 import PromptTipsPanel from "@/components/dashboard/PromptTipsPanel";
 import ProjectCard from "@/components/dashboard/ProjectCard";
 import { loginModalHref } from "@/lib/auth/public-login";
+import { notify } from "@/lib/notify";
 import { PENDING_PROMPT_KEY, clearDraftStorage, readDraftStorage, writeDraftStorage } from "@/hooks/useDraftStorage";
 import type { DesignDirectionId } from "@/lib/design/directions";
 import type { ImportMode } from "@/lib/import/mode";
@@ -83,7 +84,6 @@ export default function DashboardPage() {
     designDirection: DesignDirectionId,
     importMode: ImportMode,
   ) => {
-    setError("");
     const draft = readDraftStorage(PENDING_PROMPT_KEY);
     const created = await createProject({
       initialPrompt: text,
@@ -99,7 +99,9 @@ export default function DashboardPage() {
         router.push(loginModalHref("/dashboard"));
         return;
       }
-      setError(created.error);
+      // Toasted rather than inlined: the prompt hero is about to scroll away,
+      // and the failure has to stay readable wherever the user lands.
+      notify.error(created.error, { key: "create-project" });
       return;
     }
     clearDraftStorage(PENDING_PROMPT_KEY);

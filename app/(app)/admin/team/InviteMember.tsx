@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import StudioButton from '@/components/app/studio/StudioButton';
 import StudioField from '@/components/app/studio/StudioField';
+import { notify, toMessage } from '@/lib/notify';
 import type { TeamRole } from '@/lib/team/schema';
 
 /**
@@ -75,6 +76,11 @@ export default function InviteMember({
       }
       setCreated({ member: data.member, temporaryPassword: data.temporaryPassword });
       onInvited(data.member);
+      // Confirms the row was added to the table behind the dialog, and stays
+      // on screen after the dialog is dismissed.
+      notify.success(`${data.member.email} added to the team.`);
+    } catch (cause) {
+      setError(toMessage(cause, 'Could not create the invite'));
     } finally {
       setBusy(false);
     }
@@ -85,10 +91,14 @@ export default function InviteMember({
     try {
       await navigator.clipboard.writeText(created.temporaryPassword);
       setCopied(true);
+      notify.success('Temporary password copied.', { key: 'invite-copy' });
     } catch {
       // Clipboard can be unavailable (permissions, http); the password is
       // visible on screen, so selecting it by hand still works.
       setCopied(false);
+      notify.warning('Could not copy — select the password and copy it by hand.', {
+        key: 'invite-copy',
+      });
     }
   };
 

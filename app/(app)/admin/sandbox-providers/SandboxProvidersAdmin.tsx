@@ -11,6 +11,7 @@ import { FormEvent, useEffect, useState } from 'react';
 import StudioButton from '@/components/app/studio/StudioButton';
 import StudioField from '@/components/app/studio/StudioField';
 import StudioSelect from '@/components/app/studio/StudioSelect';
+import { fetchJson, notify, toMessage } from '@/lib/notify';
 import {
   ADD_PROVIDER_LABEL,
   DEFAULT_ORDER_NOTE,
@@ -69,7 +70,6 @@ export default function SandboxProvidersAdmin({
   const [error, setError] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const [driver, setDriver] = useState<SandboxDriverId>('e2b');
-  const [testResult, setTestResult] = useState<string>('');
   const [testLeak, setTestLeak] = useState<string>('');
   const rows = providersFromPayload(data);
 
@@ -97,9 +97,9 @@ export default function SandboxProvidersAdmin({
 
   const onCreate = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
     setBusy('create');
-    setError('');
     try {
       const response = await fetch('/api/admin/sandbox-providers', {
         method: 'POST',
@@ -122,11 +122,14 @@ export default function SandboxProvidersAdmin({
       });
       const payload = await response.json();
       if (!response.ok) {
-        setError(readApiError(payload, 'Could not add provider'));
+        notify.error(readApiError(payload, 'Could not add provider'), { key: 'provider-create' });
         return;
       }
-      event.currentTarget.reset();
+      formElement.reset();
       await load();
+      notify.success('Provider added.', { key: 'provider-create' });
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not add provider', key: 'provider-create' });
     } finally {
       setBusy(null);
     }
@@ -134,7 +137,6 @@ export default function SandboxProvidersAdmin({
 
   const deactivate = async (id: string, confirm = false) => {
     setBusy(id);
-    setError('');
     try {
       const response = await fetch(`/api/admin/sandbox-providers/${id}`, {
         method: 'PATCH',
@@ -146,15 +148,23 @@ export default function SandboxProvidersAdmin({
         // The row didn't look like the last active provider when it rendered,
         // but the server says it is now (another admin deactivated the rest).
         // Surface the warning; the refreshed table renders a ConfirmAction.
-        setError(payload.warning || LAST_ACTIVE_DEACTIVATE_WARNING);
+        notify.warning(payload.warning || LAST_ACTIVE_DEACTIVATE_WARNING, {
+          key: `provider-${id}`,
+          autoClose: 10000,
+        });
         await load();
         return;
       }
       if (!response.ok) {
-        setError(readApiError(payload, 'Could not update provider'));
+        notify.error(readApiError(payload, 'Could not update provider'), {
+          key: `provider-${id}`,
+        });
         return;
       }
       await load();
+      notify.success('Provider deactivated.', { key: `provider-${id}` });
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not update provider', key: `provider-${id}` });
     } finally {
       setBusy(null);
     }
@@ -162,30 +172,39 @@ export default function SandboxProvidersAdmin({
 
   const remove = async (id: string) => {
     setBusy(id);
-    setError('');
     try {
       const response = await fetch(`/api/admin/sandbox-providers/${id}`, { method: 'DELETE' });
       const payload = await response.json().catch(() => ({}));
       if (response.status === 409 && payload.needsConfirm) {
         // The server refuses to delete the last active provider outright —
         // deactivate (which has its own confirm) or add another provider first.
-        setError(payload.warning || LAST_ACTIVE_DEACTIVATE_WARNING);
+        notify.warning(payload.warning || LAST_ACTIVE_DEACTIVATE_WARNING, {
+          key: `provider-${id}`,
+          autoClose: 10000,
+        });
         return;
       }
       if (!response.ok) {
-        setError(readApiError(payload, 'Could not delete provider'));
+        notify.error(readApiError(payload, 'Could not delete provider'), {
+          key: `provider-${id}`,
+        });
         return;
       }
       await load();
+      notify.success('Provider deleted.', { key: `provider-${id}` });
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not delete provider', key: `provider-${id}` });
     } finally {
       setBusy(null);
     }
   };
 
+  // Boots a real VM on the provider, so this can take a while — the pending
+  // toast is settled in place with the verdict.
   const test = async (id: string) => {
     setBusy(`test:${id}`);
-    setTestResult('');
     setTestLeak('');
+    const toastId = notify.loading('Starting a test sandbox…');
     try {
       const response = await fetch(`/api/admin/sandbox-providers/${id}/test`, { method: 'POST' });
       const payload = await response.json();
@@ -201,8 +220,12 @@ export default function SandboxProvidersAdmin({
               previewUrl: typeof payload.previewUrl === 'string' ? payload.previewUrl : null,
               leakedSandbox: payload.leakedSandbox ?? null,
             });
-      setTestResult(message);
+      notify.settle(toastId, payload.ok === true ? 'success' : 'error', message, {
+        autoClose: 10000,
+      });
       await load();
+    } catch (cause) {
+      notify.settle(toastId, 'error', toMessage(cause, 'The provider test failed'));
     } finally {
       setBusy(null);
     }
@@ -210,13 +233,22 @@ export default function SandboxProvidersAdmin({
 
   const setStrategy = async (strategy: string) => {
     setBusy('strategy');
-    await fetch('/api/admin/sandbox-providers', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ strategy }),
-    });
-    await load();
-    setBusy(null);
+    try {
+      await fetchJson('/api/admin/sandbox-providers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ strategy }),
+      });
+      await load();
+      notify.success('Selection strategy updated.', { key: 'provider-strategy' });
+    } catch (cause) {
+      notify.error(cause, {
+        fallback: 'Could not change the strategy',
+        key: 'provider-strategy',
+      });
+    } finally {
+      setBusy(null);
+    }
   };
 
   const move = async (index: number, direction: -1 | 1) => {
@@ -228,13 +260,19 @@ export default function SandboxProvidersAdmin({
     const [row] = next.splice(index, 1);
     next.splice(target, 0, row);
     setBusy('order');
-    await fetch('/api/admin/sandbox-providers', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ order: next.map((item) => item.id) }),
-    });
-    await load();
-    setBusy(null);
+    try {
+      await fetchJson('/api/admin/sandbox-providers', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order: next.map((item) => item.id) }),
+      });
+      await load();
+      notify.success('Provider order saved.', { key: 'provider-order' });
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not reorder providers', key: 'provider-order' });
+    } finally {
+      setBusy(null);
+    }
   };
 
   const fields = credentialFields(driver);
@@ -258,7 +296,8 @@ export default function SandboxProvidersAdmin({
       </div>
 
       {error && <StatusBanner tone="error">{error}</StatusBanner>}
-      {testResult && <StatusBanner tone="info">{testResult}</StatusBanner>}
+      {/* Sticky on purpose: a leaked VM keeps billing, so this must not
+          auto-dismiss the way the test result toast does. */}
       {testLeak && <StatusBanner tone="error">{testLeak}</StatusBanner>}
 
       <AdminCard icon={<ArrowUpDown className="size-14" aria-hidden />} title="Strategy">

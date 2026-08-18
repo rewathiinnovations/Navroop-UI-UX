@@ -41,6 +41,7 @@ import {
 import { dispatchRecoveryRetry, recoveryRetryIntent } from '@/lib/jobs/recovery-retry';
 import type { ImportMode } from '@/lib/import/mode';
 import { useGenerationJob } from './useGenerationJob';
+import { notify } from '@/lib/notify';
 
 export default function ProjectWorkspace({
   projectId,
@@ -252,8 +253,12 @@ export default function ProjectWorkspace({
   const share = async () => {
     try {
       await navigator.clipboard.writeText(window.location.href);
+      notify.success('Project link copied.', { key: 'workspace-share' });
     } catch {
-      /* clipboard may be blocked — do not claim success */
+      // Never claim success the clipboard did not give us.
+      notify.warning('Could not copy — copy the address bar by hand.', {
+        key: 'workspace-share',
+      });
     }
   };
 

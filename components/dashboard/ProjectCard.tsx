@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/shadcn/dropdown-menu";
 import { cn } from "@/utils/cn";
 import styles from "./project-card.module.css";
+import { fetchJson, notify, toMessage } from "@/lib/notify";
 
 function publishBadgeFor(project: ListProject) {
   if (project.publishBadge) return project.publishBadge;
@@ -75,18 +76,27 @@ export default function ProjectCard({
     event.stopPropagation();
   };
 
+  // These three used to drop failures on the floor: the card simply stayed as
+  // it was, which reads exactly like a no-op rename or a refused delete.
   const rename = async () => {
     const name = renameValue.trim();
     setRenaming(false);
     if (!name || name === project.name) return;
     setBusy(true);
     try {
-      const response = await fetch(`/api/projects/${project.id}`, {
+      await fetchJson(`/api/projects/${project.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name }),
       });
-      if (response.ok) onRenamed?.(project.id, name);
+      onRenamed?.(project.id, name);
+      notify.success(`Renamed to “${name}”.`, { key: `project-${project.id}` });
+    } catch (cause) {
+      setRenameValue(project.name);
+      notify.error(cause, {
+        fallback: "Could not rename the project",
+        key: `project-${project.id}`,
+      });
     } finally {
       setBusy(false);
     }
@@ -95,10 +105,20 @@ export default function ProjectCard({
   const duplicate = async () => {
     setMenuOpen(false);
     setBusy(true);
+    const toastId = notify.loading("Duplicating project…");
     try {
-      const response = await fetch(`/api/projects/${project.id}/duplicate`, { method: "POST" });
-      const data = await response.json().catch(() => ({}));
-      if (response.ok && data.project) onDuplicated?.(data.project as ListProject);
+      const data = await fetchJson<{ project?: ListProject }>(
+        `/api/projects/${project.id}/duplicate`,
+        { method: "POST" },
+      );
+      if (!data.project) {
+        notify.settle(toastId, "error", "Could not duplicate the project");
+        return;
+      }
+      onDuplicated?.(data.project);
+      notify.settle(toastId, "success", `“${data.project.name}” created.`);
+    } catch (cause) {
+      notify.settle(toastId, "error", toMessage(cause, "Could not duplicate the project"));
     } finally {
       setBusy(false);
     }
@@ -109,8 +129,16 @@ export default function ProjectCard({
     if (!confirm("Delete this project? It will be permanently deleted after 30 days.")) return;
     setBusy(true);
     try {
-      const response = await fetch(`/api/projects/${project.id}`, { method: "DELETE" });
-      if (response.ok) onDeleted?.(project.id);
+      await fetchJson(`/api/projects/${project.id}`, { method: "DELETE" });
+      onDeleted?.(project.id);
+      notify.success(`“${project.name}” deleted — recoverable for 30 days.`, {
+        key: `project-${project.id}`,
+      });
+    } catch (cause) {
+      notify.error(cause, {
+        fallback: "Could not delete the project",
+        key: `project-${project.id}`,
+      });
     } finally {
       setBusy(false);
     }

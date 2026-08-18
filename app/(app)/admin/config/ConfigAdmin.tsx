@@ -17,9 +17,9 @@ import {
 import AdminCard from '@/components/admin/AdminCard';
 import AdminPage from '@/components/admin/AdminPage';
 import AdminTabs, { type AdminTab } from '@/components/admin/AdminTabs';
-import StatusBanner from '@/components/admin/StatusBanner';
 import StatusPill, { type StatusTone } from '@/components/admin/StatusPill';
 import StudioButton from '@/components/app/studio/StudioButton';
+import { notify } from '@/lib/notify';
 import type { DescribedSetting, SettingSource } from '@/lib/settings/resolve';
 import { cn } from '@/utils/cn';
 
@@ -167,19 +167,25 @@ export default function ConfigAdmin({
   const [bootstrap] = useState(initialBootstrap);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState<number | null>(null);
   // Result of the one-click GitHub app creation (?github=created|error after
-  // the callback redirect). Read once; cleared from the URL so a refresh
-  // doesn't re-announce it.
-  const [githubResult, setGithubResult] = useState<{ ok: boolean; reason?: string } | null>(null);
+  // the callback redirect). Announced once as a toast; cleared from the URL so
+  // a refresh doesn't re-announce it.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const github = params.get('github');
     if (!github) return;
-    setGithubResult(
-      github === 'created' ? { ok: true } : { ok: false, reason: params.get('reason') || undefined },
-    );
+    const reason = params.get('reason') || undefined;
+    if (github === 'created') {
+      notify.success(
+        'GitHub app created — the client ID and secret were saved automatically. The Connect button on the Connectors page works now.',
+        { key: 'config-github', autoClose: 10000 },
+      );
+    } else {
+      notify.error(
+        `GitHub app creation did not finish${reason ? ` (${reason})` : ''}. Try again, or register an OAuth app by hand and paste its credentials below.`,
+        { key: 'config-github', autoClose: 12000 },
+      );
+    }
     params.delete('github');
     params.delete('reason');
     const query = params.toString();
@@ -214,14 +220,11 @@ export default function ConfigAdmin({
   useUnsavedChangesWarning(dirtyCount > 0);
 
   const onChange = (key: string, value: string) => {
-    setSaved(null);
     setDrafts((prev) => ({ ...prev, [key]: value }));
   };
 
   const save = async () => {
     setSaving(true);
-    setError(null);
-    setSaved(null);
     try {
       const response = await fetch('/api/admin/settings', {
         method: 'PUT',
@@ -236,14 +239,18 @@ export default function ConfigAdmin({
         settings?: DescribedSetting[];
       };
       if (!response.ok) {
-        setError(data.error || 'Could not save settings');
+        notify.error(data.error || 'Could not save settings', { key: 'config-save' });
         return;
       }
       if (data.settings) setSettings(data.settings);
       setDrafts({});
-      setSaved(data.saved ?? 0);
-    } catch {
-      setError('Could not reach the server');
+      const count = data.saved ?? 0;
+      notify.success(
+        count === 0 ? 'Nothing changed.' : `Saved ${count} setting${count === 1 ? '' : 's'}.`,
+        { key: 'config-save' },
+      );
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not reach the server', key: 'config-save' });
     } finally {
       setSaving(false);
     }
@@ -251,7 +258,6 @@ export default function ConfigAdmin({
 
   const runTest = async (group: string) => {
     setTesting(group);
-    setError(null);
     try {
       const response = await fetch('/api/admin/settings/test', {
         method: 'POST',
@@ -260,12 +266,25 @@ export default function ConfigAdmin({
       });
       const data = (await response.json()) as { error?: string; checks?: Check[] };
       if (!response.ok) {
-        setError(data.error || 'Test failed');
+        notify.error(data.error || 'Test failed', { key: `config-test-${group}` });
         return;
       }
-      setResults((prev) => ({ ...prev, [group]: data.checks ?? [] }));
-    } catch {
-      setError('Could not reach the server');
+      const checks = data.checks ?? [];
+      setResults((prev) => ({ ...prev, [group]: checks }));
+      // The per-check detail renders in the panel; the toast is the summary.
+      const failed = checks.filter((check) => !check.ok).length;
+      if (failed > 0) {
+        notify.warning(`${failed} of ${checks.length} checks failed.`, {
+          key: `config-test-${group}`,
+        });
+      } else {
+        notify.success(
+          checks.length === 0 ? 'Nothing to test here.' : `All ${checks.length} checks passed.`,
+          { key: `config-test-${group}` },
+        );
+      }
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not reach the server', key: `config-test-${group}` });
     } finally {
       setTesting(null);
     }
@@ -293,20 +312,6 @@ export default function ConfigAdmin({
       <p className="text-[13px] text-[var(--studio-muted)]">
         {configuredCount} of {settings.length} settings configured.
       </p>
-
-      {error && <StatusBanner tone="error">{error}</StatusBanner>}
-      {saved !== null && (
-        <StatusBanner tone="success">
-          {saved === 0 ? 'Nothing changed.' : `Saved ${saved} setting${saved === 1 ? '' : 's'}.`}
-        </StatusBanner>
-      )}
-      {githubResult && (
-        <StatusBanner tone={githubResult.ok ? 'success' : 'error'}>
-          {githubResult.ok
-            ? 'GitHub app created — the client ID and secret were saved automatically. The Connect button on the Connectors page works now.'
-            : `GitHub app creation did not finish${githubResult.reason ? ` (${githubResult.reason})` : ''}. Try again, or register an OAuth app by hand and paste its credentials below.`}
-        </StatusBanner>
-      )}
 
       <AdminTabs
         tabs={visibleGroups.map((group): AdminTab => {

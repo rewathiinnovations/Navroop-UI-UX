@@ -6,6 +6,7 @@ import StudioButton from '@/components/app/studio/StudioButton';
 import StudioField from '@/components/app/studio/StudioField';
 import PageTabs from '@/components/app/studio/PageTabs';
 import { useAuth } from '@/components/app/auth/AuthProvider';
+import { notify } from '@/lib/notify';
 import { deleteApiKey, listPersonalApiKeys, setOrgApiKey, setPersonalApiKey } from '@/lib/api-keys/actions';
 
 type PersonalKey = {
@@ -68,15 +69,17 @@ export default function ApiKeysPage() {
     const secret = drafts[provider]?.trim();
     if (!secret) return;
     setSaving(`personal:${provider}`);
-    setError('');
     try {
       const result = await setPersonalApiKey(provider, secret);
       if (!result.ok) {
-        setError(result.error);
+        notify.error(result.error, { key: `key-${provider}` });
         return;
       }
       setDrafts((current) => ({ ...current, [provider]: '' }));
       await loadPersonal();
+      notify.success(`${provider} key saved.`, { key: `key-${provider}` });
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not save the key', key: `key-${provider}` });
     } finally {
       setSaving(null);
     }
@@ -84,14 +87,16 @@ export default function ApiKeysPage() {
 
   const removePersonal = async (provider: string) => {
     setSaving(`remove:${provider}`);
-    setError('');
     try {
       const result = await deleteApiKey(provider);
       if (!result.ok) {
-        setError(result.error);
+        notify.error(result.error, { key: `key-${provider}` });
         return;
       }
       await loadPersonal();
+      notify.success(`${provider} key removed.`, { key: `key-${provider}` });
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not remove the key', key: `key-${provider}` });
     } finally {
       setSaving(null);
     }
@@ -102,15 +107,20 @@ export default function ApiKeysPage() {
     const secret = orgDrafts[provider]?.trim();
     if (!secret) return;
     setSaving(`org:${provider}`);
-    setError('');
     try {
       const result = await setOrgApiKey(provider, secret);
       if (!result.ok) {
-        setError(result.error);
+        notify.error(result.error, { key: `org-key-${provider}` });
         return;
       }
       setOrgDrafts((current) => ({ ...current, [provider]: '' }));
       await Promise.all([loadOrg(), loadPersonal()]);
+      notify.success(`Team default for ${provider} saved.`, { key: `org-key-${provider}` });
+    } catch (cause) {
+      notify.error(cause, {
+        fallback: 'Could not save the team default',
+        key: `org-key-${provider}`,
+      });
     } finally {
       setSaving(null);
     }

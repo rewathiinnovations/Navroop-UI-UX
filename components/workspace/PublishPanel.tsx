@@ -8,6 +8,7 @@ import RecoveryPanel from './RecoveryPanel';
 import { isPublishRunning, type PublicGenerationJob } from '@/lib/jobs/types';
 import { PUBLISH_STEPPER, stepperIndex, type PublishStepKey } from '@/lib/publish/steps';
 import type { PublicDeployment } from '@/lib/publish/serialize';
+import { notify } from '@/lib/notify';
 
 type PublishState = {
   canPublish: boolean;
@@ -127,15 +128,28 @@ export default function PublishPanel({
         body: JSON.stringify({ kind }),
       });
       const data = await response.json().catch(() => ({}));
-      if (response.ok) setState(data as PublishState);
-      else if (response.status === 409 && (data.code === 'PROJECT_LOCKED' || data.heldBy)) {
+      if (response.ok) {
+        setState(data as PublishState);
+        notify.info(
+          kind === 'LIVE' ? 'Publishing to live…' : 'Building the preview…',
+          { key: 'publish' },
+        );
+      } else if (response.status === 409 && (data.code === 'PROJECT_LOCKED' || data.heldBy)) {
         const { emitLockConflict, parseLockConflict } = await import('@/lib/projects/lock-client');
         const conflict = parseLockConflict(409, data);
         if (conflict) emitLockConflict(conflict);
       }
       else if (response.status === 402) {
         setLimitError(typeof data.message === 'string' ? data.message : 'Plan limit is used up — talk to an admin');
-      } else await load();
+      } else {
+        notify.error(data.error || data.message, {
+          fallback: 'Could not start publishing',
+          key: 'publish',
+        });
+        await load();
+      }
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not start publishing', key: 'publish' });
     } finally {
       setBusy(false);
     }
@@ -147,7 +161,9 @@ export default function PublishPanel({
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
     } catch {
-      /* ignore */
+      notify.warning('Could not copy — select the URL and copy it by hand.', {
+        key: 'publish-copy',
+      });
     }
   };
 
@@ -160,11 +176,25 @@ export default function PublishPanel({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password: next }),
       });
-      if (response.ok) {
-        const data = (await response.json()) as PublishState;
-        setState(data);
-        setPassword('');
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        notify.error(data.error, {
+          fallback: 'Could not update the password',
+          key: 'publish-password',
+        });
+        return;
       }
+      const data = (await response.json()) as PublishState;
+      setState(data);
+      setPassword('');
+      notify.success(next ? 'Password protection on.' : 'Password protection off.', {
+        key: 'publish-password',
+      });
+    } catch (cause) {
+      notify.error(cause, {
+        fallback: 'Could not update the password',
+        key: 'publish-password',
+      });
     } finally {
       setBusy(false);
     }
