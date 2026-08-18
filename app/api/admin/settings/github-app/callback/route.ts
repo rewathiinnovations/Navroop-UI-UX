@@ -37,6 +37,14 @@ export async function GET(request: NextRequest) {
       ],
       { id: user.id, email: user.email },
     );
+    // Authorization and installation are separate on GitHub: a user token can
+    // only reach repository resources (including POST /user/repos) while the
+    // app is installed on the account. Send the admin straight to the install
+    // screen — same as the deploy app's flow — or pushes fail with
+    // "Resource not accessible by integration".
+    if (converted.html_url) {
+      return NextResponse.redirect(`${converted.html_url}/installations/new`);
+    }
     return back('github=created');
   } catch (err) {
     const message = err instanceof Error ? err.message : 'GitHub app creation failed';
