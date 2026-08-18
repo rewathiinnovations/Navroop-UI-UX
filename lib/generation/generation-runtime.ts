@@ -651,6 +651,8 @@ async function runApplyStream(input: StartApplyInput): Promise<ApplyResult> {
       packages: input.packages || [],
       sandboxId: input.sandboxId,
       projectId: state.projectId,
+      autoFixAttempt: input.autoFixAttempt ?? 0,
+      previousBuildSignature: input.previousBuildSignature ?? null,
     }),
     signal: controller.signal,
   });

@@ -24,6 +24,8 @@ import { ensureJobSettled } from '@/lib/jobs/settle';
 import { applyOutcome } from '@/lib/jobs/copy';
 import { assertWritableGenerationFile } from '@/lib/generation/write-guard';
 import { recordJobStepFailure } from '@/lib/jobs/step-failure';
+import { runBuildValidation } from '@/lib/validation/run-build-validation';
+import { describeBuildFailure } from '@/lib/validation/fix-prompt';
 import { log } from '@/lib/logger';
 import { WORKSPACE_ROW_ID } from '@/lib/storage/usage';
 import { getRequestId } from '@/lib/request-context';
@@ -362,6 +364,10 @@ export async function POST(request: NextRequest) {
       sandboxId: requestSandboxId,
       projectId,
       stack: requestStack,
+      // Auto-fix loop state. The client owns the counter because it owns the
+      // retry (generation is client-driven), so the route stays stateless.
+      autoFixAttempt = 0,
+      previousBuildSignature = null,
     } = await request.json();
     let sandboxId = requestSandboxId;
 
@@ -939,6 +945,34 @@ export async function POST(request: NextRequest) {
           }
         }
 
+        // Step 4: does it actually build? Everything above reports on writing
+        // files, not on whether the result compiles — a syntax error still ends
+        // as "applied successfully" with a blank preview. Runs after packages,
+        // files, and commands so the check sees the finished tree.
+        const buildCheck = await runBuildValidation({
+          stack: stackDef.id,
+          sandboxId,
+          jobId: applyJobId,
+          attempt: Number(autoFixAttempt) || 0,
+          previousSignature:
+            typeof previousBuildSignature === 'string' ? previousBuildSignature : null,
+          // 'info'/'warning' are already handled by the client; a new event type
+          // would be silently dropped by its default case.
+          notify: (message, level) => sendProgress({ type: level, message }),
+        });
+
+        // Keyed on the final result, not on the decision: every path that ends
+        // with a broken build must record it, including ones that stop without
+        // a retry (second round of missing packages, attempts exhausted).
+        if (buildCheck.result.status === 'failed') {
+          // Recorded on results for the client and the job row. It deliberately
+          // does NOT change applyOutcome's sentence: that counts file-write
+          // failures (isApplyFileFailure), and a build error is not one — the
+          // files really were written. The user sees the failure through the
+          // warning frame runBuildValidation already emitted.
+          results.errors?.push(describeBuildFailure(buildCheck.result));
+        }
+
         // Send final results. File-write misses get a warning frame so the
         // workspace chat (which ignores complete.message) sees the same sentence.
         const outcome = applyOutcome({
@@ -954,7 +988,11 @@ export async function POST(request: NextRequest) {
           results,
           explanation: parsed.explanation,
           structure: parsed.structure,
-          message: outcome.message
+          message: outcome.message,
+          // Present only when another generation should run. The client re-enters
+          // its own queue with this instruction; absent means the loop is over,
+          // whether because the build passed or because it must not retry again.
+          buildFix: buildCheck.retry,
         });
 
         // Track applied files in conversation state

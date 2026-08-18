@@ -16,6 +16,8 @@ export {
 export {
   SiJavascript,
   SiReact,
-  SiCss as SiCss3,
+  // react-icons exports SiCss3, not SiCss — the alias was written the wrong way
+  // round and left main failing typecheck.
+  SiCss3,
   SiJson
 } from 'react-icons/si';
