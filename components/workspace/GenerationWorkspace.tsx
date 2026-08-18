@@ -854,10 +854,15 @@ Tip: I automatically detect and install npm packages from your code imports (lik
     }
   };
 
-  const applyGeneratedCode = async (code: string, isEdit: boolean = false, overrideSandboxData?: SandboxData) => {
+  const applyGeneratedCode = async (
+    code: string,
+    isEdit: boolean = false,
+    overrideSandboxData?: SandboxData,
+    autoFix?: { attempt: number; previousSignature: string | null },
+  ) => {
     setLoading(true);
     log('Applying AI-generated code...');
-    
+
     try {
       // Show progress component instead of individual messages
       setCodeApplicationState({ stage: 'analyzing' });
@@ -879,12 +884,48 @@ Tip: I automatically detect and install npm packages from your code imports (lik
         isEdit,
         packages: pendingPackages,
         sandboxId: effectiveSandboxData?.sandboxId,
+        autoFixAttempt: autoFix?.attempt ?? 0,
+        previousBuildSignature: autoFix?.previousSignature ?? null,
       });
       const finalData: any = applyResult.finalData;
       if (finalData?.type === 'complete') {
         setLoading(false);
       }
-      
+
+      // Close the build → fix → re-apply loop. The server decides whether a
+      // retry is warranted (attempt cap, repeated-failure guard, actionability)
+      // and only then returns buildFix; the client's job is to run it, not to
+      // re-derive the policy. Absent buildFix means the loop is over.
+      const buildFix = finalData?.buildFix;
+      if (buildFix?.instruction) {
+        addChatMessage(`Build failed — attempting an automatic fix (${buildFix.attempt}/2).`, 'system');
+        try {
+          const fixResult = await startGenerationStream({
+            prompt: buildFix.instruction,
+            model: aiModel,
+            context: { sandboxId: effectiveSandboxData?.sandboxId, currentFiles: {} },
+            isEdit: true,
+            projectId: projectId ?? undefined,
+            sandboxData: effectiveSandboxData ?? undefined,
+          });
+          if (fixResult?.generatedCode) {
+            // Recurse with the attempt carried forward; the server stops the loop
+            // by withholding buildFix once the cap or the guard trips.
+            return await applyGeneratedCode(fixResult.generatedCode, true, overrideSandboxData, {
+              attempt: buildFix.attempt,
+              previousSignature: buildFix.signature ?? null,
+            });
+          }
+          addChatMessage('The automatic build fix produced no changes.', 'system');
+        } catch (fixError: unknown) {
+          // A failed fix must not lose the original apply result.
+          addChatMessage(
+            `Automatic build fix failed: ${fixError instanceof Error ? fixError.message : String(fixError)}`,
+            'system',
+          );
+        }
+      }
+
       // Process final data
       if (finalData && finalData.type === 'complete') {
         const data: any = {
