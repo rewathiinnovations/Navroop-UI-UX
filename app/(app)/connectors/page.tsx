@@ -18,7 +18,14 @@ export default async function ConnectorsPage({
   const status = await getGitHubConnectionStatus(session.user.id);
   const params = await searchParams;
   const banner =
-    params.github === 'connected' ? 'connected' : params.github === 'error' ? 'error' : null;
+    params.github === 'connected'
+      ? 'connected'
+      : params.github === 'unconfigured'
+        ? 'unconfigured'
+        : params.github === 'error'
+          ? 'error'
+          : null;
+  const isAdmin = session.user.role === 'ADMIN';
 
   return (
     <StudioShell variant="workspace">
@@ -30,6 +37,7 @@ export default async function ConnectorsPage({
           connected={status.connected}
           githubUsername={status.connected ? status.githubUsername : undefined}
           banner={banner}
+          isAdmin={isAdmin}
         />
       </main>
     </StudioShell>

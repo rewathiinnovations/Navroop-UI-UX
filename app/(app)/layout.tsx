@@ -1,17 +1,15 @@
 import { Suspense, type ReactNode } from 'react';
 import Sidebar from '@/components/layout/Sidebar';
+import { getSessionUser } from '@/lib/auth';
 import { withRelativeLabels } from '@/lib/format-relative-time';
 import { getRecentProjects, getWorkspaceMeta } from '@/lib/projects/stars';
 import '@/components/app/studio/studio.css';
 
-export default async function AppGroupLayout({
-  children,
-}: {
-  children: ReactNode;
-}) {
-  const [recentResult, workspaceResult] = await Promise.all([
+export default async function AppGroupLayout({ children }: { children: ReactNode }) {
+  const [recentResult, workspaceResult, sessionUser] = await Promise.all([
     getRecentProjects(5),
     getWorkspaceMeta(),
+    getSessionUser(),
   ]);
 
   const recents = withRelativeLabels(recentResult.ok ? recentResult.data.projects : []);
@@ -21,12 +19,19 @@ export default async function AppGroupLayout({
   return (
     <div className="studio-shell relative flex h-dvh min-h-0 overflow-hidden">
       <div className="studio-glow" aria-hidden />
-      <Suspense fallback={<div className="h-full min-h-0 w-[272px] shrink-0 border-r border-[var(--studio-line)]" />}>
-        <Sidebar teamName={teamName} memberCount={memberCount} recents={recents} />
+      <Suspense
+        fallback={
+          <div className="h-full min-h-0 w-[272px] shrink-0 border-r border-[var(--studio-line)]" />
+        }
+      >
+        <Sidebar
+          teamName={teamName}
+          memberCount={memberCount}
+          recents={recents}
+          isAdmin={sessionUser?.role === 'ADMIN'}
+        />
       </Suspense>
-      <div className="studio-scroll relative z-10 min-h-0 min-w-0 flex-1">
-        {children}
-      </div>
+      <div className="studio-scroll relative z-10 min-h-0 min-w-0 flex-1">{children}</div>
     </div>
   );
 }

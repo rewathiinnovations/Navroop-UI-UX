@@ -25,7 +25,7 @@ const authProjects: Project[] = authJourney
       },
       {
         name: 'authenticated',
-        testMatch: /journeys-authenticated\.spec\.ts/,
+        testMatch: /journeys-(authenticated|workflow)\.spec\.ts/,
         dependencies: ['setup'],
         use: { ...devices['Desktop Chrome'], storageState: AUTH_STORAGE_STATE },
       },

@@ -84,8 +84,38 @@ const CAUSE_LINES: Record<JobErrorCode, string> = {
     'The import could not finish — the source page was blocked, rejected, or produced no files.',
 };
 
-export function recoveryCauseLine(errorCode: string | null | undefined) {
+/**
+ * Codes whose recorded `errorMessage` says the same thing as the curated line, only more
+ * precisely — `providerFailureMessage` names the vendor and what it did ("Gemini rejected
+ * the API key", "out of quota (generate_content_free_tier)").
+ *
+ * The generic line for `provider_not_configured` tells the reader to set one of four API
+ * keys, which is actively wrong when a key *is* set and the vendor rejected it. Every other
+ * code keeps its curated line: `sandbox_unavailable` covers three different pre-flight
+ * messages on purpose, and `provider_error` records a raw provider string that is usually
+ * worse copy than the sentence written for it.
+ */
+const RECORDED_CAUSE_CODES = new Set<string>([
+  'provider_not_configured',
+  'provider_quota_exhausted',
+]);
+
+/** True when the job recorded a sentence more specific than the curated cause line. */
+function recordedCause(errorCode: string, errorMessage: string | null | undefined) {
+  if (!RECORDED_CAUSE_CODES.has(errorCode)) return null;
+  const recorded = errorMessage?.trim();
+  if (!recorded) return null;
+  const generic = isKnownJobErrorCode(errorCode) ? CAUSE_LINES[errorCode] : '';
+  return recorded === generic ? null : recorded;
+}
+
+export function recoveryCauseLine(
+  errorCode: string | null | undefined,
+  errorMessage?: string | null,
+) {
   if (!errorCode) return '';
+  const recorded = recordedCause(errorCode, errorMessage);
+  if (recorded) return recorded;
   return isKnownJobErrorCode(errorCode) ? CAUSE_LINES[errorCode] : '';
 }
 
@@ -151,7 +181,9 @@ export function recoveryNextStepLine(input: {
     return "This month's credits are used up. Add credits, or wait for the monthly reset.";
   }
   if (input.errorCode === 'provider_not_configured') {
-    return NO_PROVIDER_CONFIGURED_MESSAGE;
+    // The cause line above already shows the recorded vendor sentence when there is one, and
+    // repeating the generic "set one of these four keys" underneath it contradicts it.
+    return recordedCause(input.errorCode, input.errorMessage) ? '' : NO_PROVIDER_CONFIGURED_MESSAGE;
   }
   if (input.errorCode === 'request_rejected') {
     return 'The AI could not accept this request. Try a shorter prompt — sending the same one will be rejected again.';

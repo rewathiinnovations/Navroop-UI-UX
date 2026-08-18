@@ -1,4 +1,5 @@
 // Using direct fetch to Morph's OpenAI-compatible API to avoid SDK type issues
+import { getSetting } from '@/lib/settings/resolve';
 
 export interface MorphEditBlock {
   targetFile: string;
@@ -40,12 +41,15 @@ export function normalizeProjectPath(inputPath: string): { normalizedPath: strin
 }
 
 async function morphChatCompletionsCreate(payload: any) {
-  if (!process.env.MORPH_API_KEY) throw new Error('MORPH_API_KEY is not set');
+  const morphKey = await getSetting('tooling.morph.apiKey');
+  if (!morphKey) {
+    throw new Error('No Morph API key is configured. Add one in Admin -> Configuration.');
+  }
   const res = await fetch('https://api.morphllm.com/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${process.env.MORPH_API_KEY}`
+      'Authorization': `Bearer ${morphKey}`
     },
     body: JSON.stringify(payload)
   });
@@ -203,8 +207,8 @@ export async function applyMorphEditToFile(params: {
   updateSnippet: string;
 }): Promise<MorphApplyResult> {
   try {
-    if (!process.env.MORPH_API_KEY) {
-      return { success: false, error: 'MORPH_API_KEY not set' };
+    if (!(await getSetting('tooling.morph.apiKey'))) {
+      return { success: false, error: 'No Morph API key is configured' };
     }
 
     const { normalizedPath, fullPath } = normalizeProjectPath(params.targetPath);

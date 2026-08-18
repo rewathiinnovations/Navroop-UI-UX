@@ -7,7 +7,7 @@ export async function register() {
     sweepTmp();
     await import("./sentry.server.config");
     const { assertBackupBoot } = await import("./lib/backup/boot");
-    assertBackupBoot();
+    await assertBackupBoot();
     const { assertInternalOrigin } = await import("./lib/api/internal-origin");
     assertInternalOrigin();
     const { wireShutdownDrain } = await import("./lib/runtime/shutdown");

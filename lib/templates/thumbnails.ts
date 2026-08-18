@@ -9,6 +9,7 @@ import { capturePage } from '@/lib/import/capture';
 import { log } from '@/lib/logger';
 import { cachePath } from '@/lib/runtime/data-dir';
 import { upload } from '@/lib/storage';
+import { getSetting } from '@/lib/settings/resolve';
 
 function cacheThumbnailDerivative(templateId: string, buffer: Buffer) {
   try {
@@ -25,14 +26,23 @@ function cacheThumbnailDerivative(templateId: string, buffer: Buffer) {
   }
 }
 
-export function thumbnailPublicUrl(key: string | null | undefined): string | null {
+/**
+ * Resolves the public prefix once. Storage settings live in the database now,
+ * so reading them is async — but mapping a list of rows to URLs must stay
+ * synchronous, hence the split.
+ */
+export async function thumbnailUrlBase(): Promise<string | null> {
+  if ((await getSetting('storage.driver')) !== 's3') return null;
+  return ((await getSetting('storage.s3.publicUrl')) || '').replace(/\/+$/, '') || null;
+}
+
+export function thumbnailPublicUrl(
+  key: string | null | undefined,
+  base: string | null = null,
+): string | null {
   if (!key) return null;
   const normalized = key.replace(/^\/+/, '');
-  if (process.env.STORAGE_DRIVER === 's3') {
-    const base = (process.env.S3_PUBLIC_URL || process.env.ELK_PUBLIC_URL || '').replace(/\/+$/, '');
-    if (base) return `${base}/${normalized}`;
-  }
-  return `/uploads/${normalized}`;
+  return base ? `${base}/${normalized}` : `/uploads/${normalized}`;
 }
 
 export function thumbnailObjectKey(templateId: string) {

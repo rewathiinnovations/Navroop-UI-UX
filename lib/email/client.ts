@@ -1,3 +1,4 @@
+import { getSettings } from '@/lib/settings/resolve';
 import { allowEmail, type EmailClass } from './rate-limit';
 
 export type SendEmailInput = {
@@ -10,9 +11,11 @@ export type SendEmailInput = {
 
 export type SendEmailResult = { id: string } | { ok: false; error: string };
 
-function workspaceFrom() {
+function workspaceFrom(configured: string | null) {
+  // NEXT_PUBLIC_WORKSPACE_NAME is inlined into the client bundle at build time,
+  // so it stays an environment read; only the address itself moves to admin.
   const workspace = process.env.NEXT_PUBLIC_WORKSPACE_NAME || 'Navroop';
-  return process.env.EMAIL_FROM || `${workspace} <noreply@localhost>`;
+  return configured || `${workspace} <noreply@localhost>`;
 }
 
 function fail(error: unknown, context: string): SendEmailResult {
@@ -21,7 +24,11 @@ function fail(error: unknown, context: string): SendEmailResult {
   return { ok: false, error: message };
 }
 
-async function sendViaResend(input: SendEmailInput, apiKey: string): Promise<SendEmailResult> {
+async function sendViaResend(
+  input: SendEmailInput,
+  apiKey: string,
+  from: string,
+): Promise<SendEmailResult> {
   try {
     // Trusted host — do not route through safeFetch.
     const response = await fetch('https://api.resend.com/emails', {
@@ -31,7 +38,7 @@ async function sendViaResend(input: SendEmailInput, apiKey: string): Promise<Sen
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        from: workspaceFrom(),
+        from,
         to: [input.to],
         subject: input.subject,
         html: input.html,
@@ -80,11 +87,16 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
       return { ok: false, error: 'Email rate limit reached' };
     }
 
-    const apiKey = process.env.RESEND_API_KEY?.trim();
+    const config = await getSettings(['email.resend.apiKey', 'email.from']);
+    const apiKey = config['email.resend.apiKey'];
     if (!apiKey) {
       return sendViaDevLog({ ...input, to, subject });
     }
-    return await sendViaResend({ ...input, to, subject }, apiKey);
+    return await sendViaResend(
+      { ...input, to, subject },
+      apiKey,
+      workspaceFrom(config['email.from']),
+    );
   } catch (error) {
     return fail(error, 'sendEmail');
   }

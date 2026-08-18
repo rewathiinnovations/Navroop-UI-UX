@@ -1,11 +1,9 @@
 'use client';
 
+import AdminPage from '@/components/admin/AdminPage';
 import { FormEvent, useState } from 'react';
-import StudioShell from '@/components/app/studio/StudioShell';
 import StudioButton from '@/components/app/studio/StudioButton';
 import StudioField from '@/components/app/studio/StudioField';
-import PageTabs from '@/components/app/studio/PageTabs';
-import { adminTabs } from '../plans/PlansAdmin';
 
 export default function WorkspaceAdmin({
   initial,
@@ -79,94 +77,101 @@ export default function WorkspaceAdmin({
   };
 
   return (
-    <StudioShell variant="workspace">
-      <main className="mx-auto max-w-[720px] px-20 py-40">
-        <h1 className="text-[32px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">Admin</h1>
-        <PageTabs items={adminTabs('workspace')} />
-
-        <form onSubmit={saveCap} className="space-y-16">
-          <StudioField
-            id="member-cap"
-            label="Member monthly credit cap"
-            type="number"
-            value={cap}
-            onChange={(event) => setCap(event.target.value)}
-            placeholder="Empty = no per-member cap"
-          />
-          <StudioField
-            id="spend-limit"
-            label="Monthly spend limit (USD)"
-            type="number"
-            value={spendLimit}
-            onChange={(event) => setSpendLimit(event.target.value)}
-            placeholder="Empty = no spend ceiling"
-          />
-          <StudioButton
-            type="button"
-            variant="ghost"
-            disabled={busy}
-            onClick={() => {
-              void (async () => {
-                setBusy(true);
-                setError('');
-                setMessage('');
-                try {
-                  const response = await fetch('/api/admin/workspace', {
-                    method: 'PATCH',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      monthlySpendLimitUsd: spendLimit.trim() === '' ? null : Number(spendLimit),
-                    }),
-                  });
-                  const payload = await response.json();
-                  if (!response.ok) {
-                    setError(payload.error || 'Could not save');
-                    return;
-                  }
-                  setMessage('Spend limit saved.');
-                } finally {
-                  setBusy(false);
+    <AdminPage
+      title="Workspace"
+      description="Spending caps for the whole workspace, and the switch that stops all generation at once."
+    >
+      <form onSubmit={saveCap} className="space-y-16">
+        <StudioField
+          id="member-cap"
+          label="Member monthly credit cap"
+          type="number"
+          value={cap}
+          onChange={(event) => setCap(event.target.value)}
+          placeholder="Empty = no per-member cap"
+        />
+        <StudioField
+          id="spend-limit"
+          label="Monthly spend limit (USD)"
+          type="number"
+          value={spendLimit}
+          onChange={(event) => setSpendLimit(event.target.value)}
+          placeholder="Empty = no spend ceiling"
+        />
+        <StudioButton
+          type="button"
+          variant="ghost"
+          disabled={busy}
+          onClick={() => {
+            void (async () => {
+              setBusy(true);
+              setError('');
+              setMessage('');
+              try {
+                const response = await fetch('/api/admin/workspace', {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    monthlySpendLimitUsd: spendLimit.trim() === '' ? null : Number(spendLimit),
+                  }),
+                });
+                const payload = await response.json();
+                if (!response.ok) {
+                  setError(payload.error || 'Could not save');
+                  return;
                 }
-              })();
-            }}
-          >
-            Save spend limit
-          </StudioButton>
-          <StudioButton type="submit" variant="primary" disabled={busy}>
-            Save cap
-          </StudioButton>
-        </form>
+                setMessage('Spend limit saved.');
+              } finally {
+                setBusy(false);
+              }
+            })();
+          }}
+        >
+          Save spend limit
+        </StudioButton>
+        <StudioButton type="submit" variant="primary" disabled={busy}>
+          Save cap
+        </StudioButton>
+      </form>
 
-        <div className="mt-32 space-y-12">
-          <h2 className="text-[18px] font-medium text-[var(--studio-fg)]">Emergency pause</h2>
-          <p className="text-[13px] text-[var(--studio-muted)]">
-            {paused
-              ? pauseReason === 'SPEND_LIMIT'
-                ? 'Automatic pause — this workspace reached its spend limit.'
-                : 'Manual pause — generation is paused for the whole workspace.'
-              : 'Generation is running. Pause to block all credit-consuming actions.'}
-          </p>
-          {typeof initial.spendUsd === 'number' && (
-            <p className="text-[12px] text-[var(--studio-faint)]">
-              Spend this period: ${initial.spendUsd.toFixed(2)}
-              {initial.monthlySpendLimitUsd != null ? ` / $${initial.monthlySpendLimitUsd.toFixed(2)}` : ''}
-            </p>
-          )}
-          <StudioButton type="button" variant={paused ? 'ghost' : 'danger'} disabled={busy} onClick={() => void togglePause()}>
-            {paused ? 'Resume generation' : 'Pause generation'}
-          </StudioButton>
-        </div>
-
-        {initial.creditAlert80Sent && (
-          <p className="mt-24 text-[13px] text-[var(--studio-muted)]">80% credit alert already sent this period.</p>
-        )}
-        {error && (
-          <p className="mt-16 text-[13px] text-[var(--studio-danger)]" role="alert">
-            {error}
+      <div className="mt-32 space-y-12">
+        <h2 className="text-[18px] font-medium text-[var(--studio-fg)]">Emergency pause</h2>
+        <p className="text-[13px] text-[var(--studio-muted)]">
+          {paused
+            ? pauseReason === 'SPEND_LIMIT'
+              ? 'Automatic pause — this workspace reached its spend limit.'
+              : 'Manual pause — generation is paused for the whole workspace.'
+            : 'Generation is running. Pause to block all credit-consuming actions.'}
+        </p>
+        {typeof initial.spendUsd === 'number' && (
+          <p className="text-[12px] text-[var(--studio-faint)]">
+            Spend this period: ${initial.spendUsd.toFixed(2)}
+            {initial.monthlySpendLimitUsd != null
+              ? ` / $${initial.monthlySpendLimitUsd.toFixed(2)}`
+              : ''}
           </p>
         )}
-        {message && <p className="mt-16 text-[13px] text-[var(--studio-muted)]">{message}</p>}
-      </main>
-    </StudioShell>
+        <StudioButton
+          type="button"
+          variant={paused ? 'ghost' : 'danger'}
+          disabled={busy}
+          onClick={() => void togglePause()}
+        >
+          {paused ? 'Resume generation' : 'Pause generation'}
+        </StudioButton>
+      </div>
+
+      {initial.creditAlert80Sent && (
+        <p className="mt-24 text-[13px] text-[var(--studio-muted)]">
+          80% credit alert already sent this period.
+        </p>
+      )}
+      {error && (
+        <p className="mt-16 text-[13px] text-[var(--studio-danger)]" role="alert">
+          {error}
+        </p>
+      )}
+      {message && <p className="mt-16 text-[13px] text-[var(--studio-muted)]">{message}</p>}
+    </AdminPage>
   );
 }

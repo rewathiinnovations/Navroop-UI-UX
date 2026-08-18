@@ -11,6 +11,7 @@ import {
   PanelLeftClose,
   Plug,
   Search,
+  Shield,
   Star,
   User,
   Users,
@@ -32,7 +33,14 @@ function NavroopMark() {
     >
       <svg viewBox="0 0 32 32" className="size-28" fill="none" aria-hidden>
         <defs>
-          <linearGradient id="navroopSidebarMark" x1="6" y1="2" x2="26" y2="30" gradientUnits="userSpaceOnUse">
+          <linearGradient
+            id="navroopSidebarMark"
+            x1="6"
+            y1="2"
+            x2="26"
+            y2="30"
+            gradientUnits="userSpaceOnUse"
+          >
             <stop stopColor="#FF8A3D" />
             <stop offset="0.48" stopColor="#FF5C7A" />
             <stop offset="1" stopColor="#C084FC" />
@@ -78,10 +86,12 @@ export default function Sidebar({
   teamName,
   memberCount,
   recents,
+  isAdmin = false,
 }: {
   teamName: string;
   memberCount: number;
   recents: RecentProject[];
+  isAdmin?: boolean;
 }) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -127,18 +137,44 @@ export default function Sidebar({
 
       <div className="studio-scroll mt-8 min-h-0 flex-1 pb-12">
         <nav className="flex flex-col gap-2 px-10" aria-label="Workspace">
-          <SidebarLink href="/dashboard" icon={<LayoutDashboard className="size-16" />} active={onDashboard}>
+          <SidebarLink
+            href="/dashboard"
+            icon={<LayoutDashboard className="size-16" />}
+            active={onDashboard}
+          >
             Dashboard
           </SidebarLink>
-          <SidebarLink href="/templates" icon={<LayoutTemplate className="size-16" />} active={pathname === '/templates'}>
+          <SidebarLink
+            href="/templates"
+            icon={<LayoutTemplate className="size-16" />}
+            active={pathname === '/templates'}
+          >
             Templates
           </SidebarLink>
-          <SidebarLink href="/connectors" icon={<Plug className="size-16" />} active={pathname === '/connectors'}>
+          <SidebarLink
+            href="/connectors"
+            icon={<Plug className="size-16" />}
+            active={pathname === '/connectors'}
+          >
             Connectors
           </SidebarLink>
-          <SidebarLink href="/deployments" icon={<Globe className="size-16" />} active={pathname === '/deployments'}>
+          <SidebarLink
+            href="/deployments"
+            icon={<Globe className="size-16" />}
+            active={pathname === '/deployments'}
+          >
             Deployments
           </SidebarLink>
+          {/* Admin was previously reachable only from a menu item labelled "Team". */}
+          {isAdmin && (
+            <SidebarLink
+              href="/admin"
+              icon={<Shield className="size-16" />}
+              active={pathname === '/admin' || pathname.startsWith('/admin/')}
+            >
+              Admin
+            </SidebarLink>
+          )}
         </nav>
 
         <div className="mt-16 px-10">
@@ -146,16 +182,32 @@ export default function Sidebar({
             Projects
           </p>
           <div className="flex flex-col gap-2">
-            <SidebarLink href="/projects" icon={<Folder className="size-16" />} active={onProjects && mine === null && starred !== 'true'}>
+            <SidebarLink
+              href="/projects"
+              icon={<Folder className="size-16" />}
+              active={onProjects && mine === null && starred !== 'true'}
+            >
               All
             </SidebarLink>
-            <SidebarLink href="/projects?starred=true" icon={<Star className="size-16" />} active={onProjects && starred === 'true'}>
+            <SidebarLink
+              href="/projects?starred=true"
+              icon={<Star className="size-16" />}
+              active={onProjects && starred === 'true'}
+            >
               Starred
             </SidebarLink>
-            <SidebarLink href="/projects?mine=true" icon={<User className="size-16" />} active={onProjects && mine === 'true'}>
+            <SidebarLink
+              href="/projects?mine=true"
+              icon={<User className="size-16" />}
+              active={onProjects && mine === 'true'}
+            >
               Owned by me
             </SidebarLink>
-            <SidebarLink href="/projects?mine=false" icon={<Users className="size-16" />} active={onProjects && mine === 'false'}>
+            <SidebarLink
+              href="/projects?mine=false"
+              icon={<Users className="size-16" />}
+              active={onProjects && mine === 'false'}
+            >
               Shared with me
             </SidebarLink>
           </div>

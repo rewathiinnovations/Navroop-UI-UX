@@ -10,7 +10,7 @@ export async function handleCron(
   fn: () => Promise<unknown>,
   map?: (result: unknown) => NextResponse,
 ) {
-  if (!authorizeCron(request)) {
+  if (!(await authorizeCron(request))) {
     return jsonError('Unauthorized', 'UNAUTHORIZED', 401);
   }
   try {

@@ -35,11 +35,15 @@ export function bindStreamErrorCapture() {
       console.error(error);
     },
     attach<T extends object>(result: T): T & StreamFailureSource {
-      return Object.assign(result, {
-        get streamError() {
-          return streamError;
-        },
+      // `Object.assign` would read the getter once and copy the value it returned, pinning
+      // `streamError` to the `undefined` it holds before the stream has run. The property
+      // has to stay a getter on the result, so define it rather than assign it.
+      Object.defineProperty(result, 'streamError', {
+        get: () => streamError,
+        enumerable: true,
+        configurable: true,
       });
+      return result as T & StreamFailureSource;
     },
   };
 }

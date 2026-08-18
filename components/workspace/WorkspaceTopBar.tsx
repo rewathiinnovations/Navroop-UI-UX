@@ -157,6 +157,7 @@ export default function WorkspaceTopBar({
 }) {
   const router = useRouter();
   const [draft, setDraft] = useState(projectName);
+  const nameFieldRef = useRef<HTMLInputElement>(null);
   const [connectOpen, setConnectOpen] = useState(false);
   const [pushing, setPushing] = useState(false);
   const [pushSuccess, setPushSuccess] = useState(false);
@@ -238,6 +239,11 @@ export default function WorkspaceTopBar({
   }, []);
 
   useEffect(() => {
+    // Generation renames the project from the prompt, so `projectName` can change under a
+    // reader who is part-way through typing a new one — and this effect would replace what
+    // they had typed. While the field has focus their text is the newer of the two, and
+    // `commit` writes it on blur; the server value is picked up the next time it changes.
+    if (nameFieldRef.current && document.activeElement === nameFieldRef.current) return;
     setDraft(projectName);
   }, [projectName]);
 
@@ -259,6 +265,7 @@ export default function WorkspaceTopBar({
         <NavroopMark />
         <div className="flex min-w-0 flex-col justify-center">
           <input
+            ref={nameFieldRef}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onBlur={commit}

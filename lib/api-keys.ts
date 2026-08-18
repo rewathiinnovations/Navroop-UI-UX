@@ -41,6 +41,18 @@ const PROVIDER_ALIASES: Record<string, string[]> = {
   gateway: ['gateway'],
 };
 
+/** Registry keys for the providers that /admin/config manages. */
+const SETTING_KEY_BY_PROVIDER: Record<string, string> = {
+  openai: 'ai.openai.apiKey',
+  anthropic: 'ai.anthropic.apiKey',
+  google: 'ai.google.apiKey',
+  gemini: 'ai.google.apiKey',
+  groq: 'ai.groq.apiKey',
+  gateway: 'ai.gateway.apiKey',
+  firecrawl: 'tooling.firecrawl.apiKey',
+  e2b: 'tooling.e2b.apiKey',
+};
+
 function envNameForProvider(id: string) {
   if (id === 'gemini') return 'GEMINI_API_KEY';
   return API_KEY_PROVIDERS.find((provider) => provider.id === id)?.env;
@@ -56,7 +68,11 @@ async function decodeStoredSecret(secret: string) {
 }
 
 /**
- * Personal key → org default → process env.
+ * Personal key → org default → workspace setting → environment.
+ *
+ * The last two steps are the settings resolver, so a key saved in
+ * Admin → Configuration is picked up by every caller that already used this
+ * helper, and an untouched deployment keeps reading its environment variable.
  * Accepts settings ids (`gemini`) and provider ids (`google`).
  */
 export async function getEffectiveApiKey(
@@ -86,7 +102,14 @@ export async function getEffectiveApiKey(
     if (value) return value;
   }
 
+  const { getSetting } = await import('./settings/resolve');
   for (const id of aliases) {
+    const settingKey = SETTING_KEY_BY_PROVIDER[id];
+    if (settingKey) {
+      const value = await getSetting(settingKey);
+      if (value) return value;
+    }
+    // Providers with no registry entry still honour their environment variable.
     const envName = envNameForProvider(id);
     const value = envName ? process.env[envName]?.trim() : '';
     if (value) return value;

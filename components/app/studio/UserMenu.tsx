@@ -126,8 +126,8 @@ export default function UserMenu({ compact = false }: { compact?: boolean }) {
               API Keys
             </MenuLink>
             {user.role === 'ADMIN' && (
-              <MenuLink href="/admin/team" icon={<Users className="size-16" />} onClick={() => setOpen(false)}>
-                Team
+              <MenuLink href="/admin" icon={<Users className="size-16" />} onClick={() => setOpen(false)}>
+                Admin
               </MenuLink>
             )}
           </div>

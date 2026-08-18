@@ -255,8 +255,12 @@ describe('pollPreviewReady timeout is not READY', () => {
 
   it('bootProject only marks READY after pollPreviewReady, and a throw sets FAILED', () => {
     const coldStart = managerSource.slice(managerSource.indexOf('setStep(projectId, \'ready\')'));
+    // `row` rather than `selectedConfig`: the readiness poll moved inside the
+    // `createWithFailover` callback, where the candidate under test is the loop's `row` and
+    // `selectedConfig` is not assigned until a provider has won. The ordering asserted
+    // below is the actual invariant and is unchanged by that move.
     expect(coldStart).toMatch(
-      /await pollPreviewReady\(\s*previewUrl,\s*requestId,\s*\{\s*driver:\s*selectedConfig\.driver/,
+      /await pollPreviewReady\(\s*previewUrl,\s*requestId,\s*\{\s*driver:\s*row\.driver/,
     );
     expect(coldStart.indexOf('await pollPreviewReady(')).toBeLessThan(coldStart.indexOf("sandboxStatus: 'READY'"));
     expect(coldStart.indexOf("sandboxStatus: 'READY'")).toBeLessThan(coldStart.lastIndexOf("sandboxStatus: 'FAILED'"));

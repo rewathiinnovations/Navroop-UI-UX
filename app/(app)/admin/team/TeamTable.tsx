@@ -1,15 +1,10 @@
 'use client';
 
+import AdminPage from '@/components/admin/AdminPage';
+import ConfirmAction from '@/components/admin/ConfirmAction';
 import { Fragment, useState } from 'react';
-import StudioShell from '@/components/app/studio/StudioShell';
 import StudioButton from '@/components/app/studio/StudioButton';
-import PageTabs from '@/components/app/studio/PageTabs';
-import {
-  deactivateMember,
-  listTeam,
-  reactivateMember,
-  updateMemberRole,
-} from '@/lib/team/actions';
+import { deactivateMember, listTeam, reactivateMember, updateMemberRole } from '@/lib/team/actions';
 import type { TeamRole } from '@/lib/team/schema';
 import { formatAdminDate } from '../format-admin-date';
 
@@ -59,7 +54,9 @@ export default function TeamTable({ initialMembers }: { initialMembers: Member[]
         setRowError(userId, result.error);
         return;
       }
-      setMembers((current) => current.map((member) => (member.id === userId ? result.data : member)));
+      setMembers((current) =>
+        current.map((member) => (member.id === userId ? result.data : member)),
+      );
     } finally {
       setBusy(null);
     }
@@ -105,41 +102,26 @@ export default function TeamTable({ initialMembers }: { initialMembers: Member[]
   };
 
   return (
-    <StudioShell variant="workspace">
-      <main className="mx-auto max-w-[960px] px-20 py-40">
-        <h1 className="text-[32px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">Admin</h1>
-        <PageTabs
-          items={[
-            { href: '/admin/team', label: 'Team', active: true },
-            { href: '/admin/usage', label: 'Usage' },
-            { href: '/admin/quality', label: 'Quality' },
-            { href: '/admin/jobs', label: 'Jobs' },
-            { href: '/admin/backups', label: 'Backups' },
-            { href: '/admin/audit', label: 'Audit' },
-            { href: '/admin/integrations', label: 'Integrations' },
-            { href: '/admin/deploy', label: 'Deploy' },
-            { href: '/admin/servers', label: 'Servers' },
-            { href: '/admin/plans', label: 'Plans' },
-            { href: '/admin/workspace', label: 'Workspace' },
-          ]}
-        />
-
-        <div className="overflow-x-auto rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)]">
-          <table className="w-full text-left text-[14px]">
-            <thead className="border-b border-[var(--studio-line)] text-[12px] uppercase tracking-[0.08em] text-[var(--studio-faint)]">
-              <tr>
-                <th className="px-16 py-12 font-medium">Name</th>
-                <th className="px-16 py-12 font-medium">Email</th>
-                <th className="px-16 py-12 font-medium">Role</th>
-                <th className="px-16 py-12 font-medium">Status</th>
-                <th className="px-16 py-12 font-medium">Member since</th>
-                <th className="px-16 py-12 font-medium">Projects</th>
-                <th className="px-16 py-12 font-medium"> </th>
-              </tr>
-            </thead>
-            <tbody>
-              {members.map((member) => (
-                <Fragment key={member.id}>
+    <AdminPage
+      title="Team"
+      description="Who can sign in, what role they hold, and how to invite or deactivate them."
+    >
+      <div className="overflow-x-auto rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)]">
+        <table className="w-full text-left text-[14px]">
+          <thead className="border-b border-[var(--studio-line)] text-[12px] uppercase tracking-[0.08em] text-[var(--studio-faint)]">
+            <tr>
+              <th className="px-16 py-12 font-medium">Name</th>
+              <th className="px-16 py-12 font-medium">Email</th>
+              <th className="px-16 py-12 font-medium">Role</th>
+              <th className="px-16 py-12 font-medium">Status</th>
+              <th className="px-16 py-12 font-medium">Member since</th>
+              <th className="px-16 py-12 font-medium">Projects</th>
+              <th className="px-16 py-12 font-medium"> </th>
+            </tr>
+          </thead>
+          <tbody>
+            {members.map((member) => (
+              <Fragment key={member.id}>
                 <tr className="border-b border-[var(--studio-line)] last:border-0 align-top">
                   <td className="px-16 py-14 font-medium text-[var(--studio-fg)]">{member.name}</td>
                   <td className="px-16 py-14 text-[var(--studio-muted)]">{member.email}</td>
@@ -169,8 +151,12 @@ export default function TeamTable({ initialMembers }: { initialMembers: Member[]
                       {member.isActive ? 'Active' : 'Inactive'}
                     </span>
                   </td>
-                  <td className="px-16 py-14 text-[var(--studio-muted)]">{formatMemberSince(member.createdAt)}</td>
-                  <td className="px-16 py-14 text-[var(--studio-muted)]">{member._count.projects}</td>
+                  <td className="px-16 py-14 text-[var(--studio-muted)]">
+                    {formatMemberSince(member.createdAt)}
+                  </td>
+                  <td className="px-16 py-14 text-[var(--studio-muted)]">
+                    {member._count.projects}
+                  </td>
                   <td className="px-16 py-14">
                     <div className="flex flex-col items-end gap-8">
                       {member.isActive && (
@@ -183,37 +169,56 @@ export default function TeamTable({ initialMembers }: { initialMembers: Member[]
                           {busy === `reset:${member.id}` ? 'Sending…' : 'Send reset link'}
                         </StudioButton>
                       )}
-                      <StudioButton
-                        type="button"
-                        variant={member.isActive ? 'danger' : 'ghost'}
-                        disabled={busy === `active:${member.id}`}
-                        onClick={() => onToggleActive(member)}
-                      >
-                        {member.isActive ? 'Deactivate' : 'Reactivate'}
-                      </StudioButton>
+                      {member.isActive ? (
+                        <ConfirmAction
+                          label="Deactivate"
+                          title={`Deactivate ${member.name || member.email}?`}
+                          body="They will be signed out and will not be able to sign in again until reactivated. Their projects are kept."
+                          confirmLabel="Deactivate"
+                          busyLabel="Deactivating…"
+                          disabled={busy === `active:${member.id}`}
+                          onConfirm={() => onToggleActive(member)}
+                        />
+                      ) : (
+                        <StudioButton
+                          type="button"
+                          variant="ghost"
+                          disabled={busy === `active:${member.id}`}
+                          onClick={() => onToggleActive(member)}
+                        >
+                          Reactivate
+                        </StudioButton>
+                      )}
                     </div>
                   </td>
                 </tr>
                 {rowNotes[member.id] && (
                   <tr className="border-b border-[var(--studio-line)] last:border-0">
-                    <td colSpan={7} className="px-16 pb-12 pt-0 text-[12px] text-[var(--studio-accent-hover)]" role="status">
+                    <td
+                      colSpan={7}
+                      className="px-16 pb-12 pt-0 text-[12px] text-[var(--studio-accent-hover)]"
+                      role="status"
+                    >
                       {rowNotes[member.id]}
                     </td>
                   </tr>
                 )}
                 {rowErrors[member.id] && (
                   <tr className="border-b border-[var(--studio-line)] last:border-0">
-                    <td colSpan={7} className="px-16 pb-12 pt-0 text-[12px] text-[var(--studio-danger)]" role="alert">
+                    <td
+                      colSpan={7}
+                      className="px-16 pb-12 pt-0 text-[12px] text-[var(--studio-danger)]"
+                      role="alert"
+                    >
                       {rowErrors[member.id]}
                     </td>
                   </tr>
                 )}
-                </Fragment>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </main>
-    </StudioShell>
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </AdminPage>
   );
 }

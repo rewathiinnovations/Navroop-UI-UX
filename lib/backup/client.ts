@@ -11,37 +11,45 @@ import { mkdir, readdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { backupDriverFromEnv } from './assert';
+import { getSetting, getSettings } from '@/lib/settings/resolve';
+import { backupDriver } from './assert';
 import type { RetentionObject } from './retention';
 
 const PREFIX = 'backups/db/';
 
-function requireBackupEnv(...names: string[]) {
-  for (const name of names) {
-    const value = process.env[name]?.trim();
-    if (value) return value;
+function requireBackup(value: string | null, label: string) {
+  if (!value) {
+    throw new Error(
+      `${label} is required for backups. Set it in Admin -> Configuration -> Backups.`,
+    );
   }
-  throw new Error(`${names[0]} is required for backups`);
+  return value;
 }
 
-export function backupBucket() {
-  return requireBackupEnv('BACKUP_BUCKET');
+export async function backupBucket() {
+  return requireBackup(await getSetting('backups.bucket'), 'Backup bucket');
 }
 
-export function backupS3Client() {
+export async function backupS3Client() {
+  const values = await getSettings([
+    'backups.region',
+    'backups.endpoint',
+    'backups.accessKeyId',
+    'backups.secretAccessKey',
+  ]);
   return new S3Client({
-    region: process.env.BACKUP_REGION?.trim() || 'auto',
-    endpoint: requireBackupEnv('BACKUP_ENDPOINT'),
+    region: values['backups.region'] || 'auto',
+    endpoint: requireBackup(values['backups.endpoint'], 'Backup endpoint'),
     credentials: {
-      accessKeyId: requireBackupEnv('BACKUP_ACCESS_KEY_ID'),
-      secretAccessKey: requireBackupEnv('BACKUP_SECRET_ACCESS_KEY'),
+      accessKeyId: requireBackup(values['backups.accessKeyId'], 'Backup access key ID'),
+      secretAccessKey: requireBackup(values['backups.secretAccessKey'], 'Backup secret access key'),
     },
     forcePathStyle: true,
   });
 }
 
-function localBackupRoot() {
-  return process.env.BACKUP_LOCAL_DIR || join(process.cwd(), 'tmp', 'backups');
+async function localBackupRoot() {
+  return (await getSetting('backups.localDir')) || join(process.cwd(), 'tmp', 'backups');
 }
 
 /**
@@ -56,8 +64,8 @@ export function isMissingUploadHelper(error: unknown) {
 }
 
 export async function uploadBackupFile(localPath: string, objectKey: string, expectedBytes: number) {
-  if (backupDriverFromEnv() === 'local') {
-    const dest = join(localBackupRoot(), objectKey);
+  if ((await backupDriver()) === 'local') {
+    const dest = join(await localBackupRoot(), objectKey);
     await mkdir(dirname(dest), { recursive: true });
     await pipeline(createReadStream(localPath), createWriteStream(dest));
     const info = await stat(dest);
@@ -67,8 +75,8 @@ export async function uploadBackupFile(localPath: string, objectKey: string, exp
     return info.size;
   }
 
-  const client = backupS3Client();
-  const bucket = backupBucket();
+  const client = await backupS3Client();
+  const bucket = await backupBucket();
   // One file handle per attempt. A stream can only be read once, so the fallback
   // needs its own; and a throw before the SDK drained it leaves the fd open.
   const bodies: ReadStream[] = [];
@@ -108,8 +116,8 @@ export async function uploadBackupFile(localPath: string, objectKey: string, exp
 export type BackupListObject = RetentionObject & { sizeBytes: number };
 
 export async function listBackupObjects(): Promise<BackupListObject[]> {
-  if (backupDriverFromEnv() === 'local') {
-    const root = join(localBackupRoot(), PREFIX);
+  if ((await backupDriver()) === 'local') {
+    const root = join(await localBackupRoot(), PREFIX);
     let names: string[] = [];
     try {
       names = await readdir(root);
@@ -126,8 +134,8 @@ export async function listBackupObjects(): Promise<BackupListObject[]> {
     return rows;
   }
 
-  const client = backupS3Client();
-  const bucket = backupBucket();
+  const client = await backupS3Client();
+  const bucket = await backupBucket();
   try {
     const rows: BackupListObject[] = [];
     let token: string | undefined;
@@ -156,9 +164,9 @@ export async function listBackupObjects(): Promise<BackupListObject[]> {
 }
 
 export async function deleteBackupObject(key: string) {
-  if (backupDriverFromEnv() === 'local') {
+  if ((await backupDriver()) === 'local') {
     try {
-      await unlink(join(localBackupRoot(), key));
+      await unlink(join(await localBackupRoot(), key));
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== 'ENOENT') throw error;
@@ -167,9 +175,9 @@ export async function deleteBackupObject(key: string) {
   }
   // Called once per retained object in the retention loop, so the socket pool this
   // client owns has to be released rather than left for the garbage collector.
-  const client = backupS3Client();
+  const client = await backupS3Client();
   try {
-    await client.send(new DeleteObjectCommand({ Bucket: backupBucket(), Key: key }));
+    await client.send(new DeleteObjectCommand({ Bucket: await backupBucket(), Key: key }));
   } finally {
     client.destroy();
   }
@@ -177,14 +185,14 @@ export async function deleteBackupObject(key: string) {
 
 export async function downloadBackupObject(key: string, destPath: string) {
   await mkdir(dirname(destPath), { recursive: true });
-  if (backupDriverFromEnv() === 'local') {
+  if ((await backupDriver()) === 'local') {
     const { copyFile } = await import('node:fs/promises');
-    await copyFile(join(localBackupRoot(), key), destPath);
+    await copyFile(join(await localBackupRoot(), key), destPath);
     return;
   }
-  const client = backupS3Client();
+  const client = await backupS3Client();
   try {
-    const response = await client.send(new GetObjectCommand({ Bucket: backupBucket(), Key: key }));
+    const response = await client.send(new GetObjectCommand({ Bucket: await backupBucket(), Key: key }));
     const body = response.Body;
     if (!body) throw new Error(`Backup object missing: ${key}`);
     // Stream to disk. Buffering the whole dump would run out of memory on a large

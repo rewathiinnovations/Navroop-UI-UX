@@ -108,11 +108,20 @@ export default function ChatInput({
             </Hint>
             {/* TODO: wire existing attachments when an upload path exists */}
             {showMode && (
-              <div className="inline-flex rounded-8 bg-[var(--studio-surface)] p-2">
+              // Which mode is selected is carried only by background colour, so a screen
+              // reader announced two identical unlabelled buttons. `aria-pressed` puts the
+              // selection in the accessibility tree, where it is also the only stable hook a
+              // test has for "switching mode changed what the send button submits".
+              <div
+                role="group"
+                aria-label="Chat mode"
+                className="inline-flex rounded-8 bg-[var(--studio-surface)] p-2"
+              >
                 {(['plan', 'build'] as const).map((item) => (
                   <button
                     key={item}
                     type="button"
+                    aria-pressed={mode === item}
                     onClick={() => setMode(item)}
                     className={cn(
                       'rounded-6 px-8 py-3 text-[11px] font-medium capitalize',

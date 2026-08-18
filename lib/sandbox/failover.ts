@@ -56,6 +56,32 @@ export function isFailoverError(error: unknown) {
   return false;
 }
 
+/**
+ * Whether a failure while booting a sandbox is worth asking the next provider.
+ *
+ * `isFailoverError` is written for transport faults — a connection reset, a 5xx, a message
+ * with "timeout" in it. The failures that actually strand a build are further in: a vendor
+ * hands back a VM and then never serves the dev server, or returns no preview URL at all.
+ * Those are specific to the vendor that produced them, so the next candidate is exactly the
+ * right thing to try.
+ *
+ * The exception is a fault that would repeat identically everywhere. A missing provider row
+ * is this repo's config error, not a vendor outage, and retrying it down the list just
+ * spends two more VMs to reach the same message.
+ */
+export function isSandboxBootFailover(error: unknown) {
+  if (isFailoverError(error)) return true;
+  const name = (error as { name?: string } | null)?.name;
+  if (name !== 'SandboxBootError') return false;
+  const code = (error as { code?: string }).code;
+  // A workspace over its sandbox or minutes ceiling is over it for every provider.
+  if (code === 'SANDBOX_LIMIT' || code === 'SANDBOX_MINUTES' || code === 'NO_CHECKPOINT') {
+    return false;
+  }
+  const step = (error as { step?: string }).step;
+  return step === 'restore' || step === 'install' || step === 'dev' || step === 'ready';
+}
+
 export async function createWithFailover<T>(opts: {
   candidates: ProviderCandidate[];
   create: (row: ProviderCandidate) => Promise<T>;

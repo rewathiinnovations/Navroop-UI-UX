@@ -15,6 +15,7 @@ import type { JobResourceIds, JobStep } from '@/lib/jobs/types';
 
 export default function RecoveryPanel({
   errorCode,
+  errorMessage,
   filesWritten,
   requestId,
   busy,
@@ -32,6 +33,8 @@ export default function RecoveryPanel({
   resourceIds,
 }: {
   errorCode?: string | null;
+  /** The sentence the job recorded, preferred over the generic line for the codes that have one. */
+  errorMessage?: string | null;
   filesWritten: number;
   requestId?: string | null;
   busy?: string | null;
@@ -49,7 +52,7 @@ export default function RecoveryPanel({
   resourceIds?: JobResourceIds | null;
 }) {
   const heading = recoveryHeading(kind ?? (variant === 'publish' ? 'PUBLISH' : 'BUILD'));
-  const cause = recoveryCauseLine(errorCode);
+  const cause = recoveryCauseLine(errorCode, errorMessage);
   const failedKey = steps?.find((step) => step.status === 'failed')?.key;
   const sandboxLines = sandboxChoiceLines(resourceIds);
 

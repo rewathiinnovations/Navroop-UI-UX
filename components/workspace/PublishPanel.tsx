@@ -325,6 +325,7 @@ export default function PublishPanel({
                     variant="publish"
                     kind={state.job.kind}
                     errorCode={state.job.errorCode}
+                    errorMessage={state.job.errorMessage}
                     filesWritten={0}
                     requestId={state.job.requestId}
                     steps={state.job.steps}

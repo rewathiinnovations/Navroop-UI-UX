@@ -66,6 +66,11 @@ import {
 import { loadEffectiveProviderEnv } from '@/lib/ai/effective-env';
 import { bindStreamErrorCapture, EmptyCompletionError, producedNoChanges } from '@/lib/ai/empty-completion';
 import { sanitizeGenerationPath } from '@/lib/generation/parse-files';
+import {
+  collectRecoveredStreamText,
+  truncationRecoveryOutcome,
+  type TruncationRecoveryOutcome,
+} from '@/lib/generation/truncation-recovery';
 import { executeWithCompletionFailover, ProviderRunError, type ProviderAttempt } from '@/lib/ai/run';
 import { describeNoChanges } from '@/lib/generation/no-changes';
 import { summarizeGenerationOutput } from '@/lib/generation/output-summary';
@@ -1854,73 +1859,60 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
           // If we have truncated files, try to regenerate them
           if (truncatedFiles.length > 0) {
             console.log('[generate-ai-code-stream] Attempting to regenerate truncated files:', truncatedFiles);
-            
+
+            // The recovery call is a second generation, so reuse the provider entry that
+            // served the first pass. The older mapping re-derived a client from the model
+            // string and had no `google` branch at all, so Gemini runs were quietly sent to
+            // Groq with a Gemini model name.
+            const recoveryEntry =
+              (servedProvider && servedModel
+                ? providerChain.find(
+                    (entry: ProviderEntry) =>
+                      entry.provider === servedProvider && entry.model === servedModel,
+                  )
+                : null) ?? providerChain[0] ?? null;
+            let recoveryFailure: TruncationRecoveryOutcome | null = null;
+
             for (const filePath of truncatedFiles) {
+              // One provider failure will repeat for every remaining file, so stop asking.
+              if (recoveryFailure) break;
               await sendProgress({
                 type: 'info',
                 message: `Completing ${filePath}...`
               });
-              
+
               try {
                 // Create a focused prompt to complete just this file
                 const completionPrompt = `Complete the following file that was truncated. Provide the FULL file content.
-                
+
 File: ${filePath}
 Original request: ${prompt}
-                
+
 Provide the complete file content without any truncation. Include all necessary imports, complete all functions, and close all tags properly.`;
-                
-                // Make a focused API call to complete this specific file
-                // Create a new client for the completion based on the provider
-                let completionClient;
-                if (model.includes('gpt') || model.includes('openai')) {
-                  completionClient = openai;
-                } else if (model.includes('claude')) {
-                  completionClient = anthropic;
-                } else if (model === 'moonshotai/kimi-k2-instruct-0905') {
-                  completionClient = groq;
-                } else {
-                  completionClient = groq;
-                }
-                
-                // Determine the correct model name for the completion
-                let completionModelName: string;
-                if (model === 'moonshotai/kimi-k2-instruct-0905') {
-                  completionModelName = 'moonshotai/kimi-k2-instruct-0905';
-                } else if (model.includes('openai')) {
-                  completionModelName = model.replace('openai/', '');
-                } else if (model.includes('anthropic')) {
-                  completionModelName = model.replace('anthropic/', '');
-                } else if (model.includes('google')) {
-                  completionModelName = model.replace('google/', '');
-                } else {
-                  completionModelName = model;
-                }
-                
-                const completionResult = await streamText({
-                  model: completionClient(completionModelName),
-                  messages: [
-                    { 
-                      role: 'system', 
-                      content: 'You are completing a truncated file. Provide the complete, working file content.'
-                    },
-                    { role: 'user', content: completionPrompt }
-                  ],
-                  temperature: model.startsWith('openai/gpt-5') ? undefined : appConfig.ai.defaultTemperature
-                });
-                
-                // Get the full text from the stream
-                let completedContent = '';
-                for await (const chunk of completionResult.textStream) {
-                  completedContent += chunk;
-                }
-                
-                // Replace the truncated file in the generatedCode
-                const filePattern = new RegExp(
-                  `<file path="${filePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}">[\\s\\S]*?(?:</file>|$)`,
-                  'g'
+
+                const recoveryClient = clientForEntry(recoveryEntry, providerEnv);
+                const capture = bindStreamErrorCapture();
+                const completionResult = capture.attach(
+                  streamText({
+                    model: recoveryClient(recoveryEntry.model),
+                    messages: [
+                      {
+                        role: 'system',
+                        content: 'You are completing a truncated file. Provide the complete, working file content.'
+                      },
+                      { role: 'user', content: completionPrompt }
+                    ],
+                    temperature: recoveryEntry.model.startsWith('gpt-5')
+                      ? undefined
+                      : appConfig.ai.defaultTemperature,
+                    onError: capture.onError,
+                  }),
                 );
-                
+
+                // Throws whatever the stream reported rather than handing back the empty
+                // string a rejected call resolves to.
+                const completedContent = await collectRecoveredStreamText(completionResult);
+
                 // Extract just the code content (remove any markdown or explanation)
                 let cleanContent = completedContent;
                 if (cleanContent.includes('```')) {
@@ -1929,32 +1921,57 @@ Provide the complete file content without any truncation. Include all necessary 
                     cleanContent = codeMatch[1];
                   }
                 }
-                
+
+                // A recovery that came back with nothing must not overwrite the file with
+                // nothing: a file cut off mid-write is worth more than an empty one.
+                if (!cleanContent.trim()) {
+                  throw new EmptyCompletionError(recoveryEntry.provider, recoveryEntry.model);
+                }
+
+                // Replace the truncated file in the generatedCode
+                const filePattern = new RegExp(
+                  `<file path="${filePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}">[\\s\\S]*?(?:</file>|$)`,
+                  'g'
+                );
                 generatedCode = generatedCode.replace(
                   filePattern,
                   `<file path="${filePath}">\n${cleanContent}\n</file>`
                 );
-                
+
                 console.log(`[generate-ai-code-stream] Successfully completed ${filePath}`);
-                
               } catch (completionError) {
                 console.error(`[generate-ai-code-stream] Failed to complete ${filePath}:`, completionError);
-                await sendProgress({
-                  type: 'warning',
-                  message: `Could not auto-complete ${filePath}. Manual review may be needed.`
-                });
+                recoveryFailure = truncationRecoveryOutcome(
+                  completionError,
+                  recoveryEntry?.provider ?? servedProvider,
+                );
               }
             }
-            
-            // Clear the warnings after attempting fixes
-            truncationWarnings.length = 0;
-            await sendProgress({
-              type: 'info',
-              message: 'Truncation recovery complete'
-            });
+
+            if (recoveryFailure) {
+              // The truncated files stay, and the run says so. This branch used to clear the
+              // warnings and report success no matter what the recovery had done.
+              await recordJobStepFailure(generationJob?.id, {
+                key: 'truncation-recovery',
+                label: 'Complete the truncated files',
+                error: recoveryFailure.errorMessage,
+              });
+              await sendProgress({
+                type: 'warning',
+                message: recoveryFailure.errorMessage,
+                warnings: truncationWarnings,
+              });
+            } else {
+              // Clear the warnings only when every truncated file was actually rewritten.
+              truncationWarnings.length = 0;
+              await sendProgress({
+                type: 'info',
+                message: `Completed ${truncatedFiles.length} truncated file${truncatedFiles.length === 1 ? '' : 's'}.`
+              });
+            }
           }
         }
-        
+
         const usageProjectId =
           (typeof requestProjectId === 'string' && requestProjectId) ||
           (typeof context?.projectId === 'string' && context.projectId) ||

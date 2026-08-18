@@ -5,7 +5,7 @@ import { checkpointRetentionDays, isThinEligible } from './retention';
 import { pruneStalePresence } from '@/lib/projects/presence';
 
 export async function thinCheckpoints() {
-  const retentionDays = checkpointRetentionDays();
+  const retentionDays = await checkpointRetentionDays();
   const now = new Date();
   const cutoff = new Date(now.getTime() - retentionDays * 24 * 60 * 60 * 1000);
 
