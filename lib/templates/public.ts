@@ -1,8 +1,12 @@
 import { thumbnailPublicUrl } from './thumbnails';
 import type { PublicTemplate, TemplateRow } from './types';
 
-/** Maps a store row to the client-safe template shape. Not a Server Action. */
-export function toPublic(row: TemplateRow): PublicTemplate {
+/**
+ * Maps a store row to the client-safe template shape. Not a Server Action.
+ * `thumbnailBase` comes from `thumbnailUrlBase()`; pass it once per request
+ * rather than resolving storage settings per row.
+ */
+export function toPublic(row: TemplateRow, thumbnailBase: string | null = null): PublicTemplate {
   return {
     id: row.id,
     slug: row.slug,
@@ -12,7 +16,7 @@ export function toPublic(row: TemplateRow): PublicTemplate {
     stack: String(row.stack),
     prompt: row.prompt,
     designDirection: row.designDirection,
-    thumbnailUrl: thumbnailPublicUrl(row.thumbnailKey),
+    thumbnailUrl: thumbnailPublicUrl(row.thumbnailKey, thumbnailBase),
     previewUrl: row.previewUrl,
     isActive: row.isActive,
     isBuiltIn: row.isBuiltIn,

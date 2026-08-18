@@ -23,9 +23,9 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(new URL(loginModalHref('/api/github/connect'), request.url));
   }
 
-  const { clientId, callbackUrl, configured } = getGithubOAuthConfig();
+  const { clientId, callbackUrl, configured } = await getGithubOAuthConfig();
   if (!configured) {
-    return NextResponse.redirect(profileGithubRedirect(request.url, 'error'));
+    return NextResponse.redirect(profileGithubRedirect(request.url, 'unconfigured'));
   }
 
   try {

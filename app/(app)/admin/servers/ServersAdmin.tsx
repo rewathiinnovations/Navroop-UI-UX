@@ -1,10 +1,15 @@
 'use client';
 
+import { Server as ServerIcon } from 'lucide-react';
+import AdminCard from '@/components/admin/AdminCard';
+import StatusPill from '@/components/admin/StatusPill';
+import AdminPage from '@/components/admin/AdminPage';
+import { AdminTable, Td, Th, Tr } from '@/components/admin/AdminTable';
+import StatusBanner from '@/components/admin/StatusBanner';
 import { useState } from 'react';
 import Link from 'next/link';
-import StudioShell from '@/components/app/studio/StudioShell';
 import StudioButton from '@/components/app/studio/StudioButton';
-import PageTabs from '@/components/app/studio/PageTabs';
+import ConfirmAction from '@/components/admin/ConfirmAction';
 
 export type PublicServer = {
   id: string;
@@ -17,21 +22,6 @@ export type PublicServer = {
   last4: string;
   deploymentCount: number;
 };
-
-const adminTabs = (active: string) => [
-  { href: '/admin/team', label: 'Team', active: active === 'team' },
-  { href: '/admin/usage', label: 'Usage', active: active === 'usage' },
-  { href: '/admin/quality', label: 'Quality', active: active === 'quality' },
-  { href: '/admin/jobs', label: 'Jobs', active: active === 'jobs' },
-  { href: '/admin/backups', label: 'Backups', active: active === 'backups' },
-  { href: '/admin/audit', label: 'Audit', active: active === 'audit' },
-  { href: '/admin/integrations', label: 'Integrations', active: active === 'integrations' },
-  { href: '/admin/deploy', label: 'Deploy', active: active === 'deploy' },
-  { href: '/admin/servers', label: 'Servers', active: active === 'servers' },
-  { href: '/admin/plans', label: 'Plans', active: active === 'plans' },
-  { href: '/admin/workspace', label: 'Workspace', active: active === 'workspace' },
-  { href: '/admin/sandbox-providers', label: 'Sandbox providers', active: active === 'sandbox-providers' },
-];
 
 export default function ServersAdmin({ initial }: { initial: PublicServer[] }) {
   const [servers, setServers] = useState(initial);
@@ -52,7 +42,7 @@ export default function ServersAdmin({ initial }: { initial: PublicServer[] }) {
       const response = await fetch(`/api/admin/servers/${id}/test`, { method: 'POST' });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        setError(data.error || 'Connection fail');
+        setError(data.error || 'The connection test failed');
         return;
       }
       setMessage(`Connection ok${data.version ? ` (${data.version})` : ''}`);
@@ -61,13 +51,9 @@ export default function ServersAdmin({ initial }: { initial: PublicServer[] }) {
     }
   };
 
+  // The confirm for a server with live deployments is ConfirmAction in the row,
+  // like every other destructive admin action — not window.confirm.
   const toggle = async (server: PublicServer) => {
-    if (server.isActive && server.deploymentCount > 0) {
-      const ok = window.confirm(
-        `This server has ${server.deploymentCount} live deployments. Deactivate it? New publishes will not go here.`,
-      );
-      if (!ok) return;
-    }
     setBusy(`active:${server.id}`);
     try {
       const response = await fetch(`/api/admin/servers/${server.id}`, {
@@ -81,7 +67,7 @@ export default function ServersAdmin({ initial }: { initial: PublicServer[] }) {
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        setError(data.error || 'Update fail');
+        setError(data.error || 'Could not update the server');
         return;
       }
       await refresh();
@@ -106,70 +92,111 @@ export default function ServersAdmin({ initial }: { initial: PublicServer[] }) {
   };
 
   return (
-    <StudioShell variant="workspace">
-      <main className="mx-auto max-w-[960px] px-20 py-40">
-        <h1 className="text-[32px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">Admin</h1>
-        <PageTabs items={adminTabs('servers')} />
+    <AdminPage
+      icon="servers"
+      title="Servers"
+      description="The machines available to host published sites."
+    >
+      {error && <StatusBanner tone="error">{error}</StatusBanner>}
+      {message && <StatusBanner tone="success">{message}</StatusBanner>}
 
-        {error && <p className="mb-12 text-[13px] text-[var(--studio-danger)]">{error}</p>}
-        {message && <p className="mb-12 text-[13px] text-[var(--studio-muted)]">{message}</p>}
-
+      <AdminCard icon={<ServerIcon className="size-14" aria-hidden />} title="Servers">
         <p className="mb-16 text-[13px] text-[var(--studio-muted)]">
-          Servers are discovered from <Link href="/admin/integrations" className="text-[var(--studio-accent)]">/admin/integrations</Link>.
-          This page is only for limits and the active toggle.
+          Servers are discovered from{' '}
+          <Link
+            href="/admin/integrations"
+            className="text-[var(--studio-accent)] underline-offset-2 hover:underline"
+          >
+            Admin → Integrations
+          </Link>
+          . This page is only for limits and the active toggle.
         </p>
 
-        <div className="overflow-x-auto rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)]">
-          <table className="w-full text-left text-[14px]">
-            <thead className="border-b border-[var(--studio-line)] text-[12px] uppercase tracking-[0.08em] text-[var(--studio-faint)]">
-              <tr>
-                <th className="px-16 py-12 font-medium">Name</th>
-                <th className="px-16 py-12 font-medium">IP</th>
-                <th className="px-16 py-12 font-medium">Token</th>
-                <th className="px-16 py-12 font-medium">Deployments</th>
-                <th className="px-16 py-12 font-medium">Status</th>
-                <th className="px-16 py-12 font-medium"> </th>
-              </tr>
-            </thead>
-            <tbody>
-              {servers.map((server) => (
-                <tr key={server.id} className="border-b border-[var(--studio-line)] last:border-0 align-top">
-                  <td className="px-16 py-14">
-                    <p className="font-medium">{server.name}</p>
-                    <p className="text-[12px] text-[var(--studio-faint)]">{server.apiUrl}</p>
-                  </td>
-                  <td className="px-16 py-14 text-[var(--studio-muted)]">{server.serverIp}</td>
-                  <td className="px-16 py-14 text-[13px]">••••{server.last4}</td>
-                  <td className="px-16 py-14">
-                    {server.deploymentCount} /
-                    <input
-                      type="number"
-                      min={1}
-                      defaultValue={server.maxDeployments}
-                      className="ml-6 h-32 w-64 rounded-8 border border-[var(--studio-line)] px-6 text-[12px]"
-                      onBlur={(event) => {
-                        const value = Number(event.target.value);
-                        if (value > 0 && value !== server.maxDeployments) void saveMax(server.id, value);
-                      }}
+        <AdminTable
+          isEmpty={servers.length === 0}
+          empty="No servers discovered yet. Connect Coolify in Admin → Integrations."
+          head={
+            <>
+              <Th>Name</Th>
+              <Th>IP</Th>
+              <Th>Token</Th>
+              <Th>Deployments</Th>
+              <Th>Status</Th>
+              <Th align="right"> </Th>
+            </>
+          }
+        >
+          {servers.map((server) => (
+            <Tr key={server.id}>
+              <Td>
+                <p className="font-medium text-[var(--studio-fg)]">{server.name}</p>
+                <p className="text-[12px] text-[var(--studio-faint)]">{server.apiUrl}</p>
+              </Td>
+              <Td muted>{server.serverIp}</Td>
+              <Td mono muted>
+                ••••{server.last4}
+              </Td>
+              <Td>
+                <div className="flex items-center gap-6">
+                  <span className="text-[var(--studio-fg)]">{server.deploymentCount}</span>
+                  <span className="text-[var(--studio-faint)]">/</span>
+                  <input
+                    type="number"
+                    min={1}
+                    aria-label={`Max deployments for ${server.name}`}
+                    defaultValue={server.maxDeployments}
+                    className="h-32 w-64 rounded-8 border border-[var(--studio-line)] bg-[var(--studio-bg)] px-6 text-[12px] text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
+                    onBlur={(event) => {
+                      const value = Number(event.target.value);
+                      if (value > 0 && value !== server.maxDeployments)
+                        void saveMax(server.id, value);
+                    }}
+                  />
+                </div>
+              </Td>
+              <Td>
+                <StatusPill tone={server.isActive ? 'positive' : 'neutral'}>
+                  {server.isActive ? 'Active' : 'Inactive'}
+                </StatusPill>
+              </Td>
+              <Td align="right">
+                <div className="flex flex-wrap items-center justify-end gap-8">
+                  <StudioButton
+                    type="button"
+                    variant="ghost"
+                    disabled={busy === `test:${server.id}`}
+                    onClick={() => void test(server.id)}
+                  >
+                    {busy === `test:${server.id}` ? 'Testing…' : 'Test connection'}
+                  </StudioButton>
+                  {server.isActive && server.deploymentCount > 0 ? (
+                    <ConfirmAction
+                      label="Deactivate"
+                      title={`Deactivate ${server.name}?`}
+                      body={`This server hosts ${server.deploymentCount} live ${
+                        server.deploymentCount === 1 ? 'deployment' : 'deployments'
+                      }. They keep running, but new publishes will not go here.`}
+                      confirmLabel="Deactivate"
+                      busyLabel="Deactivating…"
+                      disabled={busy === `active:${server.id}`}
+                      onConfirm={() => toggle(server)}
                     />
-                  </td>
-                  <td className="px-16 py-14">{server.isActive ? 'Active' : 'Inactive'}</td>
-                  <td className="px-16 py-14">
-                    <div className="flex flex-col gap-6">
-                      <StudioButton type="button" variant="ghost" disabled={busy === `test:${server.id}`} onClick={() => void test(server.id)}>
-                        Test connection
-                      </StudioButton>
-                      <StudioButton type="button" variant="ghost" disabled={busy === `active:${server.id}`} onClick={() => void toggle(server)}>
-                        {server.isActive ? 'Deactivate' : 'Activate'}
-                      </StudioButton>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </main>
-    </StudioShell>
+                  ) : (
+                    <StudioButton
+                      type="button"
+                      variant={server.isActive ? 'danger' : 'ghost'}
+                      disabled={busy === `active:${server.id}`}
+                      onClick={() => void toggle(server)}
+                    >
+                      {server.isActive ? 'Deactivate' : 'Activate'}
+                    </StudioButton>
+                  )}
+                </div>
+              </Td>
+            </Tr>
+          ))}
+        </AdminTable>
+      </AdminCard>
+    </AdminPage>
   );
 }

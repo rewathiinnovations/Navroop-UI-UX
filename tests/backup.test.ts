@@ -1,16 +1,16 @@
 /**
  * Backup assertions, retention, restore guards, stale banner.
- * Run: npx tsx tests/backup.test.ts
+ * Run: pnpm exec tsx tests/backup.test.ts
  */
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  assertDistinctBuckets,
+  assertDistinctBucketValues,
   assertEncryptionKey,
-  assertProductionBackupDriver,
+  assertProductionBackupDriverValues,
   assertRestoreTarget,
-  backupDriverFromEnv,
+  backupDriver,
   isBackupStale,
   isRestoreTestOverdue,
   retentionDecisions,
@@ -57,28 +57,28 @@ function doesNotThrow(fn: () => void, name: string) {
 }
 
 throws(
-  () => assertDistinctBuckets('navroop-assets', 'navroop-assets'),
+  () => assertDistinctBucketValues('navroop-assets', 'navroop-assets'),
   'BACKUP_BUCKET === ELK_BUCKET fails assertion',
 );
 doesNotThrow(
-  () => assertDistinctBuckets('navroop-assets', 'navroop-backups'),
+  () => assertDistinctBucketValues('navroop-assets', 'navroop-backups'),
   'distinct buckets pass',
 );
 doesNotThrow(
-  () => assertDistinctBuckets(undefined, 'navroop-backups'),
+  () => assertDistinctBucketValues(undefined, 'navroop-backups'),
   'missing app bucket skips distinct check',
 );
 
 throws(
-  () => assertProductionBackupDriver('production', 'local'),
+  () => assertProductionBackupDriverValues('production', 'local'),
   'production + local driver refuses backup',
 );
 doesNotThrow(
-  () => assertProductionBackupDriver('production', 's3'),
+  () => assertProductionBackupDriverValues('production', 's3'),
   'production + s3 driver allowed',
 );
 doesNotThrow(
-  () => assertProductionBackupDriver('development', 'local'),
+  () => assertProductionBackupDriverValues('development', 'local'),
   'development + local driver allowed',
 );
 
@@ -166,7 +166,7 @@ delete process.env.BACKUP_BUCKET;
 process.env.BACKUP_LOCAL_DIR = join(backupTmp, 'store');
 
 try {
-  assert(backupDriverFromEnv() === 'local', 'test env resolves to the local backup driver');
+  assert((await backupDriver()) === 'local', 'test env resolves to the local backup driver');
 
   const dumpBody = Buffer.from('navroop-dump-'.repeat(4096), 'utf8');
   const dumpPath = join(backupTmp, 'db.dump');

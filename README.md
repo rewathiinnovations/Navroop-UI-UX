@@ -45,15 +45,19 @@ MORPH_API_KEY=your_morphllm_api_key    # https://morphllm.com/dashboard
 
 3. **Run**
 ```bash
-pnpm dev  # or npm run dev / yarn dev
+pnpm dev
 ```
+
+Always start the dev server with `pnpm dev` — not `npm run dev`, `yarn dev`, or `npx next dev`.
+This repo pins `packageManager: pnpm@11.21.0` and uses a pnpm workspace; running it through
+another package manager resolves modules differently and can rewrite `pnpm-workspace.yaml`.
 
 Open [http://localhost:3000](http://localhost:3000)
 
 ## Verify
 
 ```bash
-pnpm run verify        # pre-push gate (also: npm run verify)
+pnpm run verify        # pre-push gate
 pnpm run verify:full   # same gate, every Playwright project (stack and full journeys are .fixme(); locally this also runs the authenticated dashboard journey)
 ```
 

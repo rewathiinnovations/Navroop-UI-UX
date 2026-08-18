@@ -286,9 +286,30 @@ export default function PreviewPanel({
             )
           ) : (
             <div className="flex h-full w-full items-center justify-center px-24 text-center">
-              <p className="max-w-[280px] text-[14px] leading-6 text-[var(--studio-muted)]">
-                Nothing built yet — review the plan and approve to get started
-              </p>
+              {phase === 'COMPLETE' ? (
+                // The site exists (COMPLETE means lastCode/checkpoint) — the
+                // missing thing is only the preview snapshot. Saying "nothing
+                // built yet" here told users their finished build was lost.
+                <div className="max-w-[320px]">
+                  <p className="text-[14px] leading-6 text-[var(--studio-muted)]">
+                    The site is built, but no preview snapshot has been captured yet. View it in
+                    Live mode, or send a change in chat to rebuild and capture a preview.
+                  </p>
+                  {onStartLive ? (
+                    <button
+                      type="button"
+                      onClick={onStartLive}
+                      className="mt-14 inline-flex min-h-[38px] items-center rounded-full border border-[var(--studio-line-strong)] px-14 text-[13px] font-medium text-[var(--studio-fg)] transition-colors duration-200 hover:bg-[var(--studio-surface-hover)]"
+                    >
+                      Turn on Live mode
+                    </button>
+                  ) : null}
+                </div>
+              ) : (
+                <p className="max-w-[280px] text-[14px] leading-6 text-[var(--studio-muted)]">
+                  Nothing built yet — review the plan and approve to get started
+                </p>
+              )}
             </div>
           )}
           {showTools && (
@@ -377,7 +398,7 @@ function SandboxColdStart({
             <button
               type="button"
               onClick={onRetry}
-              className="inline-flex min-h-[36px] items-center rounded-full bg-[var(--studio-accent)] px-16 text-[13px] font-medium text-white hover:bg-[var(--studio-accent-hover)]"
+              className="inline-flex min-h-[36px] items-center rounded-full [background-image:var(--studio-cta-gradient)] px-16 text-[13px] font-medium text-white transition-[filter] duration-200 hover:brightness-[1.07]"
             >
               Try again
             </button>
@@ -397,7 +418,7 @@ function EmptyPreview({ onStartLive }: { onStartLive?: () => void }) {
           <button
             type="button"
             onClick={onStartLive}
-            className="mt-16 inline-flex min-h-[36px] items-center rounded-full bg-[var(--studio-accent)] px-16 text-[13px] font-medium text-white hover:bg-[var(--studio-accent-hover)]"
+            className="mt-16 inline-flex min-h-[36px] items-center rounded-full [background-image:var(--studio-cta-gradient)] px-16 text-[13px] font-medium text-white transition-[filter] duration-200 hover:brightness-[1.07]"
           >
             {LIVE_MODE_LABEL}
           </button>
@@ -425,7 +446,7 @@ function PreviewBuildFailed({
         <button
           type="button"
           onClick={onRetry}
-          className="inline-flex min-h-[32px] items-center rounded-full bg-[var(--studio-accent)] px-12 text-[12px] font-medium text-white hover:bg-[var(--studio-accent-hover)]"
+          className="inline-flex min-h-[32px] items-center rounded-full [background-image:var(--studio-cta-gradient)] px-12 text-[12px] font-medium text-white transition-[filter] duration-200 hover:brightness-[1.07]"
         >
           Retry
         </button>

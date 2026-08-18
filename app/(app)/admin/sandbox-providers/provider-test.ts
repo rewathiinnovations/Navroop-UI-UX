@@ -1,5 +1,8 @@
 import { nextHealthAfterFailure, nextHealthAfterSuccess } from '@/lib/sandbox/health';
-import { formatProviderCheckResult, type LeakedTestSandbox } from '@/lib/sandbox/provider-check-copy';
+import {
+  formatProviderCheckResult,
+  type LeakedTestSandbox,
+} from '@/lib/sandbox/provider-check-copy';
 
 export const TEST_SCOPE =
   'Test creates a sandbox, runs echo, and shuts it down. It does not start a preview or run a build.';

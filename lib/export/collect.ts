@@ -30,7 +30,19 @@ export async function collectExportFiles(input: {
     ? input.checkpoints.find((row) => row.id === input.checkpointId)
     : [...input.checkpoints].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
 
-  if (!selected) return [];
+  if (!selected) {
+    // No checkpoint exists — a build whose post-generation capture failed
+    // (dead sandbox at that moment) still has its finished site in lastCode.
+    // The boot restore already treats lastCode as the snapshot fallback; the
+    // user's "Download code" gets the same site instead of a refusal. An
+    // explicitly requested checkpoint id is still answered from checkpoints
+    // only (the route 404s before this on an unknown id).
+    if (!input.checkpointId) {
+      const { captureFileSnapshot } = await import('@/lib/checkpoints/snapshot');
+      return filterExportFiles(await captureFileSnapshot(input.projectId));
+    }
+    return [];
+  }
   const files = await readSnapshot({
     snapshotKey: selected.snapshotKey,
     fileSnapshot: selected.fileSnapshot,

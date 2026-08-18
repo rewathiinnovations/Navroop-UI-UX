@@ -1,6 +1,6 @@
 /**
  * Consumption caps, sandbox minutes, provider failover/queue, spend ceiling.
- * Run: npx tsx tests/consumption.test.ts
+ * Run: pnpm exec tsx tests/consumption.test.ts
  */
 import { resolve } from 'node:path';
 import { config } from 'dotenv';

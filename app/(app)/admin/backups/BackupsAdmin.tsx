@@ -1,10 +1,13 @@
 'use client';
 
+import { Archive, History, KeyRound, LifeBuoy } from 'lucide-react';
+import AdminCard from '@/components/admin/AdminCard';
+import AdminPage from '@/components/admin/AdminPage';
+import { AdminTable, Td, Th, Tr } from '@/components/admin/AdminTable';
+import StatTile from '@/components/admin/StatTile';
+import StatusBanner from '@/components/admin/StatusBanner';
 import { useEffect, useState } from 'react';
-import StudioShell from '@/components/app/studio/StudioShell';
 import StudioButton from '@/components/app/studio/StudioButton';
-import PageTabs from '@/components/app/studio/PageTabs';
-import { adminTabs } from '../plans/PlansAdmin';
 import { BACK_UP_NOW_LABEL } from '@/lib/backup/copy';
 import { formatAdminDateTime } from '../format-admin-date';
 
@@ -84,119 +87,101 @@ export default function BackupsAdmin({ initial }: { initial: BackupAdminPayload 
     }
   };
 
+  const status = data.running || busy ? 'Running' : data.stale ? 'Stale' : 'OK';
+
   return (
-    <StudioShell variant="workspace">
-      <main className="mx-auto max-w-[1100px] px-20 py-40">
-        <h1 className="text-[32px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">Admin</h1>
-        <PageTabs items={adminTabs('backups')} />
+    <AdminPage
+      icon="backups"
+      title="Backups"
+      description="When the database was last backed up, and how to restore it."
+      width="wide"
+      actions={
+        <StudioButton
+          type="button"
+          onClick={() => void runNow()}
+          disabled={busy || Boolean(data.running)}
+        >
+          {busy || data.running ? 'Backing up…' : BACK_UP_NOW_LABEL}
+        </StudioButton>
+      }
+    >
+      {data.staleBanner && <StatusBanner tone="error">{data.staleBanner}</StatusBanner>}
 
-        {data.staleBanner && (
-          <div
-            className="mb-16 rounded-12 border border-[var(--studio-danger)]/30 bg-[var(--studio-surface)] p-16"
-            role="alert"
-          >
-            <p className="text-[14px] font-medium text-[var(--studio-danger)]">{data.staleBanner}</p>
-          </div>
-        )}
-
-        {data.restoreNotice && (
-          <div className="mb-16 rounded-12 border border-[var(--studio-danger)]/30 bg-[var(--studio-surface)] p-16">
-            <p className="text-[14px] font-medium text-[var(--studio-danger)]">{data.restoreNotice}</p>
-            <p className="mt-8 font-mono text-[12px] text-[var(--studio-muted)]">{data.restoreCommand}</p>
-          </div>
-        )}
-
-        {data.alert && !data.staleBanner && (
-          <div className="mb-16 rounded-12 border border-[var(--studio-danger)]/30 bg-[var(--studio-surface)] p-16">
-            <p className="text-[14px] font-medium text-[var(--studio-danger)]">{data.alert.message}</p>
-          </div>
-        )}
-
-        {error && (
-          <p className="mb-16 text-[13px] text-[var(--studio-danger)]" role="alert">
-            {error}
+      {data.restoreNotice && (
+        <StatusBanner tone="error">
+          <p>{data.restoreNotice}</p>
+          <p className="mt-8 font-mono text-[12px] text-[var(--studio-muted)]">
+            {data.restoreCommand}
           </p>
-        )}
+        </StatusBanner>
+      )}
 
-        <div className="mb-24 grid grid-cols-1 gap-12 sm:grid-cols-3">
-          <div className="rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-18">
-            <p className="text-[12px] uppercase tracking-[0.08em] text-[var(--studio-faint)]">Last DB backup</p>
-            <p className="mt-8 text-[28px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">
-              {data.lastSuccess ? formatAge(data.lastSuccess.ageMs) : 'Never'}
-            </p>
-          </div>
-          <div className="rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-18">
-            <p className="text-[12px] uppercase tracking-[0.08em] text-[var(--studio-faint)]">Encryption key</p>
-            <p className="mt-8 text-[28px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">
-              {data.encryptionFingerprint || '—'}
-            </p>
-          </div>
-          <div className="rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-18">
-            <p className="text-[12px] uppercase tracking-[0.08em] text-[var(--studio-faint)]">Status</p>
-            <p className="mt-8 text-[28px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">
-              {data.running || busy ? 'Running' : data.stale ? 'Stale' : 'OK'}
-            </p>
-          </div>
-        </div>
+      {data.alert && !data.staleBanner && (
+        <StatusBanner tone="error">{data.alert.message}</StatusBanner>
+      )}
+      {error && <StatusBanner tone="error">{error}</StatusBanner>}
+      {(busy || data.running) && (
+        <StatusBanner tone="info">
+          Backup in progress. This page refreshes automatically.
+        </StatusBanner>
+      )}
 
-        <div className="mb-24 flex items-center gap-12">
-          <StudioButton type="button" onClick={() => void runNow()} disabled={busy || Boolean(data.running)}>
-            {busy || data.running ? 'Backing up…' : BACK_UP_NOW_LABEL}
-          </StudioButton>
-          {(busy || data.running) && (
-            <p className="text-[13px] text-[var(--studio-muted)]">Backup in progress. This page refreshes automatically.</p>
-          )}
-        </div>
+      <div className="grid grid-cols-1 gap-12 sm:grid-cols-3">
+        <StatTile
+          icon={<Archive className="size-16" aria-hidden />}
+          value={data.lastSuccess ? formatAge(data.lastSuccess.ageMs) : 'Never'}
+          label="Last DB backup"
+          tone={data.lastSuccess ? 'default' : 'warning'}
+        />
+        <StatTile
+          icon={<KeyRound className="size-16" aria-hidden />}
+          value={data.encryptionFingerprint || '—'}
+          label="Encryption key"
+        />
+        <StatTile
+          icon={<Archive className="size-16" aria-hidden />}
+          value={status}
+          label="Status"
+          tone={status === 'Stale' ? 'danger' : status === 'Running' ? 'warning' : 'default'}
+        />
+      </div>
 
-        <section className="mb-32">
-          <h2 className="mb-12 text-[18px] font-medium text-[var(--studio-fg)]">Recovery</h2>
-          <p className="text-[14px] leading-6 text-[var(--studio-muted)]">{data.recoverySummary}</p>
-          <p className="mt-12 font-mono text-[12px] text-[var(--studio-fg)]">{data.restoreCommand}</p>
-        </section>
+      <AdminCard icon={<LifeBuoy className="size-14" aria-hidden />} title="Recovery">
+        <p className="text-[14px] leading-6 text-[var(--studio-muted)]">{data.recoverySummary}</p>
+        <p className="mt-12 font-mono text-[12px] text-[var(--studio-fg)]">{data.restoreCommand}</p>
+      </AdminCard>
 
-        <section>
-          <h2 className="mb-12 text-[18px] font-medium text-[var(--studio-fg)]">Recent runs</h2>
-          <div className="overflow-x-auto rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)]">
-            <table className="w-full text-left text-[14px]">
-              <thead className="border-b border-[var(--studio-line)] text-[12px] uppercase tracking-[0.08em] text-[var(--studio-faint)]">
-                <tr>
-                  <th className="px-16 py-12 font-medium">Started</th>
-                  <th className="px-16 py-12 font-medium">Kind</th>
-                  <th className="px-16 py-12 font-medium">Status</th>
-                  <th className="px-16 py-12 font-medium">Size</th>
-                  <th className="px-16 py-12 font-medium">Duration</th>
-                  <th className="px-16 py-12 font-medium">Object</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.runs.map((row) => (
-                  <tr key={row.id} className="border-t border-[var(--studio-line)]">
-                    <td className="px-16 py-12 text-[var(--studio-fg)]">
-                      {formatAdminDateTime(row.startedAt)}
-                    </td>
-                    <td className="px-16 py-12 text-[var(--studio-fg)]">{row.kind}</td>
-                    <td className="px-16 py-12 text-[var(--studio-fg)]">{row.status}</td>
-                    <td className="px-16 py-12 text-[var(--studio-muted)]">{row.sizeBytes ?? '—'}</td>
-                    <td className="px-16 py-12 text-[var(--studio-muted)]">
-                      {row.durationMs != null ? `${Math.round(row.durationMs / 1000)}s` : '—'}
-                    </td>
-                    <td className="px-16 py-12 font-mono text-[12px] text-[var(--studio-muted)]">
-                      {row.objectKey || row.detail || '—'}
-                    </td>
-                  </tr>
-                ))}
-                {data.runs.length === 0 && (
-                  <tr>
-                    <td colSpan={6} className="px-16 py-16 text-[13px] text-[var(--studio-muted)]">
-                      No backup runs yet.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      </main>
-    </StudioShell>
+      <AdminCard icon={<History className="size-14" aria-hidden />} title="Recent runs">
+        <AdminTable
+          isEmpty={data.runs.length === 0}
+          empty="No backup runs yet."
+          head={
+            <>
+              <Th>Started</Th>
+              <Th>Kind</Th>
+              <Th>Status</Th>
+              <Th>Size</Th>
+              <Th>Duration</Th>
+              <Th>Object</Th>
+            </>
+          }
+        >
+          {data.runs.map((row) => (
+            <Tr key={row.id}>
+              <Td>{formatAdminDateTime(row.startedAt)}</Td>
+              <Td>{row.kind}</Td>
+              <Td>{row.status}</Td>
+              <Td muted>{row.sizeBytes ?? '—'}</Td>
+              <Td muted>
+                {row.durationMs != null ? `${Math.round(row.durationMs / 1000)}s` : '—'}
+              </Td>
+              <Td mono muted>
+                {row.objectKey || row.detail || '—'}
+              </Td>
+            </Tr>
+          ))}
+        </AdminTable>
+      </AdminCard>
+    </AdminPage>
   );
 }

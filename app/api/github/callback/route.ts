@@ -18,7 +18,7 @@ import {
   verifyOAuthState,
 } from '@/lib/github/oauth-state';
 
-function finish(request: NextRequest, result: 'connected' | 'error') {
+function finish(request: NextRequest, result: 'connected' | 'error' | 'unconfigured') {
   const response = NextResponse.redirect(profileGithubRedirect(request.url, result));
   response.cookies.set(GITHUB_OAUTH_STATE_COOKIE, '', { ...oauthStateCookieOptions(), maxAge: 0 });
   return response;
@@ -39,9 +39,9 @@ export async function GET(request: NextRequest) {
       return finish(request, 'error');
     }
 
-    const { clientId, clientSecret, callbackUrl, configured } = getGithubOAuthConfig();
+    const { clientId, clientSecret, callbackUrl, configured } = await getGithubOAuthConfig();
     if (!configured) {
-      return finish(request, 'error');
+      return finish(request, 'unconfigured');
     }
 
     // Trusted host — do not route through safeFetch.

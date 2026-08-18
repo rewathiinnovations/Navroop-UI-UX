@@ -1,6 +1,6 @@
 /**
  * Sentry beforeSend redaction: tokens, pems, passwords, auth headers, query token=.
- * Run: npx tsx tests/sentry-scrub.test.ts
+ * Run: pnpm exec tsx tests/sentry-scrub.test.ts
  */
 import { sentryBeforeSend } from '../lib/sentry/scrub.ts';
 

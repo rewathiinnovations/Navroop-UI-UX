@@ -1,4 +1,5 @@
 import { getEffectiveApiKey } from '@/lib/api-keys';
+import { getSettings } from '@/lib/settings/resolve';
 
 const OVERLAY_KEYS = [
   { env: 'GEMINI_API_KEY', provider: 'google' },
@@ -6,6 +7,17 @@ const OVERLAY_KEYS = [
   { env: 'ANTHROPIC_API_KEY', provider: 'anthropic' },
   { env: 'GROQ_API_KEY', provider: 'groq' },
   { env: 'AI_GATEWAY_API_KEY', provider: 'gateway' },
+] as const;
+
+/** Non-secret AI settings configured in Admin → Configuration, not only in the environment. */
+const OVERLAY_BASE_URLS = [
+  { env: 'ANTHROPIC_BASE_URL', setting: 'ai.anthropic.baseUrl' },
+  { env: 'OPENAI_BASE_URL', setting: 'ai.openai.baseUrl' },
+  { env: 'GEMINI_BASE_URL', setting: 'ai.google.baseUrl' },
+  { env: 'GROQ_BASE_URL', setting: 'ai.groq.baseUrl' },
+  { env: 'AI_PROVIDER_CONCURRENCY', setting: 'ai.concurrency' },
+  { env: 'AI_PRIMARY_PROVIDER', setting: 'ai.primaryProvider' },
+  { env: 'AI_PRIMARY_MODEL', setting: 'ai.primaryModel' },
 ] as const;
 
 /**
@@ -30,6 +42,10 @@ export async function loadEffectiveProviderEnv(
   const keys: Record<string, string | null> = {};
   for (const row of OVERLAY_KEYS) {
     keys[row.env] = await getEffectiveApiKey(userId, row.provider);
+  }
+  const settings = await getSettings(OVERLAY_BASE_URLS.map((row) => row.setting));
+  for (const row of OVERLAY_BASE_URLS) {
+    keys[row.env] = settings[row.setting];
   }
   return overlayProviderKeys(env, keys);
 }

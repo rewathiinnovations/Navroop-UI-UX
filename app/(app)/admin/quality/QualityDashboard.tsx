@@ -1,11 +1,18 @@
 'use client';
 
+import { AlertCircle, FolderOpen, Gauge, GitCommitHorizontal, Sparkles } from 'lucide-react';
+import AdminCard from '@/components/admin/AdminCard';
+import AdminPage from '@/components/admin/AdminPage';
+import StatTile from '@/components/admin/StatTile';
+import StatusBanner from '@/components/admin/StatusBanner';
 import { FormEvent, useEffect, useMemo, useState } from 'react';
-import StudioShell from '@/components/app/studio/StudioShell';
 import StudioButton from '@/components/app/studio/StudioButton';
 import StudioField from '@/components/app/studio/StudioField';
-import PageTabs from '@/components/app/studio/PageTabs';
-import { MIN_KIND_SAMPLES, QUALITY_SIGNAL_KINDS, type QualitySignalKind } from '@/lib/signals/score';
+import {
+  MIN_KIND_SAMPLES,
+  QUALITY_SIGNAL_KINDS,
+  type QualitySignalKind,
+} from '@/lib/signals/score';
 import { formatAdminDate } from '../format-admin-date';
 
 type KindMetric = {
@@ -109,27 +116,13 @@ export default function QualityDashboard() {
   };
 
   return (
-    <StudioShell variant="workspace">
-      <main className="mx-auto max-w-[1100px] px-20 py-40">
-        <h1 className="text-[32px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">Admin</h1>
-        <PageTabs
-          items={[
-            { href: '/admin/team', label: 'Team' },
-            { href: '/admin/usage', label: 'Usage' },
-            { href: '/admin/quality', label: 'Quality', active: true },
-            { href: '/admin/health', label: 'Health' },
-            { href: '/admin/jobs', label: 'Jobs' },
-            { href: '/admin/backups', label: 'Backups' },
-            { href: '/admin/audit', label: 'Audit' },
-            { href: '/admin/integrations', label: 'Integrations' },
-            { href: '/admin/deploy', label: 'Deploy' },
-            { href: '/admin/servers', label: 'Servers' },
-            { href: '/admin/plans', label: 'Plans' },
-            { href: '/admin/workspace', label: 'Workspace' },
-          ]}
-        />
-
-        <form onSubmit={applyRange} className="mb-24 flex flex-col gap-12 sm:flex-row sm:items-end">
+    <AdminPage
+      icon="quality"
+      title="Quality"
+      description="How well generation is performing over time, and the problems that keep recurring."
+      width="wide"
+      actions={
+        <form onSubmit={applyRange} className="flex flex-wrap items-end gap-8">
           <StudioField
             id="quality-from"
             label="From"
@@ -150,36 +143,38 @@ export default function QualityDashboard() {
             Apply
           </StudioButton>
         </form>
+      }
+    >
+      {error && <StatusBanner tone="error">{error}</StatusBanner>}
 
-        {error && (
-          <p className="mb-16 text-[13px] text-[var(--studio-danger)]" role="alert">
-            {error}
-          </p>
-        )}
+      <div className="grid grid-cols-1 gap-12 sm:grid-cols-3">
+        <StatTile
+          icon={<FolderOpen className="size-16" aria-hidden />}
+          value={data ? data.summary.totalGenerations : '—'}
+          label="Generations"
+        />
+        <StatTile
+          icon={<Gauge className="size-16" aria-hidden />}
+          value={data ? data.summary.activeDays : '—'}
+          label="Active days"
+        />
+        <StatTile
+          icon={<GitCommitHorizontal className="size-16" aria-hidden />}
+          value={data?.summary.promptVersionLabel || '—'}
+          label="Prompt version"
+        />
+      </div>
 
-        <div className="mb-24 grid grid-cols-1 gap-12 sm:grid-cols-3">
-          {[
-            { label: 'Generations', value: data ? String(data.summary.totalGenerations) : '—' },
-            { label: 'Active days', value: data ? String(data.summary.activeDays) : '—' },
-            { label: 'Prompt version', value: data?.summary.promptVersionLabel || '—' },
-          ].map((card) => (
-            <div
-              key={card.label}
-              className="rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-18"
-            >
-              <p className="text-[12px] uppercase tracking-[0.08em] text-[var(--studio-faint)]">{card.label}</p>
-              <p className="mt-8 text-[28px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">{card.value}</p>
-            </div>
-          ))}
-        </div>
-
-        {data?.overall != null && (
-          <p className="mb-16 text-[13px] text-[var(--studio-muted)]">
-            Overall quality score {formatPct(data.overall)} — weighted composite, shown only with 30+ samples.
-          </p>
-        )}
-
-        <div className="mb-32 grid grid-cols-1 gap-12 sm:grid-cols-2 lg:grid-cols-4">
+      <AdminCard
+        icon={<Sparkles className="size-14" aria-hidden />}
+        title="Signal scores"
+        description={
+          data?.overall != null
+            ? `Overall quality score ${formatPct(data.overall)} — weighted composite, shown only with 30+ samples.`
+            : undefined
+        }
+      >
+        <div className="grid grid-cols-1 gap-12 sm:grid-cols-2 lg:grid-cols-4">
           {QUALITY_SIGNAL_KINDS.map((kind) => {
             const metric = data?.metrics[kind];
             const n = metric?.n ?? 0;
@@ -187,31 +182,41 @@ export default function QualityDashboard() {
             return (
               <div
                 key={kind}
-                className="rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-18"
+                className="rounded-12 border border-[var(--studio-line)] bg-[var(--studio-bg)] px-16 py-18"
                 title={metric?.definition}
               >
                 <p className="text-[12px] uppercase tracking-[0.08em] text-[var(--studio-faint)]">
                   {metric?.label || kind}
                 </p>
-                <p className="mt-8 text-[24px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">
-                  {ready ? formatPct(metric.mean!) : `Not enough data yet (${n}/${MIN_KIND_SAMPLES})`}
+                <p className="mt-8 text-[22px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">
+                  {ready
+                    ? formatPct(metric.mean!)
+                    : `Not enough data yet (${n}/${MIN_KIND_SAMPLES})`}
                 </p>
                 <p className="mt-6 text-[12px] text-[var(--studio-muted)]">
                   based on {n} generations · {trendLabel(metric?.trend ?? null)}
                 </p>
-                <p className="mt-8 text-[11px] leading-4 text-[var(--studio-faint)]">{metric?.definition}</p>
+                <p className="mt-8 text-[11px] leading-4 text-[var(--studio-faint)]">
+                  {metric?.definition}
+                </p>
               </div>
             );
           })}
         </div>
+      </AdminCard>
 
-        <section className="mb-32">
-          <h2 className="mb-12 text-[18px] font-medium text-[var(--studio-fg)]">Prompt version history</h2>
+      <AdminCard
+        icon={<GitCommitHorizontal className="size-14" aria-hidden />}
+        title="Prompt version history"
+      >
+        {!loading && (data?.versions || []).length === 0 ? (
+          <p className="text-[13px] text-[var(--studio-muted)]">No prompt versions recorded yet.</p>
+        ) : (
           <div className="grid grid-cols-1 gap-12 lg:grid-cols-2">
             {(data?.versions || []).map((version) => (
               <div
                 key={version.id}
-                className="rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-18"
+                className="rounded-12 border border-[var(--studio-line)] bg-[var(--studio-bg)] px-16 py-18"
               >
                 <p className="text-[14px] font-medium text-[var(--studio-fg)]">
                   {version.label}
@@ -232,7 +237,9 @@ export default function QualityDashboard() {
                       return (
                         <li key={kind}>
                           {row?.label || kind}:{' '}
-                          {row?.mean != null ? formatPct(row.mean) : `Not enough data yet (${row?.n ?? 0}/${MIN_KIND_SAMPLES})`}
+                          {row?.mean != null
+                            ? formatPct(row.mean)
+                            : `Not enough data yet (${row?.n ?? 0}/${MIN_KIND_SAMPLES})`}
                         </li>
                       );
                     })}
@@ -240,29 +247,27 @@ export default function QualityDashboard() {
                 )}
               </div>
             ))}
-            {!loading && (data?.versions || []).length === 0 && (
-              <p className="text-[13px] text-[var(--studio-muted)]">No prompt versions recorded yet.</p>
-            )}
           </div>
-        </section>
+        )}
+      </AdminCard>
 
-        <section>
-          <h2 className="mb-12 text-[18px] font-medium text-[var(--studio-fg)]">Recurring issues</h2>
-          {(data?.recurringIssues || []).length === 0 ? (
-            <p className="text-[13px] text-[var(--studio-muted)]">No recurring code-audit issues yet.</p>
-          ) : (
-            <ul className="space-y-8 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-14">
-              {data!.recurringIssues.map((issue) => (
-                <li key={issue.category} className="text-[13px] text-[var(--studio-fg)]">
-                  <span className="font-medium">{issue.category}</span>
-                  {` · ${issue.count}`}
-                  <span className="text-[var(--studio-muted)]"> — {issue.sampleTitle}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-      </main>
-    </StudioShell>
+      <AdminCard icon={<AlertCircle className="size-14" aria-hidden />} title="Recurring issues">
+        {(data?.recurringIssues || []).length === 0 ? (
+          <p className="text-[13px] text-[var(--studio-muted)]">
+            No recurring code-audit issues yet.
+          </p>
+        ) : (
+          <ul className="space-y-8">
+            {data!.recurringIssues.map((issue) => (
+              <li key={issue.category} className="text-[13px] text-[var(--studio-fg)]">
+                <span className="font-medium">{issue.category}</span>
+                {` · ${issue.count}`}
+                <span className="text-[var(--studio-muted)]"> — {issue.sampleTitle}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </AdminCard>
+    </AdminPage>
   );
 }

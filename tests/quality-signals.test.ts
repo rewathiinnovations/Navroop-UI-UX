@@ -1,6 +1,6 @@
 /**
  * Quality measurement layer — scoring, aggregation, collectors.
- * Run: npx tsx tests/quality-signals.test.ts
+ * Run: pnpm exec tsx tests/quality-signals.test.ts
  */
 import {
   QUALITY_SIGNAL_KINDS,

@@ -1,6 +1,6 @@
 /**
  * Terms acceptance is required on register and the timestamp is stored.
- * Run: npx tsx tests/legal-terms.test.ts
+ * Run: pnpm exec tsx tests/legal-terms.test.ts
  */
 import { resolve } from 'node:path';
 import { config } from 'dotenv';

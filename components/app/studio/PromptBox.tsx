@@ -52,7 +52,19 @@ export default function PromptBox({
 
   return (
     <form onSubmit={onFormSubmit} className={cn("w-full", className)}>
-      <div className="rounded-12 border border-[var(--studio-line-strong)] bg-[var(--studio-surface)] shadow-[0_8px_30px_rgba(24,24,27,0.06)] focus-within:ring-2 focus-within:ring-[var(--studio-ring)]">
+      {/* The "type an idea" moment. Focus doesn't snap a hard ring on — the
+          border warms to the accent and a soft glow rises under the box, so
+          starting a project feels like the surface waking up. Both layers are
+          box-shadow/border-color only; reduced motion just skips the ease. */}
+      <div
+        className={cn(
+          'rounded-12 border border-[var(--studio-line-strong)] bg-[var(--studio-surface)]',
+          'shadow-[0_8px_30px_rgba(24,24,27,0.06)]',
+          'transition-[border-color,box-shadow] duration-300 ease-out motion-reduce:transition-none',
+          'focus-within:border-[var(--studio-accent)]/55',
+          'focus-within:shadow-[0_0_0_3px_var(--studio-accent-soft),0_12px_40px_rgba(24,24,27,0.1)]',
+        )}
+      >
         <label htmlFor={id} className="sr-only">
           {label}
         </label>
@@ -72,9 +84,19 @@ export default function PromptBox({
             type="submit"
             disabled={!value.trim() || submitting}
             aria-label="Create project"
-            className="inline-flex size-[44px] items-center justify-center rounded-full bg-[var(--studio-accent)] text-white hover:bg-[var(--studio-accent-hover)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-200 cursor-pointer"
+            className={cn(
+              'group inline-flex size-[44px] items-center justify-center rounded-full',
+              '[background-image:var(--studio-cta-gradient)] text-white hover:brightness-[1.07]',
+              'disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer',
+              'transition-[background-color,transform,filter] duration-200',
+              'active:scale-95 disabled:active:scale-100 motion-reduce:transition-none motion-reduce:active:scale-100',
+            )}
           >
-            {submitting ? <Loader2 className="size-18 animate-spin" /> : <ArrowUp className="size-18" />}
+            {submitting ? (
+              <Loader2 className="size-18 animate-spin motion-reduce:animate-none" />
+            ) : (
+              <ArrowUp className="size-18 transition-transform duration-200 group-hover:-translate-y-2 motion-reduce:transition-none motion-reduce:group-hover:translate-y-0" />
+            )}
           </button>
         </div>
       </div>

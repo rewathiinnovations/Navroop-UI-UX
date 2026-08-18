@@ -19,7 +19,7 @@ import {
   BsFolder2Open,
   SiJavascript, 
   SiReact, 
-  SiCss, 
+  SiCss3, 
   SiJson 
 } from '@/lib/icons';
 import { motion } from 'framer-motion';
@@ -117,9 +117,13 @@ function AISandboxPage({
   const projectIdFromPath = typeof routeParams?.id === 'string' ? routeParams.id : null;
   const reconnectedRef = useRef(false);
   const pendingChatPromptRef = useRef<string | null>(null);
+  // Empty means "no explicit choice": the server then starts the provider
+  // chain at the configured primary (Admin → Configuration / AI_PRIMARY_*).
+  // Hardcoding appConfig.ai.defaultModel here silently overrode that setting
+  // on every build, because an explicit model outranks the chain's primary.
   const [aiModel, setAiModel] = useState(() => {
     const modelParam = searchParams.get('model');
-    return appConfig.ai.availableModels.includes(modelParam || '') ? modelParam! : appConfig.ai.defaultModel;
+    return appConfig.ai.availableModels.includes(modelParam || '') ? modelParam! : '';
   });
   const [urlOverlayVisible, setUrlOverlayVisible] = useState(false);
   const [urlInput, setUrlInput] = useState('');
@@ -147,6 +151,51 @@ function AISandboxPage({
   const [sandboxFiles, setSandboxFiles] = useState<Record<string, string>>({});
   const [hasInitialSubmission, setHasInitialSubmission] = useState<boolean>(false);
   const [fileStructure, setFileStructure] = useState<string>('');
+
+  // The Code tab used to fill only after an apply in this browser session, so
+  // reopening a finished project showed an empty tree. Load the persisted site
+  // once on mount; later applies refresh it through fetchSandboxFiles.
+  useEffect(() => {
+    const id = projectId ?? projectIdFromPath;
+    if (!id) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch(`/api/get-sandbox-files?projectId=${encodeURIComponent(id)}`);
+        if (!response.ok) return;
+        const data = await response.json();
+        if (!cancelled && data.success) {
+          setSandboxFiles((current) =>
+            Object.keys(current).length > 0 ? current : data.files || {},
+          );
+          setFileStructure((current) => current || data.structure || '');
+          // The code tab's tree and viewer render from generationProgress.files
+          // (the live-stream state) — seed it so a reopened project shows its
+          // site instead of an empty explorer. A stream in flight wins.
+          const entries = Object.entries((data.files || {}) as Record<string, string>);
+          if (entries.length > 0) {
+            setGenerationProgress((prev) => {
+              if (prev.isGenerating || prev.files.length > 0) return prev;
+              return {
+                ...prev,
+                files: entries.map(([path, content]) => ({
+                  path,
+                  content,
+                  type: path.split('.').pop() || 'text',
+                  completed: true,
+                })),
+              };
+            });
+          }
+        }
+      } catch {
+        // The tab stays empty; the next apply refreshes it.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, projectIdFromPath]);
   
   const [conversationContext, setConversationContext] = useState<{
     scrapedWebsites: Array<{ url: string; content: any; timestamp: Date }>;
@@ -684,7 +733,7 @@ function AISandboxPage({
         // Update URL with sandbox ID
         const newParams = new URLSearchParams(searchParams.toString());
         newParams.set('sandbox', data.sandboxId);
-        newParams.set('model', aiModel);
+        if (aiModel) newParams.set('model', aiModel);
         const sandboxProjectId = getGenerationState().projectId ?? projectId ?? projectIdFromPath;
         if (sandboxProjectId) {
           router.push(`/project/${sandboxProjectId}?${newParams.toString()}`, { scroll: false });
@@ -1114,10 +1163,14 @@ Tip: I automatically detect and install npm packages from your code imports (lik
   };
 
   const fetchSandboxFiles = async () => {
-    if (!sandboxData) return;
-    
+    const filesProjectId = getGenerationState().projectId ?? projectId ?? projectIdFromPath;
+    // No early return on missing sandboxData: with a projectId the server can
+    // serve the persisted site even when no live sandbox exists.
+    if (!sandboxData && !filesProjectId) return;
+
     try {
-      const response = await fetch('/api/get-sandbox-files', {
+      const query = filesProjectId ? `?projectId=${encodeURIComponent(filesProjectId)}` : '';
+      const response = await fetch(`/api/get-sandbox-files${query}`, {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
@@ -2088,7 +2141,7 @@ Tip: I automatically detect and install npm packages from your code imports (lik
     } else if (ext === 'tsx' || ext === 'ts') {
       return <SiReact style={{ width: '16px', height: '16px' }} className="text-blue-500" />;
     } else if (ext === 'css') {
-      return <SiCss style={{ width: '16px', height: '16px' }} className="text-blue-500" />;
+      return <SiCss3 style={{ width: '16px', height: '16px' }} className="text-blue-500" />;
     } else if (ext === 'json') {
       return <SiJson style={{ width: '16px', height: '16px' }} className="text-gray-600" />;
     } else {
@@ -2965,7 +3018,9 @@ Focus on the key sections and content, making it clean and modern.`;
       const response = await fetch(`/api/projects/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: nextTitle }),
+        // The API's update schema takes `name`. This sent `title`, which the
+        // schema rejected — every rename from the top bar silently no-opped.
+        body: JSON.stringify({ name: nextTitle }),
       });
       if (!response.ok) {
         setSaveState('idle');

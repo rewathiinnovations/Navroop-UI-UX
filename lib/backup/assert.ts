@@ -1,14 +1,25 @@
+import { getSettings } from '@/lib/settings/resolve';
+
 const MIN_ENCRYPTION_KEY_BYTES = 32;
 
-export function assertDistinctBuckets(
-  appBucket = process.env.ELK_BUCKET || process.env.S3_BUCKET,
-  backupBucket = process.env.BACKUP_BUCKET,
+/**
+ * The rule itself, with both values supplied. Kept pure and synchronous so it
+ * stays directly testable; the wrapper below is what production calls.
+ */
+export function assertDistinctBucketValues(
+  appBucket: string | null | undefined,
+  backupBucket: string | null | undefined,
 ) {
   const app = appBucket?.trim();
   const backup = backupBucket?.trim();
   if (app && backup && app === backup) {
-    throw new Error('BACKUP_BUCKET must be different from ELK_BUCKET');
+    throw new Error('The backup bucket must be different from the application storage bucket');
   }
+}
+
+export async function assertDistinctBuckets() {
+  const values = await getSettings(['storage.s3.bucket', 'backups.bucket']);
+  assertDistinctBucketValues(values['storage.s3.bucket'], values['backups.bucket']);
 }
 
 export function assertEncryptionKey(key = process.env.ENCRYPTION_KEY) {
@@ -17,19 +28,23 @@ export function assertEncryptionKey(key = process.env.ENCRYPTION_KEY) {
   }
 }
 
-export function assertProductionBackupDriver(
-  nodeEnv = process.env.NODE_ENV,
-  driver: 's3' | 'local' = backupDriverFromEnv(),
+export function assertProductionBackupDriverValues(
+  nodeEnv: string | undefined,
+  driver: 's3' | 'local',
 ) {
   if (nodeEnv === 'production' && driver === 'local') {
     throw new Error('Refusing production backup to local filesystem');
   }
 }
 
-export function backupDriverFromEnv(): 's3' | 'local' {
-  const endpoint = process.env.BACKUP_ENDPOINT?.trim();
-  const bucket = process.env.BACKUP_BUCKET?.trim();
-  return endpoint && bucket ? 's3' : 'local';
+export async function assertProductionBackupDriver() {
+  assertProductionBackupDriverValues(process.env.NODE_ENV, await backupDriver());
+}
+
+/** S3 only when both an endpoint and a bucket are configured; otherwise local disk. */
+export async function backupDriver(): Promise<'s3' | 'local'> {
+  const values = await getSettings(['backups.endpoint', 'backups.bucket']);
+  return values['backups.endpoint'] && values['backups.bucket'] ? 's3' : 'local';
 }
 
 function normalizeDbUrl(url: string) {

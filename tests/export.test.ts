@@ -1,6 +1,6 @@
 /**
  * ZIP export from checkpoints (dead sandbox, older id, rate limit, README).
- * Run: npx tsx tests/export.test.ts
+ * Run: pnpm exec tsx tests/export.test.ts
  */
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';

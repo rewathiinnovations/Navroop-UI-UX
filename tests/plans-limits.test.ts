@@ -1,6 +1,6 @@
 /**
  * Plan + credit limits: costs, period roll, check/consume, 402 English copy.
- * Run: npx tsx tests/plans-limits.test.ts
+ * Run: pnpm exec tsx tests/plans-limits.test.ts
  */
 import { resolve } from 'node:path';
 import { config } from 'dotenv';

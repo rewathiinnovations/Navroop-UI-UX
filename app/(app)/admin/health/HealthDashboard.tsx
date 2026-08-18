@@ -1,8 +1,22 @@
 'use client';
 
+import {
+  AlertTriangle,
+  Bug,
+  GitBranch,
+  HardDrive,
+  ListChecks,
+  Plug,
+  Server,
+  Sparkles,
+} from 'lucide-react';
+import AdminCard from '@/components/admin/AdminCard';
+import AdminPage from '@/components/admin/AdminPage';
+import AdminTabs, { type AdminTab } from '@/components/admin/AdminTabs';
+import StatTile from '@/components/admin/StatTile';
+import StatusBanner from '@/components/admin/StatusBanner';
+import StudioButton from '@/components/app/studio/StudioButton';
 import { useEffect, useState } from 'react';
-import StudioShell from '@/components/app/studio/StudioShell';
-import PageTabs from '@/components/app/studio/PageTabs';
 import { formatAdminDate, formatAdminDateTime } from '../format-admin-date';
 
 type HealthPayload = {
@@ -81,22 +95,6 @@ type HealthPayload = {
   };
 };
 
-const tabs = [
-  { href: '/admin/team', label: 'Team' },
-  { href: '/admin/usage', label: 'Usage' },
-  { href: '/admin/quality', label: 'Quality' },
-  { href: '/admin/health', label: 'Health', active: true },
-  { href: '/admin/jobs', label: 'Jobs' },
-  { href: '/admin/backups', label: 'Backups' },
-  { href: '/admin/audit', label: 'Audit' },
-  { href: '/admin/integrations', label: 'Integrations' },
-  { href: '/admin/deploy', label: 'Deploy' },
-  { href: '/admin/servers', label: 'Servers' },
-  { href: '/admin/plans', label: 'Plans' },
-  { href: '/admin/workspace', label: 'Workspace' },
-  { href: '/admin/sandbox-providers', label: 'Sandbox providers' },
-];
-
 export default function HealthDashboard() {
   const [data, setData] = useState<HealthPayload | null>(null);
   const [error, setError] = useState('');
@@ -146,14 +144,8 @@ export default function HealthDashboard() {
           label: 'Sandboxes vs plan',
           value: `${data.sandboxes.current} / ${data.sandboxes.limit < 0 ? '∞' : data.sandboxes.limit}`,
         },
-        {
-          label: 'Orphan Coolify apps',
-          value: String(data.orphans?.coolify ?? 0),
-        },
-        {
-          label: 'Orphan DNS records',
-          value: String(data.orphans?.dns ?? 0),
-        },
+        { label: 'Orphan Coolify apps', value: String(data.orphans?.coolify ?? 0) },
+        { label: 'Orphan DNS records', value: String(data.orphans?.dns ?? 0) },
         {
           label: 'Orphan deploy repos (report only)',
           value: String(data.orphans?.repos ?? 0),
@@ -161,48 +153,48 @@ export default function HealthDashboard() {
       ]
     : [];
 
-  return (
-    <StudioShell variant="workspace">
-      <main className="mx-auto max-w-[1100px] px-20 py-40">
-        <h1 className="text-[32px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">Admin</h1>
-        <PageTabs items={tabs} />
-
-        {data?.release && (
-          <section className="mb-24 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-18">
-            <h2 className="mb-8 text-[18px] font-medium text-[var(--studio-fg)]">Current release</h2>
-            <p className="text-[13px] text-[var(--studio-fg)]">
-              <span className="font-medium">{data.release.sha}</span>
-              {data.release.deployedAt !== '1970-01-01T00:00:00.000Z' ? (
-                <span className="text-[var(--studio-muted)]">{` — deployed ${formatAdminDateTime(data.release.deployedAt)}`}</span>
-              ) : (
-                <span className="text-[var(--studio-muted)]"> — deploy time unknown</span>
-              )}
-            </p>
-            <p className="mt-8 text-[12px] text-[var(--studio-muted)]">
-              Rolling back the app does not revert the database. Restore from backup if the schema changed.
-            </p>
-            {(data.release.history || []).length > 0 && (
-              <ul className="mt-12 space-y-4 text-[12px] text-[var(--studio-muted)]">
-                {data.release.history.slice(0, 10).map((row) => (
-                  <li key={row.sha}>
-                    {row.sha}
-                    {` — ${formatAdminDateTime(row.deployedAt)}`}
-                  </li>
-                ))}
-              </ul>
+  const tabs: AdminTab[] = [
+    data?.release && {
+      id: 'release',
+      label: 'Release',
+      icon: <GitBranch className="size-13" aria-hidden />,
+      panel: (
+        <AdminCard>
+          <p className="text-[13px] text-[var(--studio-fg)]">
+            <span className="font-medium">{data.release.sha}</span>
+            {data.release.deployedAt !== '1970-01-01T00:00:00.000Z' ? (
+              <span className="text-[var(--studio-muted)]">{` — deployed ${formatAdminDateTime(data.release.deployedAt)}`}</span>
+            ) : (
+              <span className="text-[var(--studio-muted)]"> — deploy time unknown</span>
             )}
-            <label className="mt-16 block text-[13px] text-[var(--studio-fg)]">
-              Type <span className="font-medium">roll back</span> to confirm
-              <input
-                className="mt-6 w-full rounded-12 border border-[var(--studio-line)] bg-[var(--studio-bg)] px-12 py-8 text-[13px]"
-                value={confirm}
-                onChange={(event) => setConfirm(event.target.value)}
-                autoComplete="off"
-              />
-            </label>
-            <button
+          </p>
+          <p className="mt-8 text-[12px] text-[var(--studio-muted)]">
+            Rolling back the app does not revert the database. Restore from backup if the schema
+            changed.
+          </p>
+          {(data.release.history || []).length > 0 && (
+            <ul className="mt-12 space-y-4 text-[12px] text-[var(--studio-muted)]">
+              {data.release.history.slice(0, 10).map((row) => (
+                <li key={row.sha}>
+                  {row.sha}
+                  {` — ${formatAdminDateTime(row.deployedAt)}`}
+                </li>
+              ))}
+            </ul>
+          )}
+          <label className="mt-16 block text-[13px] text-[var(--studio-fg)]">
+            Type <span className="font-medium">roll back</span> to confirm
+            <input
+              className="mt-6 h-40 w-full rounded-10 border border-[var(--studio-line-strong)] bg-[var(--studio-bg)] px-12 text-[13px] text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
+              value={confirm}
+              onChange={(event) => setConfirm(event.target.value)}
+              autoComplete="off"
+            />
+          </label>
+          <div className="mt-12">
+            <StudioButton
               type="button"
-              className="mt-12 rounded-12 border border-[var(--studio-line)] px-14 py-8 text-[13px] text-[var(--studio-fg)] disabled:opacity-50"
+              variant="danger"
               disabled={rollingBack || confirm.trim().toLowerCase() !== 'roll back'}
               onClick={async () => {
                 setRollingBack(true);
@@ -224,203 +216,216 @@ export default function HealthDashboard() {
                 }
               }}
             >
-              Roll back to previous release
-            </button>
-            {rollbackMessage ? (
-              <p className="mt-8 text-[13px] text-[var(--studio-muted)]" role="status">
-                {rollbackMessage}
-              </p>
-            ) : null}
-          </section>
-        )}
-
-        {data?.self && (
-          <section className="mb-24 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-18">
-            <h2 className="mb-8 text-[18px] font-medium text-[var(--studio-fg)]">This instance</h2>
-            <p className="text-[13px] text-[var(--studio-fg)]">
-              Coolify application{' '}
-              {data.self.coolifyAppUuid ? (
-                <span className="font-medium">{data.self.coolifyAppUuid}</span>
-              ) : (
-                <span className="font-medium">not configured</span>
-              )}
+              {rollingBack ? 'Rolling back…' : 'Roll back to previous release'}
+            </StudioButton>
+          </div>
+          {rollbackMessage ? (
+            <p className="mt-8 text-[13px] text-[var(--studio-muted)]" role="status">
+              {rollbackMessage}
             </p>
-            {!data.self.coolifyAppUuid && (
-              <p className="mt-6 text-[12px] text-[var(--studio-muted)]">
-                COOLIFY_APP_UUID is not set, so Navroop cannot identify its own Coolify application.
-                Rollback and the Sentry restart will refuse to run until it is set in the deployment
-                environment.
-              </p>
-            )}
-            <p className="mt-8 text-[12px] text-[var(--studio-muted)]">
-              {`${data.self.environment} · commit ${data.self.gitSha} · instance ${data.self.instanceId}`}
-            </p>
-          </section>
-        )}
-
-        {data?.dataDir && (
-          <section className="mb-24 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-18">
-            <h2 className="mb-8 text-[18px] font-medium text-[var(--studio-fg)]">Persistent volume</h2>
-            <p
-              className={
-                data.dataDir.state === 'unwritable' || data.dataDir.warnLowSpace
-                  ? 'text-[13px] text-[var(--studio-danger)]'
-                  : 'text-[13px] text-[var(--studio-muted)]'
-              }
-            >
-              {data.dataDir.state === 'unwritable'
-                ? 'Not writable'
-                : data.dataDir.state === 'not_checked'
-                  ? 'Not checked yet'
-                  : data.dataDir.alertLowSpace
-                    ? 'Writable — free space is under 10%'
-                    : data.dataDir.warnLowSpace
-                      ? 'Writable — free space is under 20%'
-                      : 'Writable'}
-            </p>
-            {data.dataDir.state === 'not_checked' ? (
-              <p className="mt-4 text-[13px] text-[var(--studio-muted)]">
-                The boot probe has not run in this process, so writability is unknown. This is not a failure.
-              </p>
-            ) : null}
-            <p className="mt-10 text-[13px] text-[var(--studio-fg)]">
-              Path: <span className="font-medium">{data.dataDir.path}</span>
-            </p>
-            <p className="mt-4 text-[13px] text-[var(--studio-fg)]">
-              Volume id:{' '}
-              <span className="font-medium">{data.dataDir.volumeId || 'none'}</span>
-              {data.dataDir.volumeAgeSeconds != null ? (
-                <span className="text-[var(--studio-muted)]">
-                  {` — age ${Math.floor(data.dataDir.volumeAgeSeconds / 86400)}d`}
-                </span>
-              ) : null}
-            </p>
-            {data.dataDir.volumeChanged ? (
-              <p className="mt-4 text-[13px] text-[var(--studio-danger)]">
-                Volume id changed
-                {data.dataDir.previousVolumeId
-                  ? ` (was ${data.dataDir.previousVolumeId})`
-                  : ''}
-                . This is a fresh volume or a lost mount. Reconstructible state is rebuilt from the database or object storage.
-              </p>
-            ) : null}
-            <p className="mt-4 text-[13px] text-[var(--studio-fg)]">
-              Free space:{' '}
-              <span className="font-medium">
-                {data.dataDir.freeBytes != null && data.dataDir.totalBytes != null
-                  ? `${Math.round((data.dataDir.freeBytes / (1024 * 1024 * 1024)) * 10) / 10} GB of ${Math.round((data.dataDir.totalBytes / (1024 * 1024 * 1024)) * 10) / 10} GB`
-                  : 'unknown'}
-              </span>
-              {data.dataDir.freeRatio != null
-                ? ` (${Math.round(data.dataDir.freeRatio * 100)}% free)`
-                : ''}
-            </p>
-            {data.dataDir.error ? (
-              <p className="mt-8 text-[13px] text-[var(--studio-danger)]" role="alert">
-                {data.dataDir.error}
-              </p>
-            ) : null}
-            <p className="mt-10 text-[12px] text-[var(--studio-muted)]">
-              The volume is a cache and bootstrap shortcut. If it is deleted, the next boot rebuilds it from Postgres or object storage. It is not included in the database backup.
-            </p>
-          </section>
-        )}
-
-        {data?.errorTracking && (
-          <section className="mb-24 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-18">
-            <h2 className="mb-8 text-[18px] font-medium text-[var(--studio-fg)]">Error tracking</h2>
-            <p
-              className={
-                data.errorTracking.status === 'Healthy'
-                  ? 'text-[13px] text-[var(--studio-muted)]'
-                  : 'text-[13px] text-[var(--studio-danger)]'
-              }
-            >
-              {data.errorTracking.status}
-            </p>
-            <p className="mt-10 text-[13px] text-[var(--studio-fg)]">
-              Last successful send:{' '}
-              <span className="font-medium">
-                {data.errorTracking.lastSuccessfulSendAt
-                  ? formatAdminDateTime(data.errorTracking.lastSuccessfulSendAt)
-                  : 'never'}
-              </span>
-            </p>
-            <p className="mt-4 text-[13px] text-[var(--studio-fg)]">
-              Last confirmed Sentry receipt:{' '}
-              <span className="font-medium">
-                {data.errorTracking.lastConfirmedReceiptAt
-                  ? formatAdminDateTime(data.errorTracking.lastConfirmedReceiptAt)
-                  : 'never'}
-              </span>
-            </p>
-            {data.errorTracking.quota ? (
-              <div className="mt-14">
-                <p className="text-[12px] uppercase tracking-[0.08em] text-[var(--studio-faint)]">
-                  Quota {data.errorTracking.quota.used} / {data.errorTracking.quota.limit}
-                  {data.errorTracking.quota.resetsAt
-                    ? ` · resets ${formatAdminDate(data.errorTracking.quota.resetsAt)}`
-                    : ''}
-                </p>
-                <div className="mt-6 h-8 overflow-hidden rounded-12 bg-[var(--studio-bg)]">
-                  <div
-                    className="h-full bg-[var(--studio-fg)]"
-                    style={{
-                      width: `${Math.min(
-                        100,
-                        data.errorTracking.quota.limit > 0
-                          ? (data.errorTracking.quota.used / data.errorTracking.quota.limit) * 100
-                          : 0,
-                      )}%`,
-                    }}
-                  />
-                </div>
-              </div>
+          ) : null}
+        </AdminCard>
+      ),
+    },
+    data?.self && {
+      id: 'instance',
+      label: 'Instance',
+      icon: <Server className="size-13" aria-hidden />,
+      panel: (
+        <AdminCard>
+          <p className="text-[13px] text-[var(--studio-fg)]">
+            Coolify application{' '}
+            {data.self.coolifyAppUuid ? (
+              <span className="font-medium">{data.self.coolifyAppUuid}</span>
             ) : (
-              <p className="mt-10 text-[13px] text-[var(--studio-muted)]">Quota unavailable (Sentry API token not set).</p>
+              <span className="font-medium">not configured</span>
             )}
-            <div className="mt-14">
-              <p className="mb-6 text-[12px] uppercase tracking-[0.08em] text-[var(--studio-faint)]">
-                Dropped events (24h)
-              </p>
-              {(data.errorTracking.dropped24h || []).length === 0 ? (
-                <p className="text-[13px] text-[var(--studio-muted)]">No dropped events reported.</p>
-              ) : (
-                <ul className="space-y-4 text-[13px] text-[var(--studio-fg)]">
-                  {data.errorTracking.dropped24h.map((row) => (
-                    <li key={row.reason}>
-                      {row.reason}
-                      {` · ${row.count}`}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-            <div className="mt-14">
-              <p className="mb-6 text-[12px] uppercase tracking-[0.08em] text-[var(--studio-faint)]">
-                Top issues by volume
-              </p>
-              {(data.errorTracking.topIssues || []).length === 0 ? (
-                <p className="text-[13px] text-[var(--studio-muted)]">No issues returned.</p>
-              ) : (
-                <ul className="space-y-4 text-[13px] text-[var(--studio-fg)]">
-                  {data.errorTracking.topIssues.map((row) => (
-                    <li key={row.id || row.title}>
-                      <span className="font-medium">{row.title}</span>
-                      {` · ${row.count}`}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-            <p className="mt-14 text-[12px] text-[var(--studio-muted)]">
-              DSN project {data.errorTracking.dsnProjectId || '—'}
-              {` · ${data.errorTracking.environment}`}
-              {` · ${data.errorTracking.releaseSha}`}
+          </p>
+          {!data.self.coolifyAppUuid && (
+            <p className="mt-6 text-[12px] text-[var(--studio-muted)]">
+              COOLIFY_APP_UUID is not set, so Navroop cannot identify its own Coolify application.
+              Rollback and the Sentry restart will refuse to run until it is set in the deployment
+              environment.
             </p>
-            <button
+          )}
+          <p className="mt-8 text-[12px] text-[var(--studio-muted)]">
+            {`${data.self.environment} · commit ${data.self.gitSha} · instance ${data.self.instanceId}`}
+          </p>
+        </AdminCard>
+      ),
+    },
+    data?.dataDir && {
+      id: 'volume',
+      label: 'Volume',
+      icon: <HardDrive className="size-13" aria-hidden />,
+      panel: (
+        <AdminCard>
+          <p
+            className={
+              data.dataDir.state === 'unwritable' || data.dataDir.warnLowSpace
+                ? 'text-[13px] text-[var(--studio-danger)]'
+                : 'text-[13px] text-[var(--studio-muted)]'
+            }
+          >
+            {data.dataDir.state === 'unwritable'
+              ? 'Not writable'
+              : data.dataDir.state === 'not_checked'
+                ? 'Not checked yet'
+                : data.dataDir.alertLowSpace
+                  ? 'Writable — free space is under 10%'
+                  : data.dataDir.warnLowSpace
+                    ? 'Writable — free space is under 20%'
+                    : 'Writable'}
+          </p>
+          {data.dataDir.state === 'not_checked' ? (
+            <p className="mt-4 text-[13px] text-[var(--studio-muted)]">
+              The boot probe has not run in this process, so writability is unknown. This is not a
+              failure.
+            </p>
+          ) : null}
+          <p className="mt-10 text-[13px] text-[var(--studio-fg)]">
+            Path: <span className="font-medium">{data.dataDir.path}</span>
+          </p>
+          <p className="mt-4 text-[13px] text-[var(--studio-fg)]">
+            Volume id: <span className="font-medium">{data.dataDir.volumeId || 'none'}</span>
+            {data.dataDir.volumeAgeSeconds != null ? (
+              <span className="text-[var(--studio-muted)]">
+                {` — age ${Math.floor(data.dataDir.volumeAgeSeconds / 86400)}d`}
+              </span>
+            ) : null}
+          </p>
+          {data.dataDir.volumeChanged ? (
+            <p className="mt-4 text-[13px] text-[var(--studio-danger)]">
+              Volume id changed
+              {data.dataDir.previousVolumeId ? ` (was ${data.dataDir.previousVolumeId})` : ''}. This
+              is a fresh volume or a lost mount. Reconstructible state is rebuilt from the database
+              or object storage.
+            </p>
+          ) : null}
+          <p className="mt-4 text-[13px] text-[var(--studio-fg)]">
+            Free space:{' '}
+            <span className="font-medium">
+              {data.dataDir.freeBytes != null && data.dataDir.totalBytes != null
+                ? `${Math.round((data.dataDir.freeBytes / (1024 * 1024 * 1024)) * 10) / 10} GB of ${Math.round((data.dataDir.totalBytes / (1024 * 1024 * 1024)) * 10) / 10} GB`
+                : 'unknown'}
+            </span>
+            {data.dataDir.freeRatio != null
+              ? ` (${Math.round(data.dataDir.freeRatio * 100)}% free)`
+              : ''}
+          </p>
+          {data.dataDir.error ? (
+            <p className="mt-8 text-[13px] text-[var(--studio-danger)]" role="alert">
+              {data.dataDir.error}
+            </p>
+          ) : null}
+          <p className="mt-10 text-[12px] text-[var(--studio-muted)]">
+            The volume is a cache and bootstrap shortcut. If it is deleted, the next boot rebuilds
+            it from Postgres or object storage. It is not included in the database backup.
+          </p>
+        </AdminCard>
+      ),
+    },
+    data?.errorTracking && {
+      id: 'error-tracking',
+      label: 'Error tracking',
+      icon: <Bug className="size-13" aria-hidden />,
+      panel: (
+        <AdminCard>
+          <p
+            className={
+              data.errorTracking.status === 'Healthy'
+                ? 'text-[13px] text-[var(--studio-muted)]'
+                : 'text-[13px] text-[var(--studio-danger)]'
+            }
+          >
+            {data.errorTracking.status}
+          </p>
+          <p className="mt-10 text-[13px] text-[var(--studio-fg)]">
+            Last successful send:{' '}
+            <span className="font-medium">
+              {data.errorTracking.lastSuccessfulSendAt
+                ? formatAdminDateTime(data.errorTracking.lastSuccessfulSendAt)
+                : 'never'}
+            </span>
+          </p>
+          <p className="mt-4 text-[13px] text-[var(--studio-fg)]">
+            Last confirmed Sentry receipt:{' '}
+            <span className="font-medium">
+              {data.errorTracking.lastConfirmedReceiptAt
+                ? formatAdminDateTime(data.errorTracking.lastConfirmedReceiptAt)
+                : 'never'}
+            </span>
+          </p>
+          {data.errorTracking.quota ? (
+            <div className="mt-14">
+              <p className="text-[12px] uppercase tracking-[0.08em] text-[var(--studio-faint)]">
+                Quota {data.errorTracking.quota.used} / {data.errorTracking.quota.limit}
+                {data.errorTracking.quota.resetsAt
+                  ? ` · resets ${formatAdminDate(data.errorTracking.quota.resetsAt)}`
+                  : ''}
+              </p>
+              <div className="mt-6 h-8 overflow-hidden rounded-12 bg-[var(--studio-bg)]">
+                <div
+                  className="h-full bg-[var(--studio-accent)]"
+                  style={{
+                    width: `${Math.min(
+                      100,
+                      data.errorTracking.quota.limit > 0
+                        ? (data.errorTracking.quota.used / data.errorTracking.quota.limit) * 100
+                        : 0,
+                    )}%`,
+                  }}
+                />
+              </div>
+            </div>
+          ) : (
+            <p className="mt-10 text-[13px] text-[var(--studio-muted)]">
+              Quota unavailable (Sentry API token not set).
+            </p>
+          )}
+          <div className="mt-14">
+            <p className="mb-6 text-[12px] uppercase tracking-[0.08em] text-[var(--studio-faint)]">
+              Dropped events (24h)
+            </p>
+            {(data.errorTracking.dropped24h || []).length === 0 ? (
+              <p className="text-[13px] text-[var(--studio-muted)]">No dropped events reported.</p>
+            ) : (
+              <ul className="space-y-4 text-[13px] text-[var(--studio-fg)]">
+                {data.errorTracking.dropped24h.map((row) => (
+                  <li key={row.reason}>
+                    {row.reason}
+                    {` · ${row.count}`}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <div className="mt-14">
+            <p className="mb-6 text-[12px] uppercase tracking-[0.08em] text-[var(--studio-faint)]">
+              Top issues by volume
+            </p>
+            {(data.errorTracking.topIssues || []).length === 0 ? (
+              <p className="text-[13px] text-[var(--studio-muted)]">No issues returned.</p>
+            ) : (
+              <ul className="space-y-4 text-[13px] text-[var(--studio-fg)]">
+                {data.errorTracking.topIssues.map((row) => (
+                  <li key={row.id || row.title}>
+                    <span className="font-medium">{row.title}</span>
+                    {` · ${row.count}`}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <p className="mt-14 text-[12px] text-[var(--studio-muted)]">
+            DSN project {data.errorTracking.dsnProjectId || '—'}
+            {` · ${data.errorTracking.environment}`}
+            {` · ${data.errorTracking.releaseSha}`}
+          </p>
+          <div className="mt-14">
+            <StudioButton
               type="button"
-              className="mt-14 rounded-12 border border-[var(--studio-line)] px-14 py-8 text-[13px] text-[var(--studio-fg)] disabled:opacity-50"
+              variant="ghost"
               disabled={testBusy}
               onClick={async () => {
                 setTestBusy(true);
@@ -442,39 +447,24 @@ export default function HealthDashboard() {
                 }
               }}
             >
-              Send test event
-            </button>
-            {testMessage ? (
-              <p className="mt-8 text-[13px] text-[var(--studio-muted)]" role="status">
-                {testMessage}
-              </p>
-            ) : null}
-          </section>
-        )}
-
-        {error && (
-          <p className="mb-16 text-[13px] text-[var(--studio-danger)]" role="alert">
-            {error}
-          </p>
-        )}
-
-        <div className="mb-24 grid grid-cols-1 gap-12 sm:grid-cols-3">
-          {(loading && !data ? Array.from({ length: 7 }, (_, i) => ({ label: '…', value: '—' })) : cards).map(
-            (card, index) => (
-              <div
-                key={`${card.label}-${index}`}
-                className="rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-18"
-              >
-                <p className="text-[12px] uppercase tracking-[0.08em] text-[var(--studio-faint)]">{card.label}</p>
-                <p className="mt-8 text-[28px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">{card.value}</p>
-              </div>
-            ),
-          )}
-        </div>
-
-        <section className="mb-32">
-          <h2 className="mb-12 text-[18px] font-medium text-[var(--studio-fg)]">Integrations</h2>
-          <ul className="space-y-8 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-14">
+              {testBusy ? 'Sending…' : 'Send test event'}
+            </StudioButton>
+          </div>
+          {testMessage ? (
+            <p className="mt-8 text-[13px] text-[var(--studio-muted)]" role="status">
+              {testMessage}
+            </p>
+          ) : null}
+        </AdminCard>
+      ),
+    },
+    {
+      id: 'integrations',
+      label: 'Integrations',
+      icon: <Plug className="size-13" aria-hidden />,
+      panel: (
+        <AdminCard>
+          <ul className="space-y-8">
             {(data?.integrations || []).map((row) => (
               <li key={row.kind} className="text-[13px] text-[var(--studio-fg)]">
                 <span className="font-medium">{row.kind}</span>
@@ -484,23 +474,34 @@ export default function HealthDashboard() {
                     {` — checked ${formatAdminDateTime(row.lastCheckedAt)}`}
                   </span>
                 ) : null}
-                {row.lastError ? <span className="text-[var(--studio-danger)]">{` — ${row.lastError}`}</span> : null}
+                {row.lastError ? (
+                  <span className="text-[var(--studio-danger)]">{` — ${row.lastError}`}</span>
+                ) : null}
               </li>
             ))}
             {!loading && (data?.integrations || []).length === 0 && (
               <li className="text-[13px] text-[var(--studio-muted)]">No integration rows found.</li>
             )}
           </ul>
-        </section>
-
-        <section className="mb-32">
-          <h2 className="mb-12 text-[18px] font-medium text-[var(--studio-fg)]">AI providers</h2>
-          <ul className="space-y-8 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-14">
+        </AdminCard>
+      ),
+    },
+    {
+      id: 'providers',
+      label: 'AI providers',
+      icon: <Sparkles className="size-13" aria-hidden />,
+      panel: (
+        <AdminCard>
+          <ul className="space-y-8">
             {(data?.providers || []).map((row) => (
               <li key={row.id} className="text-[13px] text-[var(--studio-fg)]">
                 <span className="font-medium">{row.provider}</span>
                 {` · ${row.model}`}
-                <span className={row.healthy ? 'text-[var(--studio-muted)]' : 'text-[var(--studio-danger)]'}>
+                <span
+                  className={
+                    row.healthy ? 'text-[var(--studio-muted)]' : 'text-[var(--studio-danger)]'
+                  }
+                >
                   {row.healthy ? ' — healthy' : ' — unhealthy'}
                 </span>
               </li>
@@ -509,15 +510,24 @@ export default function HealthDashboard() {
               <li className="text-[13px] text-[var(--studio-muted)]">No providers configured.</li>
             )}
           </ul>
-        </section>
-
-        <section className="mb-32">
-          <h2 className="mb-12 text-[18px] font-medium text-[var(--studio-fg)]">System checks</h2>
-          <ul className="space-y-8 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-14">
+        </AdminCard>
+      ),
+    },
+    {
+      id: 'checks',
+      label: 'System checks',
+      icon: <ListChecks className="size-13" aria-hidden />,
+      panel: (
+        <AdminCard>
+          <ul className="space-y-8">
             {(data?.systemChecks || []).map((row) => (
               <li
                 key={row.name}
-                className={row.stale || row.ok === false ? 'text-[13px] text-[var(--studio-danger)]' : 'text-[13px] text-[var(--studio-fg)]'}
+                className={
+                  row.stale || row.ok === false
+                    ? 'text-[13px] text-[var(--studio-danger)]'
+                    : 'text-[13px] text-[var(--studio-fg)]'
+                }
               >
                 <span className="font-medium">{row.name}</span>
                 {row.lastRunAt
@@ -529,17 +539,26 @@ export default function HealthDashboard() {
               </li>
             ))}
             {!loading && (data?.systemChecks || []).length === 0 && (
-              <li className="text-[13px] text-[var(--studio-muted)]">No system checks recorded yet.</li>
+              <li className="text-[13px] text-[var(--studio-muted)]">
+                No system checks recorded yet.
+              </li>
             )}
           </ul>
-        </section>
-
-        <section>
-          <h2 className="mb-12 text-[18px] font-medium text-[var(--studio-fg)]">Top error codes</h2>
+        </AdminCard>
+      ),
+    },
+    {
+      id: 'errors',
+      label: 'Top errors',
+      icon: <AlertTriangle className="size-13" aria-hidden />,
+      panel: (
+        <AdminCard>
           {(data?.topErrorCodes || []).length === 0 ? (
-            <p className="text-[13px] text-[var(--studio-muted)]">No recurring errors in the last 7 days.</p>
+            <p className="text-[13px] text-[var(--studio-muted)]">
+              No recurring errors in the last 7 days.
+            </p>
           ) : (
-            <ul className="space-y-8 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-14">
+            <ul className="space-y-8">
               {data!.topErrorCodes.map((row) => (
                 <li key={row.code} className="text-[13px] text-[var(--studio-fg)]">
                   <span className="font-medium">{row.code}</span>
@@ -548,8 +567,38 @@ export default function HealthDashboard() {
               ))}
             </ul>
           )}
-        </section>
-      </main>
-    </StudioShell>
+        </AdminCard>
+      ),
+    },
+  ].filter(Boolean) as AdminTab[];
+
+  return (
+    <AdminPage
+      icon="health"
+      title="Health"
+      description="Whether this installation is running correctly: release, storage, error tracking, and provider checks."
+      width="wide"
+    >
+      {error && <StatusBanner tone="error">{error}</StatusBanner>}
+
+      <div className="grid grid-cols-1 gap-12 sm:grid-cols-2 xl:grid-cols-5">
+        {(loading && !data
+          ? Array.from({ length: 10 }, (_, i) => ({ label: '…', value: '—' }))
+          : cards
+        ).map((card, index) => (
+          <StatTile
+            key={`${card.label}-${index}`}
+            icon={<AlertTriangle className="size-15" aria-hidden />}
+            value={card.value}
+            label={card.label}
+            tone={
+              card.value !== '0' && card.value !== '—' && card.value !== '…' ? 'warning' : 'default'
+            }
+          />
+        ))}
+      </div>
+
+      <AdminTabs tabs={tabs} />
+    </AdminPage>
   );
 }

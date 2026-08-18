@@ -1,6 +1,6 @@
 /**
  * SEO/AEO generation rules + audit checks (no UI).
- * Run: npx tsx tests/seo-audit.test.ts
+ * Run: pnpm exec tsx tests/seo-audit.test.ts
  */
 import { buildStablePromptPrefix, getSeoRules } from '../lib/stack-prompts';
 import { runSeoChecks } from '../lib/seo/scan';

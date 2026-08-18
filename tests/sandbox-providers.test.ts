@@ -1,6 +1,6 @@
 /**
  * Multi-provider sandbox routing, credits, failover, sticky, round-robin.
- * Run: npx tsx tests/sandbox-providers.test.ts
+ * Run: pnpm exec tsx tests/sandbox-providers.test.ts
  */
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';

@@ -1,10 +1,13 @@
 'use client';
 
+import { Download, ScrollText } from 'lucide-react';
+import AdminCard from '@/components/admin/AdminCard';
+import AdminPage from '@/components/admin/AdminPage';
+import { AdminTable, Td, Th, Tr } from '@/components/admin/AdminTable';
+import StatusBanner from '@/components/admin/StatusBanner';
 import { FormEvent, useEffect, useState } from 'react';
-import StudioShell from '@/components/app/studio/StudioShell';
 import StudioButton from '@/components/app/studio/StudioButton';
-import PageTabs from '@/components/app/studio/PageTabs';
-import { adminTabs } from '../plans/PlansAdmin';
+import StudioField from '@/components/app/studio/StudioField';
 import { formatAdminDateTime } from '../format-admin-date';
 
 type AuditRow = {
@@ -65,95 +68,84 @@ export default function AuditAdmin() {
   };
 
   return (
-    <StudioShell variant="workspace">
-      <PageTabs items={adminTabs('audit')} />
-      <main className="mx-auto flex w-full max-w-5xl flex-col gap-16 px-20 py-20">
-        <div>
-          <h1 className="text-[22px] font-semibold text-[var(--studio-fg)]">Audit log</h1>
-          <p className="mt-4 text-[13px] text-[var(--studio-muted)]">
-            Security trail for admin and workspace changes. Secrets are redacted when written.
-          </p>
-        </div>
+    <AdminPage
+      icon="audit"
+      title="Audit log"
+      description="A record of every administrative and workspace change, and who made it. Secrets are redacted before anything is written here."
+      width="wide"
+    >
+      {error && <StatusBanner tone="error">{error}</StatusBanner>}
 
-        <form onSubmit={onFilter} className="grid gap-10 sm:grid-cols-5">
-          <input
+      <AdminCard icon={<ScrollText className="size-14" aria-hidden />} title="Entries">
+        <form onSubmit={onFilter} className="mb-16 grid gap-10 sm:grid-cols-5">
+          <StudioField
+            id="audit-actor"
+            label="Actor email"
             value={actor}
             onChange={(event) => setActor(event.target.value)}
-            placeholder="Actor email"
-            className="h-40 rounded-10 border border-[var(--studio-line)] px-12 text-[13px]"
           />
-          <input
+          <StudioField
+            id="audit-action"
+            label="Action"
             value={action}
             onChange={(event) => setAction(event.target.value)}
-            placeholder="Action"
-            className="h-40 rounded-10 border border-[var(--studio-line)] px-12 text-[13px]"
           />
-          <input
+          <StudioField
+            id="audit-from"
+            label="From"
             type="date"
             value={from}
             onChange={(event) => setFrom(event.target.value)}
-            className="h-40 rounded-10 border border-[var(--studio-line)] px-12 text-[13px]"
           />
-          <input
+          <StudioField
+            id="audit-to"
+            label="To"
             type="date"
             value={to}
             onChange={(event) => setTo(event.target.value)}
-            className="h-40 rounded-10 border border-[var(--studio-line)] px-12 text-[13px]"
           />
-          <div className="flex gap-8">
+          <div className="flex items-end gap-8">
             <StudioButton type="submit" variant="primary" disabled={loading}>
               {loading ? 'Loading…' : 'Filter'}
             </StudioButton>
-            <a
+            <StudioButton
+              type="button"
+              variant="ghost"
               href={`/api/admin/audit?${query()}&format=csv`}
-              className="inline-flex h-40 items-center rounded-10 border border-[var(--studio-line)] px-12 text-[13px] text-[var(--studio-fg)]"
             >
-              Export CSV
-            </a>
+              <Download className="size-14" aria-hidden />
+              CSV
+            </StudioButton>
           </div>
         </form>
 
-        {error ? <p className="text-[13px] text-red-600">{error}</p> : null}
-
-        <div className="overflow-x-auto rounded-12 border border-[var(--studio-line)]">
-          <table className="w-full text-left text-[13px]">
-            <thead className="bg-[var(--studio-surface)] text-[var(--studio-muted)]">
-              <tr>
-                <th className="px-12 py-10 font-medium">When</th>
-                <th className="px-12 py-10 font-medium">Actor</th>
-                <th className="px-12 py-10 font-medium">Action</th>
-                <th className="px-12 py-10 font-medium">Target</th>
-                <th className="px-12 py-10 font-medium">Change</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.length === 0 && !loading ? (
-                <tr>
-                  <td colSpan={5} className="px-12 py-16 text-[var(--studio-faint)]">
-                    No audit entries
-                  </td>
-                </tr>
-              ) : null}
-              {rows.map((row) => (
-                <tr key={row.id} className="border-t border-[var(--studio-line)]">
-                  <td className="whitespace-nowrap px-12 py-10 text-[var(--studio-muted)]">
-                    {formatAdminDateTime(row.createdAt)}
-                  </td>
-                  <td className="px-12 py-10">{row.actorEmail}</td>
-                  <td className="px-12 py-10">{row.action}</td>
-                  <td className="px-12 py-10 text-[var(--studio-muted)]">
-                    {row.targetType || '—'}
-                    {row.targetId ? ` ${row.targetId}` : ''}
-                  </td>
-                  <td className="px-12 py-10 text-[var(--studio-muted)]">
-                    {row.diff.length ? row.diff.join(' · ') : '—'}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </main>
-    </StudioShell>
+        <AdminTable
+          isEmpty={!loading && rows.length === 0}
+          empty="No audit entries."
+          head={
+            <>
+              <Th>When</Th>
+              <Th>Actor</Th>
+              <Th>Action</Th>
+              <Th>Target</Th>
+              <Th>Change</Th>
+            </>
+          }
+        >
+          {rows.map((row) => (
+            <Tr key={row.id}>
+              <Td muted>{formatAdminDateTime(row.createdAt)}</Td>
+              <Td>{row.actorEmail}</Td>
+              <Td>{row.action}</Td>
+              <Td muted>
+                {row.targetType || '—'}
+                {row.targetId ? ` ${row.targetId}` : ''}
+              </Td>
+              <Td muted>{row.diff.length ? row.diff.join(' · ') : '—'}</Td>
+            </Tr>
+          ))}
+        </AdminTable>
+      </AdminCard>
+    </AdminPage>
   );
 }

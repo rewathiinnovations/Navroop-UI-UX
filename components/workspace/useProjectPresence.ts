@@ -125,10 +125,7 @@ export function useProjectPresence(projectId: string | null, options?: { selfBus
 
   const releaseLock = useCallback(async () => {
     if (!projectId) return;
-    const confirmed = window.confirm(
-      "Release this lock? The other person's work may be lost.",
-    );
-    if (!confirmed) return;
+    // Confirmation is ConfirmAction on the Release button (LockBar).
     const response = await fetch(`/api/projects/${projectId}/lock/release`, { method: 'POST' });
     if (response.ok) {
       setLock({ locked: false, heldBy: null, expiresAt: null, reason: null });

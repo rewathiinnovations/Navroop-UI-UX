@@ -1,4 +1,5 @@
 import { fallbackAltText } from '@/lib/assets/keys';
+import { getSetting } from '@/lib/settings/resolve';
 import { persistOptimizedAsset } from '@/lib/assets/persist';
 
 /**
@@ -25,9 +26,9 @@ export async function searchStockPhoto(input: SearchStockInput) {
   const query = input.query.trim();
   if (!query) throw new Error('Stock photo query is required');
 
-  const accessKey = process.env.UNSPLASH_ACCESS_KEY?.trim();
+  const accessKey = await getSetting('tooling.unsplash.accessKey');
   if (!accessKey) {
-    throw new Error('UNSPLASH_ACCESS_KEY is not configured');
+    throw new Error('No Unsplash access key is configured. Add one in Admin → Configuration.');
   }
 
   const search = new URL('https://api.unsplash.com/search/photos');

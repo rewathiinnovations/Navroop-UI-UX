@@ -1,6 +1,6 @@
 /**
  * Password reset + email client.
- * Run: npx tsx tests/password-reset.test.ts
+ * Run: pnpm exec tsx tests/password-reset.test.ts
  */
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';

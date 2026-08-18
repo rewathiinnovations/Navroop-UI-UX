@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { Copy, ImagePlus, Trash2 } from 'lucide-react';
+import ConfirmAction from '@/components/admin/ConfirmAction';
 import {
   deleteProjectAsset,
   generateProjectImage,
@@ -239,29 +240,28 @@ export default function AssetsPanel({ projectId }: { projectId: string }) {
                 <Copy className="size-12" />
                 Copy URL
               </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (
-                    !window.confirm(
-                      'Delete this asset from storage and the library? Pages that reference it may break.',
-                    )
-                  ) {
+              <ConfirmAction
+                label={
+                  <span className="inline-flex items-center gap-4">
+                    <Trash2 className="size-12" aria-hidden />
+                    Delete
+                  </span>
+                }
+                title="Delete this asset?"
+                body="It is removed from storage and the library. Pages that reference it may break."
+                confirmLabel="Delete"
+                busyLabel="Deleting…"
+                variant="ghost"
+                triggerClassName="min-h-0 h-32 rounded-full border border-[var(--studio-line)] px-10 text-[11px] text-[var(--studio-danger)]"
+                onConfirm={async () => {
+                  const result = await deleteProjectAsset(projectId, asset.id);
+                  if (!result.ok) {
+                    setError(result.error);
                     return;
                   }
-                  void deleteProjectAsset(projectId, asset.id).then((result) => {
-                    if (!result.ok) {
-                      setError(result.error);
-                      return;
-                    }
-                    setAssets((current) => current.filter((row) => row.id !== asset.id));
-                  });
+                  setAssets((current) => current.filter((row) => row.id !== asset.id));
                 }}
-                className="inline-flex h-32 items-center gap-4 rounded-full border border-[var(--studio-line)] px-10 text-[11px] text-[var(--studio-danger)]"
-              >
-                <Trash2 className="size-12" />
-                Delete
-              </button>
+              />
             </div>
           </li>
         ))}

@@ -10,5 +10,5 @@ export default async function AdminTeamPage() {
   const result = await listTeam();
   if (!result.ok) redirect('/dashboard');
 
-  return <TeamTable initialMembers={result.data.members} />;
+  return <TeamTable initialMembers={result.data.members} selfId={user.id} />;
 }

@@ -1,6 +1,6 @@
 /**
  * Project full-text search matches original prompt text.
- * Run: npx tsx tests/search.test.ts
+ * Run: pnpm exec tsx tests/search.test.ts
  */
 import { resolve } from 'node:path';
 import { config } from 'dotenv';

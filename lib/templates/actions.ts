@@ -22,6 +22,7 @@ import {
   updateTemplateRow,
 } from './store';
 import { toPublic } from './public';
+import { thumbnailUrlBase } from './thumbnails';
 import { captureThumbnailFromUrl, storeThumbnailBuffer } from './thumbnails';
 import type { TemplateSort } from './types';
 import { isVisibleToWorkspace } from './visibility';
@@ -72,7 +73,11 @@ export async function listTemplates(query: {
   const visible = includeInactive
     ? rows
     : rows.filter((row) => isVisibleToWorkspace(row, WORKSPACE_ROW_ID));
-  return { ok: true as const, data: { templates: visible.map(toPublic) } };
+  const thumbnailBase = await thumbnailUrlBase();
+  return {
+    ok: true as const,
+    data: { templates: visible.map((row) => toPublic(row, thumbnailBase)) },
+  };
 }
 
 export async function getTemplate(id: string) {
@@ -84,7 +89,7 @@ export async function getTemplate(id: string) {
   if (!isVisibleToWorkspace(row, WORKSPACE_ROW_ID, { includeInactive: admin })) {
     return notFound();
   }
-  return { ok: true as const, data: { template: toPublic(row) } };
+  return { ok: true as const, data: { template: toPublic(row, await thumbnailUrlBase()) } };
 }
 
 export async function createFromTemplate(id: string, input: { prompt?: string; name?: string }) {
@@ -212,20 +217,20 @@ export async function saveProjectAsTemplate(
     try {
       const key = await captureThumbnailFromUrl(project.previewUrl, created.id, user.id);
       const updated = await updateTemplateRow(created.id, { thumbnailKey: key });
-      return { ok: true as const, data: { template: toPublic(updated ?? created) } };
+      return { ok: true as const, data: { template: toPublic(updated ?? created, await thumbnailUrlBase()) } };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Could not capture thumbnail';
       return {
         ok: true as const,
         data: {
-          template: toPublic(created),
+          template: toPublic(created, await thumbnailUrlBase()),
           thumbnailWarning: message,
         },
       };
     }
   }
 
-  return { ok: true as const, data: { template: toPublic(created) } };
+  return { ok: true as const, data: { template: toPublic(created, await thumbnailUrlBase()) } };
 }
 
 export async function adminListTemplates(query: {
@@ -242,7 +247,11 @@ export async function adminListTemplates(query: {
     stack: query.stack,
     sort: query.sort ?? 'newest',
   });
-  return { ok: true as const, data: { templates: rows.map(toPublic) } };
+  const thumbnailBase = await thumbnailUrlBase();
+  return {
+    ok: true as const,
+    data: { templates: rows.map((row) => toPublic(row, thumbnailBase)) },
+  };
 }
 
 export async function adminCreateTemplate(input: unknown) {
@@ -274,7 +283,7 @@ export async function adminCreateTemplate(input: unknown) {
     targetId: created.id,
     after: { name: created.name },
   });
-  return { ok: true as const, data: { template: toPublic(created) } };
+  return { ok: true as const, data: { template: toPublic(created, await thumbnailUrlBase()) } };
 }
 
 export async function adminUpdateTemplate(id: string, input: unknown) {
@@ -299,7 +308,7 @@ export async function adminUpdateTemplate(id: string, input: unknown) {
     workspaceId: data.workspaceId,
     sortOrder: data.sortOrder,
   });
-  return { ok: true as const, data: { template: toPublic(updated ?? existing) } };
+  return { ok: true as const, data: { template: toPublic(updated ?? existing, await thumbnailUrlBase()) } };
 }
 
 export async function adminDeleteTemplate(id: string) {
@@ -332,7 +341,7 @@ export async function adminUploadThumbnail(id: string, buffer: Buffer) {
   if (!existing) return notFound();
   const key = await storeThumbnailBuffer(id, buffer);
   const updated = await updateTemplateRow(id, { thumbnailKey: key });
-  return { ok: true as const, data: { template: toPublic(updated ?? existing) } };
+  return { ok: true as const, data: { template: toPublic(updated ?? existing, await thumbnailUrlBase()) } };
 }
 
 export async function adminGenerateThumbnails() {

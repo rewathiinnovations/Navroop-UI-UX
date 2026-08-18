@@ -10,6 +10,6 @@ export {
 export { incrementUsageCount } from './usage';
 export { isVisibleToWorkspace, memberTemplateWhere } from './visibility';
 export { buildTemplatePromptFromProject } from './summary';
-export { thumbnailPublicUrl } from './thumbnails';
+export { thumbnailPublicUrl, thumbnailUrlBase } from './thumbnails';
 export { toPublic } from './public';
 export type { PublicTemplate, TemplateRow, TemplateSort } from './types';

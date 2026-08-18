@@ -3,7 +3,7 @@ import { PrismaClient } from '../../generated/prisma/index.js';
 /**
  * The only way a suite in this repo should obtain a Prisma client.
  *
- * Each suite under `tests/` carries a `Run: npx tsx tests/<name>.test.ts` header, and
+ * Each suite under `tests/` carries a `Run: pnpm exec tsx tests/<name>.test.ts` header, and
  * that command does not load `tests/setup/env.ts`. Without it, `DATABASE_URL` is still
  * the application database, so a suite that creates and deletes users, projects and
  * jobs would do it to real data. A comment cannot prevent that; refusing to hand out a
@@ -60,7 +60,7 @@ export function assertTestEnvApplied(env: NodeJS.ProcessEnv = process.env) {
 }
 
 /**
- * A Prisma client for the test database. Asserts first, so a direct `npx tsx` run
+ * A Prisma client for the test database. Asserts first, so a direct `pnpm exec tsx` run
  * throws here rather than at the first query — nothing connects, and no data is touched.
  */
 export function testPrismaClient() {

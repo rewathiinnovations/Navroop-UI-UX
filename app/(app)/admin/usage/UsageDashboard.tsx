@@ -1,10 +1,25 @@
 'use client';
 
+import {
+  AlertOctagon,
+  Brain,
+  Bug,
+  ChevronDown,
+  DollarSign,
+  FolderOpen,
+  ShieldAlert,
+  Sparkles,
+  Users2,
+} from 'lucide-react';
+import AdminCard from '@/components/admin/AdminCard';
+import AdminPage from '@/components/admin/AdminPage';
+import { AdminTable, Td, Th, Tr } from '@/components/admin/AdminTable';
+import StatTile from '@/components/admin/StatTile';
+import StatusBanner from '@/components/admin/StatusBanner';
+import { SkeletonTable } from '@/components/admin/AdminSkeleton';
 import { Fragment, FormEvent, useEffect, useMemo, useState } from 'react';
-import StudioShell from '@/components/app/studio/StudioShell';
 import StudioButton from '@/components/app/studio/StudioButton';
 import StudioField from '@/components/app/studio/StudioField';
-import PageTabs from '@/components/app/studio/PageTabs';
 import { listSkills, type PublicSkill } from '@/lib/skills/actions';
 import { getMemoryExtractionSetting, updateMemoryExtractionSetting } from '@/lib/memory/actions';
 import { formatAdminDateTime } from '../format-admin-date';
@@ -56,6 +71,9 @@ type TeardownLeaks = {
   total: number;
   open: TeardownLeak[];
 };
+
+/** The card is a warning, not an inventory — past this the list stops informing. */
+const LEAK_LIST_LIMIT = 8;
 
 function currentMonthInputs(now = new Date()) {
   const year = now.getUTCFullYear();
@@ -191,26 +209,13 @@ export default function UsageDashboard() {
   };
 
   return (
-    <StudioShell variant="workspace">
-      <main className="mx-auto max-w-[960px] px-20 py-40">
-        <h1 className="text-[32px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">Admin</h1>
-        <PageTabs
-          items={[
-            { href: '/admin/team', label: 'Team' },
-            { href: '/admin/usage', label: 'Usage', active: true },
-            { href: '/admin/quality', label: 'Quality' },
-            { href: '/admin/jobs', label: 'Jobs' },
-            { href: '/admin/backups', label: 'Backups' },
-            { href: '/admin/audit', label: 'Audit' },
-            { href: '/admin/integrations', label: 'Integrations' },
-            { href: '/admin/deploy', label: 'Deploy' },
-            { href: '/admin/servers', label: 'Servers' },
-            { href: '/admin/plans', label: 'Plans' },
-            { href: '/admin/workspace', label: 'Workspace' },
-          ]}
-        />
-
-        <form onSubmit={applyRange} className="mb-24 flex flex-col gap-12 sm:flex-row sm:items-end">
+    <AdminPage
+      icon="usage"
+      title="Usage"
+      description="What was generated, by whom, and what it cost."
+      width="wide"
+      actions={
+        <form onSubmit={applyRange} className="flex flex-wrap items-end gap-8">
           <StudioField
             id="usage-from"
             label="From"
@@ -231,228 +236,239 @@ export default function UsageDashboard() {
             Apply
           </StudioButton>
         </form>
+      }
+    >
+      {error && <StatusBanner tone="error">{error}</StatusBanner>}
 
-        {error && (
-          <p className="mb-16 text-[13px] text-[var(--studio-danger)]" role="alert">
-            {error}
-          </p>
-        )}
+      <div className="grid grid-cols-1 gap-12 sm:grid-cols-3">
+        <StatTile
+          icon={<FolderOpen className="size-16" aria-hidden />}
+          value={summary ? summary.totalProjects : '—'}
+          label="Total projects"
+        />
+        <StatTile
+          icon={<Users2 className="size-16" aria-hidden />}
+          value={summary ? summary.totalGenerations : '—'}
+          label="Total generations"
+        />
+        <StatTile
+          icon={<DollarSign className="size-16" aria-hidden />}
+          value={summary ? formatMoney(summary.totalEstimatedCost) : '—'}
+          label="Estimated spend"
+          hint="Estimate — not live billing"
+        />
+      </div>
 
-        <div className="mb-24 grid grid-cols-1 gap-12 sm:grid-cols-3">
-          {[
-            { label: 'Total Projects', value: summary ? String(summary.totalProjects) : '—' },
-            { label: 'Total Generations', value: summary ? String(summary.totalGenerations) : '—' },
-            {
-              label: 'Estimated Spend',
-              value: summary ? formatMoney(summary.totalEstimatedCost) : '—',
-              hint: 'Estimate — not live billing',
-            },
-          ].map((card) => (
-            <div
-              key={card.label}
-              className="rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-18"
-            >
-              <p className="text-[12px] uppercase tracking-[0.08em] text-[var(--studio-faint)]">{card.label}</p>
-              <p className="mt-8 text-[28px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">{card.value}</p>
-              {'hint' in card && card.hint && (
-                <p className="mt-4 text-[12px] text-[var(--studio-muted)]">{card.hint}</p>
-              )}
-            </div>
-          ))}
-        </div>
+      {teardownLeaks.open.length > 0 && (
+        <AdminCard
+          icon={<AlertOctagon className="size-14" aria-hidden />}
+          title="Sandboxes that could not be stopped"
+          description={`A kill was asked and the provider did not confirm the VM is gone. These may still be billed. ${teardownLeaks.total} recorded; ${teardownLeaks.open.length} still open. The idle reaper retries them unless the provider circuit is open.`}
+        >
+          <ul className="space-y-8">
+            {/* Newest entries are appended, so the recent ones live at the end. */}
+            {teardownLeaks.open.slice(-LEAK_LIST_LIMIT).reverse().map((leak) => (
+              <li
+                key={`${leak.projectId || 'none'}:${leak.sandboxId || leak.at}`}
+                className="flex flex-col gap-2 text-[13px] sm:flex-row sm:items-baseline sm:justify-between"
+              >
+                <span className="text-[var(--studio-fg)]">
+                  {leak.driver || 'sandbox'} {leak.sandboxId || 'unknown id'} ({leak.source})
+                </span>
+                <span className="text-[var(--studio-faint)]">{leak.reason}</span>
+              </li>
+            ))}
+            {teardownLeaks.open.length > LEAK_LIST_LIMIT && (
+              <li className="text-[13px] text-[var(--studio-faint)]">
+                …and {teardownLeaks.open.length - LEAK_LIST_LIMIT} more still open. The count
+                above is the full picture; this list shows the most recent.
+              </li>
+            )}
+          </ul>
+        </AdminCard>
+      )}
 
-        {teardownLeaks.open.length > 0 && (
-          <section className="mb-24 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-16">
-            <h2 className="text-[16px] font-medium text-[var(--studio-fg)]">Sandboxes that could not be stopped</h2>
-            <p className="mt-4 text-[12px] text-[var(--studio-muted)]">
-              A kill was asked and the provider did not confirm the VM is gone. These may still be
-              billed. {teardownLeaks.total} recorded; {teardownLeaks.open.length} still open. The
-              idle reaper retries them unless the provider circuit is open.
-            </p>
-            <ul className="mt-12 space-y-8">
-              {teardownLeaks.open.map((leak) => (
-                <li
-                  key={`${leak.projectId || 'none'}:${leak.sandboxId || leak.at}`}
-                  className="flex flex-col gap-2 text-[13px] sm:flex-row sm:items-baseline sm:justify-between"
-                >
-                  <span className="text-[var(--studio-fg)]">
-                    {leak.driver || 'sandbox'} {leak.sandboxId || 'unknown id'} ({leak.source})
-                  </span>
-                  <span className="text-[var(--studio-faint)]">{leak.reason}</span>
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
-
-        {ssrfRejects.total > 0 && (
-          <section className="mb-24 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-16">
-            <h2 className="text-[16px] font-medium text-[var(--studio-fg)]">Private-range import blocks</h2>
-            <p className="mt-4 text-[12px] text-[var(--studio-muted)]">
-              Repeated SSRF-style import attempts (private / localhost / link-local). {ssrfRejects.total} total.
-            </p>
-            <ul className="mt-12 space-y-8">
-              {Object.entries(ssrfRejects.byUser)
-                .sort((a, b) => b[1] - a[1])
-                .map(([userId, count]) => {
-                  const member = members.find((row) => row.userId === userId);
-                  return (
-                    <li key={userId} className="flex items-baseline justify-between gap-12 text-[13px]">
-                      <span className="text-[var(--studio-fg)]">
-                        {member?.name || member?.email || userId}
-                      </span>
-                      <span className="text-[var(--studio-faint)]">{count}</span>
-                    </li>
-                  );
-                })}
-            </ul>
-          </section>
-        )}
-
-        {qualityIssues.length > 0 && (
-          <section className="mb-24 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-16">
-            <h2 className="text-[16px] font-medium text-[var(--studio-fg)]">Recurring code-quality issues</h2>
-            <p className="mt-4 text-[12px] text-[var(--studio-muted)]">
-              Frequent finding categories across recent CodeAudits — use these to tighten base-rules.
-            </p>
-            <ul className="mt-12 space-y-8">
-              {qualityIssues.map((issue) => (
-                <li key={issue.category} className="flex items-baseline justify-between gap-12 text-[13px]">
-                  <span className="text-[var(--studio-fg)]">
-                    {issue.category}
-                    <span className="ml-8 text-[var(--studio-muted)]">{issue.sampleTitle}</span>
-                  </span>
-                  <span className="text-[var(--studio-faint)]">{issue.count}</span>
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
-
-        <div className="overflow-hidden rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)]">
-          <table className="w-full text-left text-[14px]">
-            <thead className="border-b border-[var(--studio-line)] text-[12px] uppercase tracking-[0.08em] text-[var(--studio-faint)]">
-              <tr>
-                <th className="px-16 py-12 font-medium">Member</th>
-                <th className="px-16 py-12 font-medium">Projects</th>
-                <th className="px-16 py-12 font-medium">Generations</th>
-                <th className="px-16 py-12 font-medium">Estimated spend</th>
-              </tr>
-            </thead>
-            <tbody>
-              {members.map((member) => (
-                <Fragment key={member.userId}>
-                  <tr
-                    className="cursor-pointer border-b border-[var(--studio-line)] last:border-0 hover:bg-[var(--studio-surface-hover)]"
-                    onClick={() => void toggleMember(member)}
+      {ssrfRejects.total > 0 && (
+        <AdminCard
+          icon={<ShieldAlert className="size-14" aria-hidden />}
+          title="Private-range import blocks"
+          description={`Repeated SSRF-style import attempts (private / localhost / link-local). ${ssrfRejects.total} total.`}
+        >
+          <ul className="space-y-8">
+            {Object.entries(ssrfRejects.byUser)
+              .sort((a, b) => b[1] - a[1])
+              .map(([userId, count]) => {
+                const member = members.find((row) => row.userId === userId);
+                return (
+                  <li
+                    key={userId}
+                    className="flex items-baseline justify-between gap-12 text-[13px]"
                   >
-                    <td className="px-16 py-14">
-                      <div className="font-medium text-[var(--studio-fg)]">{member.name}</div>
-                      <div className="text-[12px] text-[var(--studio-muted)]">{member.email}</div>
-                    </td>
-                    <td className="px-16 py-14 text-[var(--studio-muted)]">{member.projectCount}</td>
-                    <td className="px-16 py-14 text-[var(--studio-muted)]">{member.generationCount}</td>
-                    <td className="px-16 py-14 text-[var(--studio-muted)]">{formatMoney(member.estimatedCost)}</td>
-                  </tr>
-                  {expanded === member.userId && (
-                    <tr className="border-b border-[var(--studio-line)] last:border-0">
-                      <td colSpan={4} className="px-16 py-14">
-                        {member.projects.length === 0 ? (
-                          <p className="text-[13px] text-[var(--studio-muted)]">No projects in this range.</p>
-                        ) : loadingProjects && member.projects.some((project) => !eventsByProject[project.id]) ? (
-                          <p className="text-[13px] text-[var(--studio-muted)]">Loading projects…</p>
-                        ) : (
-                          <div className="space-y-16">
-                            {member.projects.map((project) => (
-                              <div key={project.id}>
-                                <p className="mb-8 text-[13px] font-medium text-[var(--studio-fg)]">{project.name}</p>
-                                <ul className="space-y-4 text-[12px] text-[var(--studio-muted)]">
-                                  {(eventsByProject[project.id] || []).map((event, index) => (
-                                    <li key={`${project.id}-${index}`}>
-                                      {event.kind} · {formatMoney(event.cost)} · {formatWhen(event.createdAt)}
-                                    </li>
-                                  ))}
-                                </ul>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </td>
-                    </tr>
-                  )}
-                </Fragment>
-              ))}
-              {!loading && members.length === 0 && (
-                <tr>
-                  <td colSpan={4} className="px-16 py-18 text-[13px] text-[var(--studio-muted)]">
-                    No usage in this range.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+                    <span className="text-[var(--studio-fg)]">
+                      {member?.name || member?.email || userId}
+                    </span>
+                    <span className="text-[var(--studio-faint)]">{count}</span>
+                  </li>
+                );
+              })}
+          </ul>
+        </AdminCard>
+      )}
 
-        <section className="mt-24 overflow-hidden rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)]">
-          <div className="border-b border-[var(--studio-line)] px-16 py-14">
-            <h2 className="text-[16px] font-medium text-[var(--studio-fg)]">Skills</h2>
-            <p className="mt-4 text-[12px] text-[var(--studio-muted)]">
-              Sorted by usage. Zero-usage skills never matched or are unused.
-            </p>
-          </div>
-          <table className="w-full text-left text-[14px]">
-            <thead className="border-b border-[var(--studio-line)] text-[12px] uppercase tracking-[0.08em] text-[var(--studio-faint)]">
-              <tr>
-                <th className="px-16 py-12 font-medium">Skill</th>
-                <th className="px-16 py-12 font-medium">Enabled</th>
-                <th className="px-16 py-12 font-medium">Usage</th>
-              </tr>
-            </thead>
-            <tbody>
-              {skills.map((skill) => (
-                <tr key={skill.id} className="border-b border-[var(--studio-line)] last:border-0">
-                  <td className="px-16 py-14">
-                    <div className="font-medium text-[var(--studio-fg)]">{skill.name}</div>
-                    <div className="text-[12px] text-[var(--studio-muted)]">{skill.description}</div>
-                  </td>
-                  <td className="px-16 py-14 text-[var(--studio-muted)]">{skill.enabled ? 'On' : 'Off'}</td>
-                  <td className="px-16 py-14 text-[var(--studio-muted)]">{skill.usageCount}</td>
-                </tr>
-              ))}
-              {!loading && skills.length === 0 && (
-                <tr>
-                  <td colSpan={3} className="px-16 py-18 text-[13px] text-[var(--studio-muted)]">
-                    No workspace skills yet.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </section>
+      {qualityIssues.length > 0 && (
+        <AdminCard
+          icon={<Bug className="size-14" aria-hidden />}
+          title="Recurring code-quality issues"
+          description="Frequent finding categories across recent CodeAudits — use these to tighten base-rules."
+        >
+          <ul className="space-y-8">
+            {qualityIssues.map((issue) => (
+              <li
+                key={issue.category}
+                className="flex items-baseline justify-between gap-12 text-[13px]"
+              >
+                <span className="text-[var(--studio-fg)]">
+                  {issue.category}
+                  <span className="ml-8 text-[var(--studio-muted)]">{issue.sampleTitle}</span>
+                </span>
+                <span className="text-[var(--studio-faint)]">{issue.count}</span>
+              </li>
+            ))}
+          </ul>
+        </AdminCard>
+      )}
 
-        <section className="mt-24 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-14">
-          <h2 className="text-[16px] font-medium text-[var(--studio-fg)]">Brain memory</h2>
-          <p className="mt-4 text-[12px] text-[var(--studio-muted)]">
-            When off, auto-extraction after a generation does not run. Manual memory still injects.
-          </p>
-          <label className="mt-12 inline-flex items-center gap-8 text-[13px] text-[var(--studio-fg)]">
-            <input
-              type="checkbox"
-              checked={memoryExtractionEnabled}
-              disabled={savingExtraction}
-              onChange={(event) => {
-                const next = event.target.checked;
-                setSavingExtraction(true);
-                void updateMemoryExtractionSetting(next).then((result) => {
-                  setSavingExtraction(false);
-                  if (result.ok) setMemoryExtractionEnabled(result.data.enabled);
-                });
-              }}
-            />
-            memoryExtractionEnabled
-          </label>
-        </section>
-      </main>
-    </StudioShell>
+      <AdminCard icon={<Users2 className="size-14" aria-hidden />} title="By member">
+        {loading && members.length === 0 ? (
+          <SkeletonTable rows={4} cols={5} />
+        ) : (
+        <AdminTable
+          isEmpty={!loading && members.length === 0}
+          empty="No usage in this range."
+          head={
+            <>
+              <Th>Member</Th>
+              <Th>Projects</Th>
+              <Th>Generations</Th>
+              <Th>Estimated spend</Th>
+              <Th align="right"> </Th>
+            </>
+          }
+        >
+          {members.map((member) => {
+            const isOpen = expanded === member.userId;
+            return (
+              <Fragment key={member.userId}>
+                <Tr className="cursor-pointer" onClick={() => void toggleMember(member)}>
+                  <Td>
+                    <div className="font-medium text-[var(--studio-fg)]">{member.name}</div>
+                    <div className="text-[12px] text-[var(--studio-muted)]">{member.email}</div>
+                  </Td>
+                  <Td muted>{member.projectCount}</Td>
+                  <Td muted>{member.generationCount}</Td>
+                  <Td muted>{formatMoney(member.estimatedCost)}</Td>
+                  <Td align="right">
+                    <ChevronDown
+                      className={`ml-auto size-14 text-[var(--studio-faint)] transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`}
+                      aria-hidden
+                    />
+                  </Td>
+                </Tr>
+                {isOpen && (
+                  <Tr>
+                    <Td colSpan={5}>
+                      {member.projects.length === 0 ? (
+                        <p className="text-[13px] text-[var(--studio-muted)]">
+                          No projects in this range.
+                        </p>
+                      ) : loadingProjects &&
+                        member.projects.some((project) => !eventsByProject[project.id]) ? (
+                        <p className="text-[13px] text-[var(--studio-muted)]">Loading projects…</p>
+                      ) : (
+                        <div className="space-y-16">
+                          {member.projects.map((project) => (
+                            <div key={project.id}>
+                              <p className="mb-8 text-[13px] font-medium text-[var(--studio-fg)]">
+                                {project.name}
+                              </p>
+                              <ul className="space-y-4 text-[12px] text-[var(--studio-muted)]">
+                                {(eventsByProject[project.id] || []).map((event, index) => (
+                                  <li key={`${project.id}-${index}`}>
+                                    {event.kind} · {formatMoney(event.cost)} ·{' '}
+                                    {formatWhen(event.createdAt)}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </Td>
+                  </Tr>
+                )}
+              </Fragment>
+            );
+          })}
+        </AdminTable>
+        )}
+      </AdminCard>
+
+      <AdminCard
+        icon={<Sparkles className="size-14" aria-hidden />}
+        title="Skills"
+        description="Sorted by usage. Zero-usage skills never matched or are unused."
+      >
+        {loading && skills.length === 0 ? (
+          <SkeletonTable rows={3} cols={4} />
+        ) : (
+        <AdminTable
+          isEmpty={!loading && skills.length === 0}
+          empty="No workspace skills yet."
+          head={
+            <>
+              <Th>Skill</Th>
+              <Th>Enabled</Th>
+              <Th align="right">Usage</Th>
+            </>
+          }
+        >
+          {skills.map((skill) => (
+            <Tr key={skill.id}>
+              <Td>
+                <div className="font-medium text-[var(--studio-fg)]">{skill.name}</div>
+                <div className="text-[12px] text-[var(--studio-muted)]">{skill.description}</div>
+              </Td>
+              <Td muted>{skill.enabled ? 'On' : 'Off'}</Td>
+              <Td align="right" muted>
+                {skill.usageCount}
+              </Td>
+            </Tr>
+          ))}
+        </AdminTable>
+        )}
+      </AdminCard>
+
+      <AdminCard icon={<Brain className="size-14" aria-hidden />} title="Brain memory">
+        <p className="text-[13px] text-[var(--studio-muted)]">
+          When off, auto-extraction after a generation does not run. Manual memory still injects.
+        </p>
+        <label className="mt-12 inline-flex items-center gap-8 text-[13px] text-[var(--studio-fg)]">
+          <input
+            type="checkbox"
+            checked={memoryExtractionEnabled}
+            disabled={savingExtraction}
+            onChange={(event) => {
+              const next = event.target.checked;
+              setSavingExtraction(true);
+              void updateMemoryExtractionSetting(next).then((result) => {
+                setSavingExtraction(false);
+                if (result.ok) setMemoryExtractionEnabled(result.data.enabled);
+              });
+            }}
+          />
+          Automatically extract memory after generation
+        </label>
+      </AdminCard>
+    </AdminPage>
   );
 }
