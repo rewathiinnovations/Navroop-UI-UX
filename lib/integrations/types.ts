@@ -96,6 +96,8 @@ export type GithubManifest = {
   name: string;
   url: string;
   redirect_url: string;
+  /** OAuth callback(s) — required for apps whose users authorize (connectors). */
+  callback_urls?: string[];
   /** Deploy app only — the connectors app has no post-install setup page. */
   setup_url?: string;
   public: false;
