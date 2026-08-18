@@ -89,3 +89,6 @@ bun.lockb
 .claude/worktrees/
 .claude/**/.env
 .claude/**/.env.*
+
+# In-browser preview vendor asset (copied from node_modules/esbuild-wasm at install)
+public/preview-vendor/esbuild.wasm
