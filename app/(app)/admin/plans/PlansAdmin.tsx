@@ -16,12 +16,10 @@ const FIELDS = [
   ['maxLiveSites', 'Live'],
   ['maxPreviewSites', 'Preview'],
   ['maxMembers', 'Members'],
-  ['maxConcurrentSandboxes', 'Sandboxes'],
   ['checkpointRetentionDays', 'Retention'],
   ['maxTokensPerJob', 'Tokens/job'],
   ['maxFilesPerJob', 'Files/job'],
   ['maxOutputBytesPerJob', 'Bytes/job'],
-  ['monthlySandboxMinutes', 'Sandbox min'],
 ] as const;
 
 const INPUT_CLASS =
@@ -83,7 +81,6 @@ export default function PlansAdmin({
           maxLiveSites: Number(form.get('maxLiveSites') || 1),
           maxPreviewSites: Number(form.get('maxPreviewSites') || 3),
           maxMembers: Number(form.get('maxMembers') || 2),
-          maxConcurrentSandboxes: Number(form.get('maxConcurrentSandboxes') || 1),
           checkpointRetentionDays: Number(form.get('checkpointRetentionDays') || 7),
           storageBytesLimit: String(form.get('storageBytesLimit') || 524288000),
         }),
@@ -285,13 +282,6 @@ export default function PlansAdmin({
             label="Max members"
             type="number"
             defaultValue={5}
-          />
-          <StudioField
-            id="plan-sandboxes"
-            name="maxConcurrentSandboxes"
-            label="Max concurrent sandboxes"
-            type="number"
-            defaultValue={2}
           />
           <StudioField
             id="plan-retention"

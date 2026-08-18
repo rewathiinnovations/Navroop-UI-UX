@@ -2,7 +2,7 @@ import { prisma } from '@/lib/db';
 import { getEffectivePlan } from '@/lib/plans/limits';
 import { DEFAULT_JOB_CAPS, type JobCaps } from './caps';
 
-export type PlanConsumptionCaps = JobCaps & { monthlySandboxMinutes: number };
+export type PlanConsumptionCaps = JobCaps;
 
 export async function getPlanCaps(workspaceId: string): Promise<PlanConsumptionCaps> {
   const plan = await getEffectivePlan(workspaceId);
@@ -11,10 +11,9 @@ export async function getPlanCaps(workspaceId: string): Promise<PlanConsumptionC
       maxTokensPerJob: number;
       maxFilesPerJob: number;
       maxOutputBytesPerJob: number;
-      monthlySandboxMinutes: number;
     }>
   >`
-    SELECT "maxTokensPerJob", "maxFilesPerJob", "maxOutputBytesPerJob", "monthlySandboxMinutes"
+    SELECT "maxTokensPerJob", "maxFilesPerJob", "maxOutputBytesPerJob"
     FROM "Plan"
     WHERE id = ${plan.id}
     LIMIT 1
@@ -24,6 +23,5 @@ export async function getPlanCaps(workspaceId: string): Promise<PlanConsumptionC
     maxTokensPerJob: row?.maxTokensPerJob ?? DEFAULT_JOB_CAPS.maxTokensPerJob,
     maxFilesPerJob: row?.maxFilesPerJob ?? DEFAULT_JOB_CAPS.maxFilesPerJob,
     maxOutputBytesPerJob: row?.maxOutputBytesPerJob ?? DEFAULT_JOB_CAPS.maxOutputBytesPerJob,
-    monthlySandboxMinutes: row?.monthlySandboxMinutes ?? 300,
   };
 }

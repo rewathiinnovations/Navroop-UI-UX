@@ -44,7 +44,6 @@ async function exportProject(request: NextRequest, params: Promise<{ id: string 
       id: true,
       name: true,
       stack: true,
-      sandboxStatus: true,
       checkpoints: {
         where: { snapshotPruned: false },
         orderBy: { createdAt: 'desc' },
@@ -66,7 +65,6 @@ async function exportProject(request: NextRequest, params: Promise<{ id: string 
   const files = await collectExportFiles({
     projectId: project.id,
     checkpointId,
-    sandboxStatus: project.sandboxStatus,
     checkpoints: project.checkpoints,
   });
   if (files.length === 0) {

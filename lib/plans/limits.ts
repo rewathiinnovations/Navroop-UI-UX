@@ -5,12 +5,7 @@ import { notifyAdminsCredit80 } from './alerts';
 import { creditDenialMessage, limitDenialMessage } from './messages';
 import { log } from '@/lib/logger';
 import { setSentryActionContext } from '@/lib/sentry/context';
-import type {
-  CreditAction,
-  CreditCheckResult,
-  LimitCheckResult,
-  LimitKind,
-} from './types';
+import type { CreditAction, CreditCheckResult, LimitCheckResult, LimitKind } from './types';
 
 export const CREDIT_COSTS = {
   generation: 1,
@@ -86,7 +81,6 @@ export async function rollCreditPeriodIfNeeded(workspaceId = WORKSPACE_ROW_ID): 
       "creditsUsed" = 0,
       "creditsPeriodStart" = ${nextStart},
       "creditAlert80Sent" = false,
-      "sandboxMinutesUsed" = 0,
       "spendUsd" = 0,
       "spendAlert80Sent" = false,
       "generationPaused" = CASE WHEN "pauseReason" = 'SPEND_LIMIT' THEN false ELSE "generationPaused" END,
@@ -96,7 +90,12 @@ export async function rollCreditPeriodIfNeeded(workspaceId = WORKSPACE_ROW_ID): 
   return prisma.workspace.findUniqueOrThrow({ where: { id: workspace.id } });
 }
 
-function logCreditDenial(workspaceId: string, userId: string, action: CreditAction, reason: string) {
+function logCreditDenial(
+  workspaceId: string,
+  userId: string,
+  action: CreditAction,
+  reason: string,
+) {
   setSentryActionContext({ action, workspaceId });
   log.warn('credits.denied', { action, workspaceId, userId, reason });
 }
@@ -240,10 +239,6 @@ async function currentForLimit(workspaceId: string, kind: LimitKind) {
       });
     case 'members':
       return prisma.user.count({ where: { isActive: true } });
-    case 'sandboxes':
-      return prisma.project.count({
-        where: { deletedAt: null, sandboxStatus: { in: ['READY', 'BOOTING'] } },
-      });
     case 'storage': {
       const workspace = await ensureWorkspace(workspaceId);
       return workspace.storageBytes;
@@ -263,8 +258,6 @@ function planLimit(plan: Plan, kind: LimitKind) {
       return plan.maxPreviewSites;
     case 'members':
       return plan.maxMembers;
-    case 'sandboxes':
-      return plan.maxConcurrentSandboxes;
     case 'storage':
       return Number(plan.storageBytesLimit);
     default:

@@ -10,7 +10,6 @@ function ranOutLabel(reason: string) {
   if (reason === 'member_cap') return 'Personal credit limit';
   if (reason === 'projects') return 'Project limit';
   if (reason === 'members') return 'Member limit';
-  if (reason === 'sandboxes') return 'Sandbox limit';
   if (reason === 'storage') return 'Storage limit';
   return 'Workspace credits';
 }

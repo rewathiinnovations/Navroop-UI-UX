@@ -45,11 +45,9 @@ async function seed() {
       ownerId: USER,
       initialPrompt: 'Build Vaidya',
       lastCode: null,
-      sandboxStatus: 'FAILED',
     },
     update: {
       lastCode: null,
-      sandboxStatus: 'FAILED',
       phase: 'BUILDING',
       generationStatus: 'generating',
       progressMessage: null,
@@ -136,7 +134,7 @@ describe('settleStreamedGeneration — stream files are not a finished site', ()
     expect(project.phase).toBe('COMPLETE');
   });
 
-  it('does not settle SUCCEEDED+COMPLETE with lastCode null when sandbox/persist missed', async () => {
+  it('does not settle SUCCEEDED+COMPLETE with lastCode null when nothing parsed', async () => {
     const job = await startBuild();
 
     const settled = await settleStreamedGeneration({
@@ -160,7 +158,7 @@ describe('settleStreamedGeneration — stream files are not a finished site', ()
     expect(settled.outcome).toBe('failed');
     expect(row?.status).not.toBe('SUCCEEDED');
     expect(row?.status).toBe('FAILED');
-    expect(row?.errorCode).toBe('sandbox_unavailable');
+    expect(row?.errorCode).toBe('no_files_generated');
     expect(row?.filesWritten).toBe(11);
     expect(project?.lastCode).toBeNull();
     expect(project?.phase).not.toBe('COMPLETE');

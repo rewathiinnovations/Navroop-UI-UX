@@ -4,8 +4,8 @@ import { toLastCode } from '@/lib/projects/last-code';
 import { failJob, succeedJob } from './lifecycle';
 import { getJob } from './store';
 
-export const STREAM_SANDBOX_PERSIST_MISS_MESSAGE =
-  'The generated files were not saved because the workspace never became ready.';
+export const STREAM_NO_FILES_MESSAGE =
+  'The AI finished without producing any files we could save. Try again.';
 
 export type StreamSettleInput = {
   jobId: string;
@@ -93,11 +93,10 @@ export async function settleStreamedGeneration(
 
   const project = await prisma.project.findUnique({
     where: { id: job.projectId },
-    select: { lastCode: true, sandboxStatus: true, phase: true },
+    select: { lastCode: true, phase: true },
   });
   const checkpointCount = await prisma.checkpoint.count({ where: { projectId: job.projectId } });
   let hasSite = Boolean(project?.lastCode) || checkpointCount > 0;
-  const sandboxDead = project?.sandboxStatus === 'FAILED' || project?.sandboxStatus === 'DEAD';
 
   // The stream is the source of the site — persist it here, server-side.
   // Before this, lastCode was only written by the browser's terminal PATCH,
@@ -120,16 +119,18 @@ export async function settleStreamedGeneration(
     hasSite = true;
   }
 
-  if (!hasSite && sandboxDead) {
+  // A stream that produced no parseable file leaves nothing to show. Saying
+  // "complete" here is how a job used to read SUCCEEDED with lastCode empty.
+  if (!hasSite) {
     await failJob(job.id, {
-      errorCode: 'sandbox_unavailable',
-      errorMessage: STREAM_SANDBOX_PERSIST_MISS_MESSAGE,
+      errorCode: 'no_files_generated',
+      errorMessage: STREAM_NO_FILES_MESSAGE,
       ...usage,
     });
     return {
       outcome: 'failed',
-      errorCode: 'sandbox_unavailable',
-      errorMessage: STREAM_SANDBOX_PERSIST_MISS_MESSAGE,
+      errorCode: 'no_files_generated',
+      errorMessage: STREAM_NO_FILES_MESSAGE,
     };
   }
 

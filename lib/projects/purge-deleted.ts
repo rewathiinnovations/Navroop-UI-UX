@@ -10,7 +10,6 @@ export async function purgeDeletedProjects() {
     where: { deletedAt: { not: null, lt: cutoff } },
     select: {
       id: true,
-      sandboxId: true,
       checkpoints: { select: { snapshotKey: true, snapshotBytes: true } },
       projectAssets: { select: { storageKey: true, sizeBytes: true } },
     },

@@ -14,48 +14,51 @@ function since(days: number) {
 }
 
 async function windowCounts(from: Date) {
-  const [generations, publishes, sandboxBoots] = await Promise.all([
+  const [generations, publishes] = await Promise.all([
     prisma.project.count({
       where: { generationStatus: 'error', updatedAt: { gte: from } },
     }),
     prisma.deployment.count({
       where: { status: 'FAILED', updatedAt: { gte: from } },
     }),
-    prisma.project.count({
-      where: { sandboxStatus: 'FAILED', updatedAt: { gte: from } },
-    }),
   ]);
-  return { generations, publishes, sandboxBoots };
+  return { generations, publishes };
 }
 
 export async function getAdminHealth() {
-  const [last24h, last7d, integrations, sandboxCount, plan, deployErrors, integrationErrors, orphans, errorTracking, systemChecks] =
-    await Promise.all([
-      windowCounts(since(1)),
-      windowCounts(since(7)),
-      prisma.integration.findMany({
-        where: { workspaceId: WORKSPACE_ROW_ID },
-        select: { kind: true, status: true, lastCheckedAt: true, lastError: true },
-      }),
-      prisma.project.count({
-        where: { deletedAt: null, sandboxStatus: { in: ['READY', 'BOOTING'] } },
-      }),
-      getEffectivePlan(WORKSPACE_ROW_ID),
-      prisma.deployment.groupBy({
-        by: ['lastError'],
-        where: { status: 'FAILED', updatedAt: { gte: since(7) }, lastError: { not: null } },
-        _count: { lastError: true },
-        orderBy: { _count: { lastError: 'desc' } },
-        take: 8,
-      }),
-      prisma.integration.findMany({
-        where: { lastError: { not: null } },
-        select: { kind: true, lastError: true },
-      }),
-      loadOrphanReport(),
-      loadErrorTrackingPanel(),
-      loadSystemChecks(),
-    ]);
+  const [
+    last24h,
+    last7d,
+    integrations,
+    plan,
+    deployErrors,
+    integrationErrors,
+    orphans,
+    errorTracking,
+    systemChecks,
+  ] = await Promise.all([
+    windowCounts(since(1)),
+    windowCounts(since(7)),
+    prisma.integration.findMany({
+      where: { workspaceId: WORKSPACE_ROW_ID },
+      select: { kind: true, status: true, lastCheckedAt: true, lastError: true },
+    }),
+    getEffectivePlan(WORKSPACE_ROW_ID),
+    prisma.deployment.groupBy({
+      by: ['lastError'],
+      where: { status: 'FAILED', updatedAt: { gte: since(7) }, lastError: { not: null } },
+      _count: { lastError: true },
+      orderBy: { _count: { lastError: 'desc' } },
+      take: 8,
+    }),
+    prisma.integration.findMany({
+      where: { lastError: { not: null } },
+      select: { kind: true, lastError: true },
+    }),
+    loadOrphanReport(),
+    loadErrorTrackingPanel(),
+    loadSystemChecks(),
+  ]);
 
   const codes = new Map<string, number>();
   for (const row of deployErrors) {
@@ -94,10 +97,6 @@ export async function getAdminHealth() {
       .sort((a, b) => b[1] - a[1])
       .slice(0, 8)
       .map(([code, count]) => ({ code, count })),
-    sandboxes: {
-      current: sandboxCount,
-      limit: plan.maxConcurrentSandboxes,
-    },
     orphans: orphans
       ? {
           checkedAt: orphans.checkedAt,

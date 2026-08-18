@@ -100,9 +100,9 @@ describe('lib raw SQL parses on Postgres', () => {
     await prisma.$executeRaw`
       INSERT INTO "Workspace" (
         id, "storageBytes", "creditsUsed", "creditsPeriodStart",
-        "generationPaused", "sandboxMinutesUsed", "spendUsd", "spendAlert80Sent",
+        "generationPaused", "spendUsd", "spendAlert80Sent",
         "monthlySpendLimitUsd"
-      ) VALUES (${WS}, 0, 0, NOW(), false, 0, 0, false, 1)
+      ) VALUES (${WS}, 0, 0, NOW(), false, 0, false, 1)
     `;
     await parses(() => accrueSpend(WS, 0.85));
     await parses(() => accrueSpend(WS, 0.5));

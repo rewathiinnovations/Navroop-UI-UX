@@ -78,7 +78,7 @@ export async function isCodeScanInFlight(projectId: string) {
 async function performCodeAudit(projectId: string) {
   const project = await prisma.project.findFirst({
     where: { id: projectId, deletedAt: null },
-    select: { id: true, stack: true, previewUrl: true, sandboxId: true, designDirection: true },
+    select: { id: true, stack: true, previewUrl: true, designDirection: true },
   });
   if (!project) return false;
 

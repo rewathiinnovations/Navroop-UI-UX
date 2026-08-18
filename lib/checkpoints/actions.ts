@@ -268,7 +268,7 @@ export async function getCheckpoints(projectId: string) {
 async function loadProjectForWrite(projectId: string) {
   return prisma.project.findFirst({
     where: { id: projectId, deletedAt: null },
-    select: { id: true, ownerId: true, sandboxId: true, previewUrl: true },
+    select: { id: true, ownerId: true, previewUrl: true },
   });
 }
 

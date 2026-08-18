@@ -5,4 +5,3 @@ export { createProject } from './project';
 export { createCheckpoint } from './checkpoint';
 export { createJob } from './job';
 export { createDeployment } from './deployment';
-export { createSandboxProviderConfig } from './sandbox-provider';

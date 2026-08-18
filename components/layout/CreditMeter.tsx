@@ -7,8 +7,6 @@ type Meter = {
   used: number;
   limit: number;
   resetAt: string;
-  sandboxMinutesUsed?: number;
-  sandboxMinutesLimit?: number;
 };
 
 export default function CreditMeter() {
@@ -30,20 +28,13 @@ export default function CreditMeter() {
   if (!meter || meter.limit <= 0) return null;
 
   const ratio = Math.min(meter.used / meter.limit, 1);
-  const tone = ratio >= 1 ? 'bg-rose-500' : ratio >= 0.8 ? 'bg-amber-500' : 'bg-[var(--studio-accent)]';
+  const tone =
+    ratio >= 1 ? 'bg-rose-500' : ratio >= 0.8 ? 'bg-amber-500' : 'bg-[var(--studio-accent)]';
   const reset = new Date(meter.resetAt);
   const resetLabel = Number.isNaN(reset.getTime())
     ? ''
     : reset.toLocaleDateString('en-IN', { month: 'short', day: 'numeric' });
-  const sandboxUsed = meter.sandboxMinutesUsed ?? 0;
-  const sandboxLimit = meter.sandboxMinutesLimit ?? 0;
-  const sandboxTitle =
-    sandboxLimit > 0
-      ? `${sandboxUsed} / ${sandboxLimit} sandbox minutes`
-      : '';
-  const title = [resetLabel ? `Resets ${resetLabel}` : 'Credit usage', sandboxTitle]
-    .filter(Boolean)
-    .join(' · ');
+  const title = resetLabel ? `Resets ${resetLabel}` : 'Credit usage';
 
   return (
     <Link
@@ -64,7 +55,10 @@ export default function CreditMeter() {
         aria-valuenow={meter.used}
         aria-label="Credits used this period"
       >
-        <div className={`h-full rounded-full ${tone}`} style={{ width: `${Math.max(ratio * 100, meter.used > 0 ? 4 : 0)}%` }} />
+        <div
+          className={`h-full rounded-full ${tone}`}
+          style={{ width: `${Math.max(ratio * 100, meter.used > 0 ? 4 : 0)}%` }}
+        />
       </div>
     </Link>
   );

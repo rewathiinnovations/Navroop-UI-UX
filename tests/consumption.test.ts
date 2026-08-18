@@ -277,10 +277,10 @@ try {
   await prisma.$executeRaw`
     INSERT INTO "Workspace" (
       id, "storageBytes", "creditsUsed", "creditsPeriodStart",
-      "generationPaused", "sandboxMinutesUsed", "spendUsd", "spendAlert80Sent"
+      "generationPaused", "spendUsd", "spendAlert80Sent"
     ) VALUES (
       ${WS}, 0, 0, NOW(),
-      false, 0, 0, false
+      false, 0, false
     )
   `;
 

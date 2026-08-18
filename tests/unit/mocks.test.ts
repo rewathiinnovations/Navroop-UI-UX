@@ -3,10 +3,7 @@ import {
   createAiMock,
   createCloudflareMock,
   createCoolifyMock,
-  createDaytonaMock,
-  createE2bMock,
   createGithubMock,
-  createModalMock,
   createResendMock,
   createSentryMock,
   createStorageMock,
@@ -14,9 +11,6 @@ import {
 
 const factories = [
   ['ai', createAiMock],
-  ['e2b', createE2bMock],
-  ['modal', createModalMock],
-  ['daytona', createDaytonaMock],
   ['github', createGithubMock],
   ['coolify', createCoolifyMock],
   ['cloudflare', createCloudflareMock],

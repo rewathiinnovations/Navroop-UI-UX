@@ -1188,32 +1188,6 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
             hasBackendFiles = false;
           }
 
-          if (hasBackendFiles) {
-            const cacheSandboxId = global.sandboxState?.fileCache?.sandboxId || null;
-            const scopeProjectId =
-              (typeof requestProjectId === 'string' && requestProjectId) ||
-              (typeof context?.projectId === 'string' && context.projectId) ||
-              '';
-            if (scopeProjectId) {
-              const { prisma } = await import('@/lib/db');
-              const own = await prisma.project.findUnique({
-                where: { id: scopeProjectId },
-                select: { sandboxId: true },
-              });
-              const ownSandboxId = own?.sandboxId || null;
-              if (!ownSandboxId || cacheSandboxId !== ownSandboxId) {
-                log.info('generation.backend_cache_skipped', {
-                  requestId: getRequestId(),
-                  projectId: scopeProjectId,
-                  cacheSandboxId,
-                  ownSandboxId,
-                });
-                backendFiles = {};
-                hasBackendFiles = false;
-              }
-            }
-          }
-
           console.log('[generate-ai-code-stream] Backend file cache status:');
           console.log('[generate-ai-code-stream] - Has sandboxState:', !!global.sandboxState);
           console.log(
