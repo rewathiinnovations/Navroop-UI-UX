@@ -8,37 +8,9 @@
  * Extracted from POST /api/analyze-edit-intent so the generation stream can
  * call it directly instead of over HTTP. The route is a thin wrapper.
  */
-import { createGroq } from '@ai-sdk/groq';
-import { createAnthropic } from '@ai-sdk/anthropic';
-import { createOpenAI } from '@ai-sdk/openai';
-import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { generateObject } from 'ai';
 import { z } from 'zod';
-
-const isUsingAIGateway = !!process.env.AI_GATEWAY_API_KEY;
-const aiGatewayBaseURL = 'https://ai-gateway.vercel.sh/v1';
-
-const groq = createGroq({
-  apiKey: process.env.AI_GATEWAY_API_KEY ?? process.env.GROQ_API_KEY,
-  baseURL: isUsingAIGateway ? aiGatewayBaseURL : undefined,
-});
-
-const anthropic = createAnthropic({
-  apiKey: process.env.AI_GATEWAY_API_KEY ?? process.env.ANTHROPIC_API_KEY,
-  baseURL: isUsingAIGateway
-    ? aiGatewayBaseURL
-    : process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com/v1',
-});
-
-const openai = createOpenAI({
-  apiKey: process.env.AI_GATEWAY_API_KEY ?? process.env.OPENAI_API_KEY,
-  baseURL: isUsingAIGateway ? aiGatewayBaseURL : process.env.OPENAI_BASE_URL,
-});
-
-const googleGenerativeAI = createGoogleGenerativeAI({
-  apiKey: process.env.AI_GATEWAY_API_KEY ?? process.env.GEMINI_API_KEY,
-  baseURL: isUsingAIGateway ? aiGatewayBaseURL : undefined,
-});
+import { getProviderForModel } from '@/lib/ai/provider-manager';
 
 const searchPlanSchema = z.object({
   editType: z
@@ -64,7 +36,9 @@ const searchPlanSchema = z.object({
   regexPatterns: z
     .array(z.string())
     .optional()
-    .describe('Regex patterns for finding code structures (e.g., "className=[\\"\\\'].*header.*[\\"\\\']")'),
+    .describe(
+      'Regex patterns for finding code structures (e.g., "className=[\\"\\\'].*header.*[\\"\\\']")',
+    ),
 
   fileTypesToSearch: z
     .array(z.string())
@@ -96,19 +70,13 @@ export type AnalyzeEditIntentInput = {
 };
 
 export type AnalyzeEditIntentResult =
-  | { ok: true; searchPlan: SearchPlan }
-  | { ok: false; status: number; error: string };
+  { ok: true; searchPlan: SearchPlan } | { ok: false; status: number; error: string };
 
 type ManifestLike = { files?: Record<string, unknown> };
 
 function selectModel(model: string) {
-  if (model.startsWith('anthropic/')) return anthropic(model.replace('anthropic/', ''));
-  if (model.startsWith('openai/')) {
-    if (model.includes('gpt-oss')) return groq(model);
-    return openai(model.replace('openai/', ''));
-  }
-  if (model.startsWith('google/')) return googleGenerativeAI(model.replace('google/', ''));
-  return groq(model);
+  const { client, actualModel } = getProviderForModel(model);
+  return client(actualModel);
 }
 
 export async function analyzeEditIntent(

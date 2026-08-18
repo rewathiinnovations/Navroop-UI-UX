@@ -52,7 +52,8 @@ const CAUSE_LINES: Record<JobErrorCode, string> = {
   queue_timeout: 'The build waited too long in the queue',
   client_disconnected: 'Your browser disconnected before the build finished',
   no_files_generated: 'The AI finished without producing any files',
-  stack_mismatch: "The AI wrote files that don't fit this project's framework, so they were not applied",
+  stack_mismatch:
+    "The AI wrote files that don't fit this project's framework, so they were not applied",
   tool_call_validation_failed: 'The AI replied in a form we could not use — try again',
   credits_exhausted: "This month's credits are used up",
   plan_failed: 'The plan for this build could not be written',
@@ -74,7 +75,7 @@ const CAUSE_LINES: Record<JobErrorCode, string> = {
     'We could not tell whether the live workspace is still running — publish was not started from an older snapshot. Try again',
   provider_not_configured: NO_PROVIDER_CONFIGURED_MESSAGE,
   provider_quota_exhausted:
-    'The AI provider is out of quota — try again later, or add a different provider key on the server.',
+    'DeepSeek is out of quota — try again later, or check the plan and billing details on the DeepSeek account.',
   request_rejected:
     'The AI could not accept this request — it may be too large or against the content policy. Try a shorter prompt.',
   // One code for every hard URL-import abort (blocked page, login wall, SSRF,
@@ -167,7 +168,11 @@ export function offersRecoveryRetry(input: {
   errorMessage?: string | null;
 }) {
   if (input.errorCode && NO_RETRY_CODES.has(input.errorCode)) return false;
-  if (input.kind === 'IMPORT' && input.errorMessage && IMPORT_NO_RETRY_MESSAGES.has(input.errorMessage)) {
+  if (
+    input.kind === 'IMPORT' &&
+    input.errorMessage &&
+    IMPORT_NO_RETRY_MESSAGES.has(input.errorMessage)
+  ) {
     return false;
   }
   return true;
@@ -220,7 +225,10 @@ export function recoveryNextStepLine(input: {
   if (input.errorMessage === URL_GUARD_MESSAGES.redirect) {
     return `${URL_GUARD_MESSAGES.redirect}. Use the final public URL, or paste the content.`;
   }
-  if (input.errorMessage === IMPORT_NO_FILES_MESSAGE || input.errorMessage === URL_GUARD_MESSAGES.timeout) {
+  if (
+    input.errorMessage === IMPORT_NO_FILES_MESSAGE ||
+    input.errorMessage === URL_GUARD_MESSAGES.timeout
+  ) {
     return '';
   }
   return '';

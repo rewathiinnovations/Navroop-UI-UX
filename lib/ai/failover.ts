@@ -94,10 +94,7 @@ function isCredentialRejection(message: string) {
 function namedProviderOf(error: unknown, explicit?: ProviderName | null): ProviderName | null {
   if (explicit) return explicit;
   if (error && typeof error === 'object' && 'provider' in error) {
-    const value = (error as { provider?: unknown }).provider;
-    if (value === 'google' || value === 'openai' || value === 'anthropic' || value === 'groq') {
-      return value;
-    }
+    if ((error as { provider?: unknown }).provider === 'deepseek') return 'deepseek';
   }
   return null;
 }
@@ -141,10 +138,7 @@ export function providerFailureMessage(error: unknown, provider?: ProviderName |
   if (error instanceof ProviderNotConfiguredError) return error.message;
   const kind = classifyProviderFailure(error);
   if (kind === 'quota') {
-    const limit = messageOf(error).match(/generate_content_[\w]+/i)?.[0];
-    return limit
-      ? `The AI provider is out of quota (${limit}) — try again later, or add a different provider key on the server.`
-      : 'The AI provider is out of quota — try again later, or add a different provider key on the server.';
+    return 'DeepSeek is out of quota — try again later, or check the plan and billing details on the DeepSeek account.';
   }
   if (kind === 'content_policy') {
     return 'The AI refused this request because of its content policy — try a different prompt.';
@@ -161,7 +155,7 @@ export function providerFailureMessage(error: unknown, provider?: ProviderName |
       const name = providerDisplayName(vendor);
       return `${name} rejected the API key. Ask an administrator to check the ${name} key, then try again.`;
     }
-    return 'The AI provider rejected the API key. Ask an administrator to set or fix GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, or GROQ_API_KEY, then try again.';
+    return 'DeepSeek rejected the API key. Ask an administrator to set or fix DEEPSEEK_API_KEY in Admin → Configuration, then try again.';
   }
   const detail = messageOf(error).trim();
   return detail || 'The AI service is down — try again in a few minutes.';
@@ -171,8 +165,9 @@ export function retryAfterMs(error: unknown, attempt = 0) {
   if (!error || typeof error !== 'object') {
     return backoffMs(attempt);
   }
-  const headers = (error as { headers?: { get?: (name: string) => string | null; 'retry-after'?: string } })
-    .headers;
+  const headers = (
+    error as { headers?: { get?: (name: string) => string | null; 'retry-after'?: string } }
+  ).headers;
   const raw =
     typeof headers?.get === 'function'
       ? headers.get('retry-after')

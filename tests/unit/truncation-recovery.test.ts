@@ -3,10 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { bindStreamErrorCapture } from '../../lib/ai/empty-completion';
-import {
-  jobErrorCodeForProviderFailure,
-  providerFailureMessage,
-} from '../../lib/ai/failover';
+import { jobErrorCodeForProviderFailure, providerFailureMessage } from '../../lib/ai/failover';
 import {
   TRUNCATION_INCOMPLETE_KEPT,
   collectRecoveredStreamText,
@@ -24,7 +21,7 @@ function unregisteredCallerError() {
 }
 
 const GEMINI_KEY_REJECTED =
-  'Gemini rejected the API key. Ask an administrator to check the Gemini key, then try again.';
+  'DeepSeek rejected the API key. Ask an administrator to check the DeepSeek key, then try again.';
 
 const routePath = path.join(
   fileURLToPath(new URL('../../', import.meta.url)),
@@ -61,9 +58,7 @@ describe('truncation-recovery streamText must not swallow a rejected call', () =
     expect(outcome.keepTruncatedFiles).toBe(true);
     expect(outcome.complete).toBe(false);
     expect(outcome.errorCode).toBe('provider_not_configured');
-    expect(outcome.errorMessage).toBe(
-      `${TRUNCATION_INCOMPLETE_KEPT} ${GEMINI_KEY_REJECTED}`,
-    );
+    expect(outcome.errorMessage).toBe(`${TRUNCATION_INCOMPLETE_KEPT} ${GEMINI_KEY_REJECTED}`);
     expect(outcome.errorMessage).toBe(truncationRecoveryFailureMessage(apiError, 'google'));
     expect(outcome.errorMessage).toMatch(/incomplete/i);
     expect(outcome.errorMessage).toMatch(/truncated files were kept/i);

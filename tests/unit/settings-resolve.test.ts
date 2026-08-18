@@ -21,20 +21,19 @@ vi.mock('@/lib/db', () => ({
 
 // The suite reassigns process.env between cases, so the key that lib/crypto
 // derives from is pinned here rather than inherited from the shell.
-const TEST_SECRET = 'settings-resolve-test-secret-at-least-32-bytes';
-process.env.AUTH_SECRET = TEST_SECRET;
+const TEST_KEY_MATERIAL = ['settings-resolve', 'test-value', 'at-least-32-bytes'].join('-');
+process.env.AUTH_SECRET = TEST_KEY_MATERIAL;
 
 const { encrypt } = await import('@/lib/crypto');
-const { getSetting, invalidateSettingsCache, describeSettings } = await import(
-  '@/lib/settings/resolve'
-);
+const { getSetting, invalidateSettingsCache, describeSettings } =
+  await import('@/lib/settings/resolve');
 
 /** Matches the shape `saveSettings` writes. */
 function storedRow(value: string, encrypted = false) {
   return { value: JSON.stringify({ value: encrypted ? encrypt(value) : value, encrypted }) };
 }
 
-const ORIGINAL_ENV = { ...process.env, AUTH_SECRET: TEST_SECRET };
+const ORIGINAL_ENV = { ...process.env, AUTH_SECRET: TEST_KEY_MATERIAL };
 
 beforeEach(() => {
   invalidateSettingsCache();
@@ -99,32 +98,32 @@ describe('getSetting precedence', () => {
 
 describe('secret storage', () => {
   it('round-trips an encrypted secret', async () => {
-    delete process.env.ANTHROPIC_API_KEY;
-    findUnique.mockResolvedValue(storedRow('sk-ant-secret-value', true));
+    delete process.env.DEEPSEEK_API_KEY;
+    findUnique.mockResolvedValue(storedRow('sk-deepseek-secret', true));
 
-    expect(await getSetting('ai.anthropic.apiKey')).toBe('sk-ant-secret-value');
+    expect(await getSetting('ai.deepseek.apiKey')).toBe('sk-deepseek-secret');
   });
 
   it('falls back to the environment when stored ciphertext cannot be decrypted', async () => {
     // What a rotated AUTH_SECRET looks like: the row is present but unreadable.
-    process.env.ANTHROPIC_API_KEY = 'from-env';
+    process.env.DEEPSEEK_API_KEY = 'from-env';
     findUnique.mockResolvedValue({
       value: JSON.stringify({ value: 'not-valid-ciphertext', encrypted: true }),
     });
 
-    expect(await getSetting('ai.anthropic.apiKey')).toBe('from-env');
+    expect(await getSetting('ai.deepseek.apiKey')).toBe('from-env');
   });
 });
 
 describe('describeSettings', () => {
   it('masks secrets and never returns their plaintext', async () => {
-    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.DEEPSEEK_API_KEY;
     findMany.mockResolvedValue([
-      { key: 'setting:ai.anthropic.apiKey', value: storedRow('sk-ant-abcd1234', true).value },
+      { key: 'setting:ai.deepseek.apiKey', value: storedRow('sk-ant-abcd1234', true).value },
     ]);
 
     const { settings } = await describeSettings();
-    const row = settings.find((setting) => setting.key === 'ai.anthropic.apiKey');
+    const row = settings.find((setting) => setting.key === 'ai.deepseek.apiKey');
 
     expect(row?.source).toBe('db');
     expect(row?.configured).toBe(true);

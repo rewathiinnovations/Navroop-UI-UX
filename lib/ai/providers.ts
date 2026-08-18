@@ -1,4 +1,13 @@
-export type ProviderName = 'openai' | 'anthropic' | 'groq' | 'google';
+/**
+ * DeepSeek is the only AI provider.
+ *
+ * This used to be a four-vendor chain (google/openai/anthropic/groq) with
+ * cross-vendor failover. That is gone: one key, one model, chosen in
+ * Admin → Configuration. The chain shape survives as a single-element list so
+ * the retry/queue machinery around it keeps working unchanged.
+ */
+
+export type ProviderName = 'deepseek';
 
 export type ProviderEntry = {
   id: string;
@@ -7,33 +16,25 @@ export type ProviderEntry = {
   apiKeyEnv: string;
 };
 
+export const DEEPSEEK_API_KEY_ENV = 'DEEPSEEK_API_KEY';
+export const DEEPSEEK_BASE_URL_ENV = 'DEEPSEEK_BASE_URL';
+/** OpenAI-format endpoint (https://api-docs.deepseek.com). */
+export const DEEPSEEK_DEFAULT_BASE_URL = 'https://api.deepseek.com';
+
+/**
+ * Models offered in the admin dropdown. DeepSeek keeps these two aliases
+ * pointing at the current snapshot (V4-Flash-0731 / V4-Pro-0813), so pinning
+ * dated ids here would go stale on their next release.
+ */
+export const DEEPSEEK_MODELS = [
+  { id: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash — faster, cheaper' },
+  { id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro — strongest' },
+] as const;
+
+export const DEFAULT_DEEPSEEK_MODEL = 'deepseek-v4-flash';
+
 export const NO_PROVIDER_CONFIGURED_MESSAGE =
-  'No AI provider is configured — set GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, or GROQ_API_KEY on the server.';
-
-const KEY_ENV: Record<ProviderName, string> = {
-  openai: 'OPENAI_API_KEY',
-  anthropic: 'ANTHROPIC_API_KEY',
-  groq: 'GROQ_API_KEY',
-  google: 'GEMINI_API_KEY',
-};
-
-const DEFAULT_MODELS: Record<ProviderName, string> = {
-  groq: 'moonshotai/kimi-k2-instruct-0905',
-  // gpt-4o-mini half-follows the stack prompts (single-file Next.js output for
-  // a Vite project); code generation needs a current flagship-tier model.
-  openai: 'gpt-5.6-luna',
-  anthropic: 'claude-sonnet-4-20250514',
-  google: 'gemini-2.0-flash',
-};
-
-const PROVIDER_ORDER: ProviderName[] = ['google', 'openai', 'anthropic', 'groq'];
-
-const DISPLAY_NAME: Record<ProviderName, string> = {
-  google: 'Gemini',
-  openai: 'OpenAI',
-  anthropic: 'Anthropic',
-  groq: 'Groq',
-};
+  'DeepSeek is not configured — add an API key in Admin → Configuration.';
 
 export class ProviderNotConfiguredError extends Error {
   readonly code = 'provider_not_configured' as const;
@@ -50,110 +51,48 @@ export type LoadProviderChainOptions = {
   requestedModel?: string;
 };
 
-function isProviderName(value: string): value is ProviderName {
-  return value === 'openai' || value === 'anthropic' || value === 'groq' || value === 'google';
-}
-
-function parseNamedProvider(value: string | undefined): ProviderName | null {
-  if (!value?.trim()) return null;
-  const key = value.trim().toLowerCase();
-  return isProviderName(key) ? key : null;
+export function isDeepSeekModel(model: string): boolean {
+  return DEEPSEEK_MODELS.some((row) => row.id === model);
 }
 
 export function hasUsableCredential(
-  provider: ProviderName,
+  _provider: ProviderName = 'deepseek',
   env: Record<string, string | undefined> = process.env,
 ) {
-  if (env.AI_GATEWAY_API_KEY?.trim()) return true;
-  return Boolean(env[KEY_ENV[provider]]?.trim());
-}
-
-export function providerForModel(modelId: string): ProviderName {
-  const id = modelId.trim();
-  if (id.startsWith('google/')) return 'google';
-  if (id.startsWith('openai/')) return 'openai';
-  if (id.startsWith('anthropic/')) return 'anthropic';
-  if (id === 'moonshotai/kimi-k2-instruct-0905' || id.startsWith('moonshotai/')) return 'groq';
-  return 'groq';
-}
-
-export function bareModelName(modelId: string, provider: ProviderName) {
-  const stripped = modelId.replace(/^(google|openai|anthropic)\//, '').trim();
-  return stripped || DEFAULT_MODELS[provider];
+  return Boolean(env[DEEPSEEK_API_KEY_ENV]?.trim());
 }
 
 export function modelIdForEntry(entry: ProviderEntry) {
-  if (entry.provider === 'groq') return entry.model;
-  if (entry.provider === 'google') return `google/${entry.model}`;
-  if (entry.provider === 'openai') return `openai/${entry.model}`;
-  return `anthropic/${entry.model}`;
+  return entry.model;
 }
 
-export function providerDisplayName(provider: ProviderName) {
-  return DISPLAY_NAME[provider];
+export function providerDisplayName(_provider: ProviderName = 'deepseek') {
+  return 'DeepSeek';
 }
 
-export function failoverNotice(from: ProviderName, to: ProviderName) {
-  return `${DISPLAY_NAME[from]} was unavailable, so this used ${DISPLAY_NAME[to]} instead.`;
-}
-
-function makeEntry(provider: ProviderName, model: string): ProviderEntry {
-  return {
-    id: provider,
-    provider,
-    model,
-    apiKeyEnv: KEY_ENV[provider],
-  };
+export function resolveModel(
+  env: Record<string, string | undefined> = process.env,
+  requestedModel?: string,
+): string {
+  const requested = requestedModel?.trim();
+  if (requested) return requested;
+  const configured = env.AI_PRIMARY_MODEL?.trim();
+  return configured || DEFAULT_DEEPSEEK_MODEL;
 }
 
 export function loadProviderChain(
   env: Record<string, string | undefined> = process.env,
   options: LoadProviderChainOptions = {},
 ): ProviderEntry[] {
-  const rawPrimary = env.AI_PRIMARY_PROVIDER?.trim();
-  if (rawPrimary) {
-    const named = parseNamedProvider(rawPrimary);
-    if (!named) {
-      throw new ProviderNotConfiguredError(
-        `AI_PRIMARY_PROVIDER is set to "${rawPrimary}" which is not a supported provider (google, openai, anthropic, groq)`,
-        null,
-      );
-    }
-    if (!hasUsableCredential(named, env)) {
-      throw new ProviderNotConfiguredError(
-        `AI_PRIMARY_PROVIDER is set to ${named} but ${KEY_ENV[named]} is missing or blank`,
-        named,
-      );
-    }
-  }
-
-  const seen = new Set<ProviderName>();
-  const chain: ProviderEntry[] = [];
-
-  const push = (provider: ProviderName, model: string) => {
-    if (seen.has(provider)) return;
-    if (!hasUsableCredential(provider, env)) return;
-    seen.add(provider);
-    chain.push(makeEntry(provider, model));
-  };
-
-  const requested = options.requestedModel?.trim();
-  if (requested) {
-    const provider = providerForModel(requested);
-    push(provider, bareModelName(requested, provider));
-  }
-
-  const primary = parseNamedProvider(env.AI_PRIMARY_PROVIDER) ?? 'google';
-  push(primary, env.AI_PRIMARY_MODEL?.trim() || DEFAULT_MODELS[primary]);
-
-  const fallback = parseNamedProvider(env.AI_FALLBACK_PROVIDER) ?? 'openai';
-  push(fallback, env.AI_FALLBACK_MODEL?.trim() || DEFAULT_MODELS[fallback]);
-
-  for (const provider of PROVIDER_ORDER) {
-    push(provider, DEFAULT_MODELS[provider]);
-  }
-
-  return chain;
+  if (!hasUsableCredential('deepseek', env)) return [];
+  return [
+    {
+      id: 'deepseek',
+      provider: 'deepseek',
+      model: resolveModel(env, options.requestedModel),
+      apiKeyEnv: DEEPSEEK_API_KEY_ENV,
+    },
+  ];
 }
 
 export function requireUsableProviderChain(
@@ -162,16 +101,16 @@ export function requireUsableProviderChain(
 ): ProviderEntry[] {
   const chain = loadProviderChain(env, options);
   if (chain.length === 0) {
-    throw new ProviderNotConfiguredError(NO_PROVIDER_CONFIGURED_MESSAGE);
+    throw new ProviderNotConfiguredError(NO_PROVIDER_CONFIGURED_MESSAGE, 'deepseek');
   }
   return chain;
 }
 
 export function getProviderApiKey(
-  entry: ProviderEntry,
+  _entry: ProviderEntry,
   env: Record<string, string | undefined> = process.env,
 ) {
-  return env[entry.apiKeyEnv]?.trim() || undefined;
+  return env[DEEPSEEK_API_KEY_ENV]?.trim() || undefined;
 }
 
 export function providerConcurrency(env: Record<string, string | undefined> = process.env) {
@@ -180,22 +119,11 @@ export function providerConcurrency(env: Record<string, string | undefined> = pr
 }
 
 /**
- * Output-token budget per provider for site generation. The route used a
- * flat 8192, which truncates a real multi-file site mid-file (three open
- * <file> blocks, zero closed) — the completion failover then discards the
- * whole stream as "no files". Give each vendor its real headroom; Gemini
- * 2.0 Flash genuinely caps at 8192.
+ * Output-token budget for site generation. The old flat 8192 truncated real
+ * multi-file sites mid-file, and the completion check then discarded the whole
+ * stream as "no files". V4 allows far more (384K max output, 1M context), so a
+ * whole site fits in one response.
  */
-export function maxOutputTokensForEntry(entry: Pick<ProviderEntry, 'provider'>): number {
-  switch (entry.provider) {
-    case 'google':
-      return 8192;
-    case 'groq':
-      return 16384;
-    case 'openai':
-    case 'anthropic':
-      return 32768;
-    default:
-      return 16384;
-  }
+export function maxOutputTokensForEntry(_entry?: Pick<ProviderEntry, 'provider'>): number {
+  return 32768;
 }

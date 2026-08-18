@@ -1,22 +1,12 @@
 import { getEffectiveApiKey } from '@/lib/api-keys';
 import { getSettings } from '@/lib/settings/resolve';
 
-const OVERLAY_KEYS = [
-  { env: 'GEMINI_API_KEY', provider: 'google' },
-  { env: 'OPENAI_API_KEY', provider: 'openai' },
-  { env: 'ANTHROPIC_API_KEY', provider: 'anthropic' },
-  { env: 'GROQ_API_KEY', provider: 'groq' },
-  { env: 'AI_GATEWAY_API_KEY', provider: 'gateway' },
-] as const;
+const OVERLAY_KEYS = [{ env: 'DEEPSEEK_API_KEY', provider: 'deepseek' }] as const;
 
 /** Non-secret AI settings configured in Admin → Configuration, not only in the environment. */
 const OVERLAY_BASE_URLS = [
-  { env: 'ANTHROPIC_BASE_URL', setting: 'ai.anthropic.baseUrl' },
-  { env: 'OPENAI_BASE_URL', setting: 'ai.openai.baseUrl' },
-  { env: 'GEMINI_BASE_URL', setting: 'ai.google.baseUrl' },
-  { env: 'GROQ_BASE_URL', setting: 'ai.groq.baseUrl' },
+  { env: 'DEEPSEEK_BASE_URL', setting: 'ai.deepseek.baseUrl' },
   { env: 'AI_PROVIDER_CONCURRENCY', setting: 'ai.concurrency' },
-  { env: 'AI_PRIMARY_PROVIDER', setting: 'ai.primaryProvider' },
   { env: 'AI_PRIMARY_MODEL', setting: 'ai.primaryModel' },
 ] as const;
 
