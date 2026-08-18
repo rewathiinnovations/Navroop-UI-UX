@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   DEFAULT_DESIGN_DIRECTION,
   isDesignDirectionId,
@@ -65,22 +65,94 @@ export function clearDraftStorage(key: string) {
   window.localStorage.removeItem(key);
 }
 
+/**
+ * Whether a mount/key-change hydration may overwrite what is currently in the draft.
+ *
+ * `editedForKey` is the key the in-memory draft was authored under, or null when nothing
+ * has been edited since the last hydration. Storage only ever holds an older snapshot of
+ * the same box, so anything the reader has already typed under this key outranks it.
+ */
+export function draftHydrationApplies(editedForKey: string | null, key: string) {
+  return editedForKey !== key;
+}
+
 export function useDraftStorage(key: string, debounceMs = 500) {
-  const [value, setValue] = useState("");
-  const [stack, setStack] = useState<StackId>(DRAFT_DEFAULT_STACK);
-  const [designDirection, setDesignDirection] = useState<DesignDirectionId>(DEFAULT_DESIGN_DIRECTION);
-  const [importMode, setImportMode] = useState<ImportMode>(DEFAULT_IMPORT_MODE);
-  const [templateId, setTemplateId] = useState<string | null>(null);
+  const [value, setValueState] = useState("");
+  const [stack, setStackState] = useState<StackId>(DRAFT_DEFAULT_STACK);
+  const [designDirection, setDesignDirectionState] =
+    useState<DesignDirectionId>(DEFAULT_DESIGN_DIRECTION);
+  const [importMode, setImportModeState] = useState<ImportMode>(DEFAULT_IMPORT_MODE);
+  const [templateId, setTemplateIdState] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [loadedKey, setLoadedKey] = useState<string | null>(null);
 
+  /**
+   * The draft key the current in-memory draft was authored under, or null when nothing has
+   * been edited since the last hydration.
+   *
+   * Hydration reads localStorage in a mount effect, which lands *after* the field is on
+   * screen and focusable. It used to assign `stored?.text ?? ""` unconditionally, so a
+   * prompt typed in that window — wide on a cold compile, and the textarea is server
+   * rendered so it accepts input well before React hydrates — was overwritten with the
+   * empty string. The box emptied itself and the submit button greyed back out.
+   *
+   * Comparing against `key` rather than holding a boolean is what makes switching drafts
+   * still work: typing in project A then opening project B leaves the ref reading `A`, so
+   * B's stored draft loads normally.
+   */
+  const editedForKeyRef = useRef<string | null>(null);
+
+  const markEdited = useCallback(() => {
+    editedForKeyRef.current = key;
+  }, [key]);
+
+  const setValue = useCallback<typeof setValueState>(
+    (next) => {
+      markEdited();
+      setValueState(next);
+    },
+    [markEdited],
+  );
+  const setStack = useCallback<typeof setStackState>(
+    (next) => {
+      markEdited();
+      setStackState(next);
+    },
+    [markEdited],
+  );
+  const setDesignDirection = useCallback<typeof setDesignDirectionState>(
+    (next) => {
+      markEdited();
+      setDesignDirectionState(next);
+    },
+    [markEdited],
+  );
+  const setImportMode = useCallback<typeof setImportModeState>(
+    (next) => {
+      markEdited();
+      setImportModeState(next);
+    },
+    [markEdited],
+  );
+  const setTemplateId = useCallback<typeof setTemplateIdState>(
+    (next) => {
+      markEdited();
+      setTemplateIdState(next);
+    },
+    [markEdited],
+  );
+
   useEffect(() => {
-    const stored = readDraftStorage(key);
-    setValue(stored?.text ?? "");
-    setStack(stored?.stack ?? DRAFT_DEFAULT_STACK);
-    setDesignDirection(stored?.designDirection ?? DEFAULT_DESIGN_DIRECTION);
-    setImportMode(stored?.importMode ?? DEFAULT_IMPORT_MODE);
-    setTemplateId(stored?.templateId ?? null);
+    // Whatever the reader has already put in this draft outranks what storage held: the
+    // stored copy is only ever an older snapshot of the same box.
+    if (draftHydrationApplies(editedForKeyRef.current, key)) {
+      const stored = readDraftStorage(key);
+      setValueState(stored?.text ?? "");
+      setStackState(stored?.stack ?? DRAFT_DEFAULT_STACK);
+      setDesignDirectionState(stored?.designDirection ?? DEFAULT_DESIGN_DIRECTION);
+      setImportModeState(stored?.importMode ?? DEFAULT_IMPORT_MODE);
+      setTemplateIdState(stored?.templateId ?? null);
+    }
     setLoadedKey(key);
     setReady(true);
   }, [key]);
