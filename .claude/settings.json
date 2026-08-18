@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./.cursor/.env.deploy)",
+      "Read(./e2e/.auth/**)"
+    ],
+    "allow": [
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git branch:*)",
+      "Bash(git show:*)",
+      "Bash(node ./node_modules/typescript/bin/tsc --noEmit)",
+      "Bash(node ./node_modules/eslint/bin/eslint.js:*)",
+      "Bash(node ./node_modules/vitest/vitest.mjs run:*)",
+      "Bash(pnpm run verify)",
+      "Bash(pnpm run verify:full)",
+      "Bash(pnpm run test:*)",
+      "Bash(pnpm run lint)",
+      "Bash(pnpm run smoke)"
+    ]
+  }
+}

@@ -36,3 +36,8 @@ overrides:
   nanoid@5: ^5.1.16
   brace-expansion@1: ^1.1.18
   brace-expansion@2: ^2.1.4
+
+# pnpm 11 otherwise runs an implicit install (purging node_modules on drift)
+# before every script - fatal to the running dev server, whose Next/Prisma
+# binaries are locked while it serves.
+verifyDepsBeforeRun: false

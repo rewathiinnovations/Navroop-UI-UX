@@ -82,6 +82,35 @@ describe('a boot failure is worth asking the next provider', () => {
     expect(result.provider.id).toBe('e2b-1');
     expect(result.attempts.map((row) => row.ok)).toEqual([false, true]);
   });
+
+  it('reaches the second provider when the first fails npm install', async () => {
+    // The exact live failure: Modal creates the VM, `npm install` exits 1, and the message
+    // carries nothing the transport classifier recognises. It only fails over because the
+    // manager wraps it with the boot step it died on.
+    const npmInstallFailure = bootError(
+      'install',
+      'Modal created a sandbox but npm install failed (exit 1): npm error Tracker "idealTree" already exists',
+    );
+    expect(isFailoverError(npmInstallFailure)).toBe(false);
+    expect(isSandboxBootFailover(npmInstallFailure)).toBe(true);
+
+    const tried: string[] = [];
+    const result = await createWithFailover<{ url: string }>({
+      candidates: [
+        { id: 'modal-1', driver: 'modal' },
+        { id: 'e2b-1', driver: 'e2b' },
+      ] as never,
+      isFailoverError: isSandboxBootFailover,
+      create: async (row) => {
+        tried.push(row.driver);
+        if (row.driver === 'modal') throw npmInstallFailure;
+        return { url: `https://${row.driver}.preview.test` };
+      },
+    });
+
+    expect(tried).toEqual(['modal', 'e2b']);
+    expect(result.provider.id).toBe('e2b-1');
+  });
 });
 
 describe('the boot runs inside the failover loop', () => {
@@ -102,6 +131,14 @@ describe('the boot runs inside the failover loop', () => {
     ]) {
       expect(callback, `${step} must run inside the failover callback`).toContain(step);
     }
+  });
+
+  it('names the step on a provider error that is not a SandboxBootError', () => {
+    // The providers do not all use SandboxBootError: `assertInstallSucceeded` throws a plain
+    // Error. Rethrowing it unchanged left the classifier nothing to recognise, so a Modal
+    // `npm install` failure ended the boot in ten seconds with an eligible E2B row
+    // untouched — the same wedge this file exists to prevent, one error type further along.
+    expect(callback).toMatch(/throw new SandboxBootError\(\s*bootSteps\.get\(projectId\) \?\? 'install'/);
   });
 
   it('stops the VM it is abandoning before the next provider is tried', () => {

@@ -21,6 +21,9 @@ export const createProjectSchema = z.object({
   name: optionalName,
   initialPrompt: z.string().trim().min(1, 'initialPrompt is required'),
   skipPlanning: z.boolean().optional().default(false),
+  /** Create the row and return at once; the initial plan generates detached.
+   *  The dashboard uses this so submit lands in the workspace instantly. */
+  deferPlanning: z.boolean().optional().default(false),
   stack: z.enum(STACK_IDS).default(DEFAULT_STACK),
   designDirection: z.enum(DESIGN_DIRECTION_IDS).default(DEFAULT_DESIGN_DIRECTION),
   importMode: z.enum(IMPORT_MODES).default(DEFAULT_IMPORT_MODE),

@@ -720,7 +720,17 @@ async function bootProject(
               { code: error.code, requestId: error.requestId, previewLastError: error.previewLastError },
             );
           }
-          throw error;
+          // Anything reaching here failed *after* this provider's VM existed, so it is that
+          // provider's failure whatever its type — and the providers do not all use
+          // SandboxBootError. `assertInstallSucceeded` throws a plain Error, which is how a
+          // Modal `npm install` failure ("Tracker idealTree already exists") ended the whole
+          // boot in ten seconds with an eligible E2B row untouched. Naming the step here is
+          // what lets `isSandboxBootFailover` give the next candidate its turn.
+          throw new SandboxBootError(
+            bootSteps.get(projectId) ?? 'install',
+            error instanceof Error ? error.message : String(error),
+            { requestId },
+          );
         }
       },
       onAttempt: async (attempt) => {

@@ -1,0 +1,73 @@
+# Navroop — Claude Code project memory
+
+This project was developed in Cursor before moving to Claude Code. The Cursor configuration is
+still the source of truth for the *content* of the rules and skills; this file is the entry
+point that makes Claude Code load them. Keep the two in step — see `keep-cursor-current` below.
+
+## Read this before non-trivial work
+
+**`AGENTS.md`** is the product map: routes, Prisma models, the job lifecycle, the sandbox
+provider rules, the verify gate, and the invariants that are easy to break by accident. It is
+~42 KB, so it is deliberately *not* auto-imported into every session — read it with the Read
+tool before changing product behaviour, schema, API routes, or layout. Do not guess at any of
+what it documents.
+
+`.cursor/README.md` is the map of the Cursor layout. `.cursor/lessons-learned.md` is a
+self-evolving mistake log — read it before starting, and append to it when corrected.
+
+## Always-on rules
+
+These are the `alwaysApply: true` Cursor rules, imported verbatim so they apply in every
+session exactly as they did in Cursor.
+
+@.cursor/rules/navroop-product.mdc
+@.cursor/rules/secrets.mdc
+@.cursor/rules/coolify-local-secrets.mdc
+@.cursor/rules/single-dev-server.mdc
+@.cursor/rules/multi-agent-ownership.mdc
+@.cursor/rules/keep-cursor-current.mdc
+@.cursor/rules/skills-availability.mdc
+
+## Path-scoped rules
+
+These carry `globs:` in their frontmatter rather than `alwaysApply`. Claude Code has no glob
+trigger for memory files, so read the matching rule yourself when you touch these paths.
+
+| Read this rule | When touching |
+| --- | --- |
+| `.cursor/rules/stack.mdc` | `{app,components,lib,prisma}/**/*.{ts,tsx,js,jsx,prisma}` |
+| `.cursor/rules/brand-theme.mdc` | `{app,components,styles}/**/*.{tsx,css}` |
+| `.cursor/rules/studio-generation.mdc` | `{app,components,lib}/**/{studio,generation,admin,providers}/**` |
+| `.cursor/rules/admin-ownership.mdc` | `{app/admin,app/api/admin,components/app/studio}/**/*.{ts,tsx}` |
+
+## Skills
+
+The Cursor skill packs are copied to `.claude/skills/` so the Skill tool can invoke them
+(`superpowers`, `ui-ux-pro-max`, `ui-styling`, `design`, `design-system`, and the `cursor`
+pack). `.cursor/skills/` remains as it was for anyone still using Cursor. **A skill edited in
+one place must be copied to the other**, or the two drift apart silently.
+
+Some of the copied `cursor/*` skills automate Cursor's own mechanics (`create-rule`,
+`create-hook`, `create-subagent`, `update-cursor-settings`, `update-cli-config`, `statusline`,
+`rename-chat`, `migrate-to-skills`, `sdk`, `automate`, `autopilot`, `shell`, `canvas`,
+`onboard`). They describe Cursor, not Claude Code — do not follow their instructions here
+without checking they still make sense. The `loop` skill was not copied: Claude Code ships its
+own `/loop`, and a project skill of that name would shadow it.
+
+## Commands
+
+Use **pnpm**, never npm — keep `pnpm-lock.yaml`, never create `package-lock.json`.
+
+```bash
+pnpm run verify
+```
+
+The pre-push gate: tsc, eslint `--max-warnings 0`, the public-route allowlist, prisma validate
++ migrate diff, the destructive-migration detector, vitest with coverage, `next build`, and the
+Playwright `critical` project. `pnpm run verify:full` runs every Playwright project.
+
+Read the **Verify / release** section of `AGENTS.md` before running it. In particular it
+explains why you must not run `pnpm exec <tool>` in an agent shell (pnpm's dependency-status
+check tries to purge `node_modules`) — run the installed binary directly instead.
+
+Tests use `TEST_DATABASE_URL` (`openlovable_test` on 5433), never the application database.

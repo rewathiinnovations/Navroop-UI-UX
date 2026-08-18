@@ -206,6 +206,30 @@ export class E2BProvider extends SandboxProvider {
     }
   }
 
+  /**
+   * E2B cells are Python and Python is whitespace-sensitive: the indented
+   * template literals this file writes arrive at the kernel with their
+   * TypeScript indentation and die on IndentationError before running a
+   * single line — which is why every runCommand returned exit 1 with empty
+   * streams and the provider never tested healthy. Strip the common leading
+   * indent (textwrap.dedent semantics) at this one boundary.
+   */
+  static dedentPythonCell(code: string): string {
+    const lines = code.replace(/^\n/, '').split('\n');
+    const indents = lines
+      .filter((line) => line.trim())
+      .map((line) => (line.match(/^[ \t]*/) as RegExpMatchArray)[0].length);
+    const common = indents.length ? Math.min(...indents) : 0;
+    return lines.map((line) => line.slice(common)).join('\n');
+  }
+
+  private runPython(code: string) {
+    if (!this.sandbox) {
+      throw new Error('No active sandbox');
+    }
+    return this.sandbox.runCode(E2BProvider.dedentPythonCell(code));
+  }
+
   async runCommand(command: string): Promise<CommandResult> {
     if (this.injected) {
       const result = await this.injected.run(command);
@@ -221,10 +245,11 @@ export class E2BProvider extends SandboxProvider {
     }
 
     
-    const result = await this.sandbox.runCode(`
+    const result = await this.runPython(`
       import subprocess
       import os
 
+      os.makedirs('/home/user/app', exist_ok=True)
       os.chdir('/home/user/app')
       result = subprocess.run(${JSON.stringify(command.split(' '))}, 
                             capture_output=True, 
@@ -261,7 +286,7 @@ export class E2BProvider extends SandboxProvider {
       await (this.sandbox as any).files.write(fullPath, Buffer.from(content));
     } else {
       // Fallback to Python code execution
-      await this.sandbox.runCode(`
+      await this.runPython(`
         import os
 
         # Ensure directory exists
@@ -286,7 +311,7 @@ export class E2BProvider extends SandboxProvider {
 
     const fullPath = path.startsWith('/') ? path : `/home/user/app/${path}`;
     
-    const result = await this.sandbox.runCode(`
+    const result = await this.runPython(`
       with open("${fullPath}", 'r') as f:
           content = f.read()
       print(content)
@@ -301,7 +326,7 @@ export class E2BProvider extends SandboxProvider {
       throw new Error('No active sandbox');
     }
 
-    const result = await this.sandbox.runCode(`
+    const result = await this.runPython(`
       import os
       import json
 
@@ -351,7 +376,7 @@ export class E2BProvider extends SandboxProvider {
     const flags = appConfig.packages.useLegacyPeerDeps ? '--legacy-peer-deps' : '';
     
     
-    const result = await this.sandbox.runCode(`
+    const result = await this.runPython(`
       import subprocess
       import os
 
@@ -550,10 +575,10 @@ print('✓ src/index.css')
 print('\\nAll files created successfully!')
 `;
 
-    await this.sandbox.runCode(setupScript);
+    await this.runPython(setupScript);
     
     // Install dependencies
-    const installResult = await this.sandbox.runCode(`
+    const installResult = await this.runPython(`
 import subprocess
 
 print('Installing npm packages...')
@@ -572,7 +597,7 @@ else:
     await this.assertE2BInstallSucceeded(installResult);
     
     // Start Vite dev server
-    await this.sandbox.runCode(`
+    await this.runPython(`
 import subprocess
 import os
 import time
@@ -624,7 +649,7 @@ print('Waiting for server to be ready...')
     const plan = getStackSetupPlan(stack);
     const files = stackScaffoldFiles(stack);
 
-    await this.sandbox.runCode(`
+    await this.runPython(`
 import os
 os.makedirs('/home/user/app', exist_ok=True)
     `);
@@ -639,7 +664,7 @@ os.makedirs('/home/user/app', exist_ok=True)
       : JSON.stringify(['npm', 'run', 'dev']);
     const devLabel = JSON.stringify(plan.devCommand);
 
-    const registryResult = await this.sandbox.runCode(`
+    const registryResult = await this.runPython(`
 import os
 import subprocess
 import time
@@ -685,7 +710,7 @@ print('✓ Dev server started (' + ${devLabel} + f' PID {process.pid})')
       : JSON.stringify(['npm', 'run', 'dev']);
     const devLabel = JSON.stringify(plan.devCommand);
 
-    const restoreResult = await this.sandbox.runCode(`
+    const restoreResult = await this.runPython(`
 import os
 import subprocess
 import time
@@ -731,7 +756,7 @@ print('✓ Dev server started (' + ${devLabel} + f' PID {process.pid})')
 
     if (this.currentStack !== 'REACT') {
       const plan = getStackSetupPlan(this.currentStack);
-      await this.sandbox.runCode(`
+      await this.runPython(`
 import subprocess
 import time
 import os
@@ -749,7 +774,7 @@ print('✓ Dev server restarted (' + ${JSON.stringify(plan.devCommand)} + f' PID
     }
 
     
-    await this.sandbox.runCode(`
+    await this.runPython(`
 import subprocess
 import time
 import os

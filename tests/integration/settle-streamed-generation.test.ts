@@ -100,6 +100,31 @@ afterAll(async () => {
 });
 
 describe('settleStreamedGeneration — stream files are not a finished site', () => {
+  it('persists the streamed code server-side and succeeds, even with the sandbox dead', async () => {
+    const job = await startBuild();
+    const streamedCode = '<file path="app/page.tsx">export default function Page() { return null; }</file>';
+
+    const settled = await settleStreamedGeneration({
+      jobId: job.id,
+      producedFiles: 1,
+      streamedCode,
+      provider: 'openai',
+      model: 'gpt-4o-mini',
+    });
+
+    // The server held the whole site when the stream ended — a closed tab or
+    // a sandbox stuck mid-boot must not lose it (the Atelier Homes build:
+    // job SUCCEEDED, lastCode empty, phase PLANNING forever).
+    expect(settled.outcome).toBe('succeeded');
+    const project = await prisma.project.findUniqueOrThrow({
+      where: { id: PROJECT },
+      select: { lastCode: true, phase: true },
+    });
+    expect(project.lastCode).toBe(streamedCode);
+    expect(project.phase).toBe('COMPLETE');
+  });
+
+
   it('does not settle SUCCEEDED+COMPLETE with lastCode null when sandbox/persist missed', async () => {
     const job = await startBuild();
 

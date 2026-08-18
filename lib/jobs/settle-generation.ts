@@ -8,6 +8,10 @@ export const STREAM_SANDBOX_PERSIST_MISS_MESSAGE =
 export type StreamSettleInput = {
   jobId: string;
   producedFiles: number;
+  /** The raw streamed text (`<file path=…>` blocks). The server holds the
+   *  complete site the moment the stream ends — persistence must not depend
+   *  on the browser tab surviving to send its own PATCH. */
+  streamedCode?: string | null;
   noChangeReason?: string | null;
   tokensIn?: number;
   tokensOut?: number;
@@ -66,11 +70,27 @@ export async function settleStreamedGeneration(input: StreamSettleInput): Promis
 
   const project = await prisma.project.findUnique({
     where: { id: job.projectId },
-    select: { lastCode: true, sandboxStatus: true },
+    select: { lastCode: true, sandboxStatus: true, phase: true },
   });
   const checkpointCount = await prisma.checkpoint.count({ where: { projectId: job.projectId } });
-  const hasSite = Boolean(project?.lastCode) || checkpointCount > 0;
+  let hasSite = Boolean(project?.lastCode) || checkpointCount > 0;
   const sandboxDead = project?.sandboxStatus === 'FAILED' || project?.sandboxStatus === 'DEAD';
+
+  // The stream is the source of the site — persist it here, server-side.
+  // Before this, lastCode was only written by the browser's terminal PATCH,
+  // so a closed tab (or a sandbox stuck mid-boot) lost a fully generated
+  // site while the job read SUCCEEDED with lastCode empty.
+  const streamedHasFiles = /<file path="/.test(input.streamedCode || '');
+  if (!hasSite && streamedHasFiles) {
+    await prisma.project.update({
+      where: { id: job.projectId },
+      data: {
+        lastCode: input.streamedCode!,
+        ...(project?.phase !== 'COMPLETE' ? { phase: 'COMPLETE' as const } : {}),
+      },
+    });
+    hasSite = true;
+  }
 
   if (!hasSite && sandboxDead) {
     await failJob(job.id, {

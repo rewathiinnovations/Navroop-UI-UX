@@ -46,10 +46,18 @@ export function githubConnectorsManifest(input: {
     name: `Navroop Connect — ${input.workspaceName}`.slice(0, 34),
     url: base,
     redirect_url: `${base}/api/admin/settings/github-app/callback`,
+    // Without a registered OAuth callback, GitHub refuses user authorization
+    // with "This GitHub App must be configured with a callback URL". This is
+    // the same URL the Connect flow exchanges the code on.
+    callback_urls: [`${base}/api/github/callback`],
     public: false,
     default_permissions: {
       contents: 'write',
       metadata: 'read',
+      // Repo creation (POST /user/repos) with a user-to-server token requires
+      // Administration write on the app — without it every push fails with
+      // GitHub's "Resource not accessible by integration".
+      administration: 'write',
     },
     default_events: [],
   };

@@ -38,7 +38,10 @@ export async function createPrivateRepo(
     'https://api.github.com/user/repos',
     {
       method: 'POST',
-      body: JSON.stringify({ name, private: true }),
+      // auto_init: the git-data API cannot create trees in a repo with zero
+      // commits (409 "Git Repository is empty."), so a new repo must be born
+      // with an initial commit for the first push to have a parent.
+      body: JSON.stringify({ name, private: true, auto_init: true }),
     },
   );
   if (!result.ok || !result.data.full_name || !result.data.html_url) {
@@ -61,11 +64,37 @@ export async function pushViaGitDataApi(input: {
     throw new Error('No project files to push');
   }
 
-  const ref = await githubJson<{ object?: { sha?: string } }>(
+  let ref = await githubJson<{ object?: { sha?: string }; message?: string }>(
     githubFetch,
     token,
     `${base}/git/ref/heads/main`,
   );
+  if (!ref.ok && /repository is empty/i.test(ref.data.message || '')) {
+    // Repos created before auto_init (or emptied by hand) have no commits, and
+    // tree creation 409s on them. The Contents API is the one endpoint that
+    // can write to an empty repo, so seed the initial commit through it.
+    const seeded = await githubJson<{ message?: string }>(
+      githubFetch,
+      token,
+      `${base}/contents/README.md`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({
+          message: 'Initialize repository',
+          content: Buffer.from(`# ${fullName.split('/').pop()}
+`).toString('base64'),
+        }),
+      },
+    );
+    if (!seeded.ok) {
+      throw new Error(seeded.data.message || 'Could not initialize the empty repository');
+    }
+    ref = await githubJson<{ object?: { sha?: string }; message?: string }>(
+      githubFetch,
+      token,
+      `${base}/git/ref/heads/main`,
+    );
+  }
   const parentSha = ref.ok ? ref.data.object?.sha : undefined;
 
   const treeItems: { path: string; mode: '100644'; type: 'blob'; sha: string }[] = [];
