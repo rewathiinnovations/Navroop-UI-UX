@@ -2,7 +2,24 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, posix, resolve } from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
+
+/**
+ * playwright.config.ts drops the auth-gated projects when CI is set
+ * (`authJourney = !inCI || PLAYWRIGHT_AUTH_JOURNEY === '1'`), because that
+ * journey needs the application database and CI only creates the test one.
+ *
+ * This guard asks a *static* question — is every test file reachable by some
+ * runner — so it has to see every project the config can declare, not the subset
+ * enabled in the current environment. Without this, journeys-authenticated and
+ * journeys-workflow read as orphaned under CI and the guard fails for a
+ * configuration choice rather than a real hole. Hoisted because the config is a
+ * static import and reads the flag once, at module evaluation.
+ */
+vi.hoisted(() => {
+  process.env.PLAYWRIGHT_AUTH_JOURNEY = '1';
+});
+
 import vitestConfig from '../../vitest.config';
 import playwrightConfig from '../../playwright.config';
 import { registeredSuitePaths } from '../setup/suites';
