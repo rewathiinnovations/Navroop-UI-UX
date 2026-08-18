@@ -34,7 +34,6 @@ export async function validateBuild(sandboxUrl: string, sandboxId: string): Prom
 
     // Step 3: Check if it's the default page or actual app
     const isDefaultPage =
-      html.includes('Vercel Sandbox Ready') ||
       html.includes('Start building your React app with Vite') ||
       html.includes('Vite + React') ||
       !html.includes('id="root"');

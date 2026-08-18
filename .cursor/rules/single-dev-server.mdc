@@ -1,5 +1,5 @@
 ---
-description: One Next.js/pnpm dev server on localhost:3000; only the dedicated agent may start or restart it
+description: One Next.js/pnpm dev server on localhost:3000; only the dedicated agent may start/restart it or replace locked Next/Prisma binaries
 alwaysApply: true
 ---
 
@@ -9,15 +9,32 @@ Always use **ONE** Next.js / pnpm development server for this repo at `http://lo
 
 ## Ownership
 
-One dedicated **dev server** agent owns start and restart. That agent is the only process allowed to run `pnpm dev` / `next dev`, kill the listener on port 3000, or restart the server in place.
+One dedicated **dev server** agent owns start and restart. That agent is the **only** process allowed to:
+
+- Start/restart `pnpm dev` / `next dev`, kill the listener on port 3000, or restart the server in place
+- Run `npx prisma generate` / `prisma generate` (the query engine DLL is locked by Next on Windows)
+- Run any other command that replaces locked binaries Next is using — e.g. `pnpm add next`, overwriting `node_modules/next`, replacing `generated/prisma/query_engine-windows.dll.node`
+- Use side-generate-and-copy workarounds for EPERM on the query engine
 
 All other agents **MUST NOT**:
 
 - Run `pnpm dev`, `next dev`, or any equivalent start command
 - Kill, taskkill, or otherwise stop the process on port 3000
 - Spawn a second server on 3001, 3002, or any other port
+- Run `prisma generate` / `npx prisma generate`
+- Work around EPERM by generating to `prisma-tmp` (or similar) and copying over the live client
+- Bump `lib/db.ts` Prisma singleton keys as a generate workaround
+- `pnpm add` / install packages that fail with EPERM because Next locks `node_modules/next` — if an install truly requires it, ask the server agent to stop, then install, then start again
 
 If the server is dead, stale, or needs a Prisma/client refresh: tell the coordinator or the dedicated **dev server** agent. Do not restart it yourself.
+
+## Prisma client after a migration
+
+When another agent needs a new Prisma client after a migration:
+
+1. They MAY run `npx prisma migrate deploy` (does not lock the engine the same way) if that is safe
+2. They MUST then tell the coordinator / dedicated **dev server** agent: "need server restart — prisma generate then pnpm dev on :3000"
+3. They do NOT generate, do NOT copy tmp clients, do NOT restart
 
 ## Restart in place (owner only)
 
@@ -36,4 +53,20 @@ taskkill /PID <3000> /F
 # 1. Check listeners on 3000
 # 2. Reuse if this app is already Ready
 # 3. Or kill that next/node only, then `pnpm dev` once on 3000
+```
+
+```text
+# BAD — any non-owner generates or copies over a locked Prisma engine
+npx prisma generate
+npx prisma generate --generator client --output prisma-tmp
+# then copy prisma-tmp over generated/prisma
+# bump lib/db.ts singleton key so the old client is ignored
+
+# GOOD — non-owner
+# MAY: npx prisma migrate deploy (if safe)
+# Then ask the coordinator / dedicated dev-server agent:
+# "need server restart — prisma generate then pnpm dev on :3000"
+
+# GOOD — owner only
+# Stop :3000 if needed, prisma generate, then pnpm dev once on 3000
 ```

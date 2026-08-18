@@ -2,6 +2,14 @@ import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { requireAdmin } from '@/lib/auth';
 
+/**
+ * The usage dashboard renders every member in one page, so the query is bounded
+ * at 500 rather than paginated. A workspace that grows past 500 members
+ * silently loses the tail here and needs real pagination — the cap is a
+ * safety bound against an unbounded query, not a product decision.
+ */
+const MEMBER_LIST_CAP = 500;
+
 export async function GET() {
   const { user, error, status } = await requireAdmin();
   if (!user) {
@@ -14,7 +22,9 @@ export async function GET() {
     prisma.project.count({
       where: { status: { in: ['generating', 'applying'] } },
     }),
+    // Safety bound, not pagination: the usage dashboard renders every member.
     prisma.user.findMany({
+      take: MEMBER_LIST_CAP,
       orderBy: { name: 'asc' },
       select: {
         id: true,

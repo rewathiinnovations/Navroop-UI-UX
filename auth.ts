@@ -96,9 +96,33 @@ export const { handlers, auth, signIn, signOut, unstable_update } = NextAuth({
           token.picture = next.avatarUrl ?? null;
         }
       }
+      if (!user && token.id) {
+        try {
+          const row = await prisma.user.findUnique({
+            where: { id: String(token.id) },
+            select: { isActive: true, passwordChangedAt: true },
+          });
+          if (!row || !row.isActive) {
+            delete token.id;
+            delete token.sub;
+          } else if (
+            row.passwordChangedAt &&
+            typeof token.iat === 'number' &&
+            row.passwordChangedAt.getTime() > token.iat * 1000
+          ) {
+            delete token.id;
+            delete token.sub;
+          }
+        } catch {
+          // Stale Prisma client before a server restart — keep the token.
+        }
+      }
       return token;
     },
     async session({ session, token }) {
+      if (!token.id) {
+        return { ...session, user: undefined as unknown as typeof session.user };
+      }
       if (session.user) {
         session.user.id = String(token.id || token.sub || '');
         session.user.role = (token.role as Role) ?? 'MEMBER';

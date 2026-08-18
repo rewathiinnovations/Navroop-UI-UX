@@ -93,7 +93,6 @@ export default function HeroScrapingCode({ step }: { step: number }) {
     }, 70);
 
     return () => clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, reveal]);
 
   return (

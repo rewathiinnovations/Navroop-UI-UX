@@ -2,6 +2,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import { parseMorphEdits, applyMorphEditToFile } from '@/lib/morph-fast-apply';
 import type { SandboxState } from '@/types/sandbox';
 import type { ConversationState } from '@/types/conversation';
+import { jsonError } from '@/lib/api/error-response';
+import { requireSessionUser } from '@/lib/auth';
+import { detectAndInstallPackages } from '@/lib/sandbox/detect-packages';
+import { installPackages } from '@/lib/sandbox/install-packages';
+import { restartDevServer } from '@/lib/sandbox/restart-dev';
+import { applyOutcome } from '@/lib/jobs/copy';
 
 declare global {
   var conversationState: ConversationState | null;
@@ -135,6 +141,9 @@ declare global {
 }
 
 export async function POST(request: NextRequest) {
+  const auth = await requireSessionUser();
+  if (!auth.user) return jsonError(auth.error, 'UNAUTHORIZED', auth.status);
+
   try {
     const { response, isEdit = false, packages = [] } = await request.json();
     
@@ -181,27 +190,6 @@ export async function POST(request: NextRequest) {
     // Verify sandbox is ready before applying code
     console.log('[apply-ai-code] Verifying sandbox is ready...');
     
-    // For Vercel sandboxes, check if Vite is running
-    if (sandbox.constructor?.name === 'VercelProvider' || sandbox.getSandboxInfo?.()?.provider === 'vercel') {
-      console.log('[apply-ai-code] Detected Vercel sandbox, checking Vite status...');
-      try {
-        // Check if Vite process is running
-        const checkResult = await sandbox.runCommand('pgrep -f vite');
-        if (!checkResult || !checkResult.stdout) {
-          console.log('[apply-ai-code] Vite not running, starting it...');
-          // Start Vite if not running
-          await sandbox.runCommand('sh -c "cd /vercel/sandbox && nohup npm run dev > /tmp/vite.log 2>&1 &"');
-          // Wait for Vite to start
-          await new Promise(resolve => setTimeout(resolve, 5000));
-          console.log('[apply-ai-code] Vite started, proceeding with code application');
-        } else {
-          console.log('[apply-ai-code] Vite is already running');
-        }
-      } catch (e) {
-        console.log('[apply-ai-code] Could not check Vite status, proceeding anyway:', e);
-      }
-    }
-    
     // Apply to active sandbox
     console.log('[apply-ai-code] Applying code to sandbox...');
     console.log('[apply-ai-code] Is edit mode:', isEdit);
@@ -234,25 +222,27 @@ export async function POST(request: NextRequest) {
       console.log('[apply-ai-code] Installing packages from XML tags and tool calls:', uniquePackages);
       
       try {
-        const installResponse = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/install-packages`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ packages: uniquePackages })
-        });
-        
-        if (installResponse.ok) {
-          const installResult = await installResponse.json();
-          console.log('[apply-ai-code] Package installation result:', installResult);
-          
-          if (installResult.installed && installResult.installed.length > 0) {
-            results.packagesInstalled = installResult.installed;
+        const installResult = await installPackages({ packages: uniquePackages });
+        console.log('[apply-ai-code] Package installation result:', installResult);
+
+        if (installResult.ok) {
+          results.packagesInstalled = installResult.installedPackages;
+          results.packagesAlreadyInstalled = installResult.alreadyInstalled;
+          if (!installResult.previewReady && installResult.previewNotice) {
+            results.errors.push(installResult.previewNotice);
           }
-          if (installResult.failed && installResult.failed.length > 0) {
-            results.packagesFailed = installResult.failed;
-          }
+        } else {
+          // Log and continue. Packages are installed before any file is
+          // written, so aborting here would discard a generation the user
+          // already paid for and leave the sandbox untouched. Writing the files
+          // and surfacing the failure lets them retry the install alone.
+          console.error('[apply-ai-code] Package installation failed:', installResult.error);
+          results.packagesFailed = uniquePackages;
+          results.errors.push(`Package installation failed: ${installResult.error}`);
         }
       } catch (error) {
         console.error('[apply-ai-code] Error installing packages:', error);
+        results.errors.push(`Package installation failed: ${(error as Error).message}`);
       }
     } else {
       // Fallback to detecting packages from code
@@ -277,17 +267,10 @@ export async function POST(request: NextRequest) {
       }
       
       try {
-        console.log('[apply-ai-code] Calling detect-and-install-packages...');
-        const packageResponse = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/detect-and-install-packages`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ files: filesForPackageDetection })
-        });
-        
-        console.log('[apply-ai-code] Package detection response status:', packageResponse.status);
-        
-        if (packageResponse.ok) {
-          const packageResult = await packageResponse.json();
+        console.log('[apply-ai-code] Detecting packages from generated code...');
+        const packageResult = await detectAndInstallPackages({ files: filesForPackageDetection });
+
+        if (packageResult.ok) {
           console.log('[apply-ai-code] Package installation result:', JSON.stringify(packageResult, null, 2));
         
         if (packageResult.packagesInstalled && packageResult.packagesInstalled.length > 0) {
@@ -311,31 +294,33 @@ export async function POST(request: NextRequest) {
           console.log('[apply-ai-code] Packages were installed, forcing Vite restart...');
           
           try {
-            // Call the restart-vite endpoint
-            const restartResponse = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/restart-vite`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' }
-            });
-            
-            if (restartResponse.ok) {
-              const restartResult = await restartResponse.json();
+            const restartResult = await restartDevServer();
+            if (restartResult.ok) {
               console.log('[apply-ai-code] Vite restart result:', restartResult.message);
             } else {
-              console.error('[apply-ai-code] Failed to restart Vite:', await restartResponse.text());
+              // Log and continue. The packages are installed and the files are
+              // about to be written; a stale dev server shows the user an old
+              // preview, which the next write or a manual refresh corrects.
+              console.error('[apply-ai-code] Failed to restart Vite:', restartResult.error);
+              results.errors.push(`Failed to restart the dev server: ${restartResult.error}`);
             }
           } catch (e) {
-            console.error('[apply-ai-code] Error calling restart-vite:', e);
+            console.error('[apply-ai-code] Error restarting the dev server:', e);
+            results.errors.push(`Failed to restart the dev server: ${(e as Error).message}`);
           }
           
           // Additional delay to ensure files can be written after restart
           await new Promise(resolve => setTimeout(resolve, 1000));
         }
         } else {
-          console.error('[apply-ai-code] Package detection/installation failed:', await packageResponse.text());
+          // Log and continue: the same trade-off as the explicit package list
+          // above. Files are still worth writing.
+          console.error('[apply-ai-code] Package detection/installation failed:', packageResult.error);
+          results.errors.push(`Package detection failed: ${packageResult.error}`);
         }
       } catch (error) {
         console.error('[apply-ai-code] Error detecting/installing packages:', error);
-        // Continue with file writing even if package installation fails
+        results.errors.push(`Package detection failed: ${(error as Error).message}`);
       }
     }
     
@@ -445,7 +430,7 @@ export async function POST(request: NextRequest) {
         try {
           // Check if we're using provider pattern (v2) or direct sandbox (v1)
           if (sandbox.writeFile) {
-            // V2: Provider pattern (Vercel/E2B provider)
+            // V2: Provider pattern
             await sandbox.writeFile(file.path, fileContent);
           } else if (sandbox.files?.write) {
             // V1: Direct E2B sandbox
@@ -709,54 +694,33 @@ body {
       }
     }
     
-    // Prepare response
+    // Unused by the UI (generation uses apply-ai-code-stream). Keep the
+    // closing sentence on applyOutcome so a reader of this live route is
+    // not handed a second, stale success line.
+    const outcome = applyOutcome({
+      filesCreated: results.filesCreated,
+      filesUpdated: results.filesUpdated,
+      errors: results.errors,
+    });
     const responseData: any = {
       success: true,
       results,
       explanation: parsed.explanation,
       structure: parsed.structure,
-      message: `Applied ${results.filesCreated.length} files successfully`
+      message: outcome.message,
     };
+    if (outcome.warning) {
+      responseData.warning = outcome.warning;
+    }
     
-    // Handle missing imports automatically
+    // Missing imports are reported, not generated. The block here used to POST
+    // to a component-completion route that has never existed in this
+    // repository: every call 404'd, the .json() parse threw, and the catch
+    // produced exactly this warning. Only the warning is left.
     if (missingImports.length > 0) {
       console.warn('[apply-ai-code] Missing imports detected:', missingImports);
-      
-      // Automatically generate missing components
-      try {
-        console.log('[apply-ai-code] Auto-generating missing components...');
-        
-        const autoCompleteResponse = await fetch(
-          `${request.nextUrl.origin}/api/auto-complete-components`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              missingImports,
-              model: 'claude-sonnet-4-20250514'
-            })
-          }
-        );
-        
-        const autoCompleteData = await autoCompleteResponse.json();
-        
-        if (autoCompleteData.success) {
-          responseData.autoCompleted = true;
-          responseData.autoCompletedComponents = autoCompleteData.components;
-          responseData.message = `Applied ${results.filesCreated.length} files + auto-generated ${autoCompleteData.files} missing components`;
-          
-          // Add auto-completed files to results
-          results.filesCreated.push(...autoCompleteData.components);
-        } else {
-          // If auto-complete fails, still warn the user
-          responseData.warning = `Missing ${missingImports.length} imported components: ${missingImports.join(', ')}`;
-          responseData.missingImports = missingImports;
-        }
-      } catch (error) {
-        console.error('[apply-ai-code] Auto-complete failed:', error);
-        responseData.warning = `Missing ${missingImports.length} imported components: ${missingImports.join(', ')}`;
-        responseData.missingImports = missingImports;
-      }
+      responseData.warning = `Missing ${missingImports.length} imported components: ${missingImports.join(', ')}`;
+      responseData.missingImports = missingImports;
     }
     
     // Track applied files in conversation state

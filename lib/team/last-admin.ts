@@ -31,3 +31,8 @@ export async function wouldRemoveLastAdmin(
   });
   return otherActiveAdmins === 0;
 }
+
+export function isLastAdminDbError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /Cannot remove the last admin/i.test(message);
+}

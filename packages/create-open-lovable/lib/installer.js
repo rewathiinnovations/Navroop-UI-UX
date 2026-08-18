@@ -149,16 +149,13 @@ async function createEnvFile(projectPath, sandbox, answers) {
   if (sandbox === 'e2b') {
     envContent += `# REQUIRED - E2B Sandboxes\n`;
     envContent += `E2B_API_KEY=${answers.e2bApiKey || 'your_e2b_api_key_here'}\n\n`;
-  } else if (sandbox === 'vercel') {
-    envContent += `# REQUIRED - Vercel Sandboxes\n`;
-    if (answers.vercelAuthMethod === 'oidc') {
-      envContent += `# Using OIDC authentication (automatic in Vercel environment)\n`;
-    } else {
-      envContent += `VERCEL_TEAM_ID=${answers.vercelTeamId || 'your_team_id'}\n`;
-      envContent += `VERCEL_PROJECT_ID=${answers.vercelProjectId || 'your_project_id'}\n`;
-      envContent += `VERCEL_TOKEN=${answers.vercelToken || 'your_access_token'}\n`;
-    }
-    envContent += '\n';
+  } else if (sandbox === 'modal') {
+    envContent += `# REQUIRED - Modal sandboxes (also configure in /admin/sandbox-providers)\n`;
+    envContent += `MODAL_TOKEN_ID=${answers.modalTokenId || 'your_modal_token_id'}\n`;
+    envContent += `MODAL_TOKEN_SECRET=${answers.modalTokenSecret || 'your_modal_token_secret'}\n\n`;
+  } else if (sandbox === 'daytona') {
+    envContent += `# REQUIRED - Daytona sandboxes (also configure in /admin/sandbox-providers)\n`;
+    envContent += `DAYTONA_API_KEY=${answers.daytonaApiKey || 'your_daytona_api_key'}\n\n`;
   }
   
   // Optional AI provider keys
@@ -206,13 +203,13 @@ async function createEnvExample(projectPath, sandbox) {
     envContent += `# REQUIRED - Sandboxes for code execution\n`;
     envContent += `# Get yours at https://e2b.dev\n`;
     envContent += `E2B_API_KEY=your_e2b_api_key_here\n\n`;
-  } else if (sandbox === 'vercel') {
-    envContent += `# REQUIRED - Vercel Sandboxes\n`;
-    envContent += `# Option 1: OIDC (automatic in Vercel environment)\n`;
-    envContent += `# Option 2: Personal Access Token\n`;
-    envContent += `VERCEL_TEAM_ID=your_team_id\n`;
-    envContent += `VERCEL_PROJECT_ID=your_project_id\n`;
-    envContent += `VERCEL_TOKEN=your_access_token\n\n`;
+  } else if (sandbox === 'modal') {
+    envContent += `# REQUIRED - Modal sandboxes\n`;
+    envContent += `MODAL_TOKEN_ID=your_modal_token_id\n`;
+    envContent += `MODAL_TOKEN_SECRET=your_modal_token_secret\n\n`;
+  } else if (sandbox === 'daytona') {
+    envContent += `# REQUIRED - Daytona sandboxes\n`;
+    envContent += `DAYTONA_API_KEY=your_daytona_api_key\n\n`;
   }
   
   envContent += `# OPTIONAL - AI Providers (need at least one)\n`;

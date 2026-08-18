@@ -1,51 +1,158 @@
 import { Sandbox } from '@e2b/code-interpreter';
-import { SandboxProvider, SandboxInfo, CommandResult } from '../types';
-// SandboxProviderConfig available through parent class
+import { SandboxProvider, SandboxInfo, CommandResult, SandboxProviderConfig } from '../types';
 import { appConfig } from '@/config/app.config';
 import { DEFAULT_STACK, getSandboxTemplate, getStack, shouldInstallPackages, type StackId } from '@/lib/stacks';
 import {
   getStackSetupPlan,
   stackScaffoldFiles,
 } from '@/lib/sandbox/stack-setup';
+import { DRIVER_CAPABILITIES, DRIVER_COST_MODELS, type InjectedSandboxClient } from '../provider';
+import {
+  lastCommandOutput,
+  sandboxListUnreadableMessage,
+  sandboxMissingPreviewUrlMessage,
+  sandboxNpmInstallFailedMessage,
+  sandboxReconnectMissingPreviewUrlMessage,
+  sandboxReconnectUncertainMessage,
+} from '../boot-errors';
+import { commandResultFromE2BExecution } from '../e2b-command-result';
+import {
+  runTeardown,
+  teardownAlreadyGone,
+  teardownProvider,
+  type TeardownResult,
+} from '../teardown';
+
+type E2BRunResult = {
+  error?: { name?: string; value?: string } | null;
+  logs?: { stdout?: string[]; stderr?: string[] };
+};
+
+/** Positive evidence the VM is gone — not a timeout, auth failure, or network blip. */
+export function isE2BSandboxGone(error: unknown): boolean {
+  if (error == null || typeof error !== 'object') return false;
+  const name = error instanceof Error ? error.name : '';
+  if (name === 'FileNotFoundError') return false;
+  if (name === 'SandboxNotFoundError' || name === 'NotFoundError') return true;
+  const statusCode =
+    'statusCode' in error ? Number((error as { statusCode?: unknown }).statusCode) : Number.NaN;
+  if (statusCode === 404 || statusCode === 410) return true;
+  const message = error instanceof Error ? error.message : '';
+  return /\b(404|410)\b/.test(message) || /\bnot found\b/i.test(message) || /\bno longer exists\b/i.test(message);
+}
+
+/** getHost(undefined) interpolates to the string "https://undefined" — refuse that. */
+function usableE2BHost(host: unknown): string | null {
+  if (typeof host !== 'string') return null;
+  const trimmed = host.trim();
+  if (!trimmed || trimmed === 'undefined' || trimmed === 'null') return null;
+  return trimmed;
+}
+
+type E2BConstructorConfig = SandboxProviderConfig | { apiKey: string };
 
 export class E2BProvider extends SandboxProvider {
+  readonly driver = 'e2b' as const;
+  readonly capabilities = DRIVER_CAPABILITIES.e2b;
+  readonly costModel = DRIVER_COST_MODELS.e2b;
   private existingFiles: Set<string> = new Set();
   private currentStack: StackId = DEFAULT_STACK;
+  private injected: InjectedSandboxClient | null = null;
+
+  constructor(config: E2BConstructorConfig = {}, options?: { client?: InjectedSandboxClient }) {
+    const apiKey =
+      'e2b' in config && config.e2b
+        ? config.e2b.apiKey || ''
+        : 'apiKey' in config
+          ? (config as { apiKey: string }).apiKey
+          : '';
+    super({
+      e2b: {
+        apiKey,
+        timeoutMs: 'e2b' in config ? config.e2b?.timeoutMs : undefined,
+        template: 'e2b' in config ? config.e2b?.template : undefined,
+      },
+    });
+    this.injected = options?.client ?? null;
+  }
+
+  private apiKey() {
+    return this.config.e2b?.apiKey || '';
+  }
 
   /**
    * Probe / attach to an existing E2B sandbox. Times out in 3s by default.
    */
   async reconnect(sandboxId: string, timeoutMs = 3000): Promise<boolean> {
+    if (this.injected) {
+      const alive = await this.injected.reconnect(sandboxId);
+      if (alive) {
+        this.sandbox = { injected: true };
+        this.sandboxInfo = {
+          sandboxId,
+          url: this.injected.getPreviewUrl() || '',
+          provider: 'e2b',
+          createdAt: new Date(),
+        };
+      }
+      return alive;
+    }
+    let probeTimer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const apiKey = this.config.e2b?.apiKey || process.env.E2B_API_KEY;
+      const apiKey = this.apiKey();
       const connected = await Promise.race([
         Sandbox.connect(sandboxId, { apiKey, timeoutMs: this.config.e2b?.timeoutMs || appConfig.e2b.timeoutMs }),
         new Promise<never>((_, reject) => {
-          setTimeout(() => reject(new Error('E2B probe timed out')), timeoutMs);
+          probeTimer = setTimeout(() => reject(new Error('E2B probe timed out')), timeoutMs);
+          probeTimer.unref?.();
         }),
       ]);
 
       this.sandbox = connected;
-      const host = (this.sandbox as { getHost?: (port: number) => string }).getHost?.(appConfig.e2b.vitePort);
+      const host = usableE2BHost(
+        (this.sandbox as { getHost?: (port: number) => string }).getHost?.(appConfig.e2b.vitePort),
+      );
+      if (!host) {
+        this.sandbox = null;
+        this.sandboxInfo = null;
+        throw new Error(sandboxReconnectMissingPreviewUrlMessage('e2b', appConfig.e2b.vitePort));
+      }
       this.sandboxInfo = {
         sandboxId,
-        url: host ? `https://${host}` : '',
+        url: `https://${host}`,
         provider: 'e2b',
         createdAt: new Date(),
       };
       if (typeof this.sandbox.setTimeout === 'function') {
         this.sandbox.setTimeout(this.config.e2b?.timeoutMs || appConfig.e2b.timeoutMs);
       }
-      return Boolean(host);
+      return true;
     } catch (error) {
-      console.warn(`[E2BProvider] Failed to reconnect to sandbox ${sandboxId}:`, error);
       this.sandbox = null;
       this.sandboxInfo = null;
-      return false;
+      if (error instanceof Error && error.message === sandboxReconnectMissingPreviewUrlMessage('e2b', appConfig.e2b.vitePort)) {
+        throw error;
+      }
+      if (isE2BSandboxGone(error)) return false;
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(sandboxReconnectUncertainMessage('e2b', detail));
+    } finally {
+      if (probeTimer) clearTimeout(probeTimer);
     }
   }
 
   async createSandbox(stack: string = DEFAULT_STACK): Promise<SandboxInfo> {
+    if (this.injected) {
+      const created = await this.injected.create({ stack });
+      this.sandbox = { injected: true };
+      this.sandboxInfo = {
+        sandboxId: created.id,
+        url: created.previewUrl || this.injected.getPreviewUrl() || '',
+        provider: 'e2b',
+        createdAt: new Date(),
+      };
+      return this.sandboxInfo;
+    }
     try {
       const definition = getStack(stack);
       this.currentStack = definition.id;
@@ -67,13 +174,16 @@ export class E2BProvider extends SandboxProvider {
       // Official generic Node image (code-interpreter-v1). Looked up from the
       // stack registry — not a hardcoded create() default, not an invented template.
       this.sandbox = await Sandbox.create(template.e2b, { 
-        apiKey: this.config.e2b?.apiKey || process.env.E2B_API_KEY,
+        apiKey: this.apiKey(),
         timeoutMs: this.config.e2b?.timeoutMs || appConfig.e2b.timeoutMs
       });
       
       const sandboxId = (this.sandbox as any).sandboxId || Date.now().toString();
-      const host = (this.sandbox as any).getHost(appConfig.e2b.vitePort);
-      
+      const host = usableE2BHost((this.sandbox as any).getHost?.(appConfig.e2b.vitePort));
+      if (!host) {
+        const outcome = await teardownProvider(this);
+        throw new Error(sandboxMissingPreviewUrlMessage('e2b', appConfig.e2b.vitePort, outcome));
+      }
 
       this.sandboxInfo = {
         sandboxId,
@@ -91,11 +201,21 @@ export class E2BProvider extends SandboxProvider {
 
     } catch (error) {
       console.error('[E2BProvider] Error creating sandbox:', error);
+      await teardownProvider(this);
       throw error;
     }
   }
 
   async runCommand(command: string): Promise<CommandResult> {
+    if (this.injected) {
+      const result = await this.injected.run(command);
+      return {
+        stdout: result.stdout,
+        stderr: result.stderr,
+        exitCode: result.exitCode,
+        success: result.exitCode === 0,
+      };
+    }
     if (!this.sandbox) {
       throw new Error('No active sandbox');
     }
@@ -119,18 +239,15 @@ export class E2BProvider extends SandboxProvider {
       print(f"\\nReturn code: {result.returncode}")
     `);
     
-    const output = result.logs.stdout.join('\n');
-    const stderr = result.logs.stderr.join('\n');
-    
-    return {
-      stdout: output,
-      stderr,
-      exitCode: result.error ? 1 : 0,
-      success: !result.error
-    };
+    return commandResultFromE2BExecution(result);
   }
 
   async writeFile(path: string, content: string): Promise<void> {
+    if (this.injected) {
+      await this.injected.writeFile(path, content);
+      this.existingFiles.add(path);
+      return;
+    }
     if (!this.sandbox) {
       throw new Error('No active sandbox');
     }
@@ -162,6 +279,7 @@ export class E2BProvider extends SandboxProvider {
   }
 
   async readFile(path: string): Promise<string> {
+    if (this.injected) return this.injected.readFile(path);
     if (!this.sandbox) {
       throw new Error('No active sandbox');
     }
@@ -178,6 +296,7 @@ export class E2BProvider extends SandboxProvider {
   }
 
   async listFiles(directory: string = '/home/user/app'): Promise<string[]> {
+    if (this.injected) return this.injected.listFiles(directory);
     if (!this.sandbox) {
       throw new Error('No active sandbox');
     }
@@ -200,10 +319,17 @@ export class E2BProvider extends SandboxProvider {
       print(json.dumps(files))
     `);
     
+    const stdout = result.logs?.stdout?.join('') ?? '';
+    const pythonError = typeof result.error?.value === 'string' ? result.error.value.trim() : '';
     try {
-      return JSON.parse(result.logs.stdout.join(''));
-    } catch {
-      return [];
+      const parsed: unknown = JSON.parse(stdout);
+      if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== 'string')) {
+        throw new Error('not a JSON array of paths');
+      }
+      return parsed;
+    } catch (error) {
+      const detail = pythonError || (error instanceof Error ? error.message : String(error));
+      throw new Error(sandboxListUnreadableMessage('e2b', detail));
     }
   }
 
@@ -246,20 +372,14 @@ export class E2BProvider extends SandboxProvider {
       print(f"\\nReturn code: {result.returncode}")
     `);
     
-    const output = result.logs.stdout.join('\n');
-    const stderr = result.logs.stderr.join('\n');
-    
+    const command = commandResultFromE2BExecution(result);
+
     // Restart Vite if configured
-    if (appConfig.packages.autoRestartVite && !result.error) {
+    if (appConfig.packages.autoRestartVite && command.success) {
       await this.restartViteServer();
     }
-    
-    return {
-      stdout: output,
-      stderr,
-      exitCode: result.error ? 1 : 0,
-      success: !result.error
-    };
+
+    return command;
   }
 
   async setupViteApp(stack: string = DEFAULT_STACK): Promise<void> {
@@ -433,7 +553,7 @@ print('\\nAll files created successfully!')
     await this.sandbox.runCode(setupScript);
     
     // Install dependencies
-    await this.sandbox.runCode(`
+    const installResult = await this.sandbox.runCode(`
 import subprocess
 
 print('Installing npm packages...')
@@ -447,8 +567,9 @@ result = subprocess.run(
 if result.returncode == 0:
     print('✓ Dependencies installed successfully')
 else:
-    print(f'⚠ Warning: npm install had issues: {result.stderr}')
+    raise RuntimeError('npm install failed: ' + (result.stderr or result.stdout or 'unknown'))
     `);
+    await this.assertE2BInstallSucceeded(installResult);
     
     // Start Vite dev server
     await this.sandbox.runCode(`
@@ -518,7 +639,7 @@ os.makedirs('/home/user/app', exist_ok=True)
       : JSON.stringify(['npm', 'run', 'dev']);
     const devLabel = JSON.stringify(plan.devCommand);
 
-    await this.sandbox.runCode(`
+    const registryResult = await this.sandbox.runCode(`
 import os
 import subprocess
 import time
@@ -532,7 +653,7 @@ else:
     if result.returncode == 0:
         print('✓ Dependencies installed')
     else:
-        print(f'⚠ npm install issues: {result.stderr}')
+        raise RuntimeError('npm install failed: ' + (result.stderr or result.stdout or 'unknown'))
 
 subprocess.run(['pkill', '-f', ${JSON.stringify(plan.devArgs[0])}], capture_output=True)
 time.sleep(1)
@@ -541,6 +662,9 @@ env['FORCE_COLOR'] = '0'
 process = subprocess.Popen(${startArgs}, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
 print('✓ Dev server started (' + ${devLabel} + f' PID {process.pid})')
     `);
+    if (!plan.skipInstall) {
+      await this.assertE2BInstallSucceeded(registryResult);
+    }
 
     await new Promise((resolve) => setTimeout(resolve, appConfig.e2b.viteStartupDelay));
     for (const file of files) {
@@ -561,7 +685,7 @@ print('✓ Dev server started (' + ${devLabel} + f' PID {process.pid})')
       : JSON.stringify(['npm', 'run', 'dev']);
     const devLabel = JSON.stringify(plan.devCommand);
 
-    await this.sandbox.runCode(`
+    const restoreResult = await this.sandbox.runCode(`
 import os
 import subprocess
 import time
@@ -576,9 +700,7 @@ else:
     if result.returncode == 0:
         print('✓ Dependencies installed')
     else:
-        print(f'⚠ npm install issues: {result.stderr}')
-        if result.returncode != 0:
-            raise RuntimeError('npm install failed: ' + (result.stderr or result.stdout or 'unknown'))
+        raise RuntimeError('npm install failed: ' + (result.stderr or result.stdout or 'unknown'))
 
 subprocess.run(['pkill', '-f', ${JSON.stringify(plan.devArgs[0])}], capture_output=True)
 time.sleep(1)
@@ -587,6 +709,19 @@ env['FORCE_COLOR'] = '0'
 process = subprocess.Popen(${startArgs}, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
 print('✓ Dev server started (' + ${devLabel} + f' PID {process.pid})')
     `);
+    if (!plan.skipInstall) {
+      await this.assertE2BInstallSucceeded(restoreResult);
+    }
+  }
+
+  private async assertE2BInstallSucceeded(result: E2BRunResult): Promise<void> {
+    if (!result.error) return;
+    const stdout = (result.logs?.stdout ?? []).join('\n');
+    const stderr = (result.logs?.stderr ?? []).join('\n');
+    const output = lastCommandOutput(stdout, stderr) || result.error.value || '';
+    const outcome = await teardownProvider(this);
+    const message = sandboxNpmInstallFailedMessage('e2b', 1, output, outcome);
+    throw new Error(message);
   }
 
   async restartViteServer(): Promise<void> {
@@ -651,16 +786,27 @@ print(f'✓ Vite restarted with PID: {process.pid}')
     return this.sandboxInfo;
   }
 
-  async terminate(): Promise<void> {
-    if (this.sandbox) {
-      try {
-        await this.sandbox.kill();
-      } catch (e) {
-        console.error('Failed to terminate sandbox:', e);
+  async terminate(): Promise<TeardownResult> {
+    const sandboxId =
+      this.sandboxInfo?.sandboxId ??
+      (this.sandbox && typeof this.sandbox === 'object' && 'sandboxId' in this.sandbox
+        ? String((this.sandbox as { sandboxId?: unknown }).sandboxId ?? '') || null
+        : null);
+    if (this.injected) {
+      const outcome = await runTeardown(sandboxId, () => this.injected!.kill(), () => false);
+      if (outcome.status !== 'could_not_stop') {
+        this.sandbox = null;
+        this.sandboxInfo = null;
       }
+      return outcome;
+    }
+    if (!this.sandbox) return teardownAlreadyGone(sandboxId);
+    const outcome = await runTeardown(sandboxId, () => this.sandbox.kill(), isE2BSandboxGone);
+    if (outcome.status !== 'could_not_stop') {
       this.sandbox = null;
       this.sandboxInfo = null;
     }
+    return outcome;
   }
 
   isAlive(): boolean {

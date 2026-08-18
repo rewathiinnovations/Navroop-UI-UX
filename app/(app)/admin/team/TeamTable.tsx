@@ -11,6 +11,7 @@ import {
   updateMemberRole,
 } from '@/lib/team/actions';
 import type { TeamRole } from '@/lib/team/schema';
+import { formatAdminDate } from '../format-admin-date';
 
 type Member = {
   id: string;
@@ -23,14 +24,13 @@ type Member = {
 };
 
 function formatMemberSince(value: string | Date) {
-  const date = typeof value === 'string' ? new Date(value) : value;
-  if (Number.isNaN(date.getTime())) return '';
-  return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+  return formatAdminDate(value);
 }
 
 export default function TeamTable({ initialMembers }: { initialMembers: Member[] }) {
   const [members, setMembers] = useState(initialMembers);
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
+  const [rowNotes, setRowNotes] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
 
   const refresh = async () => {
@@ -65,6 +65,27 @@ export default function TeamTable({ initialMembers }: { initialMembers: Member[]
     }
   };
 
+  const onSendReset = async (member: Member) => {
+    setBusy(`reset:${member.id}`);
+    clearRowError(member.id);
+    setRowNotes((current) => {
+      const next = { ...current };
+      delete next[member.id];
+      return next;
+    });
+    try {
+      const response = await fetch(`/api/admin/team/${member.id}/reset-link`, { method: 'POST' });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setRowError(member.id, data.error || 'Could not send the link');
+        return;
+      }
+      setRowNotes((current) => ({ ...current, [member.id]: 'Reset link sent' }));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const onToggleActive = async (member: Member) => {
     setBusy(`active:${member.id}`);
     clearRowError(member.id);
@@ -92,7 +113,14 @@ export default function TeamTable({ initialMembers }: { initialMembers: Member[]
             { href: '/admin/team', label: 'Team', active: true },
             { href: '/admin/usage', label: 'Usage' },
             { href: '/admin/quality', label: 'Quality' },
+            { href: '/admin/jobs', label: 'Jobs' },
+            { href: '/admin/backups', label: 'Backups' },
+            { href: '/admin/audit', label: 'Audit' },
+            { href: '/admin/integrations', label: 'Integrations' },
             { href: '/admin/deploy', label: 'Deploy' },
+            { href: '/admin/servers', label: 'Servers' },
+            { href: '/admin/plans', label: 'Plans' },
+            { href: '/admin/workspace', label: 'Workspace' },
           ]}
         />
 
@@ -144,16 +172,35 @@ export default function TeamTable({ initialMembers }: { initialMembers: Member[]
                   <td className="px-16 py-14 text-[var(--studio-muted)]">{formatMemberSince(member.createdAt)}</td>
                   <td className="px-16 py-14 text-[var(--studio-muted)]">{member._count.projects}</td>
                   <td className="px-16 py-14">
-                    <StudioButton
-                      type="button"
-                      variant={member.isActive ? 'danger' : 'ghost'}
-                      disabled={busy === `active:${member.id}`}
-                      onClick={() => onToggleActive(member)}
-                    >
-                      {member.isActive ? 'Deactivate' : 'Reactivate'}
-                    </StudioButton>
+                    <div className="flex flex-col items-end gap-8">
+                      {member.isActive && (
+                        <StudioButton
+                          type="button"
+                          variant="ghost"
+                          disabled={busy === `reset:${member.id}`}
+                          onClick={() => onSendReset(member)}
+                        >
+                          {busy === `reset:${member.id}` ? 'Sending…' : 'Send reset link'}
+                        </StudioButton>
+                      )}
+                      <StudioButton
+                        type="button"
+                        variant={member.isActive ? 'danger' : 'ghost'}
+                        disabled={busy === `active:${member.id}`}
+                        onClick={() => onToggleActive(member)}
+                      >
+                        {member.isActive ? 'Deactivate' : 'Reactivate'}
+                      </StudioButton>
+                    </div>
                   </td>
                 </tr>
+                {rowNotes[member.id] && (
+                  <tr className="border-b border-[var(--studio-line)] last:border-0">
+                    <td colSpan={7} className="px-16 pb-12 pt-0 text-[12px] text-[var(--studio-accent-hover)]" role="status">
+                      {rowNotes[member.id]}
+                    </td>
+                  </tr>
+                )}
                 {rowErrors[member.id] && (
                   <tr className="border-b border-[var(--studio-line)] last:border-0">
                     <td colSpan={7} className="px-16 pb-12 pt-0 text-[12px] text-[var(--studio-danger)]" role="alert">

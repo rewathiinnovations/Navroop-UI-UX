@@ -2,7 +2,8 @@ import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { stampActivePromptHash } from '@/lib/prompts/version';
 import { maybeSettleFollowups } from '@/lib/signals/collect';
-import { calculateEventCost, type GenerationEventKind } from './usage-estimates';
+import { calculateEventCost } from './consumption/cost';
+import type { GenerationEventKind } from './usage-estimates';
 
 export {
   AI_GENERATION_ESTIMATE,
@@ -10,9 +11,9 @@ export {
   FIRECRAWL_SCRAPE_ESTIMATE,
   IMAGE_GENERATION_ESTIMATE,
   PLAN_GENERATION_ESTIMATE,
-  calculateEventCost,
   type GenerationEventKind,
 } from './usage-estimates';
+export { calculateEventCost } from './consumption/cost';
 
 export type LogGenerationEventInput = {
   projectId: string;
@@ -20,6 +21,9 @@ export type LogGenerationEventInput = {
   kind: GenerationEventKind;
   isUrlClone: boolean;
   inputTokens?: number | null;
+  outputTokens?: number | null;
+  provider?: string | null;
+  model?: string | null;
 };
 
 const isoDateSchema = z.string().refine((value) => !Number.isNaN(Date.parse(value)), {
@@ -47,7 +51,12 @@ export async function logGenerationEvent(input: LogGenerationEventInput) {
         projectId: input.projectId,
         userId: input.userId,
         kind: input.kind,
-        estimatedCost: calculateEventCost(input.kind, input.isUrlClone),
+        estimatedCost: calculateEventCost(input.kind, input.isUrlClone, {
+          tokensIn: input.inputTokens,
+          tokensOut: input.outputTokens,
+          provider: input.provider,
+          model: input.model,
+        }),
         promptVersion,
         ...(input.inputTokens != null ? { inputTokens: input.inputTokens } : {}),
       },

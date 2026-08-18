@@ -1,4 +1,6 @@
 import { looksLikeUrl } from '../projects/prompt.ts';
+import { IMPORT_NO_FILES_MESSAGE } from './copy.ts';
+import { firecrawlFailureMessage } from './firecrawl.ts';
 import { DEFAULT_IMPORT_MODE, resolveImportMode, type ImportMode } from './mode.ts';
 import { IMPORT_PROGRESS, buildingSectionProgress, composingProgress } from './progress.ts';
 import { normalizeSourceUrl } from './url.ts';
@@ -51,6 +53,7 @@ export type UrlImportDeps = {
     usedFallback: boolean;
   }) => Promise<void>;
   onProgress?: (message: string) => void;
+  jobId?: string;
 };
 
 export async function runUrlImportPipeline(input: UrlImportDeps): Promise<UrlImportResult> {
@@ -58,13 +61,28 @@ export async function runUrlImportPipeline(input: UrlImportDeps): Promise<UrlImp
   onProgress(IMPORT_PROGRESS.capturing);
   const capture = await (input.capture
     ? input.capture()
-    : (await import('./capture.ts')).capturePage(input.sourceUrl));
+    : (await import('./capture.ts')).capturePage(input.sourceUrl, { userId: input.userId }));
+
+  const warnings: string[] = [];
+  const firecrawl = capture.firecrawl ?? { ok: true as const, markdown: capture.firecrawlText };
+  if (!firecrawl.ok) {
+    const message = firecrawlFailureMessage(firecrawl);
+    warnings.push(message);
+    onProgress(message);
+    const { recordJobStepFailure } = await import('../jobs/step-failure.ts');
+    await recordJobStepFailure(input.jobId, {
+      key: 'firecrawl',
+      label: 'Reading page text',
+      error: message,
+    });
+  }
 
   onProgress(IMPORT_PROGRESS.extracting);
   const rehosted = await (input.rehost
     ? input.rehost(capture)
     : (await import('./rehost-assets.ts')).rehostImportAssets({
         projectId: input.projectId,
+        userId: input.userId,
         images: capture.images,
       }));
 
@@ -95,6 +113,7 @@ export async function runUrlImportPipeline(input: UrlImportDeps): Promise<UrlImp
           sections,
           assets: rehosted.assets,
           onProgress,
+          jobId: input.jobId,
         }));
   } catch (error) {
     console.warn('[import] segmentation failed, falling back to single-pass', error);
@@ -119,12 +138,18 @@ export async function runUrlImportPipeline(input: UrlImportDeps): Promise<UrlImp
 
   await input.persistSource?.({ capture, sections, usedFallback });
 
+  warnings.push(...rehosted.warnings, ...(generated.warnings ?? []));
+  const filesXml = generated.filesXml?.trim() ?? '';
+  if (!filesXml) {
+    throw new Error(IMPORT_NO_FILES_MESSAGE);
+  }
+
   return {
     filesXml: generated.filesXml,
     sections,
     tokens: capture.tokens,
     assets: rehosted.assets,
-    warnings: rehosted.warnings,
+    warnings,
     usedFallback,
     inputTokens: generated.inputTokens,
     sourceUrl: capture.sourceUrl,

@@ -1,5 +1,5 @@
 import {
-  useCallback, useRef
+  useCallback, useEffect, useRef
 } from 'react';
 
 const DEFAULT_CONFIG = { timeout: 0 };
@@ -10,7 +10,9 @@ export function useDebouncedCallback<T extends (...args: any[]) => any>(
 ): T {
   const timeoutRef = useRef(0);
   const callbackRef = useRef(callback);
-  callbackRef.current = callback;
+  useEffect(() => {
+    callbackRef.current = callback;
+  });
 
   const currentConfig = typeof config === 'object' ? {
     ...DEFAULT_CONFIG,

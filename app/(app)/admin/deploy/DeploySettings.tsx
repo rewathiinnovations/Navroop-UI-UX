@@ -75,13 +75,23 @@ export default function DeploySettings({ initial }: { initial: DeployState }) {
             { href: '/admin/team', label: 'Team' },
             { href: '/admin/usage', label: 'Usage' },
             { href: '/admin/quality', label: 'Quality' },
+            { href: '/admin/jobs', label: 'Jobs' },
+            { href: '/admin/backups', label: 'Backups' },
+            { href: '/admin/audit', label: 'Audit' },
+            { href: '/admin/integrations', label: 'Integrations' },
             { href: '/admin/deploy', label: 'Deploy', active: true },
+            { href: '/admin/plans', label: 'Plans' },
+            { href: '/admin/workspace', label: 'Workspace' },
+            { href: '/admin/servers', label: 'Servers' },
           ]}
         />
 
         <p className="mb-24 text-[14px] leading-6 text-[var(--studio-muted)]">
-          Coolify API access for later deploys. The token is stored encrypted. After save, only the last
-          four characters are shown. An environment token overrides the saved secret.
+          Legacy Coolify token page. Prefer{' '}
+          <a href="/admin/integrations" className="text-[var(--studio-accent)]">
+            /admin/integrations
+          </a>{' '}
+          — publish reads the connected Coolify integration, not env vars.
         </p>
 
         <div className="mb-16 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] p-16">

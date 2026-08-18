@@ -94,8 +94,39 @@ function ProjectsContent() {
   const load = useCallback(
     async (silent = false) => {
       if (!silent) setLoading(true);
+      const query = search.trim();
+      if (query) {
+        const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          setError(String(data.error || 'Could not search projects'));
+          if (!silent) setLoading(false);
+          return;
+        }
+        const hits = (data.projects || []) as Array<{
+          id: string;
+          name: string;
+          status: string;
+          phase?: ListProject['phase'];
+          updatedAt: string;
+        }>;
+        setProjects(
+          hits.map((hit) => ({
+            id: hit.id,
+            name: hit.name,
+            thumbnailUrl: null,
+            status: hit.status,
+            phase: hit.phase,
+            updatedAt: typeof hit.updatedAt === 'string' ? hit.updatedAt : new Date(hit.updatedAt).toISOString(),
+            ownerId: '',
+          })),
+        );
+        setError('');
+        if (!silent) setLoading(false);
+        return;
+      }
+
       const result = await fetchProjectList({
-        search: search.trim() || undefined,
         sort,
         mine,
         starred: starred || undefined,
@@ -164,7 +195,7 @@ function ProjectsContent() {
             {createOpen && (
               <div
                 role="menu"
-                className="absolute right-0 z-20 mt-8 w-200 overflow-hidden rounded-10 border border-[var(--studio-line)] bg-[var(--studio-surface)] shadow-[0_12px_24px_rgba(24,24,27,0.12)]"
+                className="absolute right-0 z-50 mt-8 w-200 overflow-hidden rounded-10 border border-[var(--studio-line)] bg-[var(--studio-surface)] shadow-[0_12px_24px_rgba(24,24,27,0.12)]"
               >
                 <Link
                   href="/dashboard?focus=prompt"
@@ -292,11 +323,11 @@ function ProjectsContent() {
         {!loading && !error && filtered.length === 0 && (
           <div className="rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-28 py-56 text-center">
             <h2 className="text-[24px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">
-              No projects yet
+              {search.trim() ? 'Nothing found' : 'No projects yet'}
             </h2>
             <p className="mx-auto mt-10 max-w-[420px] text-[15px] leading-6 text-[var(--studio-muted)]">
               Start a blank project and it will show up here. Deleted projects:
-              30 din baad apne aap hamesha ke liye delete ho jayega.
+              It will be permanently deleted after 30 days.
             </p>
             <StudioButton className="mt-20" href="/dashboard?focus=prompt">
               Go to dashboard

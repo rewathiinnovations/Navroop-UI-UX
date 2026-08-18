@@ -7,7 +7,7 @@ export default function PageTabs({
   items: Array<{ href: string; label: string; active?: boolean }>;
 }) {
   return (
-    <nav className="mb-28 flex gap-4 border-b border-[var(--studio-line)]">
+    <nav className="mb-28 flex flex-wrap gap-4 border-b border-[var(--studio-line)]">
       {items.map((item) => (
         <Link
           key={item.href}

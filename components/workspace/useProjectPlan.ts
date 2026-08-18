@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   approvedBuildPrompt,
   toWorkspacePlan,
@@ -28,6 +28,7 @@ export function useProjectPlan({
   const [refining, setRefining] = useState(false);
   const [approving, setApproving] = useState(false);
   const [watchPlan, setWatchPlan] = useState(false);
+  const approveKeyRef = useRef<string | null>(null);
 
   const refresh = useCallback(async () => {
     if (!projectId) return;
@@ -39,6 +40,13 @@ export function useProjectPlan({
       if (projectRes.ok) {
         const data = (await projectRes.json()) as { project?: { phase?: ProjectPhase } };
         if (data.project?.phase) setPhase(data.project.phase);
+      }
+      const jobRes = await fetch(`/api/projects/${projectId}/job`);
+      if (jobRes.ok) {
+        const data = (await jobRes.json()) as { job?: { status?: string } | null };
+        if (data.job?.status === 'ABANDONED' || data.job?.status === 'FAILED' || data.job?.status === 'CANCELLED') {
+          setPhase((current) => (current === 'BUILDING' ? 'COMPLETE' : current));
+        }
       }
       if (planRes.ok) {
         const data = (await planRes.json()) as { plan?: unknown };
@@ -105,9 +113,14 @@ export function useProjectPlan({
     if (!projectId || approving) return { ok: false as const, error: 'Project is not ready' };
     setApproving(true);
     try {
+      if (!approveKeyRef.current) {
+        approveKeyRef.current =
+          typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `approve-${Date.now()}`;
+      }
       const response = await fetch(`/api/projects/${projectId}/plan/approve`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idempotencyKey: approveKeyRef.current }),
       });
       const data = (await response.json().catch(() => null)) as { plan?: unknown; error?: string } | null;
       if (!response.ok) {

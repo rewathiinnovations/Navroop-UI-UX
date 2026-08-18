@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { isSandboxChatLocked } from '@/lib/jobs/chat-ui';
+import { shouldRequestSandbox } from '@/lib/workspace/sandbox-request';
 import type { ProjectPhase } from './types';
 
 export type WorkspaceSandboxStatus = 'NONE' | 'BOOTING' | 'READY' | 'DEAD' | 'FAILED';
@@ -57,10 +59,12 @@ export function useProjectSandbox({
   projectId,
   phase,
   iframeRef,
+  liveMode = false,
 }: {
   projectId: string | null;
   phase?: ProjectPhase | null;
   iframeRef?: { current: HTMLIFrameElement | null };
+  liveMode?: boolean;
 }) {
   const [state, setState] = useState<ProjectSandboxState>(EMPTY);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -87,9 +91,9 @@ export function useProjectSandbox({
     const data = (await response.json().catch(() => ({}))) as StatusResponse;
     const next = asState(data, EMPTY);
     setState(next);
-    if (next.status === 'READY') applyReadyUrl(next.previewUrl);
+    if (liveMode && next.status === 'READY') applyReadyUrl(next.previewUrl);
     return next;
-  }, [applyReadyUrl, projectId]);
+  }, [applyReadyUrl, liveMode, projectId]);
 
   const boot = useCallback(async () => {
     if (!projectId) return;
@@ -112,9 +116,9 @@ export function useProjectSandbox({
     }
     const next = asState({ ...data, status: data.status ?? 'READY', previewUrl: data.previewUrl }, EMPTY);
     setState({ ...next, busy: false });
-    applyReadyUrl(next.previewUrl);
+    if (liveMode) applyReadyUrl(next.previewUrl);
     return next;
-  }, [applyReadyUrl, projectId]);
+  }, [applyReadyUrl, liveMode, projectId]);
 
   useEffect(() => {
     if (!projectId) {
@@ -125,6 +129,7 @@ export function useProjectSandbox({
     void (async () => {
       const current = await refresh();
       if (cancelled || !current) return;
+      if (!liveMode || !shouldRequestSandbox('live')) return;
       const shouldBoot =
         current.hasCheckpoint &&
         current.status !== 'READY' &&
@@ -138,7 +143,7 @@ export function useProjectSandbox({
     return () => {
       cancelled = true;
     };
-  }, [boot, phase, projectId, refresh]);
+  }, [boot, liveMode, phase, projectId, refresh]);
 
   useEffect(() => {
     stopPoll();
@@ -149,7 +154,7 @@ export function useProjectSandbox({
     return stopPoll;
   }, [projectId, refresh, state.status]);
 
-  const chatLocked = state.status === 'BOOTING' || state.status === 'FAILED';
+  const chatLocked = isSandboxChatLocked(state.status);
 
   return { ...state, boot, refresh, chatLocked };
 }

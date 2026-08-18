@@ -3,6 +3,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { hashPassword, requireAdmin, validateEmail } from '@/lib/auth';
 import type { Role } from '@/generated/prisma';
+import { creditDeniedJson } from '@/lib/plans/http';
+import { checkLimit } from '@/lib/plans/limits';
+import { WORKSPACE_ROW_ID } from '@/lib/storage/usage';
+import { writeAudit } from '@/lib/audit/log';
 
 function tempPassword() {
   return `nv-${randomBytes(6).toString('base64url')}`;
@@ -28,6 +32,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'A member with that email already exists' }, { status: 409 });
   }
 
+  const memberLimit = await checkLimit(WORKSPACE_ROW_ID, 'members');
+  if (!memberLimit.ok) return creditDeniedJson({ ...memberLimit, reason: 'members', message: memberLimit.message || 'Member limit reached' });
+
   const password = tempPassword();
   const created = await prisma.user.create({
     data: {
@@ -46,6 +53,15 @@ export async function POST(request: NextRequest) {
       invitedById: user.id,
       acceptedAt: new Date(),
     },
+  });
+
+  await writeAudit({
+    actorId: user.id,
+    actorEmail: user.email,
+    action: 'member.invite',
+    targetType: 'user',
+    targetId: created.id,
+    after: { email: created.email, role: created.role },
   });
 
   return NextResponse.json({

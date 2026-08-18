@@ -74,7 +74,10 @@ export async function disconnectGitHubForUser(db: GithubConnectionDb, userId: st
   await db.gitHubConnection.deleteMany({ where: { userId } });
 }
 
-export async function decryptCallerAccessToken(db: GithubConnectionDb, userId: string) {
+export async function decryptCallerAccessToken(
+  db: { gitHubConnection: Pick<GithubConnectionDelegate, 'findUnique'> },
+  userId: string,
+) {
   const row = await db.gitHubConnection.findUnique({
     where: { userId },
     select: { githubUsername: true, accessTokenEncrypted: true },

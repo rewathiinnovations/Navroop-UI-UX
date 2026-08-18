@@ -9,6 +9,13 @@ export async function verifyPassword(password: string, hash: string) {
   return bcrypt.compare(password, hash);
 }
 
+export function validatePassword(password: string) {
+  if (!password || password.length < 8) {
+    return { ok: false as const, error: 'Password must be at least 8 characters' };
+  }
+  return { ok: true as const };
+}
+
 export function getSeedAdminCredentials() {
   const email = String(process.env.SEED_ADMIN_EMAIL || process.env.ADMIN_EMAIL || '')
     .trim()

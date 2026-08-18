@@ -5,6 +5,7 @@ import { ChevronDown, Loader2, Search } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import { relativeTime } from '@/lib/projects/prompt';
 import { sortFindings } from '@/lib/audit/findings';
+import { isMobilePreviewFinding, requestPreviewDevice } from '@/lib/preview/devices';
 import type { CodeFinding, CodeSeverity } from '@/lib/audit/types';
 import type { SendMessageOptions } from './types';
 import { useCodeAudit } from './useCodeAudit';
@@ -59,7 +60,17 @@ function FindingRow({
         <div className="min-w-0 flex-1">
           <div className="mb-6 flex flex-wrap items-center gap-6">
             <SeverityBadge status={item.status} fixed={item.fixed} />
-            <p className="text-[13px] font-medium text-[var(--studio-fg)]">{item.title}</p>
+            {isMobilePreviewFinding(item) ? (
+              <button
+                type="button"
+                onClick={() => requestPreviewDevice('mobile')}
+                className="text-left text-[13px] font-medium text-[var(--studio-fg)] hover:underline"
+              >
+                {item.title}
+              </button>
+            ) : (
+              <p className="text-[13px] font-medium text-[var(--studio-fg)]">{item.title}</p>
+            )}
           </div>
           <p className="text-[12px] leading-5 text-[var(--studio-muted)]">{item.detail}</p>
           {where && <p className="mt-4 text-[11px] text-[var(--studio-faint)]">{where}</p>}

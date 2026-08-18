@@ -2,32 +2,6 @@
 // This file contains all configurable settings for the application
 
 export const appConfig = {
-  // Vercel Sandbox Configuration
-  vercelSandbox: {
-    // Sandbox timeout in minutes
-    timeoutMinutes: 15,
-
-    // Convert to milliseconds for Vercel Sandbox API
-    get timeoutMs() {
-      return this.timeoutMinutes * 60 * 1000;
-    },
-
-    // Development server port (Vercel Sandbox typically uses 3000 for Next.js/React)
-    devPort: 3000,
-
-    // Time to wait for dev server to be ready (in milliseconds)
-    devServerStartupDelay: 7000,
-
-    // Time to wait for CSS rebuild (in milliseconds)
-    cssRebuildDelay: 2000,
-
-    // Working directory in sandbox
-    workingDirectory: '/app',
-
-    // Default runtime for sandbox
-    runtime: 'node22' // Available: node22, python3.13, v0-next-shadcn, cua-ubuntu-xfce
-  },
-
   // E2B Sandbox Configuration
   e2b: {
     // Sandbox timeout in minutes

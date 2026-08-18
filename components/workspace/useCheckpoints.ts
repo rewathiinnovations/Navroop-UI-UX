@@ -99,9 +99,11 @@ export function useCheckpoints({
         onRefresh?.();
         return { ok: true as const };
       } catch (error) {
+        const message = error instanceof Error ? error.message : 'Could not restore this version';
         return {
           ok: false as const,
-          error: error instanceof Error ? error.message : 'Could not restore this version',
+          error: message,
+          locked: message.includes('is working on this project'),
         };
       } finally {
         setBusy(false);

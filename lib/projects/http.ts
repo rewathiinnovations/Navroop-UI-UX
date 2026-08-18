@@ -2,8 +2,13 @@ import { NextResponse } from 'next/server';
 import type { ActionErr } from '@/lib/projects/actions';
 
 export function actionError(result: ActionErr) {
+  const details =
+    result.details && typeof result.details === 'object' ? (result.details as Record<string, unknown>) : {};
   return NextResponse.json(
-    { error: result.error, ...(result.details ? { details: result.details } : {}) },
+    {
+      error: result.error,
+      ...(result.status === 402 || result.status === 409 ? details : result.details ? { details: result.details } : {}),
+    },
     { status: result.status },
   );
 }
@@ -23,6 +28,7 @@ export function readCreateInput(body: Record<string, unknown>) {
       ? { designDirection: body.designDirection }
       : {}),
     ...(typeof body.importMode === 'string' && body.importMode ? { importMode: body.importMode } : {}),
+    ...(typeof body.templateId === 'string' && body.templateId ? { templateId: body.templateId } : {}),
   };
 }
 

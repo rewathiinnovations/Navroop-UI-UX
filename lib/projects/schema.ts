@@ -24,6 +24,7 @@ export const createProjectSchema = z.object({
   stack: z.enum(STACK_IDS).default(DEFAULT_STACK),
   designDirection: z.enum(DESIGN_DIRECTION_IDS).default(DEFAULT_DESIGN_DIRECTION),
   importMode: z.enum(IMPORT_MODES).default(DEFAULT_IMPORT_MODE),
+  templateId: z.string().trim().min(1).optional(),
 });
 
 export const refinePlanSchema = z.object({

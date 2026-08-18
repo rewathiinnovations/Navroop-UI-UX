@@ -1,4 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { assertSafeUrl, UnsafeUrlError } from '@/lib/security/url-guard';
+import { jsonError } from '@/lib/api/error-response';
+import { requireSessionUser } from '@/lib/auth';
 
 // Function to sanitize smart quotes and other problematic characters
 function sanitizeQuotes(text: string): string {
@@ -17,6 +20,9 @@ function sanitizeQuotes(text: string): string {
 }
 
 export async function POST(request: NextRequest) {
+  const auth = await requireSessionUser();
+  if (!auth.user) return jsonError(auth.error, 'UNAUTHORIZED', auth.status);
+
   try {
     const { url } = await request.json();
     
@@ -25,6 +31,13 @@ export async function POST(request: NextRequest) {
         success: false,
         error: 'URL is required'
       }, { status: 400 });
+    }
+
+    try {
+      await assertSafeUrl(String(url));
+    } catch (error) {
+      const message = error instanceof UnsafeUrlError ? error.message : 'URL import failed';
+      return NextResponse.json({ success: false, error: message }, { status: 400 });
     }
     
     console.log('[scrape-url-enhanced] Scraping with Firecrawl:', url);
@@ -35,6 +48,7 @@ export async function POST(request: NextRequest) {
     }
     
     // Make request to Firecrawl API with maxAge for 500% faster scraping
+    // Trusted host — do not route through safeFetch.
     const firecrawlResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
       method: 'POST',
       headers: {

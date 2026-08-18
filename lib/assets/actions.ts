@@ -7,7 +7,9 @@ import { generateImage, type GenerateAspect } from '@/lib/assets/generate-image'
 import { persistOptimizedAsset } from '@/lib/assets/persist';
 import { searchStockPhoto } from '@/lib/assets/stock-photo';
 import { deleteObject } from '@/lib/storage';
-import { adjustStorageBytes } from '@/lib/storage/usage';
+import { adjustStorageBytes, WORKSPACE_ROW_ID } from '@/lib/storage/usage';
+import { asCreditActionErr } from '@/lib/plans/http';
+import { checkCredits, consumeCredits } from '@/lib/plans/limits';
 
 export type ActionErr = { ok: false; error: string; status: number };
 export type ActionOk<T> = { ok: true; data: T };
@@ -102,6 +104,8 @@ export async function generateProjectImage(
   if (!user) return err;
   const loaded = await loadOwnedProject(projectId, user);
   if (!loaded.project) return loaded.err;
+  const credits = await checkCredits(WORKSPACE_ROW_ID, user.id, 'image');
+  if (!credits.ok) return asCreditActionErr(credits);
   try {
     const asset = await generateImage({
       projectId,
@@ -109,6 +113,7 @@ export async function generateProjectImage(
       prompt,
       aspectRatio,
     });
+    await consumeCredits(WORKSPACE_ROW_ID, user.id, 'image', projectId);
     return { ok: true as const, data: toPublic(asset) };
   } catch (error) {
     return { ok: false as const, error: (error as Error).message, status: 400 as const };

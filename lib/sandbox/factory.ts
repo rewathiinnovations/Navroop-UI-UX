@@ -1,41 +1,50 @@
 import { SandboxProvider, SandboxProviderConfig } from './types';
 import { E2BProvider } from './providers/e2b-provider';
-import { VercelProvider } from './providers/vercel-provider';
+import { ModalProvider } from './providers/modal-provider';
+import { DaytonaProvider } from './providers/daytona-provider';
+import { decryptProviderSecrets, type StoredProviderConfig } from './store';
+import { SANDBOX_DRIVERS, type InjectedSandboxClient, type SandboxDriverId } from './provider';
 
 export class SandboxFactory {
   static create(provider?: string, config?: SandboxProviderConfig): SandboxProvider {
-    // Use environment variable if provider not specified
-    const selectedProvider = provider || process.env.SANDBOX_PROVIDER || 'e2b';
-    
-    
-    switch (selectedProvider.toLowerCase()) {
+    const selectedProvider = (provider || 'e2b').toLowerCase();
+
+    switch (selectedProvider) {
       case 'e2b':
         return new E2BProvider(config || {});
-      
-      case 'vercel':
-        return new VercelProvider(config || {});
-      
+      case 'modal':
+        return new ModalProvider(config?.modal || { tokenId: '', tokenSecret: '' });
+      case 'daytona':
+        return new DaytonaProvider(config?.daytona || { apiKey: '' });
       default:
-        throw new Error(`Unknown sandbox provider: ${selectedProvider}. Supported providers: e2b, vercel`);
+        throw new Error(
+          `Unknown sandbox provider: ${selectedProvider}. Supported providers: e2b, modal, daytona`,
+        );
     }
   }
-  
-  static getAvailableProviders(): string[] {
-    return ['e2b', 'vercel'];
+
+  static fromRow(row: StoredProviderConfig, options?: { client?: InjectedSandboxClient }): SandboxProvider {
+    const secrets = decryptProviderSecrets(row.secrets);
+    if (row.driver === 'modal') {
+      const modal = secrets as { tokenId?: string; tokenSecret?: string };
+      return new ModalProvider(
+        { tokenId: modal.tokenId || '', tokenSecret: modal.tokenSecret || '' },
+        options,
+      );
+    }
+    if (row.driver === 'daytona') {
+      const daytona = secrets as { apiKey?: string; apiUrl?: string };
+      return new DaytonaProvider({ apiKey: daytona.apiKey || '', apiUrl: daytona.apiUrl }, options);
+    }
+    const e2b = secrets as { apiKey?: string };
+    return new E2BProvider({ e2b: { apiKey: e2b.apiKey || '' } }, options);
   }
-  
+
+  static getAvailableProviders(): SandboxDriverId[] {
+    return [...SANDBOX_DRIVERS];
+  }
+
   static isProviderAvailable(provider: string): boolean {
-    switch (provider.toLowerCase()) {
-      case 'e2b':
-        return !!process.env.E2B_API_KEY;
-      
-      case 'vercel':
-        // Vercel can use OIDC (automatic) or PAT
-        return !!process.env.VERCEL_OIDC_TOKEN || 
-               (!!process.env.VERCEL_TOKEN && !!process.env.VERCEL_TEAM_ID && !!process.env.VERCEL_PROJECT_ID);
-      
-      default:
-        return false;
-    }
+    return SANDBOX_DRIVERS.includes(provider.toLowerCase() as SandboxDriverId);
   }
 }

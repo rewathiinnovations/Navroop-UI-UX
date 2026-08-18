@@ -10,11 +10,20 @@ import {
   updateProjectSchema,
 } from '@/lib/projects/schema';
 import { applyCreateProjectPlanFlow, peekActor } from '@/lib/projects/plan';
+import { buildProjectListQuery, type ListProjectsQuery } from '@/lib/projects/list-sql';
 import { createCheckpointAfterGeneration } from '@/lib/checkpoints/actions';
 import { extractMemoriesAfterGeneration } from '@/lib/memory/extract';
 import { countVisualEditsFromSource, maybeSettleFollowups, recordVisualEditRate } from '@/lib/signals/collect';
 import { decideUrlImportFlow } from '@/lib/import/pipeline';
 import { upsertImportSource } from '@/lib/import/persist';
+import { asCreditActionErr } from '@/lib/plans/http';
+import { checkLimit } from '@/lib/plans/limits';
+import { WORKSPACE_ROW_ID } from '@/lib/storage/usage';
+import { bumpContentVersion } from '@/lib/projects/lock';
+import { incrementUsageCount } from '@/lib/templates/usage';
+import { writeAudit } from '@/lib/audit/log';
+import { logError } from '@/lib/logger';
+import { capturePreviewAfterGeneration } from '@/lib/preview/after-generation';
 
 export type ActionOk<T> = { ok: true; data: T };
 export type ActionErr = {
@@ -46,6 +55,25 @@ function canMutate(user: SessionUser, ownerId: string) {
   return user.id === ownerId || user.role === 'ADMIN';
 }
 
+/**
+ * Runs post-generation follow-up work without blocking the response, and without losing the
+ * failure.
+ *
+ * Detached is deliberate: the generation already succeeded and none of this may fail the
+ * request. `void promise` was not — a rejection became an unhandled rejection with no project
+ * and no task name, which is how `maybeSettleFollowups` could fail to settle job state with
+ * nothing to show for it. A synchronous throw inside the task is caught here too.
+ */
+function detachAfterGeneration(projectId: string, task: string, work: () => Promise<unknown>) {
+  void (async () => {
+    try {
+      await work();
+    } catch (error) {
+      logError('projects.after_generation_failed', error, { projectId, task });
+    }
+  })();
+}
+
 async function requireUser() {
   const user = await getSessionUser();
   if (!user) return { user: null, err: unauthorized() as ActionErr };
@@ -65,13 +93,18 @@ export async function createProject(input: {
   stack?: string;
   designDirection?: string;
   importMode?: string;
+  templateId?: string;
 }) {
   const stored = peekActor();
-  const { user, err } = stored ? { user: stored, err: null } : await requireUser();
-  if (!user) return err;
+  const actor = stored ? { user: stored, err: null as ActionErr | null } : await requireUser();
+  if (!actor.user) return actor.err ?? unauthorized();
+  const user = actor.user;
 
   const parsed = parseWithZod(createProjectSchema, input);
   if (!parsed.ok) return parsed;
+
+  const projectLimit = await checkLimit(WORKSPACE_ROW_ID, 'projects');
+  if (!projectLimit.ok) return asCreditActionErr(projectLimit);
 
   const flow = decideUrlImportFlow({
     initialPrompt: parsed.data.initialPrompt,
@@ -79,7 +112,10 @@ export async function createProject(input: {
     importMode: parsed.data.importMode,
   });
   const skipPlanning = flow.skipPlanning;
-  const name = parsed.data.name ?? nameFromPrompt(parsed.data.initialPrompt);
+  const name =
+    typeof parsed.data.name === 'string' && parsed.data.name.trim()
+      ? parsed.data.name.trim()
+      : nameFromPrompt(parsed.data.initialPrompt);
   const project = await prisma.project.create({
     data: {
       name,
@@ -108,6 +144,19 @@ export async function createProject(input: {
     userId: user.id,
     initialPrompt: parsed.data.initialPrompt,
     skipPlanning,
+  });
+
+  if (parsed.data.templateId) {
+    await incrementUsageCount(parsed.data.templateId);
+  }
+
+  await writeAudit({
+    actorId: user.id,
+    actorEmail: user.email,
+    action: 'project.create',
+    targetType: 'project',
+    targetId: project.id,
+    after: { name: project.name, stack: project.stack },
   });
 
   return {
@@ -201,53 +250,11 @@ type ListProjectRow = {
   starred: boolean;
 };
 
-async function listProjectsFromSql(query: {
-  userId: string;
-  sort: string;
-  search?: string;
-  mine?: boolean;
-  starred: boolean;
-}) {
-  const filters: Prisma.Sql[] = [Prisma.sql`p."deletedAt" IS NULL`];
-  if (query.mine === true) filters.push(Prisma.sql`p."ownerId" = ${query.userId}`);
-  if (query.mine === false) filters.push(Prisma.sql`p."ownerId" <> ${query.userId}`);
-  if (query.search) filters.push(Prisma.sql`p.name ILIKE ${`%${query.search}%`}`);
-  if (query.starred) {
-    filters.push(
-      Prisma.sql`EXISTS (SELECT 1 FROM "ProjectStar" s WHERE s."projectId" = p.id AND s."userId" = ${query.userId})`,
-    );
-  }
+async function listProjectsFromSql(query: ListProjectsQuery) {
+  const { sql, values } = buildProjectListQuery(query);
+  const rows = await prisma.$queryRawUnsafe<ListProjectRow[]>(sql, ...values);
 
-  const orderBy =
-    query.sort === 'name'
-      ? Prisma.sql`p.name ASC`
-      : query.sort === 'createdAt'
-        ? Prisma.sql`p."createdAt" DESC`
-        : Prisma.sql`p."updatedAt" DESC`;
-
-  const rows = await prisma.$queryRaw<ListProjectRow[]>`
-    SELECT
-      p.id,
-      p.name,
-      p."thumbnailUrl",
-      p.status,
-      p.phase,
-      p."createdAt",
-      p."updatedAt",
-      p."ownerId",
-      u.name AS "ownerName",
-      u."avatarUrl" AS "ownerAvatarUrl",
-      EXISTS (
-        SELECT 1 FROM "ProjectStar" s
-        WHERE s."projectId" = p.id AND s."userId" = ${query.userId}
-      ) AS starred
-    FROM "Project" p
-    INNER JOIN "User" u ON u.id = p."ownerId"
-    WHERE ${Prisma.join(filters, ' AND ')}
-    ORDER BY ${orderBy}
-  `;
-
-  return rows.map((row) => ({
+  const mapped = rows.map((row) => ({
     id: row.id,
     name: row.name,
     thumbnailUrl: row.thumbnailUrl,
@@ -258,7 +265,32 @@ async function listProjectsFromSql(query: {
     ownerId: row.ownerId,
     owner: { name: row.ownerName, avatarUrl: row.ownerAvatarUrl },
     starred: Boolean(row.starred),
+    liveUrl: null as string | null,
+    previewUrl: null as string | null,
+    publishBadge: 'draft' as 'draft' | 'preview' | 'live',
   }));
+
+  if (mapped.length === 0) return mapped;
+  try {
+    const deployments = await prisma.deployment.findMany({
+      where: { projectId: { in: mapped.map((row) => row.id) }, status: 'LIVE' },
+      select: { projectId: true, kind: true, url: true },
+    });
+    const byProject = new Map<string, { liveUrl: string | null; previewUrl: string | null }>();
+    for (const row of deployments) {
+      const current = byProject.get(row.projectId) ?? { liveUrl: null, previewUrl: null };
+      if (row.kind === 'LIVE') current.liveUrl = row.url;
+      if (row.kind === 'PREVIEW') current.previewUrl = row.url;
+      byProject.set(row.projectId, current);
+    }
+    return mapped.map((project) => {
+      const urls = byProject.get(project.id);
+      const publishBadge = urls?.liveUrl ? 'live' : urls?.previewUrl ? 'preview' : 'draft';
+      return { ...project, liveUrl: urls?.liveUrl ?? null, previewUrl: urls?.previewUrl ?? null, publishBadge };
+    });
+  } catch {
+    return mapped;
+  }
 }
 
 export async function getProject(id: string) {
@@ -291,7 +323,7 @@ export async function updateProject(id: string, input: { name?: string; status?:
   const project = await prisma.project.update({
     where: { id },
     data: {
-      ...(parsed.data.name !== undefined ? { name: parsed.data.name } : {}),
+      ...(typeof parsed.data.name === 'string' ? { name: parsed.data.name } : {}),
       ...(parsed.data.status !== undefined ? { status: parsed.data.status } : {}),
     },
     include: { owner: { select: ownerSelect } },
@@ -317,6 +349,21 @@ export async function deleteProject(id: string) {
     include: { owner: { select: ownerSelect } },
   });
 
+  try {
+    const { stopProjectDeployments } = await import('@/lib/publish/cleanup');
+    await stopProjectDeployments(id);
+  } catch (error) {
+    console.warn('[projects] stop deployments on soft-delete failed', id, error);
+  }
+
+  await writeAudit({
+    actorId: user.id,
+    actorEmail: user.email,
+    action: 'project.soft_delete',
+    targetType: 'project',
+    targetId: id,
+  });
+
   return { ok: true as const, data: project };
 }
 
@@ -337,6 +384,14 @@ export async function restoreProject(id: string) {
     include: { owner: { select: ownerSelect } },
   });
 
+  await writeAudit({
+    actorId: user.id,
+    actorEmail: user.email,
+    action: 'project.restore',
+    targetType: 'project',
+    targetId: id,
+  });
+
   return { ok: true as const, data: project };
 }
 
@@ -350,6 +405,9 @@ export async function duplicateProject(id: string) {
   });
   if (!source) return notFound();
   if (!canMutate(user, source.ownerId)) return forbidden();
+
+  const projectLimit = await checkLimit(WORKSPACE_ROW_ID, 'projects');
+  if (!projectLimit.ok) return asCreditActionErr(projectLimit);
 
   // TODO: does not copy sandbox/generated code.
   const project = await prisma.project.create({
@@ -383,8 +441,9 @@ export type GenerationPersistInput = {
 
 export async function persistProjectGeneration(id: string, input: GenerationPersistInput) {
   const stored = peekActor();
-  const { user, err } = stored ? { user: stored, err: null } : await requireUser();
-  if (!user) return err;
+  const actor = stored ? { user: stored, err: null as ActionErr | null } : await requireUser();
+  if (!actor.user) return actor.err ?? unauthorized();
+  const user = actor.user;
 
   const existing = await prisma.project.findFirst({
     where: { id, deletedAt: null },
@@ -412,20 +471,58 @@ export async function persistProjectGeneration(id: string, input: GenerationPers
     include: { owner: { select: ownerSelect } },
   });
 
+  let previewNotice: string | null = null;
   if (input.generationStatus === 'ready') {
+    await bumpContentVersion(id);
     try {
-      await createCheckpointAfterGeneration(id, {
+      const checkpoint = await createCheckpointAfterGeneration(id, {
         previousPhase: existing.phase,
         previewUrl: input.previewUrl ?? project.previewUrl,
         sourceMessage: input.sourceMessage,
       });
+      if (checkpoint?.id) {
+        const captured = await capturePreviewAfterGeneration(
+          async () => {
+            const { buildPreviewForProject } = await import('@/lib/preview/production');
+            return buildPreviewForProject(id, checkpoint.id);
+          },
+          {
+            projectId: id,
+            checkpointId: checkpoint.id,
+            checkpointCreatedAt: checkpoint.createdAt,
+            findExisting: async () => {
+              const { previewBuildTable } = await import('@/lib/preview/db');
+              return previewBuildTable().findFirst({
+                where: {
+                  projectId: id,
+                  checkpointId: checkpoint.id,
+                  status: { in: ['READY', 'BUILDING'] },
+                },
+                orderBy: { createdAt: 'desc' },
+              });
+            },
+          },
+        );
+        previewNotice = captured.notice;
+        if (captured.error) {
+          logError('projects.preview_after_generation_failed', captured.error, { projectId: id });
+        } else if (captured.notice) {
+          logError('projects.preview_after_generation_failed', new Error(captured.notice), {
+            projectId: id,
+          });
+        }
+      }
     } catch (error) {
       console.error('[checkpoints] create after generation failed', error);
     }
-    void recordVisualEditRate(id, countVisualEditsFromSource(input.source, input.sourceMessage));
-    void maybeSettleFollowups(id);
-    void extractMemoriesAfterGeneration(id, { sourceMessage: input.sourceMessage });
+    detachAfterGeneration(id, 'visual_edit_rate', () =>
+      recordVisualEditRate(id, countVisualEditsFromSource(input.source, input.sourceMessage)),
+    );
+    detachAfterGeneration(id, 'settle_followups', () => maybeSettleFollowups(id));
+    detachAfterGeneration(id, 'extract_memories', () =>
+      extractMemoriesAfterGeneration(id, { sourceMessage: input.sourceMessage }),
+    );
   }
 
-  return { ok: true as const, data: project };
+  return { ok: true as const, data: project, previewNotice };
 }

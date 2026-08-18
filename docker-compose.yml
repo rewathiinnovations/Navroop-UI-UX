@@ -31,6 +31,8 @@ services:
         condition: service_healthy
     ports:
       - '${PORT:-3000}:3000'
+    volumes:
+      - navroop_data:/data
     environment:
       NODE_ENV: production
       HOSTNAME: 0.0.0.0
@@ -57,12 +59,37 @@ services:
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       MORPH_API_KEY: ${MORPH_API_KEY:-}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
-      COOLIFY_BASE_URL: ${COOLIFY_BASE_URL:-}
-      COOLIFY_API_TOKEN: ${COOLIFY_API_TOKEN:-}
+      CRON_SECRET: ${CRON_SECRET:-}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
+      UNSPLASH_ACCESS_KEY: ${UNSPLASH_ACCESS_KEY:-}
+      STORAGE_DRIVER: ${STORAGE_DRIVER:-local}
+      ELK_ENDPOINT: ${ELK_ENDPOINT:-}
+      ELK_REGION: ${ELK_REGION:-}
+      ELK_ACCESS_KEY_ID: ${ELK_ACCESS_KEY_ID:-}
+      ELK_SECRET_ACCESS_KEY: ${ELK_SECRET_ACCESS_KEY:-}
+      ELK_BUCKET: ${ELK_BUCKET:-}
+      S3_PUBLIC_URL: ${S3_PUBLIC_URL:-}
+      BACKUP_ENDPOINT: ${BACKUP_ENDPOINT:-}
+      BACKUP_REGION: ${BACKUP_REGION:-}
+      BACKUP_ACCESS_KEY_ID: ${BACKUP_ACCESS_KEY_ID:-}
+      BACKUP_SECRET_ACCESS_KEY: ${BACKUP_SECRET_ACCESS_KEY:-}
+      BACKUP_BUCKET: ${BACKUP_BUCKET:-}
       SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-}
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      DATA_DIR: ${DATA_DIR:-/data}
+      OBSERVABILITY_CONFIG_PATH: ${OBSERVABILITY_CONFIG_PATH:-/data/config/observability.json}
+      ALLOW_DESTRUCTIVE_MIGRATION: ${ALLOW_DESTRUCTIVE_MIGRATION:-}
+      GIT_SHA: ${GIT_SHA:-}
+      DEPLOYED_AT: ${DEPLOYED_AT:-}
+      COOLIFY_APP_UUID: ${COOLIFY_APP_UUID:-}
+      APP_URL: ${APP_URL:-}
+      # Required. Same host as APP_URL / NEXTAUTH_URL. The GitHub App Manifest
+      # callback and static preview origins are built from it, and the app
+      # refuses to boot in production if it is unset or points elsewhere.
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL}
     healthcheck:
       test:
         [
@@ -78,3 +105,4 @@ services:
 
 volumes:
   navroop_pg:
+  navroop_data:

@@ -4,6 +4,7 @@ import { prisma } from '@/lib/db';
 import { requireAdmin, requireSessionUser } from '@/lib/auth';
 import { last4FromSecret, SETTINGS_API_KEY_PROVIDERS } from '@/lib/api-keys';
 import { deleteApiKeySchema, parseWithZod, setApiKeySchema } from '@/lib/api-keys/schema';
+import { writeAudit } from '@/lib/audit/log';
 
 export type ActionOk<T> = { ok: true; data: T };
 export type ActionErr = {
@@ -73,6 +74,10 @@ export async function setPersonalApiKey(provider: string, secret: string) {
   if (!parsed.ok) return parsed;
 
   const last4 = last4FromSecret(parsed.data.secret);
+  const existingKey = await prisma.apiKey.findUnique({
+    where: { userId_provider: { userId: user.id, provider: parsed.data.provider } },
+    select: { id: true },
+  });
   await prisma.apiKey.upsert({
     where: { userId_provider: { userId: user.id, provider: parsed.data.provider } },
     create: {
@@ -87,6 +92,15 @@ export async function setPersonalApiKey(provider: string, secret: string) {
   const org = await prisma.orgApiKey.findUnique({
     where: { provider: parsed.data.provider },
     select: { id: true },
+  });
+
+  await writeAudit({
+    actorId: user.id,
+    actorEmail: user.email,
+    action: existingKey ? 'api_key.rotate' : 'api_key.add',
+    targetType: 'api_key',
+    targetId: parsed.data.provider,
+    after: { provider: parsed.data.provider, changed: true },
   });
 
   return { ok: true as const, data: { last4, hasOrgDefault: Boolean(org) } };
@@ -118,6 +132,14 @@ export async function deleteApiKey(provider: string) {
 
   await prisma.apiKey.deleteMany({
     where: { userId: user.id, provider: parsed.data.provider },
+  });
+  await writeAudit({
+    actorId: user.id,
+    actorEmail: user.email,
+    action: 'api_key.delete',
+    targetType: 'api_key',
+    targetId: parsed.data.provider,
+    after: { provider: parsed.data.provider, changed: true },
   });
 
   const org = await prisma.orgApiKey.findUnique({

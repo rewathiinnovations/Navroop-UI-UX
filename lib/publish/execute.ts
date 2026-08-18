@@ -1,0 +1,463 @@
+import { prisma } from '@/lib/db';
+import {
+  createApplication,
+  getDeploymentStatus,
+  setDomain,
+  triggerDeploy,
+  type CoolifyServerAuth,
+  type CreateApplicationInput,
+  type DeploymentHealth,
+} from '@/lib/coolify/client';
+import { pickCoolifyServer, serverAuth } from '@/lib/coolify/servers';
+import { upsertARecord } from '@/lib/cloudflare/dns';
+import { ensureDeployRepo, pushFiles } from '@/lib/github/deploy-client';
+import { getRootDomain } from '@/lib/integrations/store';
+import { getStack } from '@/lib/stacks';
+import { beginJobHeartbeat, failJob, markJobRunning, succeedJob } from '@/lib/jobs/lifecycle';
+import { getJob, updateJobFields } from '@/lib/jobs/store';
+import type { JobResourceIds, JobStep } from '@/lib/jobs/types';
+import { log } from '@/lib/logger';
+import { PREVIEW_BASIC_USER, PUBLISH_POLL_MS, PUBLISH_POLL_TIMEOUT_MS } from './constants';
+import { collectPublishFiles, publishJobErrorCode } from './files';
+import { injectPreviewFiles } from './preview-inject';
+import { coolifyAppName, dnsLabel, deployRepoName } from './naming';
+import { withProviderRetry } from './retry';
+import { claimSlug, hostForSlug, urlForSlug } from './slug';
+import { PUBLISH_STEPS } from './steps';
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** A `CoolifyServer` row, narrowed to the columns the publish loop reads. */
+export type PublishServer = {
+  id: string;
+  apiUrl: string;
+  apiToken: string;
+  serverIp: string;
+  projectUuid: string;
+};
+
+/**
+ * Every external system the ten-step loop talks to, in one injectable bundle.
+ *
+ * Production calls `runPublishJob(jobId)` and gets `livePublishDeps` — the real Coolify,
+ * GitHub App and Cloudflare clients. The seam exists so a test can drive *this* loop:
+ * without it the only way to exercise step ordering, resource persistence and resume was
+ * a hand-written replica of the loop, and a replica cannot go red when this file
+ * regresses. Every member is required, so adding one is a compile error in the tests
+ * rather than a silent fall back to a live provider call.
+ */
+export type PublishDeps = {
+  collectFiles: (projectId: string) => Promise<Record<string, string>>;
+  pickServer: () => Promise<PublishServer>;
+  rootDomain: (workspaceId: string) => Promise<string>;
+  ensureRepo: (repoSlug: string, workspaceId: string) => Promise<string>;
+  pushFiles: (
+    repoFullName: string,
+    files: Record<string, string>,
+    message: string,
+    workspaceId: string,
+  ) => Promise<string>;
+  createApp: (auth: CoolifyServerAuth, input: CreateApplicationInput) => Promise<{ uuid: string }>;
+  upsertDns: (label: string, ip: string) => Promise<string>;
+  setAppDomain: (auth: CoolifyServerAuth, appUuid: string, host: string) => Promise<void>;
+  startDeploy: (
+    auth: CoolifyServerAuth,
+    appUuid: string,
+  ) => Promise<{ deploymentUuid: string | null }>;
+  deployHealth: (
+    auth: CoolifyServerAuth,
+    appUuid: string,
+  ) => Promise<{ health: DeploymentHealth; status: string }>;
+};
+
+export const livePublishDeps: PublishDeps = {
+  collectFiles: collectPublishFiles,
+  pickServer: pickCoolifyServer,
+  rootDomain: getRootDomain,
+  ensureRepo: ensureDeployRepo,
+  pushFiles,
+  createApp: createApplication,
+  upsertDns: upsertARecord,
+  setAppDomain: setDomain,
+  startDeploy: triggerDeploy,
+  deployHealth: getDeploymentStatus,
+};
+
+function initialSteps(): JobStep[] {
+  return PUBLISH_STEPS.map((step) => ({
+    key: step.key,
+    label: step.label,
+    status: 'pending',
+    startedAt: null,
+    finishedAt: null,
+    error: null,
+  }));
+}
+
+function patchSteps(steps: JobStep[], key: string, status: JobStep['status'], error?: string | null) {
+  const now = new Date().toISOString();
+  return steps.map((step) =>
+    step.key === key
+      ? {
+          ...step,
+          status,
+          startedAt: step.startedAt ?? now,
+          finishedAt: status === 'running' ? null : now,
+          error: error ?? null,
+        }
+      : step,
+  );
+}
+
+function deriveDeploymentStatus(
+  jobStatus: 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'ABANDONED' | 'CANCELLED',
+  hadSuccessfulDeployment: boolean,
+) {
+  if (jobStatus === 'SUCCEEDED') return 'LIVE' as const;
+  if (jobStatus === 'QUEUED') return 'QUEUED' as const;
+  if (jobStatus === 'RUNNING') return 'BUILDING' as const;
+  if (hadSuccessfulDeployment) return 'LIVE' as const;
+  return 'FAILED' as const;
+}
+
+async function persistProgress(
+  jobId: string,
+  deploymentId: string,
+  input: {
+    steps: JobStep[];
+    currentStep: string;
+    resourceIds: JobResourceIds;
+    hadSuccessfulDeployment: boolean;
+    jobStatus?: 'QUEUED' | 'RUNNING' | 'SUCCEEDED';
+    extra?: {
+      slug?: string;
+      repoFullName?: string | null;
+      commitSha?: string | null;
+      coolifyAppUuid?: string | null;
+      dnsRecordId?: string | null;
+      serverId?: string;
+      buildLogUrl?: string | null;
+      url?: string | null;
+      lastRequestId?: string | null;
+    };
+  },
+) {
+  await updateJobFields(jobId, {
+    steps: input.steps,
+    currentStep: input.currentStep,
+    resourceIds: input.resourceIds,
+    lastStep: input.currentStep,
+  });
+  await prisma.deployment.update({
+    where: { id: deploymentId },
+    data: {
+      status: deriveDeploymentStatus(input.jobStatus ?? 'RUNNING', input.hadSuccessfulDeployment),
+      progressStep: input.currentStep,
+      ...(input.extra ?? {}),
+    },
+  });
+}
+
+/**
+ * `persistProgress` only ever writes QUEUED/BUILDING/LIVE, so a failed publish job
+ * used to leave the Deployment row claiming BUILDING forever. Settle it alongside
+ * the job. Best effort: never mask the publish error with a bookkeeping error.
+ */
+async function markDeploymentFailed(
+  deploymentId: string,
+  message: string,
+  hadSuccessfulDeployment: boolean,
+) {
+  try {
+    await prisma.deployment.update({
+      where: { id: deploymentId },
+      data: {
+        status: deriveDeploymentStatus('FAILED', hadSuccessfulDeployment),
+        lastError: message,
+      },
+    });
+  } catch (error) {
+    log.error('publish.deployment_status_write_failed', {
+      deploymentId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+export async function runPublishJob(jobId: string, deps: PublishDeps = livePublishDeps) {
+  const job = await getJob(jobId);
+  if (!job) throw new Error('Publish job not found');
+  if (job.status === 'SUCCEEDED') return job;
+  if (job.status !== 'QUEUED' && job.status !== 'RUNNING') return job;
+
+  const kind = job.inputPrompt === 'PREVIEW' ? 'PREVIEW' : 'LIVE';
+  const deployment = await prisma.deployment.findUnique({
+    where: { projectId_kind: { projectId: job.projectId, kind } },
+  });
+  if (!deployment) throw new Error('Deployment row not found');
+
+  const hadSuccessfulDeployment = Boolean(deployment.publishedAt || deployment.status === 'LIVE');
+  let steps = job.steps?.length ? job.steps : initialSteps();
+  const resourceIds: JobResourceIds = { ...(job.resourceIds ?? {}) };
+
+  const heartbeat = beginJobHeartbeat(jobId);
+  let project: { id: string; name: string; stack: string } | null;
+  try {
+    await markJobRunning(jobId, { chargeCredits: false, acquireProjectLock: false });
+    project = await prisma.project.findFirst({
+      where: { id: job.projectId, deletedAt: null },
+      select: { id: true, name: true, stack: true },
+    });
+  } catch (error) {
+    heartbeat.stop();
+    throw error;
+  }
+  if (!project) {
+    heartbeat.stop();
+    await failJob(jobId, { errorCode: 'provider_error', errorMessage: 'Project not found' });
+    await markDeploymentFailed(deployment.id, 'Project not found', hadSuccessfulDeployment);
+    return getJob(jobId);
+  }
+
+  const FINAL_STEP = PUBLISH_STEPS[PUBLISH_STEPS.length - 1].key;
+
+  const step = async (key: string, work: () => Promise<void>) => {
+    if (steps.find((row) => row.key === key)?.status === 'succeeded') return;
+    steps = patchSteps(steps, key, 'running');
+    await persistProgress(jobId, deployment.id, {
+      steps,
+      currentStep: key,
+      resourceIds,
+      hadSuccessfulDeployment,
+    });
+    try {
+      await work();
+      steps = patchSteps(steps, key, 'succeeded');
+      await persistProgress(jobId, deployment.id, {
+        steps,
+        currentStep: key,
+        resourceIds,
+        hadSuccessfulDeployment,
+        // The `live` step has just written LIVE + publishedAt. Deriving the status from a
+        // RUNNING job here wrote BUILDING straight back over it, so every successful
+        // publish ended parked on BUILDING — which is what the publish sheet,
+        // /deployments, the project badge and the live-slot count all read.
+        jobStatus: key === FINAL_STEP ? 'SUCCEEDED' : undefined,
+      });
+    } catch (error) {
+      steps = patchSteps(steps, key, 'failed', error instanceof Error ? error.message : 'Publish failed');
+      await persistProgress(jobId, deployment.id, {
+        steps,
+        currentStep: key,
+        resourceIds,
+        hadSuccessfulDeployment,
+      });
+      throw error;
+    }
+  };
+
+  try {
+    let files: Record<string, string> = {};
+    const stack = getStack(project.stack);
+    let slug = deployment.slug;
+    let server: PublishServer = await prisma.coolifyServer.findUniqueOrThrow({
+      where: { id: deployment.serverId },
+    });
+
+    await step('limit', async () => {});
+    await step('files', async () => {
+      files = await deps.collectFiles(job.projectId);
+      if (kind === 'PREVIEW') {
+        files = injectPreviewFiles(files, {
+          stack: stack.id,
+          deployType: stack.deployType,
+          password: null,
+        });
+      }
+    });
+    if (Object.keys(files).length === 0) {
+      files = await deps.collectFiles(job.projectId);
+      if (kind === 'PREVIEW') {
+        files = injectPreviewFiles(files, {
+          stack: stack.id,
+          deployType: stack.deployType,
+          password: null,
+        });
+      }
+    }
+    await step('slug', async () => {
+      if (hadSuccessfulDeployment) return;
+      // Claim by writing, so a concurrent publish of a same-named project loses the
+      // race on the unique index and retries onto `name-2` instead of surfacing a
+      // raw Prisma unique-violation.
+      slug = await claimSlug({
+        name: project.name,
+        kind,
+        existingSlug: deployment.slug.startsWith('pending-') ? null : deployment.slug,
+        claim: async (candidate) => {
+          await prisma.deployment.update({
+            where: { id: deployment.id },
+            data: { slug: candidate },
+          });
+        },
+      });
+      server = await deps.pickServer();
+      await persistProgress(jobId, deployment.id, {
+        steps,
+        currentStep: 'slug',
+        resourceIds,
+        hadSuccessfulDeployment,
+        extra: { slug, serverId: server.id },
+      });
+    });
+
+    const root = await deps.rootDomain(deployment.workspaceId);
+    const host = hostForSlug(slug, kind, root);
+    const repoSlug = deployRepoName(slug, kind);
+    const auth = serverAuth(server);
+
+    await step('github', async () => {
+      const repoFullName =
+        resourceIds.githubRepo ||
+        (await withProviderRetry(() => deps.ensureRepo(repoSlug, deployment.workspaceId)));
+      resourceIds.githubRepo = repoFullName;
+      await persistProgress(jobId, deployment.id, {
+        steps,
+        currentStep: 'github',
+        resourceIds,
+        hadSuccessfulDeployment,
+        extra: { repoFullName },
+      });
+      const commitSha = await deps.pushFiles(
+        repoFullName,
+        files,
+        `Publish ${kind.toLowerCase()} ${slug}`,
+        deployment.workspaceId,
+      );
+      await persistProgress(jobId, deployment.id, {
+        steps,
+        currentStep: 'github',
+        resourceIds,
+        hadSuccessfulDeployment,
+        extra: { repoFullName, commitSha },
+      });
+    });
+
+    await step('app', async () => {
+      if (resourceIds.coolifyAppUuid) return;
+      const created = await withProviderRetry(() =>
+        deps.createApp(auth, {
+          repoUrl: `https://github.com/${resourceIds.githubRepo || deployment.repoFullName}`,
+          branch: deployment.repoBranch || 'main',
+          domain: host,
+          deployType: stack.deployType,
+          buildCommand: stack.buildCommand,
+          outputDir: stack.outputDir,
+          startCommand: stack.startCommand,
+          port: stack.port,
+          dockerfile: stack.dockerfile,
+          name: coolifyAppName(slug, kind),
+          projectUuid: server.projectUuid,
+          serverIp: server.serverIp,
+        }),
+      );
+      resourceIds.coolifyAppUuid = created.uuid;
+      await persistProgress(jobId, deployment.id, {
+        steps,
+        currentStep: 'app',
+        resourceIds,
+        hadSuccessfulDeployment,
+        extra: { coolifyAppUuid: created.uuid },
+      });
+    });
+
+    await step('dns', async () => {
+      if (resourceIds.dnsRecordId) return;
+      const dnsRecordId = await withProviderRetry(() =>
+        deps.upsertDns(dnsLabel(slug, kind), server.serverIp),
+      );
+      resourceIds.dnsRecordId = dnsRecordId;
+      await persistProgress(jobId, deployment.id, {
+        steps,
+        currentStep: 'dns',
+        resourceIds,
+        hadSuccessfulDeployment,
+        extra: { dnsRecordId },
+      });
+    });
+
+    await step('domain', async () => {
+      const appUuid = resourceIds.coolifyAppUuid || deployment.coolifyAppUuid;
+      if (!appUuid) throw new Error('Coolify app missing — publish again');
+      await deps.setAppDomain(auth, appUuid, host);
+    });
+
+    let buildLogUrl = deployment.buildLogUrl;
+    await step('deploy', async () => {
+      const appUuid = resourceIds.coolifyAppUuid || deployment.coolifyAppUuid;
+      if (!appUuid) throw new Error('Coolify app missing — publish again');
+      const triggered = await deps.startDeploy(auth, appUuid);
+      buildLogUrl = `${server.apiUrl.replace(/\/+$/, '')}/application/${appUuid}`;
+      await persistProgress(jobId, deployment.id, {
+        steps,
+        currentStep: 'deploy',
+        resourceIds,
+        hadSuccessfulDeployment,
+        extra: { buildLogUrl, lastRequestId: triggered.deploymentUuid || job.requestId || null },
+      });
+    });
+
+    await step('poll', async () => {
+      const appUuid = resourceIds.coolifyAppUuid || deployment.coolifyAppUuid;
+      if (!appUuid) throw new Error('Coolify app missing — publish again');
+      const deadline = Date.now() + PUBLISH_POLL_TIMEOUT_MS;
+      let lastHealth = 'building';
+      while (Date.now() < deadline) {
+        const status = await deps.deployHealth(auth, appUuid);
+        lastHealth = status.health;
+        if (status.health === 'healthy') break;
+        if (status.health === 'failed') {
+          throw new Error(`Coolify build fail: ${status.status}`);
+        }
+        await sleep(PUBLISH_POLL_MS);
+      }
+      if (lastHealth !== 'healthy') {
+        throw new Error('Build did not become healthy within 10 minutes');
+      }
+    });
+
+    await step('live', async () => {
+      await prisma.deployment.update({
+        where: { id: deployment.id },
+        data: {
+          status: 'LIVE',
+          progressStep: 'live',
+          url: urlForSlug(slug, kind, root),
+          publishedAt: new Date(),
+          lastError: null,
+          buildLogUrl,
+        },
+      });
+      await prisma.project.update({
+        where: { id: job.projectId },
+        data: { status: kind === 'LIVE' ? 'published' : 'preview' },
+      });
+    });
+
+    await succeedJob(jobId, { lastStep: 'live' });
+    log.info('publish.job_succeeded', { jobId, projectId: job.projectId, kind });
+    return getJob(jobId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Publish failed';
+    await failJob(jobId, {
+      errorCode: publishJobErrorCode(error),
+      errorMessage: message,
+    });
+    await markDeploymentFailed(deployment.id, message, hadSuccessfulDeployment);
+    throw error;
+  } finally {
+    heartbeat.stop();
+  }
+}

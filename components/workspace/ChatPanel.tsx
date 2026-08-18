@@ -4,11 +4,15 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Copy, Link2, MoreHorizontal, RotateCcw, ThumbsDown, ThumbsUp } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import type { ChatMessage } from '@/lib/generation/types';
+import type { JobResourceIds } from '@/lib/jobs/types';
+import { isChatBuilding } from '@/lib/jobs/chat-ui';
 import BuildingIndicator from './BuildingIndicator';
+import RecoveryPanel from './RecoveryPanel';
 import CheckpointCard from './CheckpointCard';
 import Hint from './Hint';
 import PlanCard from './PlanCard';
 import type { Checkpoint, MessageFeedback, ProjectPhase, WorkspacePlan } from './types';
+import CreditLimitPanel from './CreditLimitPanel';
 
 function producedGeneration(message: ChatMessage) {
   return (
@@ -46,6 +50,9 @@ export default function ChatPanel({
   plan,
   approving,
   onApprovePlan,
+  recovery,
+  queueAhead,
+  jobStatus,
 }: {
   messages: ChatMessage[];
   projectId: string | null;
@@ -55,9 +62,26 @@ export default function ChatPanel({
   latestCheckpoint?: Checkpoint | null;
   children?: ReactNode;
   phase?: ProjectPhase | null;
+  jobStatus?: string | null;
   plan?: WorkspacePlan | null;
   approving?: boolean;
   onApprovePlan?: () => void;
+  recovery?: {
+    visible: boolean;
+    kind?: string | null;
+    errorCode?: string | null;
+    errorMessage?: string | null;
+    filesWritten: number;
+    requestId?: string | null;
+    busy?: string | null;
+    onKeep?: () => void;
+    onRetry?: () => void;
+    offerRetry?: boolean;
+    nextStep?: string | null;
+    onStartOver: () => void;
+    resourceIds?: JobResourceIds | null;
+  } | null;
+  queueAhead?: number | null;
 }) {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const [feedback, setFeedback] = useState<Record<string, MessageFeedback>>({});
@@ -92,6 +116,9 @@ export default function ChatPanel({
                   onPreviewCheckpoint={onPreviewCheckpoint}
                 />
               )}
+              {message.metadata?.creditDenial ? (
+                <CreditLimitPanel denial={message.metadata.creditDenial} />
+              ) : (
               <div className={cn('flex', message.type === 'user' ? 'justify-end' : 'justify-start')}>
                 <div
                   className={cn(
@@ -137,7 +164,8 @@ export default function ChatPanel({
                   <p className="whitespace-pre-wrap">{message.content}</p>
                 </div>
               </div>
-              {(message.type === 'ai' || message.type === 'user') && (
+              )}
+              {(message.type === 'ai' || message.type === 'user') && !message.metadata?.creditDenial && (
                 <div
                   className={cn(
                     'mt-6 flex items-center gap-2',
@@ -247,8 +275,28 @@ export default function ChatPanel({
         {plan && plan.status !== 'SUPERSEDED' && (
           <PlanCard plan={plan} approving={approving} onApprove={onApprovePlan} />
         )}
-        {phase === 'BUILDING' && <BuildingIndicator trigger={plan?.trigger} />}
-        {isGenerating && phase !== 'BUILDING' && (
+        {recovery?.visible ? (
+          <RecoveryPanel
+            kind={recovery.kind}
+            errorCode={recovery.errorCode}
+            filesWritten={recovery.filesWritten}
+            requestId={recovery.requestId}
+            busy={recovery.busy}
+            onKeep={recovery.onKeep}
+            onRetry={recovery.onRetry}
+            offerRetry={recovery.offerRetry}
+            nextStep={recovery.nextStep}
+            onStartOver={recovery.onStartOver}
+            resourceIds={recovery.resourceIds}
+          />
+        ) : (
+          isChatBuilding({ phase, jobStatus, recoveryActive: recovery?.visible }) && (
+            <BuildingIndicator trigger={plan?.trigger} queueAhead={queueAhead} />
+          )
+        )}
+        {isGenerating &&
+          !isChatBuilding({ phase, jobStatus, recoveryActive: recovery?.visible }) &&
+          !recovery?.visible && (
           <p className="text-[12px] text-[var(--studio-faint)]">Navroop is working…</p>
         )}
         {children}

@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { jsonError } from '@/lib/api/error-response';
+import { requireSessionUser } from '@/lib/auth';
 
 // Get active sandbox from global state (in production, use a proper state management solution)
 declare global {
@@ -6,6 +8,9 @@ declare global {
 }
 
 export async function POST(request: NextRequest) {
+  const auth = await requireSessionUser();
+  if (!auth.user) return jsonError(auth.error, 'UNAUTHORIZED', auth.status);
+
   try {
     const { command } = await request.json();
     
@@ -30,7 +35,7 @@ export async function POST(request: NextRequest) {
     const cmd = commandParts[0];
     const args = commandParts.slice(1);
     
-    // Execute command using Vercel Sandbox
+    // Execute command on the active sandbox provider
     const result = await global.activeSandbox.runCommand({
       cmd,
       args

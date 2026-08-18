@@ -1,4 +1,7 @@
 # Local Postgres only (host 5433). Production Coolify stack is docker-compose.yml.
+# Tests use a second database name on this instance: openlovable_test
+# (TEST_DATABASE_URL must differ from DATABASE_URL). Schema drift uses openlovable_shadow
+# (disposable; never the app or test DB). Create both with `pnpm db:test`.
 services:
   postgres:
     image: postgres:16-alpine

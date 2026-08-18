@@ -42,6 +42,39 @@ enum SandboxStatus {
   FAILED
 }
 
+enum PreviewBuildStatus {
+  PENDING
+  BUILDING
+  READY
+  FAILED
+}
+
+enum PreviewMode {
+  STATIC
+  LIVE_SANDBOX
+}
+
+enum JobKind {
+  PLAN
+  BUILD
+  FOLLOWUP
+  IMPORT
+  AUDIT
+  PUBLISH
+  DOMAIN_VERIFY
+  EXPORT
+  TEMPLATE_THUMBNAIL
+}
+
+enum JobStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  ABANDONED
+  CANCELLED
+}
+
 model User {
   id            String    @id @default(cuid())
   email         String    @unique
@@ -51,6 +84,11 @@ model User {
   isActive      Boolean   @default(true)
   avatarUrl     String?
   emailVerified DateTime?
+  passwordChangedAt DateTime?
+  promptTipsDismissedAt DateTime?
+  productTourCompletedAt DateTime?
+  termsAcceptedAt DateTime?
+  termsVersion String?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   accounts         Account[]
@@ -62,6 +100,14 @@ model User {
   stars            ProjectStar[]
   githubConnection GitHubConnection?
   skillsCreated    Skill[]
+  creditLedgers    CreditLedger[]
+  publishedDeployments Deployment[]
+  integrationsConnected Integration[]
+  passwordResetTokens PasswordResetToken[]
+  lockedProjects      Project[]          @relation("ProjectLock")
+  projectPresence     ProjectPresence[]
+  templatesCreated    Template[]
+  jobs                Job[]
 }
 
 model Account {
@@ -94,6 +140,18 @@ model Session {
   @@index([userId])
 }
 
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
 model VerificationToken {
   identifier String
   token      String
@@ -119,11 +177,18 @@ model Project {
   sandboxStatus      SandboxStatus @default(NONE)
   sandboxStartedAt   DateTime?
   sandboxLastUsedAt  DateTime?
+  sandboxMeteredUntil DateTime?
+  sandboxProviderConfigId String?
+  sandboxProviderConfig   SandboxProviderConfig? @relation(fields: [sandboxProviderConfigId], references: [id], onDelete: SetNull)
   lastCode         String?   @db.Text
   progressMessage  String?   @db.Text
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
+  /// Job is authoritative; phase is a side effect of job transitions — never updated independently.
   phase            ProjectPhase @default(PLANNING)
+  activeJobId      String?
+  activeJob        Job? @relation("ProjectActiveJob", fields: [activeJobId], references: [id], onDelete: SetNull)
+  jobs             Job[] @relation("ProjectJobs")
   stack            Stack        @default(NEXTJS)
   designDirection  String       @default("minimal")
   githubRepoFullName String?
@@ -139,10 +204,57 @@ model Project {
   qualitySignals   QualitySignal[]
   importSource     ImportSource?
   memories         MemoryEntry[]
+  deployments      Deployment[]
+  lockedById       String?
+  lockedBy         User?     @relation("ProjectLock", fields: [lockedById], references: [id], onDelete: SetNull)
+  lockedAt         DateTime?
+  lockExpiresAt    DateTime?
+  lockReason       String?
+  contentVersion   Int       @default(0)
+  presence         ProjectPresence[]
+  activePreviewBuildId String?
+  previewMode          PreviewMode @default(STATIC)
+  previewBuilds        PreviewBuild[]
+  /// Generated tsvector (name + initialPrompt). Unmapped; queried via raw SQL only.
+  searchVector         Unsupported("tsvector")? @default(dbgenerated("(setweight(to_tsvector('english'::regconfig, COALESCE(name, ''::text)), 'A'::\"char\") || setweight(to_tsvector('english'::regconfig, COALESCE(\"initialPrompt\", ''::text)), 'B'::\"char\"))"))
 
   @@index([ownerId])
   @@index([deletedAt])
   @@index([sandboxStatus, sandboxLastUsedAt])
+  @@index([lockedById, lockExpiresAt])
+  @@index([searchVector], type: Gin, map: "Project_searchVector_idx")
+}
+
+model PreviewBuild {
+  id            String             @id @default(cuid())
+  projectId     String
+  project       Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  checkpointId  String
+  status        PreviewBuildStatus @default(PENDING)
+  mode          PreviewMode
+  storagePrefix String?
+  entryPath     String             @default("index.html")
+  isSpa         Boolean            @default(false)
+  fileCount     Int                @default(0)
+  totalBytes    Int                @default(0)
+  buildLog      String?            @db.Text
+  error         String?
+  builtAt       DateTime?
+  createdAt     DateTime           @default(now())
+
+  @@index([projectId, createdAt])
+}
+
+model ProjectPresence {
+  id         String   @id @default(cuid())
+  projectId  String
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lastSeenAt DateTime @default(now())
+
+  @@unique([projectId, userId])
+  @@index([projectId, lastSeenAt])
 }
 
 model ImportSource {
@@ -220,11 +332,71 @@ model Checkpoint {
 
 /// Single-row workspace storage ledger (id = "default").
 /// Updated on snapshot write/prune/purge and image store/remove.
+/// Plan + credits live on the same row so storageBytes is never dropped.
 /// Alternative considered: AppSetting keys workspace.storageBytes / workspace.storageLimitBytes.
 model Workspace {
-  id                String @id
-  storageBytes      Int    @default(0)
-  storageLimitBytes Int?
+  id                     String    @id
+  storageBytes           Int       @default(0)
+  storageLimitBytes      Int?
+  planId                 String?
+  plan                   Plan?     @relation(fields: [planId], references: [id], onDelete: SetNull)
+  creditsUsed            Int       @default(0)
+  creditsPeriodStart     DateTime  @default(now())
+  memberMonthlyCreditCap Int?
+  generationPaused       Boolean   @default(false)
+  pauseReason            String?
+  creditAlert80Sent      Boolean   @default(false)
+  sandboxMinutesUsed     Int       @default(0)
+  monthlySpendLimitUsd   Decimal?  @db.Decimal(12, 4)
+  spendUsd               Decimal   @default(0) @db.Decimal(12, 4)
+  spendAlert80Sent       Boolean   @default(false)
+  githubOrgInstallationId String?
+  creditLedgers          CreditLedger[]
+  deployments            Deployment[]
+  integrations           Integration[]
+  customDomains          CustomDomain[]
+  templates              Template[]
+  jobs                   Job[]
+}
+
+model Plan {
+  id                      String   @id @default(cuid())
+  key                     String   @unique
+  name                    String
+  isActive                Boolean  @default(true)
+  isDefault               Boolean  @default(false)
+  monthlyCredits          Int
+  maxProjects             Int
+  maxLiveSites            Int
+  maxPreviewSites         Int
+  maxMembers              Int
+  maxConcurrentSandboxes  Int
+  checkpointRetentionDays Int
+  storageBytesLimit       BigInt
+  allowCustomDomain       Boolean  @default(false)
+  allowGithubSync         Boolean  @default(false)
+  maxTokensPerJob         Int      @default(120000)
+  maxFilesPerJob          Int      @default(60)
+  maxOutputBytesPerJob    Int      @default(2000000)
+  monthlySandboxMinutes   Int      @default(300)
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+  workspaces              Workspace[]
+}
+
+model CreditLedger {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId   String?
+  action      String
+  credits     Int
+  createdAt   DateTime  @default(now())
+
+  @@index([workspaceId, createdAt])
+  @@index([workspaceId, userId, createdAt])
 }
 
 model ProjectStar {
@@ -380,4 +552,305 @@ model PromptVersion {
   createdAt DateTime @default(now())
 
   @@index([isActive])
+}
+
+enum IntegrationKind {
+  GITHUB_DEPLOY
+  CLOUDFLARE
+  COOLIFY
+  SENTRY
+}
+
+enum IntegrationStatus {
+  DISCONNECTED
+  PENDING
+  CONNECTED
+  ERROR
+}
+
+model Integration {
+  id             String            @id @default(cuid())
+  workspaceId    String
+  workspace      Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  kind           IntegrationKind
+  status         IntegrationStatus @default(DISCONNECTED)
+  config         Json
+  secrets        String?           @db.Text
+  lastCheckedAt  DateTime?
+  lastError      String?
+  connectedById  String?
+  connectedBy    User?             @relation(fields: [connectedById], references: [id], onDelete: SetNull)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  @@unique([workspaceId, kind])
+  @@index([workspaceId, status])
+}
+
+enum DeploymentKind {
+  PREVIEW
+  LIVE
+}
+
+enum DeploymentStatus {
+  QUEUED
+  BUILDING
+  LIVE
+  FAILED
+  STOPPED
+}
+
+model CoolifyServer {
+  id             String       @id @default(cuid())
+  name           String
+  apiUrl         String
+  apiToken       String
+  serverIp       String
+  projectUuid    String
+  isActive       Boolean      @default(true)
+  maxDeployments Int          @default(50)
+  createdAt      DateTime     @default(now())
+  deployments    Deployment[]
+}
+
+model Deployment {
+  id            String           @id @default(cuid())
+  projectId     String
+  project       Project          @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  workspaceId   String
+  workspace     Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  serverId      String
+  server        CoolifyServer    @relation(fields: [serverId], references: [id], onDelete: Restrict)
+  kind          DeploymentKind
+  status        DeploymentStatus
+  slug          String
+  url           String?
+  repoFullName  String?
+  repoBranch    String           @default("main")
+  commitSha     String?
+  coolifyAppUuid String?
+  dnsRecordId   String?
+  passwordHash  String?
+  lastError     String?
+  lastRequestId String?
+  buildLogUrl   String?
+  progressStep  String?
+  publishedById String
+  publishedBy   User             @relation(fields: [publishedById], references: [id], onDelete: Restrict)
+  publishedAt   DateTime?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  customDomains CustomDomain[]
+
+  @@unique([projectId, kind])
+  @@unique([slug, kind])
+  @@index([workspaceId, status])
+}
+
+enum CustomDomainStatus {
+  PENDING_DNS
+  VERIFYING
+  SSL_PENDING
+  ACTIVE
+  FAILED
+}
+
+enum CustomDomainPath {
+  A
+  B
+}
+
+model CustomDomain {
+  id               String             @id @default(cuid())
+  deploymentId     String
+  deployment       Deployment         @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+  workspaceId      String
+  workspace        Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  hostname         String             @unique
+  status           CustomDomainStatus @default(PENDING_DNS)
+  verifyToken      String
+  expectedTarget   String
+  lastCheckedAt    DateTime?
+  lastError        String?
+  sslIssuedAt      DateTime?
+  isPrimary        Boolean            @default(false)
+  path             CustomDomainPath   @default(A)
+  cloudflareZoneId String?
+  nameservers      Json?
+  createdAt        DateTime           @default(now())
+
+  @@index([status, lastCheckedAt])
+  @@index([deploymentId])
+  @@index([workspaceId])
+}
+
+/// Starting prompts the agency reuses. workspaceId null = built-in / shared.
+model Template {
+  id               String    @id @default(cuid())
+  slug             String    @unique
+  name             String
+  description      String
+  category         String
+  stack            Stack
+  prompt           String    @db.Text
+  designDirection  String?
+  thumbnailKey     String?
+  previewUrl       String?
+  isActive         Boolean   @default(true)
+  isBuiltIn        Boolean   @default(false)
+  workspaceId      String?
+  workspace        Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdById      String?
+  createdBy        User?     @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  usageCount       Int       @default(0)
+  sortOrder        Int       @default(0)
+  createdAt        DateTime  @default(now())
+
+  @@index([category, isActive])
+}
+
+/// DB dump, storage verify, and restore-test attempts (including failures).
+model BackupRun {
+  id         String    @id @default(cuid())
+  kind       String
+  status     String
+  objectKey  String?
+  sizeBytes  BigInt?
+  durationMs Int?
+  detail     String?   @db.Text
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  @@index([kind, startedAt])
+}
+
+/// Durable long-running work. Table stays GenerationJob (@@map) so existing rows are kept.
+/// Phase on Project is a side effect of these rows.
+model Job {
+  id              String    @id @default(cuid())
+  projectId       String
+  project         Project   @relation("ProjectJobs", fields: [projectId], references: [id], onDelete: Cascade)
+  workspaceId     String
+  workspace       Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind            JobKind
+  status          JobStatus @default(QUEUED)
+
+  ownerInstance   String?
+  heartbeatAt     DateTime?
+  startedAt       DateTime?
+  finishedAt      DateTime?
+
+  attempt         Int       @default(1)
+  maxAttempts     Int       @default(2)
+
+  inputPrompt     String?   @db.Text
+  planVersion     Int?
+  partialFiles    Json?
+  filesWritten    Int       @default(0)
+  lastStep        String?
+  tokensIn        Int?
+  tokensOut       Int?
+  estimatedCostUsd Decimal?  @db.Decimal(12, 6)
+  provider        String?
+  model           String?
+  queuePosition   Int?
+
+  errorCode       String?
+  errorMessage    String?   @db.Text
+  requestId       String?
+  idempotencyKey  String?
+  creditsChargedAt DateTime?
+  steps           Json?
+  currentStep     String?
+  resourceIds     Json?
+  providerConfigId String?
+  providerConfig   SandboxProviderConfig? @relation(fields: [providerConfigId], references: [id], onDelete: SetNull)
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  activeFor       Project[] @relation("ProjectActiveJob")
+
+  @@index([projectId, createdAt])
+  @@index([status, heartbeatAt])
+  @@map("GenerationJob")
+}
+
+/// Durable admin/security trail. Distinct from CodeAudit (SEO/code quality).
+model AuditLog {
+  id          String   @id @default(cuid())
+  workspaceId String?
+  actorId     String?
+  actorEmail  String
+  action      String
+  targetType  String?
+  targetId    String?
+  before      Json?
+  after       Json?
+  requestId   String?
+  ip          String?
+  userAgent   String?
+  createdAt   DateTime @default(now())
+
+  @@index([workspaceId, createdAt])
+  @@index([action, createdAt])
+}
+
+model SandboxProviderConfig {
+  id             String  @id @default(cuid())
+  name           String
+  driver         String
+  isActive       Boolean @default(true)
+  priority       Int     @default(100)
+  weight         Int     @default(1)
+
+  secrets        String
+  config         Json
+
+  creditType         String
+  creditTotalUsd     Decimal?  @db.Decimal(12, 4)
+  creditRemainingUsd Decimal?  @db.Decimal(12, 4)
+  creditResetsAt     DateTime?
+
+  monthlyBudgetUsd    Decimal? @db.Decimal(12, 4)
+  monthlyMinutesLimit Int?
+  minutesUsed         Int      @default(0)
+  spendUsd            Decimal  @default(0) @db.Decimal(12, 4)
+  periodStart         DateTime @default(now())
+
+  healthStatus     String    @default("unknown")
+  lastCheckedAt    DateTime?
+  lastError        String?
+  consecutiveFails Int       @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  projects Project[]
+  jobs     Job[]
+}
+
+/// Local heartbeat / quota / DSN self-checks. Distinct from Sentry going silent.
+model ObservabilityCheck {
+  id        String   @id @default(cuid())
+  kind      String
+  ok        Boolean
+  detail    String?
+  eventId   String?
+  createdAt DateTime @default(now())
+
+  @@index([kind, createdAt])
+}
+
+/// Every cron endpoint writes a row on success or failure.
+model CronRun {
+  id         String   @id @default(cuid())
+  name       String
+  ok         Boolean
+  durationMs Int?
+  detail     String?
+  createdAt  DateTime @default(now())
+
+  @@index([name, createdAt])
 }

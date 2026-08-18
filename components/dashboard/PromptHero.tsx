@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import PromptBox from "@/components/app/studio/PromptBox";
+import CategoryChips from "@/components/templates/CategoryChips";
 import { PENDING_PROMPT_KEY, useDraftStorage } from "@/hooks/useDraftStorage";
 import {
   DESIGN_DIRECTION_IDS,
@@ -23,6 +24,7 @@ import { STACK_IDS, getStack, isStackId, type StackId } from "@/lib/stacks";
 export type PromptHeroHandle = {
   flush: (next?: string) => void;
   focus: () => void;
+  fill: (text: string) => void;
 };
 
 type PromptHeroProps = {
@@ -58,6 +60,11 @@ const PromptHero = forwardRef<PromptHeroHandle, PromptHeroProps>(
     useImperativeHandle(ref, () => ({
       flush,
       focus: () => textareaRef.current?.focus(),
+      fill: (text: string) => {
+        setValue(text);
+        flush(text, stack, designDirection, importMode);
+        window.setTimeout(() => textareaRef.current?.focus(), 20);
+      },
     }));
 
     useEffect(() => {
@@ -163,9 +170,21 @@ const PromptHero = forwardRef<PromptHeroHandle, PromptHeroProps>(
                     ))}
                   </div>
                 )}
+                {showImportMode && (
+                  <span className="text-[12px] text-[var(--studio-muted)]">Import (5 credits)</span>
+                )}
               </div>
             }
           />
+        </div>
+        <div className="mt-16 flex flex-col items-center gap-10">
+          <CategoryChips />
+          <a
+            href="/templates"
+            className="text-[13px] font-medium text-[var(--studio-accent)] hover:underline"
+          >
+            Browse templates
+          </a>
         </div>
       </div>
     );

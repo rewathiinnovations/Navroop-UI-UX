@@ -298,7 +298,6 @@ export default function ControlPanel({
 
       return () => clearInterval(checkInterval);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAnalyzing, showResults, analysisData]);
 
   useEffect(() => {

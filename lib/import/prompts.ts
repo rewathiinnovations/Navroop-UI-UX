@@ -1,3 +1,4 @@
+import { wrapUntrustedWebsiteContent } from '../security/untrusted-html.ts';
 import type { ImportMode } from './mode.ts';
 import type { ImportSection, RehostedAsset } from './types.ts';
 
@@ -33,7 +34,7 @@ y-range: ${input.section.approximateYRange[0]}–${input.section.approximateYRan
 summary: ${input.section.contentSummary}
 
 PAGE TEXT (complementary, this section only when possible):
-${input.firecrawlText.slice(0, 4000)}
+${wrapUntrustedWebsiteContent(input.firecrawlText, 4000)}
 
 REHOSTED ASSETS (use these URLs only — never hotlink the source site):
 ${assets}
@@ -68,7 +69,7 @@ export function buildFallbackVolatilePrompt(input: {
 ${input.tokens}
 
 PAGE TEXT:
-${input.firecrawlText.slice(0, 8000)}
+${wrapUntrustedWebsiteContent(input.firecrawlText, 8000)}
 
 REHOSTED ASSETS (use these URLs only — never hotlink the source site):
 ${assets}

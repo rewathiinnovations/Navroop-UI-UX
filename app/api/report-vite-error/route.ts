@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { jsonError } from '@/lib/api/error-response';
+import { requireSessionUser } from '@/lib/auth';
 
 declare global {
   var viteErrors: any[];
@@ -10,6 +12,9 @@ if (!global.viteErrors) {
 }
 
 export async function POST(request: NextRequest) {
+  const auth = await requireSessionUser();
+  if (!auth.user) return jsonError(auth.error, 'UNAUTHORIZED', auth.status);
+
   try {
     const { error, file, type = 'runtime-error' } = await request.json();
     

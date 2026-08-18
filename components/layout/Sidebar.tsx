@@ -2,9 +2,10 @@
 
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
-import { useEffect, useState, type ReactNode } from 'react';
+import { type ReactNode } from 'react';
 import {
   Folder,
+  Globe,
   LayoutDashboard,
   LayoutTemplate,
   PanelLeftClose,
@@ -14,13 +15,13 @@ import {
   User,
   Users,
 } from 'lucide-react';
-import { formatRelativeTime } from '@/lib/format-relative-time';
 import { cn } from '@/utils/cn';
 import AccountMenu from './AccountMenu';
+import CreditMeter from './CreditMeter';
 import { useCommandPalette } from './CommandPalette';
 import WorkspaceDropdown from './WorkspaceDropdown';
 
-type RecentProject = { id: string; name: string; updatedAt?: string | Date };
+type RecentProject = { id: string; name: string; updatedLabel?: string };
 
 function NavroopMark() {
   return (
@@ -85,11 +86,6 @@ export default function Sidebar({
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const { openPalette } = useCommandPalette();
-  const [isMac, setIsMac] = useState(false);
-
-  useEffect(() => {
-    setIsMac(/Mac|iPhone|iPad/.test(navigator.userAgent));
-  }, []);
 
   const mine = searchParams.get('mine');
   const starred = searchParams.get('starred');
@@ -97,8 +93,8 @@ export default function Sidebar({
   const onProjects = pathname === '/projects';
 
   return (
-    <aside className="relative z-20 flex h-full w-[272px] shrink-0 flex-col border-r border-[var(--studio-line)] bg-[var(--studio-header-bg)]">
-      <div className="flex items-center justify-between px-12 pt-12">
+    <aside className="relative z-20 flex h-full min-h-0 w-[272px] shrink-0 flex-col border-r border-[var(--studio-line)] bg-[var(--studio-header-bg)]">
+      <div className="flex shrink-0 items-center justify-between px-12 pt-12">
         <NavroopMark />
         <button
           type="button"
@@ -110,81 +106,89 @@ export default function Sidebar({
         </button>
       </div>
 
-      <div className="mt-4">
+      <div className="mt-4 shrink-0">
         <WorkspaceDropdown teamName={teamName} memberCount={memberCount} />
       </div>
 
-      <nav className="mt-8 flex flex-col gap-2 px-10" aria-label="Workspace">
-        <SidebarLink href="/dashboard" icon={<LayoutDashboard className="size-16" />} active={onDashboard}>
-          Dashboard
-        </SidebarLink>
+      <div className="mt-8 shrink-0 px-10">
+        <label className="sr-only" htmlFor="sidebar-search">
+          Search projects
+        </label>
         <button
           type="button"
+          id="sidebar-search"
           onClick={openPalette}
-          className="flex min-h-[44px] items-center gap-10 rounded-10 px-10 text-[13px] text-[var(--studio-muted)] transition-colors duration-200 hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
+          className="flex h-40 w-full items-center gap-8 rounded-10 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-10 text-left text-[13px] text-[var(--studio-faint)] hover:border-[var(--studio-line-strong)]"
         >
-          <Search className="size-16 text-[var(--studio-faint)]" aria-hidden />
-          <span className="flex-1 text-left">Search</span>
-          <kbd className="rounded-8 border border-[var(--studio-line)] px-6 py-2 text-[11px] text-[var(--studio-faint)]">
-            {isMac ? '⌘K' : 'Ctrl+K'}
-          </kbd>
+          <Search className="size-14 shrink-0" aria-hidden />
+          Search projects
         </button>
-        <SidebarLink href="/templates" icon={<LayoutTemplate className="size-16" />} active={pathname === '/templates'}>
-          Templates
-        </SidebarLink>
-        <SidebarLink href="/connectors" icon={<Plug className="size-16" />} active={pathname === '/connectors'}>
-          Connectors
-        </SidebarLink>
-      </nav>
+      </div>
 
-      <div className="mt-16 px-10">
-        <p className="mb-4 px-10 text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--studio-faint)]">
-          Projects
-        </p>
-        <div className="flex flex-col gap-2">
-          <SidebarLink href="/projects" icon={<Folder className="size-16" />} active={onProjects && mine === null && starred !== 'true'}>
-            All
+      <div className="studio-scroll mt-8 min-h-0 flex-1 pb-12">
+        <nav className="flex flex-col gap-2 px-10" aria-label="Workspace">
+          <SidebarLink href="/dashboard" icon={<LayoutDashboard className="size-16" />} active={onDashboard}>
+            Dashboard
           </SidebarLink>
-          <SidebarLink href="/projects?starred=true" icon={<Star className="size-16" />} active={onProjects && starred === 'true'}>
-            Starred
+          <SidebarLink href="/templates" icon={<LayoutTemplate className="size-16" />} active={pathname === '/templates'}>
+            Templates
           </SidebarLink>
-          <SidebarLink href="/projects?mine=true" icon={<User className="size-16" />} active={onProjects && mine === 'true'}>
-            Owned by me
+          <SidebarLink href="/connectors" icon={<Plug className="size-16" />} active={pathname === '/connectors'}>
+            Connectors
           </SidebarLink>
-          <SidebarLink href="/projects?mine=false" icon={<Users className="size-16" />} active={onProjects && mine === 'false'}>
-            Shared with me
+          <SidebarLink href="/deployments" icon={<Globe className="size-16" />} active={pathname === '/deployments'}>
+            Deployments
           </SidebarLink>
+        </nav>
+
+        <div className="mt-16 px-10">
+          <p className="mb-4 px-10 text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--studio-faint)]">
+            Projects
+          </p>
+          <div className="flex flex-col gap-2">
+            <SidebarLink href="/projects" icon={<Folder className="size-16" />} active={onProjects && mine === null && starred !== 'true'}>
+              All
+            </SidebarLink>
+            <SidebarLink href="/projects?starred=true" icon={<Star className="size-16" />} active={onProjects && starred === 'true'}>
+              Starred
+            </SidebarLink>
+            <SidebarLink href="/projects?mine=true" icon={<User className="size-16" />} active={onProjects && mine === 'true'}>
+              Owned by me
+            </SidebarLink>
+            <SidebarLink href="/projects?mine=false" icon={<Users className="size-16" />} active={onProjects && mine === 'false'}>
+              Shared with me
+            </SidebarLink>
+          </div>
+        </div>
+
+        <div className="mt-16 px-10">
+          <p className="mb-4 px-10 text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--studio-faint)]">
+            Recents
+          </p>
+          <div className="flex flex-col gap-2">
+            {recents.length === 0 && (
+              <p className="px-10 text-[12px] text-[var(--studio-faint)]">No recent projects</p>
+            )}
+            {recents.map((project) => (
+              <Link
+                key={project.id}
+                href={`/project/${project.id}`}
+                className="rounded-10 px-10 py-10 text-[13px] text-[var(--studio-muted)] transition-colors duration-200 hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)]"
+              >
+                <span className="block truncate">{project.name}</span>
+                {project.updatedLabel && (
+                  <span className="mt-2 block truncate text-[11px] text-[var(--studio-faint)]">
+                    {project.updatedLabel}
+                  </span>
+                )}
+              </Link>
+            ))}
+          </div>
         </div>
       </div>
 
-      <div className="mt-16 px-10">
-        <p className="mb-4 px-10 text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--studio-faint)]">
-          Recents
-        </p>
-        <div className="flex flex-col gap-2">
-          {recents.length === 0 && (
-            <p className="px-10 text-[12px] text-[var(--studio-faint)]">No recent projects</p>
-          )}
-          {recents.map((project) => (
-            <Link
-              key={project.id}
-              href={`/project/${project.id}`}
-              className="rounded-10 px-10 py-10 text-[13px] text-[var(--studio-muted)] transition-colors duration-200 hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)]"
-            >
-              <span className="block truncate">{project.name}</span>
-              {project.updatedAt && (
-                <span className="mt-2 block truncate text-[11px] text-[var(--studio-faint)]">
-                  {formatRelativeTime(project.updatedAt)}
-                </span>
-              )}
-            </Link>
-          ))}
-        </div>
-      </div>
-
-      <div className="flex-1" />
-
-      <div className="border-t border-[var(--studio-line)] p-10">
+      <div className="shrink-0 border-t border-[var(--studio-line)] p-10">
+        <CreditMeter />
         <AccountMenu />
       </div>
     </aside>

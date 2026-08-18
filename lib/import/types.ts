@@ -1,3 +1,4 @@
+import type { FirecrawlScrapeResult } from './firecrawl.ts';
 import type { ImportMode } from './mode.ts';
 
 export type DesignTokens = {
@@ -22,6 +23,8 @@ export type PageCapture = {
   tokens: DesignTokens;
   images: CapturedImage[];
   firecrawlText: string;
+  /** Typed Firecrawl outcome. Absent on older fixtures — treat as ok + firecrawlText. */
+  firecrawl?: FirecrawlScrapeResult;
   capturedAt: Date;
 };
 
@@ -49,6 +52,7 @@ export type RehostResult = {
 export type GenerateSectionsResult = {
   filesXml: string;
   inputTokens: number;
+  warnings?: string[];
 };
 
 export type UrlImportResult = {

@@ -14,8 +14,13 @@ import { ensureSandbox, SandboxBootError } from '@/lib/sandbox/manager';
 import { runCodeScan } from './scan';
 import type { PublicCodeAudit } from './types';
 import { recordCodeAuditSignals } from '@/lib/signals/collect';
+import { asCreditActionErr } from '@/lib/plans/http';
+import { checkCredits } from '@/lib/plans/limits';
+import { WORKSPACE_ROW_ID } from '@/lib/storage/usage';
+import { acquireLock, beginLockHeartbeat, releaseLock } from '@/lib/projects/lock';
+import { lockConflictAction } from '@/lib/projects/lock-http';
 
-type ActionErr = { ok: false; error: string; status: number };
+type ActionErr = { ok: false; error: string; status: number; details?: unknown };
 type ActionOk<T> = { ok: true; data: T };
 type ActionResult<T> = ActionOk<T> | ActionErr;
 
@@ -77,7 +82,7 @@ async function performCodeAudit(projectId: string) {
     where: { id: projectId, deletedAt: null },
     select: { id: true, stack: true, previewUrl: true, sandboxId: true, designDirection: true },
   });
-  if (!project) return;
+  if (!project) return false;
 
   const [previous, latestSeo] = await Promise.all([
     latestRow(projectId),
@@ -92,9 +97,16 @@ async function performCodeAudit(projectId: string) {
   let previewUrl = project.previewUrl?.trim() || null;
   let sandbox = resolveSandboxRunner(project.sandboxId);
   try {
-    const ensured = await ensureSandbox(projectId);
-    previewUrl = ensured.previewUrl;
-    sandbox = resolveSandboxRunner(ensured.sandboxId);
+    const { getProjectPreviewFields } = await import('@/lib/preview/db');
+    const { signedPreviewUrl } = await import('@/lib/preview/url');
+    const preview = await getProjectPreviewFields(projectId);
+    if (preview?.previewMode === 'STATIC' && preview.activePreviewBuildId) {
+      previewUrl = await signedPreviewUrl({ projectId, userId: 'code-audit' });
+    } else {
+      const ensured = await ensureSandbox(projectId);
+      previewUrl = ensured.previewUrl;
+      sandbox = resolveSandboxRunner(ensured.sandboxId);
+    }
   } catch (error) {
     if (!(error instanceof SandboxBootError && error.code === 'NO_CHECKPOINT')) {
       console.warn('[audit] ensureSandbox failed, scanning without live sandbox', error);
@@ -123,6 +135,7 @@ async function performCodeAudit(projectId: string) {
     metrics: scanned.metrics,
     buildOk: !findings.some((item) => item.id === 'bundle:build-failed'),
   });
+  return true;
 }
 
 /** Owner/ADMIN. Starts the scan and returns immediately (SEO audit-style). */
@@ -137,15 +150,68 @@ export async function runCodeAudit(projectId: string): Promise<ActionResult<{ sc
   if (!project) return notFound();
   if (!canMutate(user, project.ownerId)) return forbidden();
 
+  const lock = await acquireLock(projectId, user.id, 'audit');
+  if (!lock.ok) return lockConflictAction(lock);
+
   if (!inflight.has(projectId)) {
-    const job = performCodeAudit(projectId)
-      .catch((error) => {
-        console.warn('[audit] code audit failed', error);
-      })
-      .finally(() => {
-        inflight.delete(projectId);
+    const credits = await checkCredits(WORKSPACE_ROW_ID, user.id, 'audit');
+    if (!credits.ok) {
+      await releaseLock(projectId, user.id);
+      return asCreditActionErr(credits);
+    }
+    const actorId = user.id;
+    const heartbeat = beginLockHeartbeat(projectId, actorId);
+    // Until the promise chain below (with its own finally) owns the cleanup, a throw
+    // in here has to release the lock and stop the renew timer itself. The timer is
+    // the dangerous half: it pushes lockExpiresAt out every 60s, so the 15-minute
+    // TTL never fires and the project stays locked for the life of the process.
+    try {
+      const { beginJobHeartbeat, createOrReuseJob, failJob, markJobRunning, succeedJob } = await import('@/lib/jobs/lifecycle');
+      const auditJob = await createOrReuseJob({
+        projectId,
+        workspaceId: WORKSPACE_ROW_ID,
+        userId: actorId,
+        kind: 'AUDIT',
       });
-    inflight.set(projectId, job);
+      if (auditJob.status === 'QUEUED') {
+        await markJobRunning(auditJob.id, { chargeCredits: true, acquireProjectLock: false });
+      }
+      const { updateJobFields } = await import('@/lib/jobs/store');
+      await updateJobFields(auditJob.id, {
+        currentStep: 'audit',
+        steps: [{ key: 'audit', label: 'Scanning the project', status: 'running', startedAt: new Date().toISOString() }],
+      });
+      const jobBeat = beginJobHeartbeat(auditJob.id);
+      const job = performCodeAudit(projectId)
+        .then(async (didRun) => {
+          if (didRun) await succeedJob(auditJob.id);
+          else await failJob(auditJob.id, { errorCode: 'provider_error', errorMessage: 'Audit did not run' });
+        })
+        .catch(async (error) => {
+          console.warn('[audit] code audit failed', error);
+          await failJob(auditJob.id, {
+            errorCode: 'provider_error',
+            errorMessage: error instanceof Error ? error.message : 'Audit failed',
+          }).catch((failError) => {
+            console.warn('[audit] failJob after audit failure failed', failError);
+          });
+        })
+        .finally(async () => {
+          jobBeat.stop();
+          heartbeat.stop();
+          inflight.delete(projectId);
+          await releaseLock(projectId, actorId).catch((error) => {
+            console.warn('[audit] releaseLock after audit failed', error);
+          });
+        });
+      inflight.set(projectId, job);
+    } catch (error) {
+      heartbeat.stop();
+      await releaseLock(projectId, actorId).catch((releaseError) => {
+        console.warn('[audit] releaseLock after audit setup failed', releaseError);
+      });
+      throw error;
+    }
   }
 
   return { ok: true, data: { scanning: true } };

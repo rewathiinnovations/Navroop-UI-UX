@@ -1,14 +1,17 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import StudioShell from "@/components/app/studio/StudioShell";
-import PromptHero from "@/components/dashboard/PromptHero";
+import PromptHero, { type PromptHeroHandle } from "@/components/dashboard/PromptHero";
+import SetupChecklist from "@/components/dashboard/SetupChecklist";
+import ExamplePromptCards from "@/components/dashboard/ExamplePromptCards";
+import PromptTipsPanel from "@/components/dashboard/PromptTipsPanel";
 import ProjectCard from "@/components/dashboard/ProjectCard";
 import { loginModalHref } from "@/lib/auth/public-login";
-import { PENDING_PROMPT_KEY, clearDraftStorage } from "@/hooks/useDraftStorage";
+import { PENDING_PROMPT_KEY, clearDraftStorage, readDraftStorage, writeDraftStorage } from "@/hooks/useDraftStorage";
 import type { DesignDirectionId } from "@/lib/design/directions";
 import type { ImportMode } from "@/lib/import/mode";
 import { createProject } from "@/lib/projects/actions";
@@ -29,6 +32,7 @@ export default function DashboardPage() {
   const [projects, setProjects] = useState<ListProject[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const heroRef = useRef<PromptHeroHandle>(null);
 
   const firstName =
     session?.user?.name?.trim().split(/\s+/)[0] ||
@@ -80,7 +84,14 @@ export default function DashboardPage() {
     importMode: ImportMode,
   ) => {
     setError("");
-    const created = await createProject({ initialPrompt: text, stack, designDirection, importMode });
+    const draft = readDraftStorage(PENDING_PROMPT_KEY);
+    const created = await createProject({
+      initialPrompt: text,
+      stack,
+      designDirection,
+      importMode,
+      templateId: draft?.templateId || undefined,
+    });
     if (!created.ok) {
       if (created.status === 401) {
         router.push(loginModalHref("/dashboard"));
@@ -110,7 +121,13 @@ export default function DashboardPage() {
     <StudioShell variant="workspace">
       <main className="mx-auto max-w-[960px] px-20 pb-64">
         <div className="pt-56 pb-40">
-          <PromptHero greeting={`What's on your mind, ${firstName}?`} onSubmit={onSubmit} />
+          <SetupChecklist />
+          <PromptTipsPanel />
+          <PromptHero
+            ref={heroRef}
+            greeting={`What's on your mind, ${firstName}?`}
+            onSubmit={onSubmit}
+          />
           {error && (
             <p className="mt-12 text-center text-[14px] text-[var(--studio-danger)]" role="alert">
               {error}
@@ -152,11 +169,19 @@ export default function DashboardPage() {
         </div>
 
         {tab === "templates" ? (
-          <div className="rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-28 py-56 text-center">
+          <div className="rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-28 py-40 text-center">
             <h2 className="text-[24px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">
               Templates
             </h2>
-            <p className="mt-12 text-[15px] text-[var(--studio-muted)]">Coming soon</p>
+            <p className="mx-auto mt-10 max-w-[420px] text-[15px] leading-6 text-[var(--studio-muted)]">
+              Start from a restaurant, clinic, portfolio, or another detailed brief.
+            </p>
+            <Link
+              href="/templates"
+              className="mt-16 inline-flex text-[14px] font-medium text-[var(--studio-accent)] hover:underline"
+            >
+              Browse templates
+            </Link>
           </div>
         ) : (
           <>
@@ -169,12 +194,28 @@ export default function DashboardPage() {
             )}
 
             {!loading && visible.length === 0 && (
-              <div className="rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-28 py-56 text-center">
-                <h2 className="text-[24px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">
-                  No projects yet
+              <div className="rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-28 py-40">
+                <h2 className="text-center text-[24px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">
+                  Welcome to {process.env.NEXT_PUBLIC_WORKSPACE_NAME || "Navroop"}
                 </h2>
-                <p className="mx-auto mt-10 max-w-[420px] text-[15px] leading-6 text-[var(--studio-muted)]">
-                  Describe what you want to build above. It will appear here automatically.
+                <p className="mx-auto mt-10 max-w-[480px] text-center text-[15px] leading-6 text-[var(--studio-muted)]">
+                  Start with a detailed prompt. Click a card to fill the box — nothing generates until you send it.
+                </p>
+                <div className="mt-20">
+                  <ExamplePromptCards
+                    onChoose={(prompt) => {
+                      writeDraftStorage(PENDING_PROMPT_KEY, prompt);
+                      heroRef.current?.fill(prompt);
+                    }}
+                  />
+                </div>
+                <p className="mt-20 text-center">
+                  <Link
+                    href="/templates"
+                    className="text-[14px] font-medium text-[var(--studio-accent)] hover:underline"
+                  >
+                    Browse templates
+                  </Link>
                 </p>
               </div>
             )}

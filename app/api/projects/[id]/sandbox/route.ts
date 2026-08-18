@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSessionUser } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { ensureSandbox, getSandboxStatus, SandboxBootError } from '@/lib/sandbox/manager';
+import { errorPayload } from '@/lib/api/error-response';
+import { withRequest } from '@/lib/api/with-request';
 
 async function loadProject(id: string) {
   return prisma.project.findFirst({
@@ -11,9 +13,13 @@ async function loadProject(id: string) {
 }
 
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  return withRequest(request, () => getSandbox(params));
+}
+
+async function getSandbox(params: Promise<{ id: string }>) {
   const user = await getSessionUser();
   if (!user) return NextResponse.json({ error: 'Sign in required' }, { status: 401 });
 
@@ -27,9 +33,13 @@ export async function GET(
 }
 
 export async function POST(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  return withRequest(request, () => postSandbox(params));
+}
+
+async function postSandbox(params: Promise<{ id: string }>) {
   const user = await getSessionUser();
   if (!user) return NextResponse.json({ error: 'Sign in required' }, { status: 401 });
 
@@ -48,14 +58,19 @@ export async function POST(
     });
   } catch (error) {
     const boot = error instanceof SandboxBootError ? error : null;
+    if (boot?.code === 'SANDBOX_LIMIT') {
+      return NextResponse.json(
+        { reason: 'sandboxes', used: 0, limit: 0, message: boot.message },
+        { status: 402 },
+      );
+    }
+    const body = errorPayload(
+      error instanceof Error ? error.message : 'Failed to start sandbox',
+      boot?.code || 'SANDBOX_FAILED',
+      boot?.requestId,
+    );
     return NextResponse.json(
-      {
-        error: error instanceof Error ? error.message : 'Failed to start sandbox',
-        step: boot?.step,
-        code: boot?.code,
-        requestId: boot?.requestId,
-        status: 'FAILED',
-      },
+      { ...body, step: boot?.step, status: 'FAILED' },
       { status: boot?.code === 'NO_CHECKPOINT' ? 409 : 500 },
     );
   }

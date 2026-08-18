@@ -30,6 +30,8 @@ export default function LivePreviewFrame({
     y: number;
   }>({ x: 980, y: 54 });
   const [isIdle, setIsIdle] = useState(false);
+  const scheduleNextIdleMoveRef = useRef<() => void>(() => {});
+  const connectRef = useRef<() => void>(() => {});
 
   // Function to start the random idle movement sequence
   const scheduleNextIdleMove = useCallback(() => {
@@ -47,10 +49,13 @@ export default function LivePreviewFrame({
           x: prevTarget.x + randomOffsetX,
           y: prevTarget.y + randomOffsetY,
         }));
-        scheduleNextIdleMove(); // Schedule the next one
+        scheduleNextIdleMoveRef.current();
       }
     }, randomDelay);
   }, [isIdle]);
+  useEffect(() => {
+    scheduleNextIdleMoveRef.current = scheduleNextIdleMove;
+  }, [scheduleNextIdleMove]);
 
   // Effect to handle starting/stopping idle movement sequence
   useEffect(() => {
@@ -252,7 +257,7 @@ export default function LivePreviewFrame({
         if (event.code !== 1000) {
           reconnectTimeoutRef.current = setTimeout(() => {
             if (sessionId) {
-              connect();
+              connectRef.current();
             }
           }, 3000); // Wait 3 seconds before reconnecting
         }
@@ -266,6 +271,9 @@ export default function LivePreviewFrame({
       setIsConnecting(false);
     }
   }, [sessionId, isIdle]);
+  useEffect(() => {
+    connectRef.current = connect;
+  }, [connect]);
 
   useEffect(() => {
     // Only connect if we have a sessionId
@@ -311,7 +319,7 @@ export default function LivePreviewFrame({
       )}
 
       {/* Children fallback */}
-      {children && !imgRef.current?.src ? (
+      {children && !imageSrc ? (
         <div className="h-full w-full flex items-center justify-center">
           {children}
         </div>

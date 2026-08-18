@@ -38,6 +38,9 @@ export default function ProfileSettingsPage() {
   const [savingProfile, setSavingProfile] = useState(false);
   const [savingPassword, setSavingPassword] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [dataRequestMessage, setDataRequestMessage] = useState('');
+  const [dataRequestError, setDataRequestError] = useState('');
+  const [dataRequesting, setDataRequesting] = useState(false);
 
   useEffect(() => {
     if (!user) return;
@@ -105,6 +108,7 @@ export default function ProfileSettingsPage() {
             { href: '/settings/profile', label: 'Profile', active: true },
             { href: '/settings/api-keys', label: 'API Keys' },
             { href: '/settings/skills', label: 'Skills' },
+            { href: '/settings/usage', label: 'Usage' },
           ]}
         />
 
@@ -247,6 +251,56 @@ export default function ProfileSettingsPage() {
             {savingPassword ? 'Updating…' : 'Update password'}
           </StudioButton>
         </form>
+
+        <section className="mt-40 space-y-12">
+          <h2 className="text-[18px] font-medium text-[var(--studio-fg)]">Your data</h2>
+          <p className="text-[13px] leading-5 text-[var(--studio-muted)]">
+            Ask an admin for a copy of your account data or to delete the account. This emails
+            administrators — nothing is deleted automatically.
+          </p>
+          <div className="flex flex-wrap gap-8">
+            {(['export', 'deletion'] as const).map((kind) => (
+              <StudioButton
+                key={kind}
+                type="button"
+                variant="ghost"
+                disabled={dataRequesting}
+                onClick={async () => {
+                  setDataRequestError('');
+                  setDataRequestMessage('');
+                  setDataRequesting(true);
+                  try {
+                    const response = await fetch('/api/legal/data-request', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ kind }),
+                    });
+                    const data = await response.json().catch(() => ({}));
+                    if (!response.ok) {
+                      setDataRequestError(String(data.error || 'Could not send request'));
+                      return;
+                    }
+                    setDataRequestMessage('Request sent to administrators.');
+                  } finally {
+                    setDataRequesting(false);
+                  }
+                }}
+              >
+                {dataRequesting
+                  ? 'Sending…'
+                  : kind === 'deletion'
+                    ? 'Request account deletion'
+                    : 'Request data export or deletion'}
+              </StudioButton>
+            ))}
+          </div>
+          {dataRequestError && (
+            <p className="text-[13px] text-[var(--studio-danger)]" role="alert">
+              {dataRequestError}
+            </p>
+          )}
+          {dataRequestMessage && <p className="text-[13px] text-[var(--studio-muted)]">{dataRequestMessage}</p>}
+        </section>
       </main>
     </StudioShell>
   );

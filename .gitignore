@@ -13,6 +13,10 @@
 
 # testing
 /coverage
+/playwright-report
+/test-results
+/blob-report
+/e2e/.auth
 
 # next.js
 /.next/
@@ -49,7 +53,8 @@ next-env.d.ts
 e2b-template-*
 
 # IDE
-.vscode/
+.vscode/*
+!.vscode/settings.json
 .idea/
 
 # Cursor: commit project rules and skills; ignore caches/secrets only
@@ -63,6 +68,7 @@ e2b-template-*
 
 # Local object storage (STORAGE_DRIVER=local)
 /public/uploads
+/tmp/backups
 
 # Temporary files
 *.tmp
@@ -70,3 +76,9 @@ e2b-template-*
 repomix-output.txt
 bun.lockb
 .env*.local
+
+# Sentry Config File
+.env.sentry-build-plugin
+
+# Local DATA_DIR default (config / cache / tmp)
+/.data/

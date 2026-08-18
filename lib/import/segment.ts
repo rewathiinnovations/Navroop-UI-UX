@@ -1,3 +1,4 @@
+import { wrapUntrustedWebsiteContent } from '../security/untrusted-html.ts';
 import type { ImportSection, PageCapture } from './types.ts';
 
 export const MAX_IMPORT_SECTIONS = 12;
@@ -100,7 +101,7 @@ async function defaultSegmentComplete(input: { image: Buffer; text: string }): P
 Return 1–12 sections. Each needs id (slug), label, purpose, contentSummary, approximateYRange [yStart, yEnd] in CSS pixels on the desktop screenshot.
 
 PAGE TEXT:
-${input.text.slice(0, 6000)}`,
+${wrapUntrustedWebsiteContent(input.text, 6000)}`,
           },
           { type: 'image', image: input.image },
         ],

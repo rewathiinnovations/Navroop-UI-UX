@@ -6,13 +6,19 @@ import {
   captureFileSnapshot,
   readSnapshot,
   snapshotsEqual,
+  SnapshotReadError,
   writeSnapshot,
   type FileSnapshotEntry,
+  type SnapshotRecord,
 } from './snapshot';
 import { captureThumbnail } from './thumbnail';
 import { writeSnapshotToSandbox } from './write-sandbox';
 import { recordRevertRate } from '@/lib/signals/collect';
-import { adjustStorageBytes } from '@/lib/storage/usage';
+import { adjustStorageBytes, WORKSPACE_ROW_ID } from '@/lib/storage/usage';
+import { checkLimit } from '@/lib/plans/limits';
+import { gzipSync } from 'node:zlib';
+import { bumpContentVersion, withProjectLock } from '@/lib/projects/lock';
+import { lockConflictAction } from '@/lib/projects/lock-http';
 
 export type CheckpointTrigger = 'initial' | 'followup' | 'restore';
 
@@ -27,7 +33,7 @@ export type PublicCheckpoint = {
   snapshotPruned: boolean;
 };
 
-type ActionErr = { ok: false; error: string; status: number };
+type ActionErr = { ok: false; error: string; status: number; details?: unknown };
 type ActionOk<T> = { ok: true; data: T };
 
 function unauthorized(): ActionErr {
@@ -144,6 +150,14 @@ export async function createCheckpoint(
   });
 
   try {
+    const upcoming = gzipSync(Buffer.from(JSON.stringify(fileSnapshot), 'utf8')).length;
+    const storage = await checkLimit(WORKSPACE_ROW_ID, 'storage', upcoming);
+    if (!storage.ok) {
+      await prisma.checkpoint.delete({ where: { id: created.id } }).catch((error) => {
+        console.warn('[checkpoints] rollback delete failed, row has no snapshot', error);
+      });
+      throw new Error(storage.message || 'Workspace storage limit is used up');
+    }
     const written = await writeSnapshot(projectId, created.id, fileSnapshot);
     await prisma.checkpoint.update({
       where: { id: created.id },
@@ -155,7 +169,9 @@ export async function createCheckpoint(
     });
     await adjustStorageBytes(written.snapshotBytes);
   } catch (error) {
-    await prisma.checkpoint.delete({ where: { id: created.id } }).catch(() => undefined);
+    await prisma.checkpoint.delete({ where: { id: created.id } }).catch((deleteError) => {
+      console.warn('[checkpoints] rollback delete failed, row has no snapshot', deleteError);
+    });
     throw error;
   }
 
@@ -204,6 +220,11 @@ export async function createCheckpointAfterGeneration(
     orderBy: { createdAt: 'desc' },
     select: { snapshotKey: true, fileSnapshot: true },
   });
+  // Deliberately not caught: `snapshotsEqual([], snapshot)` is never true, so a failed
+  // read would defeat dedupe and write a duplicate checkpoint on every generation,
+  // inflating Workspace.storageBytes. Creating one is impossible anyway while storage is
+  // down — writeSnapshot would fail and roll the row back — so this throws instead, and
+  // the caller in lib/projects/actions.ts logs it.
   if (latest && snapshotsEqual(await readSnapshot(latest), snapshot)) {
     return null;
   }
@@ -258,7 +279,34 @@ async function writeCheckpointFiles(projectId: string, files: FileSnapshotEntry[
 }
 
 function prunedError() {
-  return { ok: false as const, error: 'Purana checkpoint — restore nahi ho sakta', status: 409 };
+  return { ok: false as const, error: 'Old checkpoint — cannot restore', status: 409 };
+}
+
+function storageUnavailableError(): ActionErr {
+  return {
+    ok: false,
+    error: 'Could not read this version from storage. Nothing was changed — try again in a moment.',
+    status: 503,
+  };
+}
+
+/**
+ * A failed read must not share an answer with an empty snapshot. `files.length === 0`
+ * routes to `prunedError()`, so treating a storage blip as zero files tells the user
+ * their version is permanently gone — the one message that stops them retrying.
+ */
+async function loadSnapshotFiles(
+  record: SnapshotRecord,
+): Promise<{ ok: true; files: FileSnapshotEntry[] } | { ok: false; err: ActionErr }> {
+  try {
+    return { ok: true, files: await readSnapshot(record) };
+  } catch (error) {
+    if (error instanceof SnapshotReadError) {
+      console.error('[checkpoints] snapshot read failed, not reporting it as pruned', error);
+      return { ok: false, err: storageUnavailableError() };
+    }
+    throw error;
+  }
 }
 
 export async function previewCheckpoint(projectId: string, checkpointId: string) {
@@ -274,9 +322,10 @@ export async function previewCheckpoint(projectId: string, checkpointId: string)
   if (!checkpoint) return { ok: false as const, error: 'Checkpoint not found', status: 404 };
   if (checkpoint.snapshotPruned) return prunedError();
 
-  const files = await readSnapshot(checkpoint);
-  if (files.length === 0) return prunedError();
-  await writeCheckpointFiles(projectId, files, project.sandboxId);
+  const loaded = await loadSnapshotFiles(checkpoint);
+  if (!loaded.ok) return loaded.err;
+  if (loaded.files.length === 0) return prunedError();
+  await writeCheckpointFiles(projectId, loaded.files, project.sandboxId);
   return { ok: true as const, data: toPublic(checkpoint) };
 }
 
@@ -295,9 +344,10 @@ export async function exitCheckpointPreview(projectId: string) {
     return { ok: false as const, error: 'No current checkpoint to restore', status: 409 };
   }
 
-  const files = await readSnapshot(latest);
-  if (latest.snapshotPruned || files.length === 0) return prunedError();
-  await writeCheckpointFiles(projectId, files, project.sandboxId);
+  const loaded = await loadSnapshotFiles(latest);
+  if (!loaded.ok) return loaded.err;
+  if (latest.snapshotPruned || loaded.files.length === 0) return prunedError();
+  await writeCheckpointFiles(projectId, loaded.files, project.sandboxId);
   return { ok: true as const, data: toPublic(latest) };
 }
 
@@ -315,20 +365,32 @@ export async function restoreCheckpoint(projectId: string, checkpointId: string)
   if (!checkpoint) return { ok: false as const, error: 'Checkpoint not found', status: 404 };
   if (checkpoint.snapshotPruned) return prunedError();
 
-  const files = await readSnapshot(checkpoint);
+  const loaded = await loadSnapshotFiles(checkpoint);
+  if (!loaded.ok) return loaded.err;
+  const files = loaded.files;
   if (files.length === 0) return prunedError();
-  await writeCheckpointFiles(projectId, files, project.sandboxId);
 
-  const created = await createCheckpoint(projectId, {
-    trigger: 'restore',
-    sourceMessage: null,
-    previewUrl: project.previewUrl,
-    restoredFromAt: checkpoint.createdAt,
+  const locked = await withProjectLock(projectId, user.id, 'generation', async () => {
+    await writeCheckpointFiles(projectId, files, project.sandboxId);
+    const created = await createCheckpoint(projectId, {
+      trigger: 'restore',
+      sourceMessage: null,
+      previewUrl: project.previewUrl,
+      restoredFromAt: checkpoint.createdAt,
+    });
+    await bumpContentVersion(projectId);
+    void recordRevertRate(projectId);
+    try {
+      const { buildPreviewForProject } = await import('@/lib/preview/production');
+      await buildPreviewForProject(projectId, created.id);
+    } catch (error) {
+      console.warn('[preview] build after restore failed', error);
+    }
+    return created;
   });
+  if (!locked.ok) return lockConflictAction(locked);
 
-  void recordRevertRate(projectId);
-
-  return { ok: true as const, data: toPublic(created) };
+  return { ok: true as const, data: toPublic(locked.value) };
 }
 
 export async function toggleCheckpointBookmark(projectId: string, checkpointId: string) {

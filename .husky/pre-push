@@ -1,0 +1,16 @@
+#!/usr/bin/env sh
+# Same rule as pre-commit: no `pnpm run` / `pnpm exec` in a hook, because pnpm's
+# dependency-status check can purge node_modules first (.cursor/lessons-learned.md).
+# `pnpm run verify` is `tsx scripts/verify.ts`, so call it directly.
+set -e
+
+cd "$(git rev-parse --show-toplevel)"
+
+tsx="./node_modules/tsx/dist/cli.mjs"
+
+if [ ! -f "$tsx" ]; then
+  echo "pre-push: $tsx is missing — run pnpm install (never pnpm exec), then push again." >&2
+  exit 1
+fi
+
+node "$tsx" scripts/verify.ts

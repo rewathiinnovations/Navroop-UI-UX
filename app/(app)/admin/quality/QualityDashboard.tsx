@@ -6,6 +6,7 @@ import StudioButton from '@/components/app/studio/StudioButton';
 import StudioField from '@/components/app/studio/StudioField';
 import PageTabs from '@/components/app/studio/PageTabs';
 import { MIN_KIND_SAMPLES, QUALITY_SIGNAL_KINDS, type QualitySignalKind } from '@/lib/signals/score';
+import { formatAdminDate } from '../format-admin-date';
 
 type KindMetric = {
   kind: QualitySignalKind;
@@ -116,7 +117,15 @@ export default function QualityDashboard() {
             { href: '/admin/team', label: 'Team' },
             { href: '/admin/usage', label: 'Usage' },
             { href: '/admin/quality', label: 'Quality', active: true },
+            { href: '/admin/health', label: 'Health' },
+            { href: '/admin/jobs', label: 'Jobs' },
+            { href: '/admin/backups', label: 'Backups' },
+            { href: '/admin/audit', label: 'Audit' },
+            { href: '/admin/integrations', label: 'Integrations' },
             { href: '/admin/deploy', label: 'Deploy' },
+            { href: '/admin/servers', label: 'Servers' },
+            { href: '/admin/plans', label: 'Plans' },
+            { href: '/admin/workspace', label: 'Workspace' },
           ]}
         />
 
@@ -209,7 +218,7 @@ export default function QualityDashboard() {
                   {version.isActive ? ' · active' : ''}
                 </p>
                 <p className="mt-4 text-[12px] text-[var(--studio-muted)]">
-                  Activated {new Date(version.createdAt).toLocaleDateString('en-US', { dateStyle: 'medium' })}
+                  Activated {formatAdminDate(version.createdAt)}
                 </p>
                 <p className="mt-8 text-[20px] font-medium text-[var(--studio-fg)]">
                   {version.overall != null

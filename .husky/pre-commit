@@ -1,0 +1,23 @@
+#!/usr/bin/env sh
+# Direct binary calls only. `pnpm exec` / `pnpm run` first run a dependency-status
+# check, decide node_modules is stale, and try to purge it before running anything.
+# Agent shells survive that because there is no TTY; a real `git commit` has one,
+# so the purge would actually happen mid-commit. See .cursor/lessons-learned.md.
+# Never set CI=true or confirmModulesPurge=false to get past it — that arms the
+# deletion instead of avoiding it.
+set -e
+
+cd "$(git rev-parse --show-toplevel)"
+
+lint_staged="./node_modules/lint-staged/bin/lint-staged.js"
+tsx="./node_modules/tsx/dist/cli.mjs"
+
+for bin in "$lint_staged" "$tsx"; do
+  if [ ! -f "$bin" ]; then
+    echo "pre-commit: $bin is missing — run pnpm install (never pnpm exec), then commit again." >&2
+    exit 1
+  fi
+done
+
+node "$lint_staged"
+node "$tsx" scripts/secret-scan.ts --staged

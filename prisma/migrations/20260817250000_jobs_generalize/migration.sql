@@ -1,0 +1,10 @@
+-- Generalise GenerationJob → Job (table kept via @@map). Widen kinds and persist steps.
+
+ALTER TYPE "JobKind" ADD VALUE IF NOT EXISTS 'PUBLISH';
+ALTER TYPE "JobKind" ADD VALUE IF NOT EXISTS 'DOMAIN_VERIFY';
+ALTER TYPE "JobKind" ADD VALUE IF NOT EXISTS 'EXPORT';
+ALTER TYPE "JobKind" ADD VALUE IF NOT EXISTS 'TEMPLATE_THUMBNAIL';
+
+ALTER TABLE "GenerationJob" ADD COLUMN IF NOT EXISTS "steps" JSONB;
+ALTER TABLE "GenerationJob" ADD COLUMN IF NOT EXISTS "currentStep" TEXT;
+ALTER TABLE "GenerationJob" ADD COLUMN IF NOT EXISTS "resourceIds" JSONB;

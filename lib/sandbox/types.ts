@@ -1,3 +1,5 @@
+import type { TeardownResult } from './teardown';
+
 export interface SandboxFile {
   path: string;
   content: string;
@@ -7,7 +9,7 @@ export interface SandboxFile {
 export interface SandboxInfo {
   sandboxId: string;
   url: string;
-  provider: 'e2b' | 'vercel';
+  provider: 'e2b' | 'modal' | 'daytona';
   createdAt: Date;
 }
 
@@ -24,11 +26,13 @@ export interface SandboxProviderConfig {
     timeoutMs?: number;
     template?: string;
   };
-  vercel?: {
-    teamId?: string;
-    projectId?: string;
-    token?: string;
-    authMethod?: 'oidc' | 'pat';
+  modal?: {
+    tokenId: string;
+    tokenSecret: string;
+  };
+  daytona?: {
+    apiKey: string;
+    apiUrl?: string;
   };
 }
 
@@ -54,7 +58,7 @@ export abstract class SandboxProvider {
   abstract installPackages(packages: string[]): Promise<CommandResult>;
   abstract getSandboxUrl(): string | null;
   abstract getSandboxInfo(): SandboxInfo | null;
-  abstract terminate(): Promise<void>;
+  abstract terminate(): Promise<TeardownResult>;
   abstract isAlive(): boolean;
 
   /** Probe an existing provider VM. Default: not supported. */

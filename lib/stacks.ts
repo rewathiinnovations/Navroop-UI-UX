@@ -2,12 +2,12 @@
  * Output-stack registry. All sandbox/dev/install/extension lookups go through
  * getStack() — do not scatter stack conditionals.
  *
- * REACT values are copied from the current E2B/Vercel Vite React setup
+ * REACT values are copied from the current E2B Vite React setup
  * (package.json scripts.dev = "vite --host", npm install, .jsx files).
  *
  * Sandbox images: official per-stack E2B templates are not used. @e2b/code-interpreter
- * ships `code-interpreter-v1` (generic Node). Vercel Sandbox uses `node22`.
- * Every stack records that template so create-sandbox is not hardcoded.
+ * ships `code-interpreter-v1` (generic Node). Every stack records that template
+ * so create-sandbox is not hardcoded.
  */
 
 export const STACK_IDS = [
@@ -28,7 +28,7 @@ export type StackId = (typeof STACK_IDS)[number];
 export type SandboxTemplate = {
   /** E2B template id. Default of @e2b/code-interpreter (generic Node). */
   e2b: string;
-  /** Vercel Sandbox runtime. */
+  /** Legacy node runtime id kept on the stack row. */
   vercelRuntime: string;
 };
 
@@ -57,10 +57,26 @@ export type StackDefinition = {
   listExtensions: string[];
   /** Default entry file for the file manifest. */
   entryPoint: string;
-  /** Production build used by the code-quality audit. Null when there is no bundler. */
+  /** Production build used by publish + the code-quality audit. Null when there is no bundler. */
   buildCommand: string | null;
+  /** Static output directory for Coolify. Null for node deploys. */
+  outputDir: string | null;
+  deployType: 'static' | 'node';
+  /** Node start command. Null for static. */
+  startCommand: string | null;
+  /** Optional Dockerfile override. Null = Nixpacks / static pack. */
+  dockerfile: string | null;
+  port: number | null;
   /** Compact PromptHero hint. Omit when neither SPA nor SSR applies. */
   seoHint?: string;
+  /** Viewing a result uses a static snapshot when this is true. */
+  canStaticPreview: boolean;
+  /** Command run inside the generation sandbox before it is killed. Null = copy output dir. */
+  previewBuildCommand: string | null;
+  /** Directory uploaded as the static preview. */
+  previewOutputDir: string;
+  /** Extensionless routes serve entryPath (index.html). */
+  spaFallback: boolean;
 };
 
 const STACKS: Record<StackId, StackDefinition> = {
@@ -86,8 +102,18 @@ const STACKS: Record<StackId, StackDefinition> = {
     frameworkPackages: ['react', 'react-dom', 'next'],
     listExtensions: ['.tsx', '.ts', '.jsx', '.js', '.css', '.json'],
     entryPoint: 'app/page.tsx',
-    buildCommand: 'npx next build',
+    buildCommand: 'npm run build',
+    outputDir: null,
+    deployType: 'node',
+    startCommand: 'npm start',
+    dockerfile: null,
+    port: 3000,
     seoHint: 'SSR — best for SEO',
+    // Preview may export statically; Coolify publish stays a Node deploy.
+    canStaticPreview: true,
+    previewBuildCommand: 'npm run build',
+    previewOutputDir: 'out',
+    spaFallback: false,
   },
   REACT: {
     id: 'REACT',
@@ -109,8 +135,17 @@ const STACKS: Record<StackId, StackDefinition> = {
     frameworkPackages: ['react', 'react-dom'],
     listExtensions: ['.jsx', '.js', '.tsx', '.ts', '.css', '.json'],
     entryPoint: 'src/main.jsx',
-    buildCommand: 'npx vite build',
+    buildCommand: 'npm run build',
+    outputDir: 'dist',
+    deployType: 'static',
+    startCommand: null,
+    dockerfile: null,
+    port: null,
     seoHint: 'SPA — weaker SEO',
+    canStaticPreview: true,
+    previewBuildCommand: 'npm run build',
+    previewOutputDir: 'dist',
+    spaFallback: true,
   },
   ASTRO: {
     id: 'ASTRO',
@@ -131,8 +166,17 @@ const STACKS: Record<StackId, StackDefinition> = {
     frameworkPackages: ['astro'],
     listExtensions: ['.astro', '.ts', '.js', '.css', '.json', '.md', '.mdx'],
     entryPoint: 'src/pages/index.astro',
-    buildCommand: 'npx astro build',
+    buildCommand: 'npm run build',
+    outputDir: 'dist',
+    deployType: 'static',
+    startCommand: null,
+    dockerfile: null,
+    port: null,
     seoHint: 'SSR — best for SEO',
+    canStaticPreview: true,
+    previewBuildCommand: 'npm run build',
+    previewOutputDir: 'dist',
+    spaFallback: false,
   },
   STATIC_HTML: {
     id: 'STATIC_HTML',
@@ -148,6 +192,15 @@ const STACKS: Record<StackId, StackDefinition> = {
     listExtensions: ['.html', '.css', '.js'],
     entryPoint: 'index.html',
     buildCommand: null,
+    outputDir: '.',
+    deployType: 'static',
+    startCommand: null,
+    dockerfile: null,
+    port: null,
+    canStaticPreview: true,
+    previewBuildCommand: null,
+    previewOutputDir: '.',
+    spaFallback: false,
   },
   VUE: {
     id: 'VUE',
@@ -169,8 +222,17 @@ const STACKS: Record<StackId, StackDefinition> = {
     frameworkPackages: ['vue'],
     listExtensions: ['.vue', '.ts', '.js', '.css', '.json'],
     entryPoint: 'src/main.js',
-    buildCommand: 'npx vite build',
+    buildCommand: 'npm run build',
+    outputDir: 'dist',
+    deployType: 'static',
+    startCommand: null,
+    dockerfile: null,
+    port: null,
     seoHint: 'SPA — weaker SEO',
+    canStaticPreview: true,
+    previewBuildCommand: 'npm run build',
+    previewOutputDir: 'dist',
+    spaFallback: true,
   },
   SVELTE: {
     id: 'SVELTE',
@@ -192,8 +254,17 @@ const STACKS: Record<StackId, StackDefinition> = {
     frameworkPackages: ['svelte', '@sveltejs/kit'],
     listExtensions: ['.svelte', '.ts', '.js', '.css', '.json'],
     entryPoint: 'src/routes/+page.svelte',
-    buildCommand: 'npx vite build',
+    buildCommand: 'npm run build',
+    outputDir: 'build',
+    deployType: 'static',
+    startCommand: null,
+    dockerfile: null,
+    port: null,
     seoHint: 'SPA — weaker SEO',
+    canStaticPreview: true,
+    previewBuildCommand: 'npm run build',
+    previewOutputDir: 'build',
+    spaFallback: true,
   },
 };
 

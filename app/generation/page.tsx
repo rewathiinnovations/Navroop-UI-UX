@@ -6,7 +6,7 @@ import { appConfig } from '@/config/app.config';
 import SidebarInput from '@/components/app/generation/SidebarInput';
 import ProjectWorkspace from '@/components/workspace/ProjectWorkspace';
 import { pagesFromFiles } from '@/components/workspace/pages-from-files';
-import { shouldRequestFollowUpPlan, type ChatMode, type MessageSource, type ProjectPhase, type ViewportSize, type WorkspacePlan, type WorkspaceView } from '@/components/workspace/types';
+import { shouldRequestFollowUpPlan, type ChatMode, type MessageSource, type ProjectPhase, type WorkspacePlan, type WorkspaceView } from '@/components/workspace/types';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 // Import icons from centralized module to avoid Turbopack chunk issues
@@ -25,11 +25,15 @@ import {
 import { motion } from 'framer-motion';
 import CodeApplicationProgress from '@/components/CodeApplicationProgress';
 import { persistProject } from '@/lib/projects/persist-client';
+import { decidePendingPromptAction } from '@/lib/projects/pending-prompt';
 import { projectDisplayName } from '@/lib/projects/prompt';
+import { shouldRequestSandbox } from '@/lib/workspace/sandbox-request';
 import { streamProjectImport } from '@/lib/import/client';
+import { retryProjectPlan } from '@/lib/projects/plan-client';
 import { DEFAULT_IMPORT_MODE, resolveImportMode, type ImportMode } from '@/lib/import/mode';
 import { useGeneration } from '@/components/app/generation/GenerationProvider';
-import { getGenerationState } from '@/lib/generation/generation-runtime';
+import { applyPageCopy, shouldAddApplyChat } from '@/lib/generation/apply-page-copy';
+import { getGenerationState, surfacePreviewNotice } from '@/lib/generation/generation-runtime';
 import { isActiveGenerationStatus } from '@/lib/generation/types';
 
 interface SandboxData {
@@ -170,7 +174,6 @@ function AISandboxPage({
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'signin'>('idle');
   const [projectUpdatedAt, setProjectUpdatedAt] = useState<string | null>(null);
   const [selectedPage, setSelectedPage] = useState('/');
-  const [viewport, setViewport] = useState<ViewportSize>('desktop');
   const pendingRestoreCodeRef = useRef<string | null>(null);
   const sendModeRef = useRef<ChatMode>('build');
 
@@ -213,6 +216,7 @@ function AISandboxPage({
         setHomeScreenFading(false);
         setActiveTab(live.status === 'generating' ? 'generation' : 'preview');
         if (live.sandboxData) {
+          // eslint-disable-next-line react-hooks/immutability -- declared later in this component
           updateStatus('Sandbox active', true);
         }
         if (live.lastGeneratedCode) {
@@ -368,23 +372,14 @@ function AISandboxPage({
       
       if (!isMounted) return;
 
-      // Check if sandbox ID is in URL
-      const sandboxIdParam = searchParams.get('sandbox');
-      
       setLoading(true);
       try {
-        if (sandboxIdParam) {
-          console.log('[home] Attempting to restore sandbox:', sandboxIdParam);
-          // For now, just create a new sandbox - you could enhance this to actually restore
-          // the specific sandbox if your backend supports it
+        if (shouldRequestSandbox('open')) {
           sandboxCreated = true;
-          await createSandbox(true);
-        } else {
-          console.log('[home] No sandbox in URL, creating new sandbox automatically...');
-          sandboxCreated = true;
+          // eslint-disable-next-line react-hooks/immutability -- declared later in this component
           await createSandbox(true);
         }
-        
+
         // If we have a URL from the home page, mark for automatic start
         if (storedUrl && isMounted) {
           // We'll trigger the generation after the component is fully mounted
@@ -408,7 +403,6 @@ function AISandboxPage({
     return () => {
       isMounted = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Run only on mount
   
   useEffect(() => {
@@ -434,9 +428,10 @@ function AISandboxPage({
       if (!screenshotUrl.match(/^https?:\/\//i)) {
         screenshotUrl = 'https://' + screenshotUrl;
       }
+      // eslint-disable-next-line react-hooks/immutability -- declared later in this component
       captureUrlScreenshot(screenshotUrl);
     }
-  }, [showHomeScreen, homeUrlInput]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [showHomeScreen, homeUrlInput]);  
 
   // Auto-start generation if flagged
   useEffect(() => {
@@ -447,10 +442,11 @@ function AISandboxPage({
       // Small delay to ensure everything is ready
       setTimeout(() => {
         console.log('[generation] Auto-starting generation for URL:', homeUrlInput);
+        // eslint-disable-next-line react-hooks/immutability -- declared later in this component
         startGeneration();
       }, 1000);
     }
-  }, [showHomeScreen, homeUrlInput]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [showHomeScreen, homeUrlInput]);  
 
 
   useEffect(() => {
@@ -458,9 +454,10 @@ function AISandboxPage({
     // AND we're not auto-starting a new generation (which would create a new sandbox)
     const autoStart = sessionStorage.getItem('autoStart');
     if (!sandboxData && autoStart !== 'true') {
+      // eslint-disable-next-line react-hooks/immutability -- declared later in this component
       checkSandboxStatus();
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);  
 
   useEffect(() => {
     if (chatMessagesRef.current) {
@@ -483,7 +480,6 @@ function AISandboxPage({
       
       return () => clearTimeout(timer);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shouldAutoGenerate, homeUrlInput, showHomeScreen]);
 
   useEffect(() => {
@@ -712,7 +708,7 @@ function AISandboxPage({
           await applyGeneratedCode(codeToRestore, false, data);
         }
         
-        // For Vercel sandboxes, Vite is already started during setupViteApp
+        // Vite is already started during setupViteApp
         // No need to restart it immediately after creation
         // Only restart if there's an actual issue later
         console.log('[createSandbox] Sandbox ready with Vite server running');
@@ -793,6 +789,7 @@ Tip: I automatically detect and install npm packages from your code imports (lik
       if (result.project.updatedAt) setProjectUpdatedAt(result.project.updatedAt);
       else setProjectUpdatedAt(new Date().toISOString());
       setSaveState('saved');
+      surfacePreviewNotice(result.previewNotice);
       router.replace(`/project/${result.project.id}`, { scroll: false });
     } catch (error) {
       console.error('[generation] Failed to save project', error);
@@ -821,6 +818,8 @@ Tip: I automatically detect and install npm packages from your code imports (lik
       if (pendingPackages.length > 0) {
         console.log('[applyGeneratedCode] Sending packages from tool calls:', pendingPackages);
         // Clear pending packages after use
+        // Shared handshake with generation-runtime (window.pendingPackages).
+        // eslint-disable-next-line react-hooks/immutability
         (window as any).pendingPackages = [];
       }
       
@@ -937,8 +936,21 @@ Tip: I automatically detect and install npm packages from your code imports (lik
             );
           }
         }
-        
-        log('Code applied successfully!');
+
+        const applyCopy = applyPageCopy({
+          filesCreated: results.filesCreated,
+          filesUpdated: results.filesUpdated,
+          errors: results.errors,
+        });
+        log(applyCopy.message, applyCopy.warning ? 'error' : 'info');
+        const lastChat = getGenerationState().messages.at(-1)?.content;
+        if (shouldAddApplyChat(lastChat, applyCopy.message)) {
+          addChatMessage(
+            applyCopy.message,
+            'system',
+            !isEdit && results.filesCreated?.length > 0 ? { appliedFiles: results.filesCreated } : undefined,
+          );
+        }
         void saveCurrentProject();
         console.log('[applyGeneratedCode] Response data:', data);
         console.log('[applyGeneratedCode] Debug info:', data.debug);
@@ -957,28 +969,6 @@ Tip: I automatically detect and install npm packages from your code imports (lik
               timestamp: new Date()
             }]
           }));
-          
-          // Update the chat message to show success
-          // Only show file list if not in edit mode
-          if (isEdit) {
-            addChatMessage(`Edit applied successfully!`, 'system');
-          } else {
-            // Check if this is part of a generation flow (has recent AI recreation message)
-            const recentMessages = chatMessages.slice(-5);
-            const isPartOfGeneration = recentMessages.some(m => 
-              m.content.includes('AI recreation generated') || 
-              m.content.includes('Code generated')
-            );
-            
-            // Don't show files if part of generation flow to avoid duplication
-            if (isPartOfGeneration) {
-              addChatMessage(`Applied ${results.filesCreated.length} files successfully!`, 'system');
-            } else {
-              addChatMessage(`Applied ${results.filesCreated.length} files successfully!`, 'system', {
-                appliedFiles: results.filesCreated
-              });
-            }
-          }
           
           // If there are failed packages, add a message about checking for errors
           if (results.packagesFailed?.length > 0) {
@@ -1830,7 +1820,7 @@ Tip: I automatically detect and install npm packages from your code imports (lik
     let sandboxPromise: Promise<void> | null = null;
     let sandboxCreating = false;
     
-    if (!sandboxData) {
+    if (!sandboxData && shouldRequestSandbox('generate')) {
       sandboxCreating = true;
       addChatMessage('Creating sandbox while I plan your app...', 'system');
       sandboxPromise = createSandbox(true).catch((error: any) => {
@@ -1946,7 +1936,7 @@ Tip: I automatically detect and install npm packages from your code imports (lik
         }
         
         if (activeSandboxData && generatedCode) {
-          // For new sandbox creations (especially Vercel), add a delay to ensure Vite is ready
+          // For new sandbox creations, add a delay to ensure Vite is ready
           if (sandboxCreating) {
             console.log('[startGeneration] New sandbox created, waiting for services to be ready...');
             await new Promise(resolve => setTimeout(resolve, 2000));
@@ -1987,12 +1977,18 @@ Tip: I automatically detect and install npm packages from your code imports (lik
   useEffect(() => {
     const pending = pendingChatPromptRef.current;
     if (!pending || !projectId) return;
+    const action = decidePendingPromptAction({ phase: initialPhase, prompt: pending });
     pendingChatPromptRef.current = null;
+    if (action.kind === 'none') return;
     const timer = setTimeout(() => {
-      void sendChatMessage(pending);
+      if (action.kind === 'show') {
+        addChatMessage(action.text, 'user');
+        return;
+      }
+      void sendChatMessage(action.text);
     }, 400);
     return () => clearTimeout(timer);
-  }, [projectId]);
+  }, [initialPhase, projectId]);
 
 
   const downloadZip = async () => {
@@ -2517,7 +2513,9 @@ Tip: I automatically detect and install npm packages from your code imports (lik
     );
     
     // Start creating sandbox and capturing screenshot immediately in parallel
-    const sandboxPromise = createSandbox(true);
+    const sandboxPromise = shouldRequestSandbox('generate')
+      ? createSandbox(true)
+      : Promise.resolve(null);
     
     // Set loading stage immediately before hiding home screen
     setLoadingStage('gathering');
@@ -2926,7 +2924,11 @@ Focus on the key sections and content, making it clean and modern.`;
         }, 1000); // Show completion briefly then switch
       } catch (error: any) {
         if (error?.name === 'AbortError') return;
-        addChatMessage(`Failed to clone website: ${error.message}`, 'system');
+        if (error?.creditDenial) {
+          addChatMessage(error.creditDenial.message, 'error', { creditDenial: error.creditDenial });
+        } else {
+          addChatMessage(error.message || 'Import failed', 'error');
+        }
         setUrlStatus([]);
         setIsPreparingDesign(false);
         setIsStartingNewGeneration(false); // Clear new generation flag on error
@@ -3001,8 +3003,6 @@ Focus on the key sections and content, making it clean and modern.`;
         if (next === 'code') setActiveTab('generation');
         else setActiveTab(next);
       }}
-      viewport={viewport}
-      onViewportChange={setViewport}
       onRefresh={refreshPreview}
       iframeRef={iframeRef}
       sandboxUrl={sandboxData?.url}
@@ -3037,12 +3037,49 @@ Focus on the key sections and content, making it clean and modern.`;
       githubConnected={githubConnected}
       githubRepoUrl={githubRepoUrl}
       sourceUrl={sourceUrl}
+      importMode={importMode}
       initialPhase={initialPhase}
       initialPlan={initialPlan}
       isJobActive={isJobActive}
       generationStatus={generationJobStatus}
       onStartApprovedBuild={(promptContext) => {
         void sendChatMessage(promptContext, { mode: 'build', silent: true });
+      }}
+      onRetryPlan={async (prompt) => {
+        const id = projectId || projectIdFromPath;
+        if (!id) {
+          addChatMessage('Project is not ready.', 'system');
+          return;
+        }
+        try {
+          await retryProjectPlan({ projectId: id, prompt });
+          addChatMessage('Plan ready. Review and approve to apply these changes.', 'ai');
+        } catch (error) {
+          addChatMessage(error instanceof Error ? error.message : 'Could not start a plan.', 'system');
+        }
+      }}
+      onRetryImport={async ({ sourceUrl: retryUrl, mode }) => {
+        const id = projectId || projectIdFromPath;
+        if (!id) {
+          addChatMessage('Project is not ready.', 'system');
+          return;
+        }
+        try {
+          const imported = await streamProjectImport({
+            projectId: id,
+            sourceUrl: retryUrl,
+            mode,
+            onProgress: (message) => addChatMessage(message, 'system'),
+          });
+          imported.warnings.forEach((warning) => addChatMessage(warning, 'system'));
+          setSourceUrl(imported.sourceUrl);
+          setImportMode(resolveImportMode(imported.mode));
+          if (imported.filesXml) {
+            await applyGeneratedCode(imported.filesXml, false);
+          }
+        } catch (error) {
+          addChatMessage(error instanceof Error ? error.message : 'Import failed', 'system');
+        }
       }}
       onThreadMessage={(content, type) => {
         addChatMessage(content, type);

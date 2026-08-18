@@ -75,7 +75,10 @@ async function runAxeOnPage(url: string, width: number, label: string): Promise<
     })) as AxeViolation[];
     return findingsFromAxe(violations, label);
   } finally {
-    await browser?.close().catch(() => undefined);
+    // A Chromium we failed to close stays resident on the server — never silent.
+    await browser?.close().catch((error) => {
+      console.warn('[audit] a11y browser close failed', error);
+    });
   }
 }
 

@@ -1,5 +1,11 @@
 import { SandboxProvider } from './types';
 import { SandboxFactory } from './factory';
+import {
+  isTeardownLeak,
+  teardownAlreadyGone,
+  teardownProvider,
+  type TeardownResult,
+} from './teardown';
 
 interface SandboxInfo {
   sandboxId: string;
@@ -28,24 +34,17 @@ class SandboxManager {
     try {
       const provider = SandboxFactory.create();
       
-      // For E2B provider, try to reconnect
-      if (provider.constructor.name === 'E2BProvider') {
-        // E2B sandboxes can be reconnected using the sandbox ID
-        const reconnected = await (provider as any).reconnect(sandboxId);
-        if (reconnected) {
-          this.sandboxes.set(sandboxId, {
-            sandboxId,
-            provider,
-            createdAt: new Date(),
-            lastAccessed: new Date()
-          });
-          this.activeSandboxId = sandboxId;
-          return provider;
-        }
+      const reconnected = await provider.reconnect(sandboxId);
+      if (reconnected) {
+        this.sandboxes.set(sandboxId, {
+          sandboxId,
+          provider,
+          createdAt: new Date(),
+          lastAccessed: new Date()
+        });
+        this.activeSandboxId = sandboxId;
+        return provider;
       }
-      
-      // For Vercel or if reconnection failed, return the new provider
-      // The caller will need to handle creating a new sandbox
       return provider;
     } catch (error) {
       console.error(`[SandboxManager] Error reconnecting to sandbox ${sandboxId}:`, error);
@@ -109,35 +108,25 @@ class SandboxManager {
   /**
    * Terminate a sandbox
    */
-  async terminateSandbox(sandboxId: string): Promise<void> {
+  async terminateSandbox(sandboxId: string): Promise<TeardownResult> {
     const sandbox = this.sandboxes.get(sandboxId);
-    if (sandbox) {
-      try {
-        await sandbox.provider.terminate();
-      } catch (error) {
-        console.error(`[SandboxManager] Error terminating sandbox ${sandboxId}:`, error);
-      }
+    if (!sandbox) return teardownAlreadyGone(sandboxId);
+    const outcome = await teardownProvider(sandbox.provider);
+    if (!isTeardownLeak(outcome)) {
       this.sandboxes.delete(sandboxId);
-      
       if (this.activeSandboxId === sandboxId) {
         this.activeSandboxId = null;
       }
     }
+    return outcome;
   }
 
   /**
    * Terminate all sandboxes
    */
-  async terminateAll(): Promise<void> {
-    const promises = Array.from(this.sandboxes.values()).map(sandbox => 
-      sandbox.provider.terminate().catch(err => 
-        console.error(`[SandboxManager] Error terminating sandbox ${sandbox.sandboxId}:`, err)
-      )
-    );
-    
-    await Promise.all(promises);
-    this.sandboxes.clear();
-    this.activeSandboxId = null;
+  async terminateAll(): Promise<TeardownResult[]> {
+    const ids = Array.from(this.sandboxes.keys());
+    return Promise.all(ids.map((id) => this.terminateSandbox(id)));
   }
 
   /**

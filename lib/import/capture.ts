@@ -1,4 +1,6 @@
+import { assertSafeUrl, UnsafeUrlError } from '../security/url-guard.ts';
 import { BLOCKED_ACCESS_MESSAGE, isBlockedAccessError, toBlockedAccessError } from './errors.ts';
+import { scrapeFirecrawlText } from './firecrawl.ts';
 import { clusterColors, uniqueTrimmed } from './tokens.ts';
 import type { CapturedImage, DesignTokens, PageCapture } from './types.ts';
 import { normalizeSourceUrl } from './url.ts';
@@ -39,33 +41,6 @@ async function dismissCookieBanners(page: {
   }
 }
 
-async function scrapeFirecrawlText(url: string): Promise<string> {
-  const apiKey = process.env.FIRECRAWL_API_KEY?.trim();
-  if (!apiKey) return '';
-  try {
-    const response = await fetch('https://api.firecrawl.dev/v1/scrape', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        url,
-        formats: ['markdown'],
-        waitFor: 2000,
-        timeout: 20000,
-        blockAds: true,
-        maxAge: 3600000,
-      }),
-    });
-    if (!response.ok) return '';
-    const data = (await response.json()) as { success?: boolean; data?: { markdown?: string } };
-    return data.data?.markdown?.trim() || '';
-  } catch {
-    return '';
-  }
-}
-
 function tokensFromEvaluate(raw: EvaluateResult): DesignTokens {
   return {
     fontFamily: raw.fontFamily || 'system-ui, sans-serif',
@@ -76,8 +51,11 @@ function tokensFromEvaluate(raw: EvaluateResult): DesignTokens {
   };
 }
 
-export async function capturePage(sourceUrl: string): Promise<PageCapture> {
-  const url = normalizeSourceUrl(sourceUrl);
+export async function capturePage(
+  sourceUrl: string,
+  opts?: { userId?: string },
+): Promise<PageCapture> {
+  const url = (await assertSafeUrl(normalizeSourceUrl(sourceUrl), { userId: opts?.userId })).href;
   const { chromium } = await import('playwright');
   const browser = await chromium.launch({ headless: true });
   try {
@@ -86,10 +64,23 @@ export async function capturePage(sourceUrl: string): Promise<PageCapture> {
       userAgent:
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     });
+    await page.route('**/*', async (route) => {
+      try {
+        await assertSafeUrl(route.request().url(), { userId: opts?.userId });
+        await route.continue();
+      } catch {
+        await route.abort('blockedbyclient');
+      }
+    });
     let response;
     try {
       response = await page.goto(url, { waitUntil: 'networkidle', timeout: WAIT_MS });
     } catch (error) {
+      if (error instanceof UnsafeUrlError) throw error;
+      const message = error instanceof Error ? error.message : '';
+      if (/blockedbyclient|ERR_BLOCKED_BY_CLIENT/i.test(message)) {
+        throw new UnsafeUrlError('private');
+      }
       throw toBlockedAccessError(error);
     }
     const status = response?.status() ?? 0;
@@ -167,19 +158,24 @@ export async function capturePage(sourceUrl: string): Promise<PageCapture> {
     await page.waitForTimeout(200).catch(() => undefined);
     const mobilePng = Buffer.from(await page.screenshot({ type: 'png', fullPage: true }));
 
-    const firecrawlText = await scrapeFirecrawlText(url);
+    // Trusted host — scrapeFirecrawlText does not route through safeFetch.
+    const firecrawl = await scrapeFirecrawlText(url);
     return {
       sourceUrl: url,
       desktopPng,
       mobilePng,
       tokens: tokensFromEvaluate(extracted),
       images: extracted.images.filter((image) => /^https?:\/\//i.test(image.url)),
-      firecrawlText,
+      firecrawlText: firecrawl.ok ? firecrawl.markdown : '',
+      firecrawl,
       capturedAt: new Date(),
     };
   } catch (error) {
     throw toBlockedAccessError(error);
   } finally {
-    await browser.close();
+    // Closing is cleanup: a close failure must not replace the capture error.
+    await browser.close().catch((error) => {
+      console.warn('[import] browser close failed', error);
+    });
   }
 }

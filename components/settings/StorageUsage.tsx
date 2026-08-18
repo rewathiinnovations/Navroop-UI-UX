@@ -44,7 +44,7 @@ export default function StorageUsage() {
         </div>
       ) : null}
       <p className="text-[12px] text-[var(--studio-faint)]">
-        30 din baad apne aap hamesha ke liye delete ho jayega — deleted projects are purged after 30 days.
+        Deleted projects are permanently purged after 30 days.
       </p>
     </section>
   );

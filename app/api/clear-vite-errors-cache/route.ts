@@ -1,10 +1,15 @@
 import { NextResponse } from 'next/server';
+import { jsonError } from '@/lib/api/error-response';
+import { requireSessionUser } from '@/lib/auth';
 
 declare global {
   var viteErrorsCache: { errors: any[], timestamp: number } | null;
 }
 
 export async function POST() {
+  const auth = await requireSessionUser();
+  if (!auth.user) return jsonError(auth.error, 'UNAUTHORIZED', auth.status);
+
   try {
     // Clear the cache
     global.viteErrorsCache = null;

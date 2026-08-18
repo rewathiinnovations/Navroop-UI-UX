@@ -8,10 +8,10 @@
   --studio-surface: #ffffff;
   --studio-surface-hover: #f4f4f5;
   --studio-header-bg: rgb(247 247 248 / 0.86);
-  --studio-accent: #e0315a;
+  --studio-accent: #c92a4e;
   --studio-accent-hover: #c42a4e;
-  --studio-accent-soft: rgba(224, 49, 90, 0.12);
-  --studio-ring: #e0315a;
+  --studio-accent-soft: rgba(201, 42, 78, 0.12);
+  --studio-ring: #c92a4e;
   --studio-cta-fg: #ffffff;
   --studio-danger: #be123c;
   --studio-skeleton: rgba(24, 24, 27, 0.06);
@@ -92,4 +92,38 @@
     transition: none !important;
     animation: none !important;
   }
+}
+
+/* App chrome scroll regions. Global CSS zeros scrollbar size; restore a thin
+   thumb here so sidebar + main can actually be scrolled on Windows. */
+.studio-shell .studio-scroll {
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(24, 24, 27, 0.28) transparent;
+}
+
+.dark .studio-shell .studio-scroll {
+  scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
+}
+
+.studio-shell .studio-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.studio-shell .studio-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.studio-shell .studio-scroll::-webkit-scrollbar-thumb {
+  background-color: rgba(24, 24, 27, 0.22);
+  border-radius: 99px;
+}
+
+.dark .studio-shell .studio-scroll::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.22);
 }

@@ -11,6 +11,9 @@ export type ListProject = {
   ownerId: string;
   owner?: { name: string | null; avatarUrl?: string | null } | null;
   starred?: boolean;
+  liveUrl?: string | null;
+  previewUrl?: string | null;
+  publishBadge?: 'draft' | 'preview' | 'live';
 };
 
 export type ProjectListQuery = {

@@ -25,6 +25,10 @@ async function readJson(response: Response) {
     checkpoints?: CheckpointPayload[];
     checkpoint?: CheckpointPayload;
     error?: string;
+    code?: string;
+    heldBy?: { name?: string };
+    expiresAt?: string;
+    details?: { code?: string; heldBy?: { name?: string }; expiresAt?: string };
   } | null;
 }
 
@@ -76,6 +80,11 @@ export async function restoreCheckpoint(projectId: string, checkpointId: string)
   });
   const data = await readJson(response);
   if (!response.ok) {
+    if (response.status === 409) {
+      const { emitLockConflict, parseLockConflict } = await import('@/lib/projects/lock-client');
+      const conflict = parseLockConflict(409, data);
+      if (conflict) emitLockConflict(conflict);
+    }
     throw new Error(data?.error || 'Could not restore this version');
   }
   return data?.checkpoint ? toCheckpoint(data.checkpoint) : null;

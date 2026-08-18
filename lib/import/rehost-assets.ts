@@ -1,3 +1,4 @@
+import { safeFetch } from '../security/safe-fetch.ts';
 import type { CapturedImage, RehostResult, RehostedAsset } from './types.ts';
 
 export const MAX_REHOST_BYTES = 10 * 1024 * 1024;
@@ -20,11 +21,12 @@ function altFromUrl(url: string, fallback?: string) {
 
 export async function rehostImportAssets(input: {
   projectId: string;
+  userId?: string;
   images: CapturedImage[];
   fetchImpl?: typeof fetch;
   persist?: (buffer: Buffer, altText: string, sourceUrl: string) => Promise<RehostedAsset>;
 }): Promise<RehostResult> {
-  const fetchImpl = input.fetchImpl ?? fetch;
+  const fetchImpl = input.fetchImpl;
   const persist =
     input.persist ??
     (async (buffer: Buffer, altText: string, sourceUrl: string) => {
@@ -58,7 +60,9 @@ export async function rehostImportAssets(input: {
       continue;
     }
     try {
-      const response = await fetchImpl(sourceUrl, { redirect: 'follow' });
+      const response = fetchImpl
+        ? await fetchImpl(sourceUrl, { redirect: 'manual' })
+        : await safeFetch(sourceUrl, { userId: input.userId });
       if (!response.ok) {
         warnings.push(`skipped ${sourceUrl} (${response.status})`);
         continue;
@@ -75,8 +79,9 @@ export async function rehostImportAssets(input: {
       }
       const asset = await persist(buffer, altFromUrl(sourceUrl, image.alt), sourceUrl);
       assets.push(asset);
-    } catch {
-      warnings.push(`skipped ${sourceUrl} (fetch failed)`);
+    } catch (error) {
+      const detail = error instanceof Error && error.message ? error.message : 'fetch failed';
+      warnings.push(`skipped ${sourceUrl} (fetch failed: ${detail})`);
     }
   }
 

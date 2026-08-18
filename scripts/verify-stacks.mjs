@@ -32,13 +32,19 @@ const nextPrompt = readFileSync(new URL('../lib/stack-prompts/nextjs.ts', import
 const htmlPrompt = readFileSync(new URL('../lib/stack-prompts/static-html.ts', import.meta.url), 'utf8');
 const genRoute = readFileSync(new URL('../app/api/generate-ai-code-stream/route.ts', import.meta.url), 'utf8');
 const e2b = readFileSync(new URL('../lib/sandbox/providers/e2b-provider.ts', import.meta.url), 'utf8');
-const vercel = readFileSync(new URL('../lib/sandbox/providers/vercel-provider.ts', import.meta.url), 'utf8');
+const injected = readFileSync(new URL('../lib/sandbox/providers/injected-base.ts', import.meta.url), 'utf8');
+const modal = readFileSync(new URL('../lib/sandbox/providers/modal-provider.ts', import.meta.url), 'utf8');
+const daytona = readFileSync(new URL('../lib/sandbox/providers/daytona-provider.ts', import.meta.url), 'utf8');
 const planSrc = readFileSync(new URL('../lib/projects/plan.ts', import.meta.url), 'utf8');
 const stackSetup = readFileSync(new URL('../lib/sandbox/stack-setup.ts', import.meta.url), 'utf8');
 const stackResolve = readFileSync(new URL('../lib/stack-resolve.ts', import.meta.url), 'utf8');
 const applyRoute = readFileSync(new URL('../app/api/apply-ai-code-stream/route.ts', import.meta.url), 'utf8');
-const filesRoute = readFileSync(new URL('../app/api/get-sandbox-files/route.ts', import.meta.url), 'utf8');
+// GET /api/get-sandbox-files is a thin wrapper; the manifest work lives here.
+const filesRoute = readFileSync(new URL('../lib/sandbox/read-files.ts', import.meta.url), 'utf8');
 const createSandbox = readFileSync(new URL('../app/api/create-ai-sandbox-v2/route.ts', import.meta.url), 'utf8');
+// POST /api/create-ai-sandbox-v2 delegates to bootEphemeralSandbox, so the
+// stack has to survive that hop as well as the route's own resolution.
+const sandboxManager = readFileSync(new URL('../lib/sandbox/manager.ts', import.meta.url), 'utf8');
 const nextScaffold = readFileSync(new URL('../lib/stacks/templates/nextjs.ts', import.meta.url), 'utf8');
 const vueScaffold = readFileSync(new URL('../lib/stacks/templates/vue.ts', import.meta.url), 'utf8');
 const svelteScaffold = readFileSync(new URL('../lib/stacks/templates/svelte.ts', import.meta.url), 'utf8');
@@ -71,18 +77,22 @@ check('VUE frameworkPackages vue not react', /VUE:[\s\S]*?frameworkPackages: \['
 check('STATIC_HTML frameworkPackages empty', /STATIC_HTML:[\s\S]*?frameworkPackages: \[\]/.test(stacksSrc));
 check('Nuxt stays TODO', stacksSrc.includes('TODO(nuxt)') && vueScaffold.includes('TODO(nuxt)'));
 check('E2B createSandbox uses registry template', e2b.includes('getSandboxTemplate') && e2b.includes('Sandbox.create(template.e2b'));
-check('Vercel createSandbox uses registry runtime', vercel.includes('getSandboxTemplate') && vercel.includes('template.vercelRuntime'));
+check('Modal and Daytona drivers exist', modal.includes('ModalProvider') && daytona.includes('DaytonaProvider'));
 check('E2B REACT path still vite --host', e2b.includes('"dev": "vite --host"') && e2b.includes('react-dom'));
-check('Vercel REACT path still vite --host', vercel.includes('dev: "vite --host"') && vercel.includes('react-dom'));
-check('non-REACT setup writes stackScaffoldFiles', e2b.includes('stackScaffoldFiles') && vercel.includes('stackScaffoldFiles') && stackSetup.includes('getStackScaffold'));
+check('injected drivers use stack scaffold', injected.includes('stackScaffoldFiles') && injected.includes('setupViteApp'));
+check('non-REACT setup writes stackScaffoldFiles', e2b.includes('stackScaffoldFiles') && stackSetup.includes('getStackScaffold'));
 check('NEXTJS scaffold has app/page.tsx', nextScaffold.includes("path: 'app/page.tsx'") && nextScaffold.includes("path: 'app/layout.tsx'"));
 check('ASTRO scaffold has src/pages/index.astro', astroScaffold.includes("path: 'src/pages/index.astro'"));
 check('VUE scaffold is Vite not Nuxt', vueScaffold.includes('@vitejs/plugin-vue') && !vueScaffold.includes('nuxt.config'));
 check('SVELTE scaffold has +page.svelte', svelteScaffold.includes("path: 'src/routes/+page.svelte'"));
 check('apply skip list is registry-driven', applyRoute.includes('shouldSkipPackageInstall') && applyRoute.includes('isStackConfigFile'));
 check('apply does not hardcode react skip only', !applyRoute.includes("pkg !== 'react' && pkg !== 'react-dom'"));
-check('get-sandbox-files uses extractStackRoutes', filesRoute.includes('extractStackRoutes') && routesSrc.includes('extractNextAppRoutes'));
-check('create-sandbox passes stack to provider', createSandbox.includes('createSandbox(stackDef.id)'));
+check('readSandboxFiles uses extractStackRoutes', filesRoute.includes('extractStackRoutes') && routesSrc.includes('extractNextAppRoutes'));
+check(
+  'create-sandbox passes stack to provider',
+  createSandbox.includes('bootEphemeralSandbox(stackDef.id)') &&
+    sandboxManager.includes('provider.createSandbox(definition.id)'),
+);
 check('resolveRequestStack projectId first', /if \(typeof input\.projectId === 'string' && input\.projectId\)/.test(stackResolve) && stackResolve.includes('always load Project.stack'));
 
 const omitted = createProjectSchema.safeParse({ initialPrompt: 'Build a site' });

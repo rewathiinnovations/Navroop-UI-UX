@@ -16,6 +16,7 @@ import { isDevQuickLoginEnabled } from "@/lib/dev-quick-login";
 import { validateEmail } from "@/lib/email";
 import { safeNextPath } from "@/lib/auth/public-login";
 import { createProjectFromPrompt } from "@/lib/projects/start-from-prompt";
+import { TERMS_REQUIRED_MESSAGE } from "@/lib/legal/terms";
 import {
   PENDING_PROMPT_KEY,
   clearDraftStorage,
@@ -30,6 +31,8 @@ type AuthModalProps = {
   onModeChange: (mode: AuthMode) => void;
   onClose: () => void;
   nextPath?: string | null;
+  initialForgot?: boolean;
+  resetSuccess?: boolean;
 };
 
 const DUPLICATE_EMAIL =
@@ -41,6 +44,8 @@ export default function AuthModal({
   onModeChange,
   onClose,
   nextPath,
+  initialForgot = false,
+  resetSuccess = false,
 }: AuthModalProps) {
   const router = useRouter();
   const titleId = useId();
@@ -52,6 +57,13 @@ export default function AuthModal({
   const [duplicateEmail, setDuplicateEmail] = useState(false);
   const [loading, setLoading] = useState(false);
   const [quickRole, setQuickRole] = useState<"admin" | "member" | null>(null);
+  const [panel, setPanel] = useState<"auth" | "forgot" | "forgot-sent">(
+    initialForgot ? "forgot" : "auth",
+  );
+  const [info, setInfo] = useState(
+    resetSuccess ? "Password updated — sign in" : "",
+  );
+  const [acceptTerms, setAcceptTerms] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -60,7 +72,10 @@ export default function AuthModal({
     setPassword("");
     setLoading(false);
     setQuickRole(null);
-  }, [open, mode]);
+    setPanel(initialForgot ? "forgot" : "auth");
+    setInfo(resetSuccess ? "Password updated — sign in" : "");
+    setAcceptTerms(false);
+  }, [open, mode, initialForgot, resetSuccess]);
 
   const finishAuthenticated = async () => {
     const draft = readDraftStorage(PENDING_PROMPT_KEY);
@@ -110,6 +125,10 @@ export default function AuthModal({
       setError("Password must be at least 8 characters");
       return;
     }
+    if (mode === "signup" && !acceptTerms) {
+      setError(TERMS_REQUIRED_MESSAGE);
+      return;
+    }
     if (!password) {
       setError("Password is required");
       return;
@@ -125,6 +144,7 @@ export default function AuthModal({
             name: trimmedName,
             email: trimmedEmail,
             password,
+            acceptTerms,
           }),
         });
         const data = await response.json().catch(() => ({}));
@@ -151,6 +171,29 @@ export default function AuthModal({
       await finishAuthenticated();
     } catch {
       setError(mode === "login" ? "Could not sign in" : "Could not create account");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const onForgotSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    setError("");
+    const trimmedEmail = email.trim().toLowerCase();
+    if (!validateEmail(trimmedEmail)) {
+      setError("Enter a valid email address");
+      return;
+    }
+    setLoading(true);
+    try {
+      await fetch("/api/auth/forgot-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: trimmedEmail }),
+      });
+      setPanel("forgot-sent");
+    } catch {
+      setPanel("forgot-sent");
     } finally {
       setLoading(false);
     }
@@ -192,12 +235,18 @@ export default function AuthModal({
               id={titleId}
               className="text-[22px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]"
             >
-              {mode === "signup" ? "Create your account" : "Welcome back"}
+              {panel !== "auth"
+                ? "Password reset"
+                : mode === "signup"
+                  ? "Create your account"
+                  : "Welcome back"}
             </DialogTitle>
             <DialogDescription className="mt-6 text-[14px] leading-5 text-[var(--studio-muted)]">
-              {mode === "signup"
-                ? "Save your prompt and start building in the studio."
-                : "Sign in to open your projects and keep building."}
+              {panel !== "auth"
+                ? "We'll send a reset link to the registered email."
+                : mode === "signup"
+                  ? "Save your prompt and start building in the studio."
+                  : "Sign in to open your projects and keep building."}
             </DialogDescription>
           </div>
           <button
@@ -210,6 +259,46 @@ export default function AuthModal({
           </button>
         </div>
 
+        {panel !== "auth" ? (
+          <form onSubmit={onForgotSubmit} className="space-y-14">
+            <StudioField
+              id="forgot-email"
+              label="Email"
+              type="email"
+              autoComplete="email"
+              required
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              placeholder="you@studio.com"
+            />
+            {error && (
+              <p className="flex items-start gap-8 text-[13px] text-[var(--studio-danger)]" role="alert">
+                <CircleAlert className="size-16 mt-2 shrink-0" aria-hidden />
+                <span>{error}</span>
+              </p>
+            )}
+            {panel === "forgot-sent" && (
+              <p className="text-[13px] leading-5 text-[var(--studio-fg)]" role="status">
+                If this email is registered, a link has been sent. Check inbox and spam.
+              </p>
+            )}
+            {panel === "forgot" && (
+              <StudioButton type="submit" variant="inverted" className="w-full" disabled={loading}>
+                {loading ? "Sending…" : "Send reset link"}
+              </StudioButton>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                setPanel("auth");
+                setError("");
+              }}
+              className="w-full text-center text-[13px] font-medium text-[var(--studio-fg)] underline underline-offset-2 cursor-pointer"
+            >
+              Back to sign in
+            </button>
+          </form>
+        ) : (
         <form onSubmit={onSubmit} className="space-y-14">
           {mode === "signup" && (
             <StudioField
@@ -243,6 +332,44 @@ export default function AuthModal({
             onChange={(event) => setPassword(event.target.value)}
             placeholder={mode === "signup" ? "At least 8 characters" : "Your password"}
           />
+          {mode === "signup" && (
+            <label className="flex items-start gap-10 text-[13px] leading-5 text-[var(--studio-fg)]">
+              <input
+                type="checkbox"
+                checked={acceptTerms}
+                onChange={(event) => setAcceptTerms(event.target.checked)}
+                className="mt-2 size-16"
+                required
+              />
+              <span>
+                I agree to the{" "}
+                <a href="/terms" target="_blank" rel="noreferrer" className="underline underline-offset-2">
+                  Terms
+                </a>{" "}
+                and{" "}
+                <a href="/privacy" target="_blank" rel="noreferrer" className="underline underline-offset-2">
+                  Privacy Policy
+                </a>
+              </span>
+            </label>
+          )}
+          {mode === "login" && (
+            <button
+              type="button"
+              onClick={() => {
+                setPanel("forgot");
+                setError("");
+              }}
+              className="text-[13px] font-medium text-[var(--studio-fg)] underline underline-offset-2 cursor-pointer"
+            >
+              Forgot password?
+            </button>
+          )}
+          {info && (
+            <p className="text-[13px] leading-5 text-[var(--studio-fg)]" role="status">
+              {info}
+            </p>
+          )}
 
           {error && (
             <p
@@ -278,8 +405,9 @@ export default function AuthModal({
                 : "Log in"}
           </StudioButton>
         </form>
+        )}
 
-        {mode === "login" && showQuickLogin && (
+        {panel === "auth" && mode === "login" && showQuickLogin && (
           <div className="mt-16 space-y-8">
             <div className="flex items-center gap-12">
               <div className="h-px flex-1 bg-[var(--studio-line)]" />
@@ -309,6 +437,7 @@ export default function AuthModal({
           </div>
         )}
 
+        {panel === "auth" && (
         <p className="mt-18 text-center text-[13px] text-[var(--studio-muted)]">
           {mode === "signup" ? "Already have an account?" : "New to Navroop?"}{" "}
           <button
@@ -319,6 +448,7 @@ export default function AuthModal({
             {mode === "signup" ? "Log in" : "Sign up"}
           </button>
         </p>
+        )}
       </DialogContent>
     </Dialog>
   );

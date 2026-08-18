@@ -14,13 +14,91 @@ import {
   shouldSkipPackageInstall,
 } from '@/lib/stacks';
 import { fulfillNeedImages } from '@/lib/assets/fulfill';
-import { getSessionUser } from '@/lib/auth';
+import { getSessionUser, requireSessionUser } from '@/lib/auth';
+import { jsonError } from '@/lib/api/error-response';
+import { installPackages } from '@/lib/sandbox/install-packages';
+import { acquireLock, beginLockHeartbeat, releaseLock } from '@/lib/projects/lock';
+import { lockConflictJson } from '@/lib/projects/lock-http';
+import { beginJobHeartbeat, createOrReuseJob, failJob, markJobRunning, succeedJob } from '@/lib/jobs/lifecycle';
+import { ensureJobSettled } from '@/lib/jobs/settle';
+import { applyOutcome } from '@/lib/jobs/copy';
+import { assertWritableGenerationFile } from '@/lib/generation/write-guard';
+import { recordJobStepFailure } from '@/lib/jobs/step-failure';
+import { log } from '@/lib/logger';
+import { WORKSPACE_ROW_ID } from '@/lib/storage/usage';
+import { getRequestId } from '@/lib/request-context';
 
 declare global {
   var conversationState: ConversationState | null;
   var activeSandboxProvider: any;
   var existingFiles: Set<string>;
   var sandboxState: SandboxState;
+}
+
+/**
+ * Reports a terminal job write that failed, instead of discarding it.
+ *
+ * The chat's busy state follows the job row, so a lost settle is an apply that hangs: the
+ * input stays locked and the building indicator keeps spinning until the 20-minute hard
+ * timeout. `.catch(() => undefined)` kept the `finally` from throwing and threw the
+ * diagnosis away with it.
+ *
+ * Never throws, so a settle failure cannot replace the error the caller is already
+ * unwinding with, and cannot skip the rest of the cleanup.
+ */
+async function reportSettleFailure(input: {
+  jobId: string;
+  intended: 'succeeded' | 'failed';
+  error: unknown;
+}): Promise<void> {
+  const detail = input.error instanceof Error ? input.error.message : String(input.error);
+  const summary = `Could not record the final job status (${input.intended}): ${detail}`;
+  try {
+    log.error('apply.settle_write_failed', {
+      jobId: input.jobId,
+      intended: input.intended,
+      error: detail,
+    });
+    // Puts it in front of a human: the workspace recovery panel and /admin/jobs both read
+    // job steps. Never throws.
+    await recordJobStepFailure(input.jobId, {
+      key: 'settle-job',
+      label: 'Record the final job status',
+      error: summary,
+    });
+    // A much simpler write than succeedJob's raw-SQL phase update, so it can still land
+    // when that one could not — and it reports its own verdict either way.
+    const outcome = await ensureJobSettled(input.jobId, {
+      errorCode: 'settle_write_failed',
+      errorMessage: summary,
+    });
+    log.warn('apply.settle_write_fallback', { jobId: input.jobId, outcome });
+  } catch (reportError) {
+    console.error('[apply-ai-code-stream] Failed to report a lost settle:', summary, reportError);
+  }
+}
+
+/**
+ * Settles the job on a path that answers with an error the user will read.
+ *
+ * Every early `return` in this handler is a response the user sees immediately. Leaving the
+ * job RUNNING behind one of them means the chat input stays locked and still says
+ * "Building — hang tight" on top of a 409 the user has already read, until the reaper
+ * notices the stopped heartbeat about a minute later. Settling here removes that minute.
+ *
+ * Never throws: a bookkeeping failure must not replace the answer we are about to send.
+ */
+async function failApplyJob(
+  jobId: string | null,
+  errorCode: string,
+  errorMessage: string,
+): Promise<void> {
+  if (!jobId) return;
+  try {
+    await failJob(jobId, { errorCode, errorMessage });
+  } catch (settleError) {
+    await reportSettleFailure({ jobId, intended: 'failed', error: settleError });
+  }
 }
 
 interface ParsedResponse {
@@ -267,6 +345,15 @@ function parseAIResponse(response: string, stack: string): ParsedResponse {
 }
 
 export async function POST(request: NextRequest) {
+  // Writes files into the active sandbox, so a session is required even when
+  // the caller sends no projectId (the lock/job branch below is project-scoped).
+  const auth = await requireSessionUser();
+  if (!auth.user) return jsonError(auth.error, 'UNAUTHORIZED', auth.status);
+
+  let releaseApplyLock: (() => Promise<void>) | null = null;
+  let applyJobId: string | null = null;
+  let applyJobHeartbeat: { stop: () => void } | null = null;
+  let applyFailed = false;
   try {
     const {
       response,
@@ -278,7 +365,41 @@ export async function POST(request: NextRequest) {
     } = await request.json();
     let sandboxId = requestSandboxId;
 
+    const lockProjectId = typeof projectId === 'string' ? projectId.trim() : '';
+    if (lockProjectId) {
+      const sessionUser = await getSessionUser();
+      if (!sessionUser) {
+        return NextResponse.json({ error: 'Sign in required' }, { status: 401 });
+      }
+      const lock = await acquireLock(lockProjectId, sessionUser.id, 'generation');
+      if (!lock.ok) return lockConflictJson(lock);
+      const heartbeat = beginLockHeartbeat(lockProjectId, sessionUser.id);
+      const applyJob = await createOrReuseJob({
+        projectId: lockProjectId,
+        workspaceId: WORKSPACE_ROW_ID,
+        userId: sessionUser.id,
+        kind: 'FOLLOWUP',
+        inputPrompt: typeof response === 'string' ? response.slice(0, 2000) : null,
+        requestId: getRequestId(),
+      });
+      if (applyJob.status === 'QUEUED') {
+        await markJobRunning(applyJob.id, { chargeCredits: true, acquireProjectLock: false });
+      }
+      applyJobId = applyJob.id;
+      // Tied to the request: a live heartbeat hides the row from the staleness reaper, so a
+      // client that disconnects must stop vouching for work nobody is reading.
+      applyJobHeartbeat = beginJobHeartbeat(applyJob.id, { signal: request.signal });
+      releaseApplyLock = async () => {
+        heartbeat.stop();
+        applyJobHeartbeat?.stop();
+        await releaseLock(lockProjectId, sessionUser.id);
+        releaseApplyLock = null;
+      };
+    }
+
     if (!response) {
+      await failApplyJob(applyJobId, 'provider_error', 'The request did not include any AI response to apply.');
+      await releaseApplyLock?.();
       return NextResponse.json({
         error: 'response is required'
       }, { status: 400 });
@@ -344,6 +465,16 @@ export async function POST(request: NextRequest) {
       } catch (providerError) {
         const boot = providerError instanceof SandboxBootError ? providerError : null;
         console.error(`[apply-ai-code-stream] ensureSandbox failed:`, providerError);
+        await failApplyJob(
+          applyJobId,
+          'sandbox_unavailable',
+          boot?.code === 'NO_CHECKPOINT'
+            ? 'This project has no saved snapshot to start a workspace from, so the changes could not be applied.'
+            : `The workspace for this project could not be started, so the changes could not be applied. ${
+                providerError instanceof Error ? providerError.message : 'Failed to start sandbox'
+              }`,
+        );
+        await releaseApplyLock?.();
         return NextResponse.json({
           success: false,
           error: providerError instanceof Error ? providerError.message : 'Failed to start sandbox',
@@ -365,6 +496,12 @@ export async function POST(request: NextRequest) {
     }
 
     if (!provider) {
+      await failApplyJob(
+        applyJobId,
+        'sandbox_unavailable',
+        'No workspace is running for this project, so the changes could not be applied. Open the project so it can start from its latest snapshot, then try again.',
+      );
+      await releaseApplyLock?.();
       return NextResponse.json({
         success: false,
         error: 'No active sandbox. Open the project so it can cold-start from the latest checkpoint.',
@@ -386,10 +523,46 @@ export async function POST(request: NextRequest) {
     const stream = new TransformStream();
     const writer = stream.writable.getWriter();
 
+    // A TransformStream writable has highWaterMark 1, so a reader that stops consuming but
+    // is not yet torn down parks `writer.write` forever — and a parked producer never reaches
+    // its `finally`, which is what leaves the job RUNNING until the 20-minute timeout.
+    // Racing each write against the request's abort is what lets it unwind.
+    let clientDisconnected = false;
+    let clientDisconnectReason: string | null = null;
+    const noteClientDisconnected = (reason: string) => {
+      if (clientDisconnected) return;
+      clientDisconnected = true;
+      clientDisconnectReason = reason;
+      log.warn('apply.client_disconnected', { jobId: applyJobId, reason });
+    };
+    if (request.signal.aborted) {
+      noteClientDisconnected('request was already aborted when streaming started');
+    }
+    request.signal.addEventListener('abort', () => noteClientDisconnected('request aborted'), {
+      once: true,
+    });
+    const clientGone = new Promise<void>((resolve) => {
+      if (request.signal.aborted) {
+        resolve();
+        return;
+      }
+      request.signal.addEventListener('abort', () => resolve(), { once: true });
+    });
+
     // Function to send progress updates
-    const sendProgress = async (data: any) => {
-      const message = `data: ${JSON.stringify(data)}\n\n`;
-      await writer.write(encoder.encode(message));
+    const sendProgress = async (data: Record<string, unknown>) => {
+      if (clientDisconnected) return;
+      // The catch is attached before the race, so the write we walk away from cannot surface
+      // later as an unhandled rejection. Non-throwing on purpose: this used to throw out of
+      // the error handler below, which then skipped `applyFailed` and marked a failed apply
+      // SUCCEEDED. Unlike generation, the work itself still runs to completion — a
+      // half-written sandbox is worse than an unwatched one.
+      const written = writer
+        .write(encoder.encode(`data: ${JSON.stringify(data)}\n\n`))
+        .catch((error: unknown) =>
+          noteClientDisconnected(error instanceof Error ? error.message : String(error)),
+        );
+      await Promise.race([written, clientGone]);
     };
 
     // Start processing in background (pass provider and request to the async function)
@@ -446,55 +619,46 @@ export async function POST(request: NextRequest) {
             packages: uniquePackages
           });
 
-          // Use streaming package installation
+          // Install packages, forwarding each progress event into this stream.
           try {
-            // Construct the API URL properly for both dev and production
-            const protocol = process.env.NODE_ENV === 'production' ? 'https' : 'http';
-            const host = req.headers.get('host') || 'localhost:3000';
-            const apiUrl = `${protocol}://${host}/api/install-packages`;
-
-            const installResponse = await fetch(apiUrl, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                packages: uniquePackages,
-                sandboxId: sandboxId || providerInstance.getSandboxInfo()?.sandboxId
-              })
+            const installResult = await installPackages({
+              packages: uniquePackages,
+              onProgress: async (event) => {
+                // Forwarded verbatim. The previous `{ type: 'package-progress',
+                // ...data }` spread let the install event's own `type` win, and
+                // the client switches on those inner types.
+                await sendProgress({ ...event });
+                if (event.type === 'success' && event.installedPackages) {
+                  results.packagesInstalled = event.installedPackages;
+                }
+              },
             });
 
-            if (installResponse.ok && installResponse.body) {
-              const reader = installResponse.body.getReader();
-              const decoder = new TextDecoder();
-
-              while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-
-                const chunk = decoder.decode(value);
-                if (!chunk) continue;
-                const lines = chunk.split('\n');
-
-                for (const line of lines) {
-                  if (line.startsWith('data: ')) {
-                    try {
-                      const data = JSON.parse(line.slice(6));
-
-                      // Forward package installation progress
-                      await sendProgress({
-                        type: 'package-progress',
-                        ...data
-                      });
-
-                      // Track results
-                      if (data.type === 'success' && data.installedPackages) {
-                        results.packagesInstalled = data.installedPackages;
-                      }
-                    } catch (parseError) {
-                      console.debug('Error parsing terminal output:', parseError);
-                    }
-                  }
-                }
-              }
+            if (!installResult.ok) {
+              // Log and continue, which is what this route already did. The
+              // files are worth writing even without their dependencies: the
+              // user sees a resolve error in the preview and can retry the
+              // install, whereas aborting discards the whole generation.
+              console.error('[apply-ai-code-stream] Package installation failed:', installResult.error);
+              await sendProgress({
+                type: 'warning',
+                message: `Package installation failed (${installResult.error}). Continuing with file creation...`,
+              });
+              results.errors.push(`Package installation failed: ${installResult.error}`);
+              await recordJobStepFailure(applyJobId, {
+                key: 'install-packages',
+                label: 'Install packages',
+                error: installResult.error,
+              });
+            } else if (!installResult.previewReady && installResult.previewNotice) {
+              // Packages and files are still kept. A dead preview is not a
+              // failed apply — record it so recovery /admin/jobs can see it.
+              results.errors.push(installResult.previewNotice);
+              await recordJobStepFailure(applyJobId, {
+                key: 'restart-dev',
+                label: 'Restart the preview',
+                error: installResult.previewNotice,
+              });
             }
           } catch (error) {
             console.error('[apply-ai-code-stream] Error installing packages:', error);
@@ -503,6 +667,11 @@ export async function POST(request: NextRequest) {
               message: `Package installation skipped (${(error as Error).message}). Continuing with file creation...`
             });
             results.errors.push(`Package installation failed: ${(error as Error).message}`);
+            await recordJobStepFailure(applyJobId, {
+              key: 'install-packages',
+              label: 'Install packages',
+              error: (error as Error).message,
+            });
           }
         } else {
           await sendProgress({
@@ -571,12 +740,22 @@ export async function POST(request: NextRequest) {
                   const msg = result.error || 'Unknown Morph error';
                   console.error('[apply-ai-code-stream] Morph apply failed for', edit.targetFile, msg);
                   if (results.errors) results.errors.push(`Morph apply failed for ${edit.targetFile}: ${msg}`);
+                  await recordJobStepFailure(applyJobId, {
+                    key: `write-file:${edit.targetFile}`,
+                    label: `Write ${edit.targetFile}`,
+                    error: msg,
+                  });
                   await sendProgress({ type: 'file-error', fileName: edit.targetFile, error: msg });
                 }
               } catch (err) {
                 const msg = (err as Error).message;
                 console.error('[apply-ai-code-stream] Morph apply exception for', edit.targetFile, msg);
                 if (results.errors) results.errors.push(`Morph apply exception for ${edit.targetFile}: ${msg}`);
+                await recordJobStepFailure(applyJobId, {
+                  key: `write-file:${edit.targetFile}`,
+                  label: `Write ${edit.targetFile}`,
+                  error: msg,
+                });
                 await sendProgress({ type: 'file-error', fileName: edit.targetFile, error: msg });
               }
             }
@@ -611,8 +790,12 @@ export async function POST(request: NextRequest) {
               action: 'creating'
             });
 
+            const writable = assertWritableGenerationFile({
+              path: file.path,
+              content: file.content,
+            });
             // Normalize the file path
-            let normalizedPath = file.path;
+            let normalizedPath = writable.path;
             if (normalizedPath.startsWith('/')) {
               normalizedPath = normalizedPath.substring(1);
             }
@@ -627,7 +810,7 @@ export async function POST(request: NextRequest) {
             const isUpdate = global.existingFiles.has(normalizedPath);
 
             // Remove any CSS imports from JSX/JS files (we're using Tailwind)
-            let fileContent = file.content;
+            let fileContent = writable.content;
             if (file.path.endsWith('.jsx') || file.path.endsWith('.js') || file.path.endsWith('.tsx') || file.path.endsWith('.ts')) {
               fileContent = fileContent.replace(/import\s+['"]\.\/[^'"]+\.css['"];?\s*\n?/g, '');
             }
@@ -671,13 +854,19 @@ export async function POST(request: NextRequest) {
               action: isUpdate ? 'updated' : 'created'
             });
           } catch (error) {
+            const message = (error as Error).message;
             if (results.errors) {
-              results.errors.push(`Failed to create ${file.path}: ${(error as Error).message}`);
+              results.errors.push(`Failed to create ${file.path}: ${message}`);
             }
+            await recordJobStepFailure(applyJobId, {
+              key: `write-file:${file.path}`,
+              label: `Write ${file.path}`,
+              error: message,
+            });
             await sendProgress({
               type: 'file-error',
               fileName: file.path,
-              error: (error as Error).message
+              error: message
             });
           }
         }
@@ -749,13 +938,22 @@ export async function POST(request: NextRequest) {
           }
         }
 
-        // Send final results
+        // Send final results. File-write misses get a warning frame so the
+        // workspace chat (which ignores complete.message) sees the same sentence.
+        const outcome = applyOutcome({
+          filesCreated: results.filesCreated,
+          filesUpdated: results.filesUpdated,
+          errors: results.errors,
+        });
+        if (outcome.warning) {
+          await sendProgress({ type: 'warning', message: outcome.warning });
+        }
         await sendProgress({
           type: 'complete',
           results,
           explanation: parsed.explanation,
           structure: parsed.structure,
-          message: `Successfully applied ${results.filesCreated.length} files`
+          message: outcome.message
         });
 
         // Track applied files in conversation state
@@ -784,14 +982,61 @@ export async function POST(request: NextRequest) {
         }
 
       } catch (error) {
-        await sendProgress({
-          type: 'error',
-          error: (error as Error).message
-        });
+        // Set before anything that can throw. When `sendProgress` still threw on a dead
+        // stream, this line was skipped and the `finally` below marked a failed apply
+        // SUCCEEDED.
+        applyFailed = true;
+        const message = error instanceof Error ? error.message : String(error);
+        await sendProgress({ type: 'error', error: message });
+        if (applyJobId) {
+          try {
+            await failJob(applyJobId, {
+              errorCode: 'provider_error',
+              errorMessage: message,
+            });
+          } catch (settleError) {
+            await reportSettleFailure({ jobId: applyJobId, intended: 'failed', error: settleError });
+          }
+        }
       } finally {
-        await writer.close();
+        // Order matters. `writer.close()` rejects when the readable was cancelled, and it
+        // used to sit ahead of the lock release — which is also what stops both heartbeats,
+        // so a disconnect left the project lock renewing itself every 60 seconds and the job
+        // heartbeat vouching for work nobody was watching. Cleanup that must happen runs
+        // first; the close is last and cannot skip anything.
+        applyJobHeartbeat?.stop();
+        if (applyJobId && !applyFailed) {
+          try {
+            await succeedJob(applyJobId);
+          } catch (settleError) {
+            await reportSettleFailure({
+              jobId: applyJobId,
+              intended: 'succeeded',
+              error: settleError,
+            });
+          }
+        }
+        // Last-resort terminal write. A no-op unless the work was torn down rather than
+        // finished or thrown, which is the one case neither branch above covers.
+        await ensureJobSettled(applyJobId, {
+          errorCode: 'client_disconnected',
+          errorMessage: clientDisconnectReason
+            ? `Client disconnected before the apply finished (${clientDisconnectReason})`
+            : 'Client disconnected before the apply finished',
+        });
+        await releaseApplyLock?.();
+        // Deliberately not awaited: `close()` waits for queued chunks to drain and a client
+        // that stopped reading never drains them, so awaiting it would park the handler all
+        // over again just past the settle.
+        void writer.close().catch(() => undefined);
       }
-    })(provider, request);
+    })(provider, request).catch((error: unknown) => {
+      // The IIFE is detached, so anything escaping it is an unhandled rejection.
+      log.error('apply.detached_work_failed', {
+        jobId: applyJobId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
 
     // Return the stream
     return new Response(stream.readable, {
@@ -803,10 +1048,14 @@ export async function POST(request: NextRequest) {
     });
 
   } catch (error) {
-    console.error('Apply AI code stream error:', error);
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to parse AI code' },
-      { status: 500 }
-    );
+    // Anything thrown after the job row exists used to leave it RUNNING, so the chat stayed
+    // locked until the reaper noticed the stopped heartbeat. Settle it here instead.
+    applyJobHeartbeat?.stop();
+    await ensureJobSettled(applyJobId, {
+      errorCode: 'provider_error',
+      errorMessage: error instanceof Error ? error.message : 'Failed to parse AI code',
+    });
+    await releaseApplyLock?.();
+    return jsonError(error instanceof Error ? error.message : 'Failed to parse AI code', 'APPLY_FAILED', 500);
   }
 }

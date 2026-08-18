@@ -41,7 +41,10 @@ export async function PATCH(
   if (hasGenerationFields(generation)) {
     const persisted = await persistProjectGeneration(id, generation);
     if (!persisted.ok) return actionError(persisted);
-    return NextResponse.json({ project: persisted.data });
+    return NextResponse.json({
+      project: persisted.data,
+      previewNotice: persisted.previewNotice ?? null,
+    });
   }
 
   if (wantsProductUpdate) {

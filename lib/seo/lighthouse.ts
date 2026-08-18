@@ -64,7 +64,8 @@ export async function runLighthouseSeo(previewUrl: string): Promise<SeoFinding[]
       logLevel: 'error',
     })) as LighthouseResult | undefined;
     return findingsFromLighthouse(result);
-  } catch {
+  } catch (error) {
+    console.warn('[seo] lighthouse run failed', error);
     return [
       finding({
         id: 'lighthouse:unavailable',
@@ -76,6 +77,9 @@ export async function runLighthouseSeo(previewUrl: string): Promise<SeoFinding[]
       }),
     ];
   } finally {
-    await browser?.close().catch(() => undefined);
+    // A Chromium we failed to close stays resident on the server — never silent.
+    await browser?.close().catch((error) => {
+      console.warn('[seo] lighthouse browser close failed', error);
+    });
   }
 }

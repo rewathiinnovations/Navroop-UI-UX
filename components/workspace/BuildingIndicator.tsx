@@ -3,8 +3,19 @@
 import { Loader2 } from 'lucide-react';
 import type { PlanTrigger } from './types';
 
-export default function BuildingIndicator({ trigger }: { trigger?: PlanTrigger | null }) {
-  const label = trigger === 'followup' ? 'Building your changes…' : 'Building your project…';
+export default function BuildingIndicator({
+  trigger,
+  queueAhead,
+}: {
+  trigger?: PlanTrigger | null;
+  queueAhead?: number | null;
+}) {
+  const label =
+    queueAhead && queueAhead > 0
+      ? `In queue — ${queueAhead} builds ahead`
+      : trigger === 'followup'
+        ? 'Building your changes…'
+        : 'Building your project…';
 
   return (
     <div

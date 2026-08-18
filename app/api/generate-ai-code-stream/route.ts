@@ -24,6 +24,50 @@ import { packageNameFromImport, shouldSkipPackageInstall } from '@/lib/stacks';
 import { loadAssetManifest } from '@/lib/assets/load-manifest';
 import { injectMatchedSkills } from '@/lib/skills/inject';
 import { buildMemoryBlock } from '@/lib/memory/build-context';
+import { creditDeniedJson } from '@/lib/plans/http';
+import { checkCredits } from '@/lib/plans/limits';
+import { WORKSPACE_ROW_ID } from '@/lib/storage/usage';
+import { jsonError } from '@/lib/api/error-response';
+import { withRequest } from '@/lib/api/with-request';
+import { analyzeEditIntent } from '@/lib/generation/analyze-edit-intent';
+import {
+  NO_PROJECT_FILES_NOTICE,
+  SANDBOX_READ_FAILED_NOTICE,
+  shouldRetrySandboxFileRead,
+} from '@/lib/generation/sandbox-read-notices';
+import { readSandboxFiles } from '@/lib/sandbox/read-files';
+import { log, logError } from '@/lib/logger';
+import { trackFailure, trackStart, trackSuccess } from '@/lib/observability/track';
+import { acquireLock, beginLockHeartbeat, releaseLock } from '@/lib/projects/lock';
+import { lockConflictJson } from '@/lib/projects/lock-http';
+import { beginJobHeartbeat, createOrReuseJob, failJob, markJobRunning, succeedJob } from '@/lib/jobs/lifecycle';
+import { createProgressBatcher } from '@/lib/jobs/progress';
+import { ensureJobSettled } from '@/lib/jobs/settle';
+import { recordJobStepFailure } from '@/lib/jobs/step-failure';
+import { getJob, updateJobFields } from '@/lib/jobs/store';
+import { toPublicJob } from '@/lib/jobs/types';
+import { getRequestId } from '@/lib/request-context';
+import { JobCapError, JobCapTracker } from '@/lib/consumption/caps';
+import { getPlanCaps } from '@/lib/consumption/plan-caps';
+import { recordJobUsage } from '@/lib/consumption/record';
+import { getDefaultCircuit } from '@/lib/ai/circuit';
+import { jobErrorCodeForProviderFailure, providerFailureMessage } from '@/lib/ai/failover';
+import { getDefaultProviderQueue, QUEUE_TIMEOUT_MESSAGE } from '@/lib/ai/queue';
+import {
+  failoverNotice,
+  getProviderApiKey,
+  providerDisplayName,
+  ProviderNotConfiguredError,
+  requireUsableProviderChain,
+  type ProviderEntry,
+  type ProviderName,
+} from '@/lib/ai/providers';
+import { loadEffectiveProviderEnv } from '@/lib/ai/effective-env';
+import { bindStreamErrorCapture, EmptyCompletionError, producedNoChanges } from '@/lib/ai/empty-completion';
+import { sanitizeGenerationPath } from '@/lib/generation/parse-files';
+import { executeWithCompletionFailover, ProviderRunError, type ProviderAttempt } from '@/lib/ai/run';
+import { describeNoChanges } from '@/lib/generation/no-changes';
+import { summarizeGenerationOutput } from '@/lib/generation/output-summary';
 
 // Force dynamic route to enable streaming
 export const dynamic = 'force-dynamic';
@@ -32,10 +76,10 @@ export const dynamic = 'force-dynamic';
 const isUsingAIGateway = !!process.env.AI_GATEWAY_API_KEY;
 const aiGatewayBaseURL = 'https://ai-gateway.vercel.sh/v1';
 
-console.log('[generate-ai-code-stream] AI Gateway config:', {
+log.info('generation.provider_config', {
   isUsingAIGateway,
   hasGroqKey: !!process.env.GROQ_API_KEY,
-  hasAIGatewayKey: !!process.env.AI_GATEWAY_API_KEY
+  hasAIGatewayKey: !!process.env.AI_GATEWAY_API_KEY,
 });
 
 const groq = createGroq({
@@ -97,14 +141,213 @@ function analyzeUserPreferences(messages: ConversationMessage[]): {
   };
 }
 
+/**
+ * Reports a terminal job write that failed, instead of discarding it.
+ *
+ * The chat's busy state follows the job row, so a lost settle is a build that hangs: the
+ * input stays locked and the building indicator keeps spinning until the 20-minute hard
+ * timeout. `.catch(() => undefined)` kept the `finally` from throwing and threw the
+ * diagnosis away with it — the symptom then looked identical to a wedged producer.
+ *
+ * Never throws, so a settle failure cannot replace the error the caller is already
+ * unwinding with, and cannot skip the rest of the cleanup.
+ */
+async function reportSettleFailure(input: {
+  jobId: string;
+  intended: 'succeeded' | 'failed';
+  error: unknown;
+}): Promise<void> {
+  const detail = input.error instanceof Error ? input.error.message : String(input.error);
+  const summary = `Could not record the final job status (${input.intended}): ${detail}`;
+  try {
+    log.error('generation.settle_write_failed', {
+      jobId: input.jobId,
+      intended: input.intended,
+      error: detail,
+    });
+    // Puts it in front of a human: the workspace recovery panel and /admin/jobs both read
+    // job steps. Never throws.
+    await recordJobStepFailure(input.jobId, {
+      key: 'settle-job',
+      label: 'Record the final job status',
+      error: summary,
+    });
+    // A much simpler write than succeedJob's raw-SQL phase update, so it can still land
+    // when that one could not — and it reports its own verdict either way.
+    const outcome = await ensureJobSettled(input.jobId, {
+      errorCode: 'settle_write_failed',
+      errorMessage: summary,
+    });
+    log.warn('generation.settle_write_fallback', { jobId: input.jobId, outcome });
+  } catch (reportError) {
+    // The reporters are documented as non-throwing; if that ever stops being true, say so
+    // rather than losing the original failure.
+    console.error('[generate-ai-code-stream] Failed to report a lost settle:', summary, reportError);
+  }
+}
+
+async function recordProviderAttempts(jobId: string, attempts: ProviderAttempt[]) {
+  if (attempts.length === 0) return;
+  const current = await getJob(jobId);
+  await updateJobFields(jobId, {
+    resourceIds: {
+      ...(current?.resourceIds ?? {}),
+      providerAttempts: attempts,
+    },
+  });
+}
+
+function clientForEntry(
+  entry: ProviderEntry,
+  env: Record<string, string | undefined>,
+) {
+  const gateway = env.AI_GATEWAY_API_KEY?.trim();
+  const apiKey = gateway || getProviderApiKey(entry, env);
+  const gatewayUrl = gateway ? aiGatewayBaseURL : undefined;
+  if (entry.provider === 'openai') {
+    return createOpenAI({ apiKey, baseURL: gatewayUrl ?? env.OPENAI_BASE_URL });
+  }
+  if (entry.provider === 'anthropic') {
+    return createAnthropic({
+      apiKey,
+      baseURL: gatewayUrl ?? (env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com/v1'),
+    });
+  }
+  if (entry.provider === 'google') {
+    return createGoogleGenerativeAI({ apiKey, baseURL: gatewayUrl });
+  }
+  return createGroq({ apiKey, baseURL: gatewayUrl });
+}
+
 declare global {
   var sandboxState: SandboxState;
   var conversationState: ConversationState | null;
 }
 
 export async function POST(request: NextRequest) {
+  return withRequest(request, () => generateAiCodeStream(request));
+}
+
+async function generateAiCodeStream(request: NextRequest) {
+  const startedAt = Date.now();
+  let releaseGenerationLock: (() => Promise<void>) | null = null;
+  let generationJob: Awaited<ReturnType<typeof createOrReuseJob>> | null = null;
+  let jobHeartbeat: { stop: () => void } | null = null;
+  let jobProgress: ReturnType<typeof createProgressBatcher> | null = null;
+  let providerSlot: ReturnType<ReturnType<typeof getDefaultProviderQueue>['acquire']> | null = null;
   try {
-    const { prompt, model = 'openai/gpt-oss-20b', context, isEdit = false, styleHint, projectId: requestProjectId, stack: requestStack, designDirection: requestDirection } = await request.json();
+    const { prompt, model = appConfig.ai.defaultModel, context, isEdit = false, styleHint, projectId: requestProjectId, stack: requestStack, designDirection: requestDirection, idempotencyKey: requestIdempotencyKey } = await request.json();
+
+    const sessionUser = await getSessionUser();
+    if (!sessionUser) {
+      return NextResponse.json({ error: 'Sign in required' }, { status: 401 });
+    }
+    const creditCheck = await checkCredits(WORKSPACE_ROW_ID, sessionUser.id, 'generation');
+    if (!creditCheck.ok) return creditDeniedJson(creditCheck);
+
+    const lockProjectId =
+      (typeof requestProjectId === 'string' && requestProjectId) ||
+      (typeof context?.projectId === 'string' && context.projectId) ||
+      '';
+    let lockHeld = false;
+    let lockHeartbeat: { stop: () => void } | null = null;
+    releaseGenerationLock = async () => {
+      lockHeartbeat?.stop();
+      lockHeartbeat = null;
+      if (lockHeld && lockProjectId) {
+        lockHeld = false;
+        await releaseLock(lockProjectId, sessionUser.id);
+      }
+    };
+    if (lockProjectId) {
+      const lock = await acquireLock(lockProjectId, sessionUser.id, 'generation');
+      if (!lock.ok) return lockConflictJson(lock);
+      lockHeld = true;
+      lockHeartbeat = beginLockHeartbeat(lockProjectId, sessionUser.id);
+    }
+
+    const idempotencyKey = typeof requestIdempotencyKey === 'string' && requestIdempotencyKey.trim()
+      ? requestIdempotencyKey.trim()
+      : null;
+    generationJob = lockProjectId
+      ? await createOrReuseJob({
+          projectId: lockProjectId,
+          workspaceId: WORKSPACE_ROW_ID,
+          userId: sessionUser.id,
+          kind: isEdit ? 'FOLLOWUP' : 'BUILD',
+          inputPrompt: typeof prompt === 'string' ? prompt : null,
+          idempotencyKey,
+          requestId: getRequestId(),
+        })
+      : null;
+    if (generationJob && (generationJob.status === 'RUNNING' || generationJob.status === 'SUCCEEDED')) {
+      await releaseGenerationLock?.();
+      return NextResponse.json({ job: toPublicJob(generationJob), reused: true });
+    }
+    let providerChain;
+    let providerEnv: Record<string, string | undefined> = process.env;
+    try {
+      providerEnv = await loadEffectiveProviderEnv(sessionUser.id, process.env);
+      providerChain = requireUsableProviderChain(providerEnv, { requestedModel: model });
+    } catch (error) {
+      const message =
+        error instanceof ProviderNotConfiguredError
+          ? error.message
+          : 'No AI provider is configured — set GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, or GROQ_API_KEY on the server.';
+      if (generationJob) {
+        await failJob(generationJob.id, {
+          errorCode: 'provider_not_configured',
+          errorMessage: message,
+        });
+      }
+      await releaseGenerationLock?.();
+      return jsonError(message, 'PROVIDER_NOT_CONFIGURED', 503);
+    }
+    const primaryProvider = providerChain[0];
+    if (generationJob?.status === 'QUEUED' && primaryProvider) {
+      providerSlot = getDefaultProviderQueue().acquire(primaryProvider.provider, {
+        jobId: generationJob.id,
+        onPosition: (n) => {
+          void updateJobFields(generationJob!.id, { queuePosition: n });
+        },
+      });
+      if (providerSlot.position > 0) {
+        await updateJobFields(generationJob.id, { queuePosition: providerSlot.position });
+      }
+      const started = await providerSlot.started;
+      if (!started.ok) {
+        await failJob(generationJob.id, {
+          errorCode: 'queue_timeout',
+          errorMessage: started.errorMessage || QUEUE_TIMEOUT_MESSAGE,
+        });
+        await releaseGenerationLock?.();
+        return jsonError(started.errorMessage || QUEUE_TIMEOUT_MESSAGE, 'QUEUE_TIMEOUT', 429);
+      }
+    }
+    if (generationJob?.status === 'QUEUED') {
+      generationJob = await markJobRunning(generationJob.id, {
+        chargeCredits: true,
+        acquireProjectLock: false,
+      });
+      if (generationJob && primaryProvider) {
+        await updateJobFields(generationJob.id, {
+          queuePosition: 0,
+          provider: primaryProvider.provider,
+          model: primaryProvider.model,
+        });
+      }
+    }
+    // A live heartbeat hides the row from the staleness reaper. Tie it to the request so a
+    // client that disconnects stops vouching for work nobody is reading: the row goes stale
+    // within a minute instead of sitting RUNNING until the 20-minute hard timeout.
+    jobHeartbeat = generationJob
+      ? beginJobHeartbeat(generationJob.id, { signal: request.signal })
+      : null;
+    jobProgress = generationJob ? createProgressBatcher(generationJob.id) : null;
+    const planCaps = await getPlanCaps(WORKSPACE_ROW_ID);
+    const capTracker = new JobCapTracker(planCaps);
+    let servedProvider = primaryProvider?.provider ?? null;
+    let servedModel = primaryProvider?.model ?? null;
     
     const generationProfile = await resolveRequestGenerationProfile({
       stack: requestStack,
@@ -114,17 +357,21 @@ export async function POST(request: NextRequest) {
     const projectStack = generationProfile.stack;
     const projectDirection = generationProfile.designDirection;
 
-    console.log('[generate-ai-code-stream] Received request:');
-    console.log('[generate-ai-code-stream] - prompt:', prompt);
-    console.log('[generate-ai-code-stream] - isEdit:', isEdit);
-    console.log('[generate-ai-code-stream] - stack:', projectStack);
-    console.log('[generate-ai-code-stream] - designDirection:', projectDirection);
-    console.log('[generate-ai-code-stream] - context.sandboxId:', context?.sandboxId);
-    console.log('[generate-ai-code-stream] - context.currentFiles:', context?.currentFiles ? Object.keys(context.currentFiles) : 'none');
-    console.log('[generate-ai-code-stream] - currentFiles count:', context?.currentFiles ? Object.keys(context.currentFiles).length : 0);
+    trackStart('generation.start', {
+      action: 'generation',
+      stack: projectStack,
+      workspaceId: WORKSPACE_ROW_ID,
+      model,
+    });
+    log.info('generation.request', {
+      isEdit,
+      stack: projectStack,
+      designDirection: projectDirection,
+      model,
+      fileCount: context?.currentFiles ? Object.keys(context.currentFiles).length : 0,
+    });
 
     if (isEdit) {
-      const sessionUser = await getSessionUser();
       const projectId =
         (typeof requestProjectId === 'string' && requestProjectId) ||
         (typeof context?.projectId === 'string' && context.projectId) ||
@@ -141,8 +388,23 @@ export async function POST(request: NextRequest) {
         try {
           await ensureSandbox(projectId, { allowEmpty: true });
         } catch (error) {
-          if (!(error instanceof SandboxBootError && error.code === 'NO_CHECKPOINT')) {
-            console.warn('[generate-ai-code-stream] ensureSandbox failed', error);
+          if (error instanceof SandboxBootError && error.code === 'NO_CHECKPOINT') {
+            // First edit of a project with no snapshot can still generate into an empty workspace.
+          } else {
+            const message =
+              error instanceof Error
+                ? `The workspace for this project could not be started. ${error.message}`
+                : 'The workspace for this project could not be started';
+            if (generationJob) {
+              await failJob(generationJob.id, {
+                errorCode: 'sandbox_unavailable',
+                errorMessage: message,
+              });
+            }
+            jobHeartbeat?.stop();
+            providerSlot?.release();
+            await releaseGenerationLock?.();
+            return jsonError(message, 'SANDBOX_UNAVAILABLE', 503);
           }
         }
       }
@@ -207,17 +469,54 @@ export async function POST(request: NextRequest) {
     const stream = new TransformStream();
     const writer = stream.writable.getWriter();
     
+    // The client leaving is a fact the work loop has to be able to see. A swallowed write
+    // failure is why generation kept burning tokens and credits for a reader that was gone.
+    let clientDisconnected = false;
+    let clientDisconnectReason: string | null = null;
+    const noteClientDisconnected = (reason: string) => {
+      if (clientDisconnected) return;
+      clientDisconnected = true;
+      clientDisconnectReason = reason;
+      log.warn('generation.client_disconnected', {
+        jobId: generationJob?.id ?? null,
+        reason,
+      });
+    };
+    if (request.signal.aborted) {
+      noteClientDisconnected('request was already aborted when streaming started');
+    }
+    request.signal.addEventListener('abort', () => noteClientDisconnected('request aborted'), {
+      once: true,
+    });
+    // A TransformStream writable has highWaterMark 1, so a reader that stops consuming but
+    // is not yet torn down parks `writer.write` forever — and a parked producer never reaches
+    // its `finally`. Racing each write against the abort is what lets it unwind.
+    const clientGone = new Promise<void>((resolve) => {
+      if (request.signal.aborted) {
+        resolve();
+        return;
+      }
+      request.signal.addEventListener('abort', () => resolve(), { once: true });
+    });
+
+    const writeChunk = async (chunk: Uint8Array) => {
+      // The catch is attached before the race, so the write we walk away from cannot
+      // surface later as an unhandled rejection.
+      const written = writer
+        .write(chunk)
+        .catch((error: unknown) =>
+          noteClientDisconnected(error instanceof Error ? error.message : String(error)),
+        );
+      await Promise.race([written, clientGone]);
+    };
+
     // Function to send progress updates with flushing
-    const sendProgress = async (data: any) => {
-      const message = `data: ${JSON.stringify(data)}\n\n`;
-      try {
-        await writer.write(encoder.encode(message));
-        // Force flush by writing a keep-alive comment
-        if (data.type === 'stream' || data.type === 'conversation') {
-          await writer.write(encoder.encode(': keepalive\n\n'));
-        }
-      } catch (error) {
-        console.error('[generate-ai-code-stream] Error writing to stream:', error);
+    const sendProgress = async (data: Record<string, unknown>) => {
+      if (clientDisconnected) return;
+      await writeChunk(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+      // Force flush by writing a keep-alive comment
+      if (!clientDisconnected && (data.type === 'stream' || data.type === 'conversation')) {
+        await writeChunk(encoder.encode(': keepalive\n\n'));
       }
     };
     
@@ -232,6 +531,7 @@ export async function POST(request: NextRequest) {
         // Check if we have a file manifest for edit mode
         let editContext = null;
         let enhancedSystemPrompt = '';
+        let sandboxReadWarned = false;
         
         if (isEdit) {
           console.log('[generate-ai-code-stream] Edit mode detected - starting agentic search workflow');
@@ -248,14 +548,10 @@ export async function POST(request: NextRequest) {
             
             // STEP 1: Get search plan from AI
             try {
-              const intentResponse = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/analyze-edit-intent`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ prompt, manifest, model })
-              });
-              
-              if (intentResponse.ok) {
-                const { searchPlan } = await intentResponse.json();
+              const intent = await analyzeEditIntent({ prompt, manifest, model });
+
+              if (intent.ok) {
+                const searchPlan = intent.searchPlan;
                 console.log('[generate-ai-code-stream] Search plan received:', searchPlan);
                 
                 await sendProgress({ 
@@ -335,7 +631,20 @@ User request: "${prompt}"`;
                   });
                 }
               } else {
-                console.error('[generate-ai-code-stream] Failed to get search plan');
+                // Log and continue. The plan only narrows the edit to a file
+                // and a line; without it the model still edits, it just sees a
+                // broader slice of the project. Aborting the user's generation
+                // over a planning miss would be the bigger failure.
+                console.error('[generate-ai-code-stream] Failed to get search plan:', intent.error);
+                await sendProgress({
+                  type: 'warning',
+                  message: 'Could not plan a targeted edit; using broader context for this change.',
+                });
+                await recordJobStepFailure(generationJob?.id, {
+                  key: 'analyze-edit-intent',
+                  label: 'Plan the edit',
+                  error: intent.error,
+                });
               }
             } catch (error) {
               console.error('[generate-ai-code-stream] Error in agentic search workflow:', error);
@@ -378,29 +687,20 @@ User request: "${prompt}"`;
               await sendProgress({ type: 'status', message: 'Fetching current files from sandbox...' });
               
               try {
-                // Fetch files directly from sandbox
-                const filesResponse = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/get-sandbox-files`, {
-                  method: 'GET',
-                  headers: { 'Content-Type': 'application/json' }
-                });
-                
-                if (filesResponse.ok) {
-                  const filesData = await filesResponse.json();
-                  
-                  if (filesData.success && filesData.manifest) {
-                    console.log('[generate-ai-code-stream] Successfully fetched manifest from sandbox');
-                    const manifest = filesData.manifest;
-                    
-                    // Now try to analyze edit intent with the fetched manifest
+                // Read files directly from sandbox
+                const filesData = await readSandboxFiles();
+
+                if (filesData.ok) {
+                  const manifest = filesData.manifest;
+                  console.log('[generate-ai-code-stream] Successfully fetched manifest from sandbox');
+
+                  {
+                    // Analyze edit intent with the manifest we just read
                     try {
-                      const intentResponse = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/analyze-edit-intent`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ prompt, manifest, model })
-                      });
-                      
-                      if (intentResponse.ok) {
-                        const { searchPlan } = await intentResponse.json();
+                      const intent = await analyzeEditIntent({ prompt, manifest, model });
+
+                      if (intent.ok) {
+                        const searchPlan = intent.searchPlan;
                         console.log('[generate-ai-code-stream] Search plan received (after fetch):', searchPlan);
                         
                         // For now, fall back to keyword search since we don't have file contents for search execution
@@ -526,28 +826,60 @@ Remember: You are a SURGEON making a precise incision, not an artist repainting 
                           type: 'status', 
                           message: `Identified edit type: ${editContext.editIntent.description}`
                         });
+                      } else {
+                        // Log and continue, as above: a missing plan costs
+                        // precision, not the edit itself.
+                        console.error('[generate-ai-code-stream] Failed to get search plan after fetch:', intent.error);
+                        await recordJobStepFailure(generationJob?.id, {
+                          key: 'analyze-edit-intent',
+                          label: 'Plan the edit',
+                          error: intent.error,
+                        });
                       }
                     } catch (error) {
                       console.error('[generate-ai-code-stream] Error analyzing intent after fetch:', error);
                     }
-                  } else {
-                    console.error('[generate-ai-code-stream] Failed to get manifest from sandbox files');
                   }
                 } else {
-                  console.error('[generate-ai-code-stream] Failed to fetch sandbox files:', filesResponse.status);
+                  // Log and continue: the sandbox read is an attempt to recover
+                  // context we do not have. Without it the model works from the
+                  // prompt and the conversation alone, which is worse but still
+                  // produces an edit.
+                  console.error('[generate-ai-code-stream] Failed to read sandbox files:', filesData.error);
+                  if (!sandboxReadWarned) {
+                    await sendProgress({
+                      type: 'warning',
+                      message: SANDBOX_READ_FAILED_NOTICE,
+                    });
+                    sandboxReadWarned = true;
+                  }
+                  await recordJobStepFailure(generationJob?.id, {
+                    key: 'read-sandbox-files',
+                    label: 'Read current files',
+                    error: filesData.error,
+                  });
                 }
               } catch (error) {
                 console.error('[generate-ai-code-stream] Error fetching sandbox files:', error);
-                await sendProgress({ 
-                  type: 'warning', 
-                  message: 'Could not analyze existing files for targeted edits. Proceeding with general edit mode.'
-                });
+                if (!sandboxReadWarned) {
+                  await sendProgress({
+                    type: 'warning',
+                    message: SANDBOX_READ_FAILED_NOTICE,
+                  });
+                  sandboxReadWarned = true;
+                }
               }
             } else {
               console.log('[generate-ai-code-stream] No active sandbox to fetch files from');
               await sendProgress({ 
                 type: 'warning', 
-                message: 'No existing files found. Consider generating initial code first.'
+                message: NO_PROJECT_FILES_NOTICE,
+              });
+              sandboxReadWarned = true;
+              await recordJobStepFailure(generationJob?.id, {
+                key: 'read-sandbox-files',
+                label: 'Read current files',
+                error: 'No workspace was running for this project, so its current files could not be read.',
               });
             }
           }
@@ -723,18 +1055,18 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
           console.log('[generate-ai-code-stream] - Has manifest:', !!global.sandboxState?.fileCache?.manifest);
           
           // If no backend files and we're in edit mode, try to fetch from sandbox
-          if (!hasBackendFiles && isEdit && (global.activeSandbox || context?.sandboxId)) {
+          if (shouldRetrySandboxFileRead({
+            hasBackendFiles,
+            isEdit,
+            hasActiveSandbox: Boolean(global.activeSandbox),
+          })) {
             console.log('[generate-ai-code-stream] No backend files, attempting to fetch from sandbox...');
             
             try {
-              const filesResponse = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/get-sandbox-files`, {
-                method: 'GET',
-                headers: { 'Content-Type': 'application/json' }
-              });
-              
-              if (filesResponse.ok) {
-                const filesData = await filesResponse.json();
-                if (filesData.success && filesData.files) {
+              const filesData = await readSandboxFiles();
+
+              if (filesData.ok) {
+                {
                   console.log('[generate-ai-code-stream] Successfully fetched', Object.keys(filesData.files).length, 'files from sandbox');
                   
                   // Initialize sandboxState if needed
@@ -772,15 +1104,14 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
                     if (!editContext) {
                       console.log('[generate-ai-code-stream] Analyzing edit intent with fetched manifest');
                       try {
-                        const intentResponse = await fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/analyze-edit-intent`, {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ prompt, manifest: filesData.manifest, model })
+                        const intent = await analyzeEditIntent({
+                          prompt,
+                          manifest: filesData.manifest,
+                          model,
                         });
-                        
-                        if (intentResponse.ok) {
-                          const { searchPlan } = await intentResponse.json();
-                          console.log('[generate-ai-code-stream] Search plan received:', searchPlan);
+
+                        if (intent.ok) {
+                          console.log('[generate-ai-code-stream] Search plan received:', intent.searchPlan);
                           
                           // Create edit context from AI analysis
                           // Note: We can't execute search here without file contents, so fall back to keyword method
@@ -789,6 +1120,15 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
                           enhancedSystemPrompt = fileContext.systemPrompt;
                           
                           console.log('[generate-ai-code-stream] Edit context created with', editContext.primaryFiles.length, 'primary files');
+                        } else {
+                          // Log and continue: same trade-off as the other two
+                          // planning call sites.
+                          console.error('[generate-ai-code-stream] Failed to get search plan:', intent.error);
+                          await recordJobStepFailure(generationJob?.id, {
+                            key: 'analyze-edit-intent',
+                            label: 'Plan the edit',
+                            error: intent.error,
+                          });
                         }
                       } catch (error) {
                         console.error('[generate-ai-code-stream] Failed to analyze edit intent:', error);
@@ -801,6 +1141,23 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
                   hasBackendFiles = Object.keys(backendFiles).length > 0;
                   console.log('[generate-ai-code-stream] Updated backend cache with fetched files');
                 }
+              } else {
+                // Log and continue: this is a best-effort attempt to recover a
+                // file cache we do not have. The generation proceeds with the
+                // context already assembled.
+                console.error('[generate-ai-code-stream] Failed to read sandbox files:', filesData.error);
+                if (!sandboxReadWarned) {
+                  await sendProgress({
+                    type: 'warning',
+                    message: SANDBOX_READ_FAILED_NOTICE,
+                  });
+                  sandboxReadWarned = true;
+                }
+                await recordJobStepFailure(generationJob?.id, {
+                  key: 'read-sandbox-files',
+                  label: 'Read current files',
+                  error: filesData.error,
+                });
               }
             } catch (error) {
               console.error('[generate-ai-code-stream] Failed to fetch sandbox files:', error);
@@ -936,6 +1293,16 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
         
         await sendProgress({ type: 'status', message: 'Planning application structure...' });
         
+        // Nobody is listening: stop before the model call rather than paying for tokens and
+        // credits nobody will see. The `finally` settles the job.
+        if (clientDisconnected) {
+          log.warn('generation.stopped_before_model', {
+            jobId: generationJob?.id ?? null,
+            reason: clientDisconnectReason,
+          });
+          return;
+        }
+
         console.log('\n[generate-ai-code-stream] Starting streaming response...\n');
         
         // Track packages that need to be installed
@@ -999,79 +1366,70 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
           };
         }
         
-        let result;
-        let retryCount = 0;
-        const maxRetries = 2;
-        
-        while (retryCount <= maxRetries) {
-          try {
-            result = await streamText(streamOptions);
-            break; // Success, exit retry loop
-          } catch (streamError: any) {
-            console.error(`[generate-ai-code-stream] Error calling streamText (attempt ${retryCount + 1}/${maxRetries + 1}):`, streamError);
-            
-            // Check if this is a Groq service unavailable error
-            const isGroqServiceError = isKimiGroq && streamError.message?.includes('Service unavailable');
-            const isRetryableError = streamError.message?.includes('Service unavailable') || 
-                                    streamError.message?.includes('rate limit') ||
-                                    streamError.message?.includes('timeout');
-            
-            if (retryCount < maxRetries && isRetryableError) {
-              retryCount++;
-              console.log(`[generate-ai-code-stream] Retrying in ${retryCount * 2} seconds...`);
-              
-              // Send progress update about retry
-              await sendProgress({ 
-                type: 'info', 
-                message: `Service temporarily unavailable, retrying (attempt ${retryCount + 1}/${maxRetries + 1})...` 
-              });
-              
-              // Wait before retry with exponential backoff
-              await new Promise(resolve => setTimeout(resolve, retryCount * 2000));
-              
-              // If Groq fails, try switching to a fallback model
-              if (isGroqServiceError && retryCount === maxRetries) {
-                console.log('[generate-ai-code-stream] Groq service unavailable, falling back to GPT-4');
-                streamOptions.model = openai('gpt-4-turbo');
-                actualModel = 'gpt-4-turbo';
-              }
-            } else {
-              // Final error, send to user
-              await sendProgress({ 
-                type: 'error', 
-                message: `Failed to initialize ${isGoogle ? 'Gemini' : isAnthropic ? 'Claude' : isOpenAI ? 'GPT-5' : isKimiGroq ? 'Kimi (Groq)' : 'Groq'} streaming: ${streamError.message}` 
-              });
-              
-              // If this is a Google model error, provide helpful info
-              if (isGoogle) {
-                await sendProgress({ 
-                  type: 'info', 
-                  message: 'Tip: Make sure your GEMINI_API_KEY is set correctly and has proper permissions.' 
-                });
-              }
-              
-              throw streamError;
-            }
-          }
-        }
-        
-        // Stream the response and parse in real-time
+        let result: Awaited<ReturnType<typeof streamText>> | undefined;
         let generatedCode = '';
+        let files: { path: string; content: string }[] = [];
         let currentFile = '';
         let currentFilePath = '';
         let componentCount = 0;
-        let isInFile = false;
-        let isInTag = false;
-        let conversationalBuffer = '';
-        
-        // Buffer for incomplete tags
-        let tagBuffer = '';
-        
-        // Stream the response and parse for packages in real-time
-        for await (const textPart of result?.textStream || []) {
+        let providersTried: string[] = [];
+        try {
+            const failover = await executeWithCompletionFailover(
+              providerChain,
+              async (entry, ctx) => {
+                servedProvider = entry.provider;
+                servedModel = entry.model;
+                const prefixed =
+                  entry.provider === 'openai'
+                    ? `openai/${entry.model}`
+                    : entry.provider === 'anthropic'
+                      ? `anthropic/${entry.model}`
+                      : entry.provider === 'google'
+                        ? `google/${entry.model}`
+                        : entry.model;
+                const client = clientForEntry(entry, providerEnv);
+                const actualModel = prefixed.includes('/') ? prefixed.split('/').slice(1).join('/') : entry.model;
+                const nextOptions = {
+                  ...streamOptions,
+                  model: client(actualModel),
+                  abortSignal: ctx.signal,
+                };
+                const capture = bindStreamErrorCapture();
+                return capture.attach(
+                  streamText({
+                    ...nextOptions,
+                    onError: capture.onError,
+                  }),
+                );
+              },
+              async (stream, entry) => {
+                result = stream;
+                servedProvider = entry.provider;
+                servedModel = entry.model;
+                generatedCode = '';
+                files = [];
+                currentFile = '';
+                currentFilePath = '';
+                let isInFile = false;
+                let isInTag = false;
+                let conversationalBuffer = '';
+                let tagBuffer = '';
+                packagesToInstall.length = 0;
+
+        // Stream the response and parse in real-time
+        for await (const textPart of stream.textStream || []) {
+          if (clientDisconnected) break;
           const text = textPart || '';
           generatedCode += text;
           currentFile += text;
+          const capAbort = capTracker.addChunk(text);
+          if (capAbort) {
+            for (const file of capTracker.partialFiles) {
+              jobProgress?.addFile(file.path, file.content);
+            }
+            await jobProgress?.flush();
+            throw capAbort;
+          }
           
           // Combine with buffer for tag detection
           const searchText = tagBuffer + text;
@@ -1153,6 +1511,16 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
           // Check for file end
           if (isInFile && currentFile.includes('</file>')) {
             isInFile = false;
+            const closed = currentFile.match(/<file path="[^"]+">([\s\S]*?)<\/file>/);
+            if (jobProgress && currentFilePath) {
+              const content = (closed?.[1] ?? '').trim();
+              const fileAbort = capTracker.addFile(currentFilePath, content);
+              jobProgress.addFile(currentFilePath, content);
+              if (fileAbort) {
+                await jobProgress.flush();
+                throw fileAbort;
+              }
+            }
             
             // Send component progress update
             if (currentFilePath.includes('components/')) {
@@ -1178,6 +1546,17 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
         }
         
         console.log('\n\n[generate-ai-code-stream] Streaming complete.');
+
+        if (clientDisconnected) {
+          // Whatever the model produced so far is already on the job row via jobProgress, so
+          // the recovery panel can resume from it. The `finally` settles the job as abandoned.
+          log.warn('generation.stopped_mid_stream', {
+            jobId: generationJob?.id ?? null,
+            reason: clientDisconnectReason,
+            charsGenerated: generatedCode.length,
+          });
+          return { generatedCode, files, morphEditBlocks: 0, stop: true as const };
+        }
         
         // Send any remaining conversational text
         if (conversationalBuffer.trim()) {
@@ -1233,14 +1612,16 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
         }
         
         // Parse files and send progress for each
-        const fileRegex = /<file path="([^"]+)">([\s\S]*?)<\/file>/g;
-        const files = [];
+        const fileRegex = /<file path="([^"]*)">([\s\S]*?)<\/file>/g;
         let match;
         
         while ((match = fileRegex.exec(generatedCode)) !== null) {
           const filePath = match[1];
           const content = match[2].trim();
-          files.push({ path: filePath, content });
+          const safe = sanitizeGenerationPath(filePath);
+          if (!safe.ok) continue;
+          files.push({ path: safe.path, content });
+          jobProgress?.addFile(safe.path, content);
           
           // Extract packages from file content - ONLY for edits
           if (isEdit) {
@@ -1274,6 +1655,77 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
               path: filePath
             });
           }
+        }
+
+                const morphEditBlocks = (generatedCode.match(/<edit\s+target_file="/g) || []).length;
+                const summary = summarizeGenerationOutput(generatedCode);
+                log.info('generation.stream_complete', {
+                  jobId: generationJob?.id ?? null,
+                  provider: entry.provider,
+                  model: entry.model,
+                  chars: summary.chars,
+                  preview: summary.preview,
+                  fileOpen: summary.fileOpen,
+                  fileClose: summary.fileClose,
+                  markdownFences: summary.markdownFences,
+                });
+                return {
+                  generatedCode,
+                  files,
+                  morphEditBlocks,
+                  stop: clientDisconnected,
+                };
+              },
+              (out) => out.stop || !producedNoChanges(out.files.length, out.morphEditBlocks),
+              { circuit: getDefaultCircuit() },
+            );
+            servedProvider = failover.provider;
+            servedModel = failover.model;
+            generatedCode = failover.result.generatedCode;
+            files = failover.result.files;
+            providersTried = [...new Set(failover.attempts.map((row) => providerDisplayName(row.provider)))];
+            if (generationJob) {
+              await updateJobFields(generationJob.id, {
+                provider: failover.provider,
+                model: failover.model,
+              });
+              await recordProviderAttempts(generationJob.id, failover.attempts);
+            }
+            if (failover.failedOver) {
+              const from = failover.attempts.find((row) => !row.ok)?.provider as ProviderName | undefined;
+              if (from) {
+                await sendProgress({
+                  type: 'info',
+                  message: failoverNotice(from, failover.provider),
+                });
+              }
+            }
+        } catch (streamError: unknown) {
+            if (streamError instanceof JobCapError) throw streamError;
+            const cause = streamError instanceof ProviderRunError ? streamError.causeError ?? streamError : streamError;
+            const attempts = streamError instanceof ProviderRunError ? streamError.attempts : [];
+            providersTried = [...new Set(attempts.map((row) => providerDisplayName(row.provider)))];
+            if (generationJob && attempts.length > 0) {
+              await recordProviderAttempts(generationJob.id, attempts);
+            }
+            if (cause instanceof EmptyCompletionError) {
+              log.warn('generation.empty_chain', {
+                jobId: generationJob?.id ?? null,
+                providersTried,
+              });
+            } else {
+              console.error('[generate-ai-code-stream] Error calling streamText:', streamError);
+              throw Object.assign(
+                streamError instanceof Error
+                  ? streamError
+                  : new Error(providerFailureMessage(cause, servedProvider)),
+                { cause },
+              );
+            }
+        }
+
+        if (clientDisconnected) {
+          return;
         }
         
         // Extract explanation
@@ -1481,18 +1933,117 @@ Provide the complete file content without any truncation. Include all necessary 
           (typeof requestProjectId === 'string' && requestProjectId) ||
           (typeof context?.projectId === 'string' && context.projectId) ||
           '';
+        let inputTokens = 0;
+        let outputTokens: number | undefined;
         try {
           const usage = await result?.usage;
-          const inputTokens = resolveInputTokens(
+          inputTokens = resolveInputTokens(
             usage,
             `${stablePrefix}\n${injectedSkills.block}\n${volatileSuffix}\n${fullPrompt}`,
           );
+          outputTokens = usage && typeof usage === 'object' && 'outputTokens' in usage
+            ? Number((usage as { outputTokens?: number }).outputTokens)
+            : undefined;
           if (usageProjectId) {
             await attachGenerationInputTokens(usageProjectId, inputTokens);
           }
         } catch (tokenError) {
-          console.error('[generate-ai-code-stream] Failed to record input tokens', tokenError);
+          logError('generation.tokens_failed', tokenError);
         }
+
+        // A run that produced neither a <file> block nor a Morph <edit> block changed
+        // nothing. That used to end as a 200 with `files: 0` and a SUCCEEDED job, which told
+        // the user their request had been carried out when it had not.
+        const morphEditBlocks = (generatedCode.match(/<edit\s+target_file="/g) || []).length;
+        const hadNoChanges = producedNoChanges(files.length, morphEditBlocks);
+        const noChangeReason = hadNoChanges
+          ? describeNoChanges({
+              isEdit,
+              hasProjectFiles: Object.keys(global.sandboxState?.fileCache?.files || {}).length > 0,
+              hasManifest: Boolean(global.sandboxState?.fileCache?.manifest),
+              providersTried,
+            })
+          : null;
+
+        if (generationJob) {
+          await jobProgress?.flush();
+          // The tokens were spent either way, so they are recorded either way.
+          const estimatedCostUsd = await recordJobUsage({
+            jobId: generationJob.id,
+            workspaceId: WORKSPACE_ROW_ID,
+            tokensIn: inputTokens,
+            tokensOut: outputTokens,
+            provider: servedProvider,
+            model: servedModel,
+          });
+          // A settle that throws here must not be reported to the user as a generation
+          // failure — the files exist either way — but it must not vanish either.
+          try {
+            if (noChangeReason) {
+              await failJob(generationJob.id, {
+                errorCode: 'no_files_generated',
+                errorMessage: noChangeReason,
+                tokensIn: inputTokens,
+                tokensOut: outputTokens,
+                estimatedCostUsd,
+                provider: servedProvider,
+                model: servedModel,
+              });
+            } else {
+              await succeedJob(generationJob.id, {
+                tokensIn: inputTokens,
+                tokensOut: outputTokens,
+                estimatedCostUsd,
+                provider: servedProvider,
+                model: servedModel,
+              });
+            }
+          } catch (settleError) {
+            await reportSettleFailure({
+              jobId: generationJob.id,
+              intended: noChangeReason ? 'failed' : 'succeeded',
+              error: settleError,
+            });
+          }
+        }
+
+        if (noChangeReason) {
+          log.warn('generation.no_changes', {
+            jobId: generationJob?.id ?? null,
+            isEdit,
+            ...summarizeGenerationOutput(generatedCode),
+            providersTried,
+          });
+          await recordJobStepFailure(generationJob?.id, {
+            key: 'write-files',
+            label: 'Write the changed files',
+            error: noChangeReason,
+          });
+          trackFailure('generation.failure', new Error('no_files_generated'), {
+            action: 'generation',
+            stack: projectStack,
+            model,
+            durationMs: Date.now() - startedAt,
+          });
+          // Both frames are needed, and neither is redundant with the other. `error` unwinds
+          // the client's generating state, but the generate branch handles it by throwing,
+          // and that throw only reaches `markGenerationError` — which sets `lastError` and
+          // renders no chat message. Without the `conversation` frame the sentence below
+          // never appears in the chat at all. Do not collapse this pair the way the
+          // no-project-files branch above collapses its `warning`.
+          await sendProgress({ type: 'conversation', text: noChangeReason });
+          await sendProgress({ type: 'error', error: noChangeReason });
+          return;
+        }
+
+        trackSuccess('generation.success', {
+          action: 'generation',
+          stack: projectStack,
+          model,
+          inputTokens,
+          outputTokens,
+          durationMs: Date.now() - startedAt,
+        });
 
         // Send completion with packages info
         await sendProgress({ 
@@ -1537,25 +2088,85 @@ Provide the complete file content without any truncation. Include all necessary 
         
       } catch (error) {
         console.error('[generate-ai-code-stream] Stream processing error:', error);
-        
-        // Check if it's a tool validation error
-        if ((error as any).message?.includes('tool call validation failed')) {
+
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        // Reaching this catch means the work stopped, whatever the reason. The tool-validation
+        // branch used to only warn and then fall out of the block, leaving the job RUNNING
+        // with nothing left to settle it.
+        const isToolValidationError = errorMessage.includes('tool call validation failed');
+        const cap = error instanceof JobCapError ? error : null;
+        const cause =
+          error instanceof ProviderRunError
+            ? error.causeError ?? error
+            : error && typeof error === 'object' && 'cause' in error
+              ? (error as { cause: unknown }).cause
+              : error;
+        const honest =
+          cap?.message ??
+          (isToolValidationError ? errorMessage : providerFailureMessage(cause, servedProvider));
+        if (isToolValidationError) {
           console.error('[generate-ai-code-stream] Tool call validation error - this may be due to the AI model sending incorrect parameters');
           await sendProgress({ 
             type: 'warning', 
             message: 'Package installation tool encountered an issue. Packages will be detected from imports instead.'
           });
-          // Continue processing - packages can still be detected from the code
         } else {
           await sendProgress({ 
             type: 'error', 
-            error: (error as Error).message 
+            error: honest 
           });
         }
+        if (generationJob) {
+          try {
+            await failJob(generationJob.id, {
+              errorCode:
+                cap?.errorCode ??
+                (isToolValidationError
+                  ? 'tool_call_validation_failed'
+                  : jobErrorCodeForProviderFailure(cause)),
+              errorMessage: honest,
+              tokensOut: cap?.tokensOut,
+              provider: servedProvider,
+              model: servedModel,
+            });
+          } catch (settleError) {
+            // Without this the failure fell through to the `finally`, which would settle it
+            // as `client_disconnected` — a terminal status, but the wrong diagnosis.
+            await reportSettleFailure({
+              jobId: generationJob.id,
+              intended: 'failed',
+              error: settleError,
+            });
+          }
+        }
       } finally {
-        await writer.close();
+        // Order matters here, and it used to be wrong. `writer.close()` rejects when the
+        // readable was cancelled, and it sat ahead of the lock release — so a client
+        // disconnect skipped the release, which is what stops `lockHeartbeat`, and the
+        // project lock then renewed itself every 60 seconds indefinitely. Cleanup that must
+        // happen runs first; the close is last and cannot skip anything.
+        jobHeartbeat?.stop();
+        providerSlot?.release();
+        await jobProgress?.flush();
+        // Last-resort terminal write: the happy path and the catch both settle already, so
+        // this is a no-op unless the work was torn down rather than finished or thrown.
+        await ensureJobSettled(generationJob?.id, {
+          errorCode: 'client_disconnected',
+          errorMessage: clientDisconnectReason
+            ? `Client disconnected before the generation finished (${clientDisconnectReason})`
+            : 'Client disconnected before the generation finished',
+        });
+        await releaseGenerationLock?.();
+        // Deliberately not awaited. `close()` waits for queued chunks to drain, and a client
+        // that stopped reading never drains them — awaiting it here would park the handler
+        // all over again, just past the settle. It also rejects outright on a cancelled
+        // readable, and there is nobody left to tell.
+        void writer.close().catch(() => undefined);
       }
-    })();
+    })().catch((error: unknown) => {
+      // The IIFE is detached, so anything escaping it is an unhandled rejection.
+      logError('generation.detached_work_failed', error);
+    });
     
     // Return the stream with proper headers for streaming support
     return new Response(stream.readable, {
@@ -1573,10 +2184,29 @@ Provide the complete file content without any truncation. Include all necessary 
     });
     
   } catch (error) {
-    console.error('[generate-ai-code-stream] Error:', error);
-    return NextResponse.json({ 
-      success: false, 
-      error: (error as Error).message 
-    }, { status: 500 });
+    jobHeartbeat?.stop();
+    providerSlot?.release();
+    if (generationJob) {
+      const cap = error instanceof JobCapError ? error : null;
+      try {
+        await failJob(generationJob.id, {
+          errorCode: cap?.errorCode ?? jobErrorCodeForProviderFailure(error),
+          errorMessage: cap?.message ?? providerFailureMessage(error),
+          tokensOut: cap?.tokensOut,
+        });
+      } catch (settleError) {
+        await reportSettleFailure({
+          jobId: generationJob.id,
+          intended: 'failed',
+          error: settleError,
+        });
+      }
+    }
+    await releaseGenerationLock?.();
+    trackFailure('generation.failure', error, {
+      action: 'generation',
+      durationMs: Date.now() - startedAt,
+    });
+    return jsonError((error as Error).message || 'Generation failed', 'GENERATION_FAILED', 500);
   }
 }

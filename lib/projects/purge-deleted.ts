@@ -51,8 +51,21 @@ export async function purgeDeletedProjects() {
       project.projectAssets.reduce((sum, row) => sum + row.sizeBytes, 0);
 
     await killProjectSandbox(project.id, project.sandboxId);
+    try {
+      const { purgeProjectPublishResources } = await import('@/lib/publish/cleanup');
+      await purgeProjectPublishResources(project.id);
+    } catch (error) {
+      console.warn('[purge-projects] publish cleanup failed', project.id, error);
+    }
     await prisma.project.delete({ where: { id: project.id } });
     await adjustStorageBytes(-bytes);
+    const { writeAudit } = await import('@/lib/audit/log');
+    await writeAudit({
+      actorEmail: 'system@navroop.local',
+      action: 'project.hard_purge',
+      targetType: 'project',
+      targetId: project.id,
+    });
 
     console.info('[purge-projects]', { projectId: project.id, reclaimedBytes: bytes });
     purged += 1;

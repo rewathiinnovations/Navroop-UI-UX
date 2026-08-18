@@ -2,14 +2,14 @@ import { PrismaClient } from '@/generated/prisma';
 
 // Bump the global key after schema/client changes so Next HMR does not keep a
 // PrismaClient constructed against an older generated client (Unknown field stars).
-const globalForPrisma = globalThis as unknown as { prismaCheckpointStorage?: PrismaClient };
+const globalForPrisma = globalThis as unknown as { prismaPasswordResetModel?: PrismaClient };
 
 export const prisma =
-  globalForPrisma.prismaCheckpointStorage ??
+  globalForPrisma.prismaPasswordResetModel ??
   new PrismaClient({
     log: process.env.NODE_ENV === 'development' ? ['error', 'warn'] : ['error'],
   });
 
 if (process.env.NODE_ENV !== 'production') {
-  globalForPrisma.prismaCheckpointStorage = prisma;
+  globalForPrisma.prismaPasswordResetModel = prisma;
 }

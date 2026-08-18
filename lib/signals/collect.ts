@@ -74,9 +74,8 @@ async function hasSignal(where: {
     select: { id: true, rawValue: true, generationEventId: true },
   });
   if (where.rawKey) {
-    return rows.some((row) => rawRecord(row.rawValue)[where.rawKey!] === where.rawEquals);
+    return rows.find((row) => rawRecord(row.rawValue)[where.rawKey!] === where.rawEquals) ?? null;
   }
-  if (where.generationEventId) return rows[0] ?? null;
   return rows[0] ?? null;
 }
 

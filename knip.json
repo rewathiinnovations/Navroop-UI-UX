@@ -1,0 +1,4 @@
+{
+  "ignore": ["generated/**", "e2e/**", "tests/**", "scripts/**", "coverage/**"],
+  "ignoreDependencies": ["@axe-core/playwright", "fast-check", "msw", "husky", "lint-staged", "prettier"]
+}

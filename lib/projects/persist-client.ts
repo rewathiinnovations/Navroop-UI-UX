@@ -59,5 +59,6 @@ export async function persistProject(input: PersistProjectInput) {
       ...project,
       title: projectDisplayName(project),
     },
+    previewNotice: typeof data.previewNotice === 'string' ? data.previewNotice : null,
   };
 }

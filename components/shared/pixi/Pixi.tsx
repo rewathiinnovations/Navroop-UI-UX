@@ -204,7 +204,6 @@ export default function Pixi({
 
   const key = useMemo(() => {
     return nanoid();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tickers]);
 
   return (

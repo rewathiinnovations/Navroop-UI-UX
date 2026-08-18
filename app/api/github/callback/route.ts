@@ -44,6 +44,7 @@ export async function GET(request: NextRequest) {
       return finish(request, 'error');
     }
 
+    // Trusted host — do not route through safeFetch.
     const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
       method: 'POST',
       headers: {
@@ -66,6 +67,7 @@ export async function GET(request: NextRequest) {
       return finish(request, 'error');
     }
 
+    // Trusted host — do not route through safeFetch.
     const ghUserRes = await fetch('https://api.github.com/user', {
       headers: {
         Accept: 'application/vnd.github+json',

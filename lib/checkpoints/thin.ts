@@ -2,6 +2,7 @@ import { prisma } from '@/lib/db';
 import { deleteObject } from '@/lib/storage';
 import { adjustStorageBytes } from '@/lib/storage/usage';
 import { checkpointRetentionDays, isThinEligible } from './retention';
+import { pruneStalePresence } from '@/lib/projects/presence';
 
 export async function thinCheckpoints() {
   const retentionDays = checkpointRetentionDays();
@@ -67,6 +68,27 @@ export async function thinCheckpoints() {
     reclaimedBytes += bytes;
   }
 
-  console.info('[thin-checkpoints]', { thinned, reclaimedBytes, retentionDays });
-  return { thinned, reclaimedBytes, retentionDays };
+  const presence = await pruneStalePresence();
+  const { pruneAuditLogs } = await import('@/lib/audit/log');
+  const audit = await pruneAuditLogs();
+  const { prunePreviewBuilds } = await import('@/lib/preview/prune');
+  const preview = await prunePreviewBuilds();
+  console.info('[thin-checkpoints]', {
+    thinned,
+    reclaimedBytes,
+    retentionDays,
+    presencePruned: presence.pruned,
+    auditPruned: audit.deleted,
+    previewDeleted: preview.deleted,
+    previewReclaimedBytes: preview.reclaimedBytes,
+  });
+  return {
+    thinned,
+    reclaimedBytes,
+    retentionDays,
+    presencePruned: presence.pruned,
+    auditPruned: audit.deleted,
+    previewDeleted: preview.deleted,
+    previewReclaimedBytes: preview.reclaimedBytes,
+  };
 }

@@ -48,6 +48,12 @@ export function useSeoAudit(projectId: string | null) {
     const result = await runSeoAudit(projectId);
     if (!result.ok) {
       setScanning(false);
+      if (result.status === 409) {
+        const { emitLockConflict, parseLockConflict } = await import('@/lib/projects/lock-client');
+        const conflict = parseLockConflict(409, result);
+        if (conflict) emitLockConflict(conflict);
+        return result;
+      }
       setError(result.error);
       return result;
     }

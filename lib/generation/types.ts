@@ -66,6 +66,12 @@ export interface ChatMessage {
     sourceUrl?: string;
     source?: 'chat' | 'visual-edit' | 'comment';
     skillNames?: string[];
+    creditDenial?: {
+      reason: string;
+      used: number;
+      limit: number;
+      message: string;
+    };
   };
 }
 
@@ -114,6 +120,7 @@ export type StartGenerationInput = {
   isEdit?: boolean;
   projectId?: string | null;
   sandboxData?: SandboxData | null;
+  idempotencyKey?: string | null;
 };
 
 export type StartApplyInput = {

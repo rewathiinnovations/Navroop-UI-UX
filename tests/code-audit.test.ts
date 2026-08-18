@@ -116,10 +116,11 @@ assert(info.detail.toLowerCase().includes('tsc not found') || info.detail.toLowe
 // --- bundle ---
 assert(measureShouldSkip('STATIC_HTML') === true, 'STATIC_HTML skips production build');
 assert(measureShouldSkip('NEXTJS') === false, 'NEXTJS runs production build');
-assert(getStack('NEXTJS').buildCommand?.includes('next'), 'NEXTJS buildCommand is next from registry');
-assert(getStack('ASTRO').buildCommand?.includes('astro'), 'ASTRO buildCommand is astro from registry');
-assert(getStack('REACT').buildCommand?.includes('vite'), 'REACT buildCommand is vite from registry');
-assert(getStack('STATIC_HTML').buildCommand == null, 'STATIC_HTML has no buildCommand');
+assert(getStack('NEXTJS').buildCommand === 'npm run build', 'NEXTJS deploy buildCommand comes from stacks registry');
+assert(getStack('NEXTJS').deployType === 'node' && getStack('NEXTJS').port === 3000, 'NEXTJS is a node deploy');
+assert(getStack('ASTRO').deployType === 'static' && getStack('ASTRO').outputDir === 'dist', 'ASTRO is static dist');
+assert(getStack('REACT').deployType === 'static' && getStack('REACT').outputDir === 'dist', 'REACT is static dist');
+assert(getStack('STATIC_HTML').buildCommand == null && getStack('STATIC_HTML').outputDir === '.', 'STATIC_HTML has no build');
 
 const failBuild = findingsFromBundle({
   stack: 'NEXTJS',

@@ -1,10 +1,15 @@
 import { NextResponse } from 'next/server';
+import { jsonError } from '@/lib/api/error-response';
+import { requireSessionUser } from '@/lib/auth';
 
 declare global {
   var activeSandbox: any;
 }
 
 export async function GET() {
+  const auth = await requireSessionUser();
+  if (!auth.user) return jsonError(auth.error, 'UNAUTHORIZED', auth.status);
+
   try {
     if (!global.activeSandbox) {
       return NextResponse.json({ 

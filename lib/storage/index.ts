@@ -4,14 +4,20 @@
  * STORAGE_DRIVER=local (default, dev): writes under /public/uploads and returns a
  * relative URL. Fine for local preview; do not use for multi-instance production.
  *
- * STORAGE_DRIVER=s3: any S3-compatible endpoint (AWS S3, Cloudflare R2, Backblaze)
- * via @aws-sdk/client-s3. R2 is recommended (zero egress fees). The bucket must
+ * STORAGE_DRIVER=s3: S3-compatible ElasticLake (path-style). The bucket must
  * allow public reads so asset URLs work in generated sites.
  *
- * Env for s3: S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_PUBLIC_URL.
+ * Env for s3: ELK_ENDPOINT, ELK_REGION, ELK_ACCESS_KEY_ID, ELK_SECRET_ACCESS_KEY,
+ * ELK_BUCKET, S3_PUBLIC_URL. Legacy S3_* names are accepted as fallback.
  *
  * Key convention: projects/{projectId}/assets/{id}.{ext}
  * Checkpoint snapshots: snapshots/{projectId}/{checkpointId}.json.gz
+ *
+ * Contract for both drivers: `get` returns null and `exists` returns false ONLY for an
+ * object that is genuinely absent. Every other failure throws. Callers turn an absent
+ * snapshot into "this version was pruned" and an absent preview file into a 404, so a
+ * driver that swallows a credentials or throttling error makes them answer wrongly and
+ * silently. See lib/storage/s3-errors.ts.
  */
 import {
   DeleteObjectCommand,
@@ -23,10 +29,12 @@ import {
 } from '@aws-sdk/client-s3';
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, sep } from 'node:path';
+import { isObjectNotFoundError } from './s3-errors';
 
 export type UploadInput = {
   key: string;
   contentType: string;
+  contentEncoding?: string;
 };
 
 export type UploadResult = { url: string };
@@ -59,8 +67,12 @@ async function localExists(key: string) {
   try {
     await stat(join(localRoot(), normalizeKey(key)));
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    // ENOTDIR: a path component is a file, so nothing can be stored under it. Anything
+    // else (EACCES, EIO) means we could not look — that is not "absent".
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return false;
+    throw error;
   }
 }
 
@@ -73,26 +85,32 @@ async function localDelete(key: string) {
   }
 }
 
-function requireS3Env(name: string) {
-  const value = process.env[name]?.trim();
-  if (!value) throw new Error(`${name} is required when STORAGE_DRIVER=s3`);
-  return value;
+function requireS3Env(...names: string[]) {
+  for (const name of names) {
+    const value = process.env[name]?.trim();
+    if (value) return value;
+  }
+  throw new Error(`${names[0]} is required when STORAGE_DRIVER=s3`);
+}
+
+function s3Bucket() {
+  return requireS3Env('ELK_BUCKET', 'S3_BUCKET');
 }
 
 function s3Client() {
   return new S3Client({
-    region: process.env.S3_REGION?.trim() || 'auto',
-    endpoint: requireS3Env('S3_ENDPOINT'),
+    region: process.env.ELK_REGION?.trim() || process.env.S3_REGION?.trim() || 'auto',
+    endpoint: requireS3Env('ELK_ENDPOINT', 'S3_ENDPOINT'),
     credentials: {
-      accessKeyId: requireS3Env('S3_ACCESS_KEY_ID'),
-      secretAccessKey: requireS3Env('S3_SECRET_ACCESS_KEY'),
+      accessKeyId: requireS3Env('ELK_ACCESS_KEY_ID', 'S3_ACCESS_KEY_ID'),
+      secretAccessKey: requireS3Env('ELK_SECRET_ACCESS_KEY', 'S3_SECRET_ACCESS_KEY'),
     },
     forcePathStyle: true,
   });
 }
 
 function s3PublicUrl(key: string) {
-  const base = requireS3Env('S3_PUBLIC_URL').replace(/\/+$/, '');
+  const base = requireS3Env('S3_PUBLIC_URL', 'ELK_PUBLIC_URL').replace(/\/+$/, '');
   return `${base}/${normalizeKey(key)}`;
 }
 
@@ -100,10 +118,11 @@ async function s3Upload(buffer: Buffer, input: UploadInput): Promise<UploadResul
   const key = normalizeKey(input.key);
   await s3Client().send(
     new PutObjectCommand({
-      Bucket: requireS3Env('S3_BUCKET'),
+      Bucket: s3Bucket(),
       Key: key,
       Body: buffer,
       ContentType: input.contentType,
+      ContentEncoding: input.contentEncoding,
     }),
   );
   return { url: s3PublicUrl(key) };
@@ -113,20 +132,21 @@ async function s3Exists(key: string) {
   try {
     await s3Client().send(
       new HeadObjectCommand({
-        Bucket: requireS3Env('S3_BUCKET'),
+        Bucket: s3Bucket(),
         Key: normalizeKey(key),
       }),
     );
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    if (isObjectNotFoundError(error)) return false;
+    throw error;
   }
 }
 
 async function s3Delete(key: string) {
   await s3Client().send(
     new DeleteObjectCommand({
-      Bucket: requireS3Env('S3_BUCKET'),
+      Bucket: s3Bucket(),
       Key: normalizeKey(key),
     }),
   );
@@ -161,15 +181,16 @@ async function s3Get(key: string): Promise<Buffer | null> {
   try {
     const response = await s3Client().send(
       new GetObjectCommand({
-        Bucket: requireS3Env('S3_BUCKET'),
+        Bucket: s3Bucket(),
         Key: normalizeKey(key),
       }),
     );
     if (!response.Body) return null;
     const bytes = await response.Body.transformToByteArray();
     return Buffer.from(bytes);
-  } catch {
-    return null;
+  } catch (error) {
+    if (isObjectNotFoundError(error)) return null;
+    throw error;
   }
 }
 
@@ -184,9 +205,9 @@ async function localListKeys(prefix: string): Promise<string[]> {
   const keys: string[] = [];
 
   async function walk(dir: string) {
-    let entries: Awaited<ReturnType<typeof readdir>>;
+    let entries;
     try {
-      entries = await readdir(dir, { withFileTypes: true });
+      entries = await readdir(dir, { withFileTypes: true, encoding: 'utf8' });
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === 'ENOENT') return;
@@ -212,7 +233,7 @@ async function s3ListKeys(prefix: string): Promise<string[]> {
   do {
     const response = await s3Client().send(
       new ListObjectsV2Command({
-        Bucket: requireS3Env('S3_BUCKET'),
+        Bucket: s3Bucket(),
         Prefix: normalizeKey(prefix),
         ContinuationToken: token,
       }),
@@ -232,3 +253,25 @@ export async function listKeys(prefix: string) {
 
 /** Alias matching the adapter interface name `delete`. */
 export { deleteObject as delete };
+
+/** Trivial HEAD for /api/health. Local stats the uploads root; s3 lists one key. Throws on failure. */
+export async function headStorage() {
+  if (driver() === 's3') {
+    await s3Client().send(
+      new ListObjectsV2Command({
+        Bucket: s3Bucket(),
+        MaxKeys: 1,
+      }),
+    );
+    return true;
+  }
+  const root = localRoot();
+  try {
+    await stat(root);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT') throw error;
+    await mkdir(root, { recursive: true });
+  }
+  return true;
+}

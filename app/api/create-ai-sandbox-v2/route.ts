@@ -2,8 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { bootEphemeralSandbox, ensureSandbox, SandboxBootError } from '@/lib/sandbox/manager';
 import { resolveRequestStack } from '@/lib/stack-resolve';
 import { getStack } from '@/lib/stacks';
+import { jsonError } from '@/lib/api/error-response';
+import { requireSessionUser } from '@/lib/auth';
 
 export async function POST(request: NextRequest) {
+  const auth = await requireSessionUser();
+  if (!auth.user) return jsonError(auth.error, 'UNAUTHORIZED', auth.status);
+
   try {
     const body = (await request.json().catch(() => ({}))) as {
       stack?: unknown;
@@ -41,6 +46,12 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error('[create-ai-sandbox-v2] Error:', error);
     const boot = error instanceof SandboxBootError ? error : null;
+    if (boot?.code === 'SANDBOX_LIMIT') {
+      return NextResponse.json(
+        { reason: 'sandboxes', used: 0, limit: 0, message: boot.message },
+        { status: 402 },
+      );
+    }
     return NextResponse.json(
       {
         error: error instanceof Error ? error.message : 'Failed to create sandbox',

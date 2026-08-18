@@ -83,11 +83,12 @@ export const WORKSPACE_TABS = [
   { id: 'seo', label: 'Quality' },
   { id: 'assets', label: 'Assets' },
   { id: 'brain', label: 'Brain' },
+  { id: 'domains', label: 'Domains' },
 ] as const;
 
 export type WorkspaceView = (typeof WORKSPACE_TABS)[number]['id'];
 
-export type ViewportSize = 'desktop' | 'mobile';
+export type ViewportSize = 'desktop' | 'tablet' | 'mobile';
 
 export type SaveStatus = 'idle' | 'saving' | 'saved' | 'signin';
 

@@ -7,6 +7,7 @@ import StudioField from '@/components/app/studio/StudioField';
 import PageTabs from '@/components/app/studio/PageTabs';
 import { listSkills, type PublicSkill } from '@/lib/skills/actions';
 import { getMemoryExtractionSetting, updateMemoryExtractionSetting } from '@/lib/memory/actions';
+import { formatAdminDateTime } from '../format-admin-date';
 
 type Summary = {
   totalProjects: number;
@@ -37,6 +38,25 @@ type RecurringIssue = {
   sampleTitle: string;
 };
 
+type SsrfRejects = {
+  total: number;
+  byUser: Record<string, number>;
+};
+
+type TeardownLeak = {
+  sandboxId: string | null;
+  projectId: string | null;
+  driver: string | null;
+  reason: string;
+  source: string;
+  at: string;
+};
+
+type TeardownLeaks = {
+  total: number;
+  open: TeardownLeak[];
+};
+
 function currentMonthInputs(now = new Date()) {
   const year = now.getUTCFullYear();
   const month = now.getUTCMonth();
@@ -51,9 +71,7 @@ function formatMoney(value: number) {
 }
 
 function formatWhen(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '';
-  return date.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  return formatAdminDateTime(value);
 }
 
 export default function UsageDashboard() {
@@ -69,6 +87,8 @@ export default function UsageDashboard() {
   const [eventsByProject, setEventsByProject] = useState<Record<string, ProjectEvent[]>>({});
   const [loadingProjects, setLoadingProjects] = useState(false);
   const [qualityIssues, setQualityIssues] = useState<RecurringIssue[]>([]);
+  const [ssrfRejects, setSsrfRejects] = useState<SsrfRejects>({ total: 0, byUser: {} });
+  const [teardownLeaks, setTeardownLeaks] = useState<TeardownLeaks>({ total: 0, open: [] });
   const [skills, setSkills] = useState<PublicSkill[]>([]);
   const [memoryExtractionEnabled, setMemoryExtractionEnabled] = useState(true);
   const [savingExtraction, setSavingExtraction] = useState(false);
@@ -106,6 +126,20 @@ export default function UsageDashboard() {
           if (qualityRes.ok) {
             const qualityData = await qualityRes.json();
             setQualityIssues(qualityData.issues || []);
+            if (qualityData.ssrfPrivateRejects) {
+              setSsrfRejects({
+                total: Number(qualityData.ssrfPrivateRejects.total) || 0,
+                byUser: qualityData.ssrfPrivateRejects.byUser || {},
+              });
+            }
+            if (qualityData.sandboxTeardownLeaks) {
+              setTeardownLeaks({
+                total: Number(qualityData.sandboxTeardownLeaks.total) || 0,
+                open: Array.isArray(qualityData.sandboxTeardownLeaks.open)
+                  ? qualityData.sandboxTeardownLeaks.open
+                  : [],
+              });
+            }
           }
           const skillsResult = await listSkills();
           if (skillsResult.ok) setSkills(skillsResult.data);
@@ -165,7 +199,14 @@ export default function UsageDashboard() {
             { href: '/admin/team', label: 'Team' },
             { href: '/admin/usage', label: 'Usage', active: true },
             { href: '/admin/quality', label: 'Quality' },
+            { href: '/admin/jobs', label: 'Jobs' },
+            { href: '/admin/backups', label: 'Backups' },
+            { href: '/admin/audit', label: 'Audit' },
+            { href: '/admin/integrations', label: 'Integrations' },
             { href: '/admin/deploy', label: 'Deploy' },
+            { href: '/admin/servers', label: 'Servers' },
+            { href: '/admin/plans', label: 'Plans' },
+            { href: '/admin/workspace', label: 'Workspace' },
           ]}
         />
 
@@ -219,6 +260,54 @@ export default function UsageDashboard() {
             </div>
           ))}
         </div>
+
+        {teardownLeaks.open.length > 0 && (
+          <section className="mb-24 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-16">
+            <h2 className="text-[16px] font-medium text-[var(--studio-fg)]">Sandboxes that could not be stopped</h2>
+            <p className="mt-4 text-[12px] text-[var(--studio-muted)]">
+              A kill was asked and the provider did not confirm the VM is gone. These may still be
+              billed. {teardownLeaks.total} recorded; {teardownLeaks.open.length} still open. The
+              idle reaper retries them unless the provider circuit is open.
+            </p>
+            <ul className="mt-12 space-y-8">
+              {teardownLeaks.open.map((leak) => (
+                <li
+                  key={`${leak.projectId || 'none'}:${leak.sandboxId || leak.at}`}
+                  className="flex flex-col gap-2 text-[13px] sm:flex-row sm:items-baseline sm:justify-between"
+                >
+                  <span className="text-[var(--studio-fg)]">
+                    {leak.driver || 'sandbox'} {leak.sandboxId || 'unknown id'} ({leak.source})
+                  </span>
+                  <span className="text-[var(--studio-faint)]">{leak.reason}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
+        {ssrfRejects.total > 0 && (
+          <section className="mb-24 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-16">
+            <h2 className="text-[16px] font-medium text-[var(--studio-fg)]">Private-range import blocks</h2>
+            <p className="mt-4 text-[12px] text-[var(--studio-muted)]">
+              Repeated SSRF-style import attempts (private / localhost / link-local). {ssrfRejects.total} total.
+            </p>
+            <ul className="mt-12 space-y-8">
+              {Object.entries(ssrfRejects.byUser)
+                .sort((a, b) => b[1] - a[1])
+                .map(([userId, count]) => {
+                  const member = members.find((row) => row.userId === userId);
+                  return (
+                    <li key={userId} className="flex items-baseline justify-between gap-12 text-[13px]">
+                      <span className="text-[var(--studio-fg)]">
+                        {member?.name || member?.email || userId}
+                      </span>
+                      <span className="text-[var(--studio-faint)]">{count}</span>
+                    </li>
+                  );
+                })}
+            </ul>
+          </section>
+        )}
 
         {qualityIssues.length > 0 && (
           <section className="mb-24 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-16">

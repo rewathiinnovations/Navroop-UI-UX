@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useTheme } from 'next-themes';
-import { BookOpen, KeyRound, LogOut, Monitor, Moon, Sparkles, Sun, UserRound, Users } from 'lucide-react';
+import { BookOpen, Box, Gauge, KeyRound, LayoutTemplate, ListTodo, LogOut, Monitor, Moon, Plug, Sparkles, Sun, UserRound, Users } from 'lucide-react';
 import { signOut } from 'next-auth/react';
 import { useAuth } from '@/components/app/auth/AuthProvider';
 import { cn } from '@/utils/cn';
@@ -97,7 +97,7 @@ export default function AccountMenu() {
         <div
           role="menu"
           className={cn(
-            'absolute bottom-[calc(100%+8px)] left-0 z-50 w-[280px] overflow-hidden rounded-12',
+            'studio-scroll absolute bottom-[calc(100%+8px)] left-0 right-0 z-50 max-h-[min(70dvh,520px)] rounded-12',
             'border border-[var(--studio-line)] bg-[var(--studio-surface)]',
             'shadow-[0_12px_32px_rgba(24,24,27,0.12)]',
           )}
@@ -127,10 +127,27 @@ export default function AccountMenu() {
             <MenuLink href="/settings/skills" icon={<Sparkles className="size-16" />} onClick={() => setOpen(false)}>
               Skills
             </MenuLink>
+            <MenuLink href="/settings/usage" icon={<Gauge className="size-16" />} onClick={() => setOpen(false)}>
+              Usage
+            </MenuLink>
             {user.role === 'ADMIN' && (
-              <MenuLink href="/admin/team" icon={<Users className="size-16" />} onClick={() => setOpen(false)}>
-                Team
-              </MenuLink>
+              <>
+                <MenuLink href="/admin/team" icon={<Users className="size-16" />} onClick={() => setOpen(false)}>
+                  Team
+                </MenuLink>
+                <MenuLink href="/admin/jobs" icon={<ListTodo className="size-16" />} onClick={() => setOpen(false)}>
+                  Jobs
+                </MenuLink>
+                <MenuLink href="/admin/integrations" icon={<Plug className="size-16" />} onClick={() => setOpen(false)}>
+                  Integrations
+                </MenuLink>
+                <MenuLink href="/admin/templates" icon={<LayoutTemplate className="size-16" />} onClick={() => setOpen(false)}>
+                  Templates
+                </MenuLink>
+                <MenuLink href="/admin/sandbox-providers" icon={<Box className="size-16" />} onClick={() => setOpen(false)}>
+                  Sandbox providers
+                </MenuLink>
+              </>
             )}
           </div>
 

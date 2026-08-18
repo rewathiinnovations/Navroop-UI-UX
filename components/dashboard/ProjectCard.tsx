@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState, type MouseEvent } from "react";
+import { useState, type MouseEvent } from "react";
 import { Copy, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
 import { formatRelativeTime } from "@/lib/format-relative-time";
 import {
@@ -10,8 +10,40 @@ import {
   projectInitials,
   type ListProject,
 } from "@/lib/projects/list-client";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/shadcn/dropdown-menu";
 import { cn } from "@/utils/cn";
 import styles from "./project-card.module.css";
+
+function publishBadgeFor(project: ListProject) {
+  if (project.publishBadge) return project.publishBadge;
+  if (project.liveUrl || project.status === 'published') return 'live' as const;
+  if (project.previewUrl || project.status === 'preview') return 'preview' as const;
+  return 'draft' as const;
+}
+
+function PublishBadge({ project }: { project: ListProject }) {
+  const kind = publishBadgeFor(project);
+  const url = kind === 'live' ? project.liveUrl : kind === 'preview' ? project.previewUrl : null;
+  const label = kind === 'live' ? 'Live' : kind === 'preview' ? 'Preview' : 'Draft';
+  return (
+    <span
+      title={url || label}
+      className={cn(
+        'absolute left-8 top-8 z-10 rounded-full px-8 py-3 text-[11px] font-medium',
+        kind === 'live' && 'bg-emerald-600 text-white',
+        kind === 'preview' && 'bg-sky-600 text-white',
+        kind === 'draft' && 'bg-zinc-500/90 text-white',
+      )}
+    >
+      {label}
+    </span>
+  );
+}
 
 type ProjectCardProps = {
   project: ListProject;
@@ -37,20 +69,6 @@ export default function ProjectCard({
   const href = `/project/${project.id}`;
   const ownerName = project.owner?.name?.trim() || "Member";
   const edited = project.updatedAt ? `Edited ${formatRelativeTime(project.updatedAt)}` : "";
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    const close = () => setMenuOpen(false);
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") close();
-    };
-    document.addEventListener("click", close);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("click", close);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [menuOpen]);
 
   const stop = (event: MouseEvent) => {
     event.preventDefault();
@@ -88,7 +106,7 @@ export default function ProjectCard({
 
   const remove = async () => {
     setMenuOpen(false);
-    if (!confirm("Delete this project? 30 din baad apne aap hamesha ke liye delete ho jayega.")) return;
+    if (!confirm("Delete this project? It will be permanently deleted after 30 days.")) return;
     setBusy(true);
     try {
       const response = await fetch(`/api/projects/${project.id}`, { method: "DELETE" });
@@ -102,9 +120,10 @@ export default function ProjectCard({
     <div
       className={cn(
         "relative overflow-hidden",
-        density === "grid" ? "aspect-[16/10]" : "h-72 w-112 shrink-0",
+        density === "grid" ? "aspect-[16/10] rounded-t-12" : "h-72 w-112 shrink-0 rounded-l-12",
       )}
     >
+      <PublishBadge project={project} />
       {generating ? (
         <div className={cn("flex h-full w-full flex-col items-center justify-center px-16 text-center text-white", styles.generating)}>
           {density === "grid" ? (
@@ -175,6 +194,9 @@ export default function ProjectCard({
     </div>
   ) : null;
 
+  const menuItemClass =
+    "flex min-h-[40px] cursor-pointer items-center gap-8 rounded-none px-12 text-[13px] text-[var(--studio-fg)] focus:bg-[var(--studio-surface-hover)] focus:text-[var(--studio-fg)]";
+
   const kebab = (
     <div
       className={cn(
@@ -183,73 +205,57 @@ export default function ProjectCard({
         menuOpen && "opacity-100",
       )}
     >
-      <button
-        type="button"
-        aria-label={`More actions for ${project.name}`}
-        aria-expanded={menuOpen}
-        disabled={busy}
-        onClick={(event) => {
-          stop(event);
-          setMenuOpen((open) => !open);
-        }}
-        className="inline-flex size-[36px] items-center justify-center rounded-8 text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)] transition-colors duration-200"
-      >
-        <MoreHorizontal className="size-16" aria-hidden />
-      </button>
-      {menuOpen && (
-        <div
-          role="menu"
-          onClick={stop}
-          className="absolute right-0 z-20 mt-4 w-168 overflow-hidden rounded-10 border border-[var(--studio-line)] bg-[var(--studio-surface)] shadow-[0_12px_24px_rgba(24,24,27,0.12)]"
-        >
-          <Link
-            href={href}
-            role="menuitem"
-            className="flex min-h-[40px] items-center px-12 text-[13px] text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)]"
-            onClick={() => setMenuOpen(false)}
-          >
-            Open
-          </Link>
+      <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+        <DropdownMenuTrigger asChild>
           <button
             type="button"
-            role="menuitem"
-            className="flex w-full min-h-[40px] items-center gap-8 px-12 text-[13px] text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)]"
-            onClick={() => {
+            aria-label={`More actions for ${project.name}`}
+            disabled={busy}
+            onClick={(event) => event.stopPropagation()}
+            className="inline-flex size-[36px] items-center justify-center rounded-8 text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)] transition-colors duration-200"
+          >
+            <MoreHorizontal className="size-16" aria-hidden />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          align="end"
+          sideOffset={4}
+          collisionPadding={8}
+          className="z-50 w-168 rounded-10 border-[var(--studio-line)] bg-[var(--studio-surface)] p-0 text-[var(--studio-fg)] shadow-[0_12px_24px_rgba(24,24,27,0.12)]"
+        >
+          <DropdownMenuItem asChild className={menuItemClass}>
+            <Link href={href}>Open</Link>
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            className={menuItemClass}
+            onSelect={() => {
               setRenameValue(project.name);
               setRenaming(true);
-              setMenuOpen(false);
             }}
           >
             <Pencil className="size-14" aria-hidden />
             Rename
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            className="flex w-full min-h-[40px] items-center gap-8 px-12 text-[13px] text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)]"
-            onClick={() => void duplicate()}
-          >
+          </DropdownMenuItem>
+          <DropdownMenuItem className={menuItemClass} onSelect={() => void duplicate()}>
             <Copy className="size-14" aria-hidden />
             Duplicate
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            className="flex w-full min-h-[40px] items-center gap-8 px-12 text-[13px] text-[var(--studio-danger)] hover:bg-[var(--studio-surface-hover)]"
-            onClick={() => void remove()}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            className={cn(menuItemClass, "text-[var(--studio-danger)] focus:text-[var(--studio-danger)]")}
+            onSelect={() => void remove()}
           >
             <Trash2 className="size-14" aria-hidden />
             Delete
-          </button>
-        </div>
-      )}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
   );
 
   return (
     <article
       className={cn(
-        "studio-motion group relative overflow-hidden rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] shadow-[0_4px_16px_rgba(24,24,27,0.04)] transition-[transform,border-color] duration-200 hover:border-[var(--studio-line-strong)]",
+        "studio-motion group relative overflow-visible rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] shadow-[0_4px_16px_rgba(24,24,27,0.04)] transition-[transform,border-color] duration-200 hover:border-[var(--studio-line-strong)]",
         density === "grid" && "hover:-translate-y-2",
         density === "list" && "flex items-stretch",
       )}

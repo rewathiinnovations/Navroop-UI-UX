@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type { ConversationState } from '@/types/conversation';
+import { jsonError } from '@/lib/api/error-response';
+import { requireSessionUser } from '@/lib/auth';
 
 declare global {
   var conversationState: ConversationState | null;
@@ -7,6 +9,9 @@ declare global {
 
 // GET: Retrieve current conversation state
 export async function GET() {
+  const auth = await requireSessionUser();
+  if (!auth.user) return jsonError(auth.error, 'UNAUTHORIZED', auth.status);
+
   try {
     if (!global.conversationState) {
       return NextResponse.json({
@@ -31,6 +36,9 @@ export async function GET() {
 
 // POST: Reset or update conversation state
 export async function POST(request: NextRequest) {
+  const auth = await requireSessionUser();
+  if (!auth.user) return jsonError(auth.error, 'UNAUTHORIZED', auth.status);
+
   try {
     const { action, data } = await request.json();
     
@@ -141,6 +149,9 @@ export async function POST(request: NextRequest) {
 
 // DELETE: Clear conversation state
 export async function DELETE() {
+  const auth = await requireSessionUser();
+  if (!auth.user) return jsonError(auth.error, 'UNAUTHORIZED', auth.status);
+
   try {
     global.conversationState = null;
     

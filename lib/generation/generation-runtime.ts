@@ -14,6 +14,7 @@ import {
   type StartApplyInput,
   type StartGenerationInput,
 } from './types';
+import { emitLockConflict, parseLockConflict } from '@/lib/projects/lock-client';
 
 type Listener = () => void;
 type JobHandler = (job: RuntimeJob) => Promise<void>;
@@ -123,6 +124,17 @@ export function addGenerationMessage(
   });
 }
 
+/**
+ * Preview-after-generation copy from persistProjectGeneration. Dedupes across the
+ * apply persist path and saveCurrentProject so one generation cannot show the
+ * same notice twice. Never throws — a failed notice must not fail the save.
+ */
+export function surfacePreviewNotice(notice: string | null | undefined) {
+  if (typeof notice !== 'string' || !notice.trim()) return;
+  if (state.messages.some((message) => message.content === notice)) return;
+  addGenerationMessage(notice, 'system');
+}
+
 export function setGenerationProgressState(
   progress: GenerationProgressState | ((prev: GenerationProgressState) => GenerationProgressState)
 ) {
@@ -217,6 +229,16 @@ function applyStreamedCode(prev: GenerationProgressState, text: string): Generat
   return updatedState;
 }
 
+async function deliverPersistPreviewNotice(response: Response, status?: GenerationStatus) {
+  if (status !== 'ready' || !response.ok) return;
+  try {
+    const data = (await response.json().catch(() => ({}))) as { previewNotice?: unknown };
+    surfacePreviewNotice(typeof data.previewNotice === 'string' ? data.previewNotice : null);
+  } catch (error) {
+    console.error('[generation-runtime] Failed to surface preview notice', error);
+  }
+}
+
 async function persistProgress(partial: {
   status?: GenerationStatus;
   progressMessage?: string | null;
@@ -227,11 +249,12 @@ async function persistProgress(partial: {
   const projectId = state.projectId;
   if (!projectId) return;
   try {
-    await fetch(`/api/projects/${projectId}`, {
+    const response = await fetch(`/api/projects/${projectId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(partial),
     });
+    await deliverPersistPreviewNotice(response, partial.status);
   } catch (error) {
     console.error('[generation-runtime] Failed to persist progress', error);
   }
@@ -258,7 +281,7 @@ function startHeartbeat() {
   }, 4000);
 }
 
-function setJobStatus(status: GenerationStatus, lastError: string | null = null) {
+function setJobStatus(status: GenerationStatus, lastError: string | null = null): Promise<void> {
   patchGenerationState({ status, lastError });
   if (isActiveGenerationStatus(status)) {
     startHeartbeat();
@@ -266,10 +289,10 @@ function setJobStatus(status: GenerationStatus, lastError: string | null = null)
       status,
       progressMessage: state.generationProgress.status || status,
     });
-    return;
+    return Promise.resolve();
   }
   stopHeartbeat();
-  void persistProgress({
+  return persistProgress({
     status,
     progressMessage: lastError || state.generationProgress.status || status,
     lastCode: state.lastGeneratedCode,
@@ -413,9 +436,49 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
       context: input.context,
       isEdit: input.isEdit,
       projectId: input.projectId ?? state.projectId,
+      idempotencyKey: input.idempotencyKey ?? undefined,
     }),
     signal: controller.signal,
   });
+
+  const contentType = response.headers.get('content-type') || '';
+  if (response.ok && contentType.includes('application/json')) {
+    const body = (await response.json().catch(() => ({}))) as { reused?: boolean };
+    if (body.reused) {
+      return { generatedCode: '', explanation: '', packagesToInstall: [], skillNames: [], alreadyRunning: true };
+    }
+  }
+
+  if (response.status === 409) {
+    const body = await response.json().catch(() => ({}));
+    const conflict = parseLockConflict(409, body);
+    if (conflict) emitLockConflict(conflict);
+    setJobStatus('idle');
+    setGenerationProgressState((prev) => ({
+      ...prev,
+      isGenerating: false,
+      isStreaming: false,
+      isThinking: false,
+    }));
+    return { generatedCode: '', explanation: '', packagesToInstall: [], skillNames: [] };
+  }
+
+  if (response.status === 402) {
+    const body = (await response.json().catch(() => ({}))) as {
+      reason?: string;
+      used?: number;
+      limit?: number;
+      message?: string;
+    };
+    const denial = {
+      reason: body.reason || 'workspace_exhausted',
+      used: typeof body.used === 'number' ? body.used : 0,
+      limit: typeof body.limit === 'number' ? body.limit : 0,
+      message: body.message || "This month's credits are used up",
+    };
+    addGenerationMessage(denial.message, 'error', { creditDenial: denial });
+    throw new Error(denial.message);
+  }
 
   if (!response.ok || !response.body) {
     throw new Error(response.ok ? 'Failed to generate code' : `HTTP error! status: ${response.status}`);
@@ -533,6 +596,13 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
           }));
         } else if (data.type === 'error') {
           throw new Error(data.error || 'Generation failed');
+        } else if (data.type === 'warning' || data.type === 'info') {
+          // Same handling as the apply branch below. The route's degraded-context
+          // notices ("could not read your files, working blind") arrive on these
+          // two frames; without a case here they were parsed and discarded.
+          if (data.message) {
+            addGenerationMessage(data.message, 'system');
+          }
         }
       } catch (error) {
         if (error instanceof SyntaxError) {
@@ -580,9 +650,18 @@ async function runApplyStream(input: StartApplyInput): Promise<ApplyResult> {
       isEdit: input.isEdit,
       packages: input.packages || [],
       sandboxId: input.sandboxId,
+      projectId: state.projectId,
     }),
     signal: controller.signal,
   });
+
+  if (response.status === 409) {
+    const body = await response.json().catch(() => ({}));
+    const conflict = parseLockConflict(409, body);
+    if (conflict) emitLockConflict(conflict);
+    setJobStatus('idle');
+    return { finalData: null };
+  }
 
   if (!response.ok) {
     throw new Error(`Failed to apply code: ${response.statusText}`);
@@ -666,7 +745,7 @@ async function runApplyStream(input: StartApplyInput): Promise<ApplyResult> {
 
   if (finalData) {
     patchGenerationState({ lastGeneratedCode: input.code });
-    setJobStatus('ready');
+    await setJobStatus('ready');
   }
 
   return { finalData };

@@ -1,22 +1,28 @@
 'use client';
 
-import { Star, X } from 'lucide-react';
+import { useState } from 'react';
+import { Loader2, Star, X } from 'lucide-react';
 import { relativeTime } from '@/lib/projects/prompt';
+import { downloadProjectZip, formatExportBytes } from '@/lib/export/client';
 import type { Checkpoint } from './types';
 
 export default function VersionHistoryPanel({
   open,
   onClose,
+  projectId,
   checkpoints = [],
   onRestore,
   onBookmark,
 }: {
   open: boolean;
   onClose: () => void;
+  projectId?: string | null;
   checkpoints?: Checkpoint[];
   onRestore?: (id: string) => void;
   onBookmark?: (id: string) => void;
 }) {
+  const [exportingId, setExportingId] = useState<string | null>(null);
+  const [exportHint, setExportHint] = useState<string | null>(null);
   if (!open) return null;
 
   return (
@@ -75,8 +81,8 @@ export default function VersionHistoryPanel({
                   <p className="text-[13px] font-medium text-[var(--studio-fg)]">{checkpoint.label}</p>
                   <button
                     type="button"
-                    title="Ise hamesha ke liye rakhein"
-                    aria-label="Ise hamesha ke liye rakhein"
+                    title="Keep this forever"
+                    aria-label="Keep this forever"
                     aria-pressed={Boolean(checkpoint.isBookmarked)}
                     onClick={() => onBookmark?.(checkpoint.id)}
                     className="inline-flex size-28 shrink-0 items-center justify-center rounded-8 text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)]"
@@ -90,16 +96,45 @@ export default function VersionHistoryPanel({
                 <p className="mb-10 text-[11px] text-[var(--studio-faint)]">{relativeTime(checkpoint.createdAt)}</p>
                 {pruned ? (
                   <p className="text-[12px] text-[var(--studio-muted)]">
-                    Purana checkpoint — restore nahi ho sakta
+                    Old checkpoint — cannot restore
                   </p>
                 ) : (
-                  <button
-                    type="button"
-                    onClick={() => onRestore?.(checkpoint.id)}
-                    className="inline-flex min-h-[36px] items-center rounded-full border border-[var(--studio-line-strong)] px-12 text-[12px] font-medium text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)]"
-                  >
-                    Restore
-                  </button>
+                  <>
+                    <div className="flex flex-wrap items-center gap-8">
+                      <button
+                        type="button"
+                        onClick={() => onRestore?.(checkpoint.id)}
+                        className="inline-flex min-h-[36px] items-center rounded-full border border-[var(--studio-line-strong)] px-12 text-[12px] font-medium text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)]"
+                      >
+                        Restore
+                      </button>
+                      {projectId ? (
+                        <button
+                          type="button"
+                          disabled={exportingId === checkpoint.id}
+                          onClick={() => {
+                            setExportingId(checkpoint.id);
+                            setExportHint(null);
+                            void downloadProjectZip(projectId, checkpoint.id).then((result) => {
+                              setExportingId(null);
+                              if (!result.ok) {
+                                setExportHint(result.error);
+                                return;
+                              }
+                              setExportHint(formatExportBytes(result.bytes));
+                            });
+                          }}
+                          className="inline-flex min-h-[36px] items-center gap-6 rounded-full border border-[var(--studio-line-strong)] px-12 text-[12px] font-medium text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)] disabled:opacity-50"
+                        >
+                          {exportingId === checkpoint.id ? <Loader2 className="size-12 animate-spin" /> : null}
+                          Download code
+                        </button>
+                      ) : null}
+                    </div>
+                    {exportHint ? (
+                      <p className="mt-6 text-[11px] text-[var(--studio-faint)]">{exportHint}</p>
+                    ) : null}
+                  </>
                 )}
               </li>
             );

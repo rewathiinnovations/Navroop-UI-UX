@@ -1,0 +1,3 @@
+# date	who	reason
+# Append via: pnpm run verify:bypass -- "reason"
+# Then commit this file with the change and git push --no-verify

@@ -1,0 +1,4 @@
+# Playwright storage state written by auth.setup.ts. This is a live signed-in
+# session for the E2E account — never commit it. The root .gitignore also lists
+# /e2e/.auth; this copy keeps the protection with the tests that create the file.
+.auth/

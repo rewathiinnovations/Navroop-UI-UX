@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import FirecrawlApp from '@mendable/firecrawl-js';
+import { assertSafeUrl, UnsafeUrlError } from '@/lib/security/url-guard';
+import { jsonError } from '@/lib/api/error-response';
+import { requireSessionUser } from '@/lib/auth';
 
 export async function POST(request: NextRequest) {
+  const auth = await requireSessionUser();
+  if (!auth.user) return jsonError(auth.error, 'UNAUTHORIZED', auth.status);
+
   try {
     const { url, formats = ['markdown', 'html'], options = {} } = await request.json();
     
@@ -10,6 +16,13 @@ export async function POST(request: NextRequest) {
         { error: "URL is required" },
         { status: 400 }
       );
+    }
+
+    try {
+      await assertSafeUrl(String(url));
+    } catch (error) {
+      const message = error instanceof UnsafeUrlError ? error.message : 'URL import failed';
+      return NextResponse.json({ error: message }, { status: 400 });
     }
     
     // Initialize Firecrawl with API key from environment

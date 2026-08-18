@@ -3,7 +3,13 @@ import { getCurrentProjectFiles } from '@/lib/github/current-files';
 import { asFileSnapshot, type FileSnapshotEntry } from './snapshot-store';
 
 export type { FileSnapshotEntry, SnapshotRecord, WriteSnapshotResult } from './snapshot-store';
-export { asFileSnapshot, readSnapshot, snapshotObjectKey, writeSnapshot } from './snapshot-store';
+export {
+  asFileSnapshot,
+  readSnapshot,
+  snapshotObjectKey,
+  SnapshotReadError,
+  writeSnapshot,
+} from './snapshot-store';
 
 /** Same file-tree helper GitHub push uses. Do not add a second reader. */
 export async function captureFileSnapshot(projectId: string): Promise<FileSnapshotEntry[]> {

@@ -27,8 +27,9 @@ export default function BuilderPage() {
     setSelectedStyle(style || "modern");
     
     // Start the website generation process
+    // Function is declared below; mount-only effect.
+    // eslint-disable-next-line react-hooks/immutability
     generateWebsite(url, style || "modern");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
 
   const generateWebsite = async (url: string, style: string) => {

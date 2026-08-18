@@ -1,4 +1,4 @@
-/** Hosts the sandbox preview is served from (E2B + Vercel). */
+/** Hosts the sandbox preview is served from. */
 export const SANDBOX_ALLOWED_HOSTS = [
   '.e2b.app',
   '.e2b.dev',

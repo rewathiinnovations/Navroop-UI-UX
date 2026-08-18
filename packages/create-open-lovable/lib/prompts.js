@@ -31,9 +31,14 @@ export function getPrompts(config) {
           short: 'E2B'
         },
         {
-          name: 'Vercel - Lightweight ephemeral VMs',
-          value: 'vercel',
-          short: 'Vercel'
+          name: 'Modal - Serverless sandboxes',
+          value: 'modal',
+          short: 'Modal'
+        },
+        {
+          name: 'Daytona - Isolated development sandboxes',
+          value: 'daytona',
+          short: 'Daytona'
         }
       ],
       default: 'e2b'
@@ -78,62 +83,25 @@ export function getEnvPrompts(provider) {
         return true;
       }
     });
-  } else if (provider === 'vercel') {
-    prompts.push({
-      type: 'list',
-      name: 'vercelAuthMethod',
-      message: 'Vercel authentication method:',
-      choices: [
-        {
-          name: 'OIDC Token (automatic in Vercel environment)',
-          value: 'oidc',
-          short: 'OIDC'
-        },
-        {
-          name: 'Personal Access Token',
-          value: 'pat',
-          short: 'PAT'
-        }
-      ]
-    });
-
+  } else if (provider === 'modal') {
     prompts.push({
       type: 'input',
-      name: 'vercelTeamId',
-      message: 'Vercel Team ID:',
-      when: (answers) => answers.vercelAuthMethod === 'pat',
-      validate: (input) => {
-        if (!input || input.trim() === '') {
-          return 'Team ID is required for PAT authentication';
-        }
-        return true;
-      }
+      name: 'modalTokenId',
+      message: 'Modal token ID:',
+      validate: (input) => input?.trim() ? true : 'Token ID is required',
     });
-
     prompts.push({
       type: 'input',
-      name: 'vercelProjectId',
-      message: 'Vercel Project ID:',
-      when: (answers) => answers.vercelAuthMethod === 'pat',
-      validate: (input) => {
-        if (!input || input.trim() === '') {
-          return 'Project ID is required for PAT authentication';
-        }
-        return true;
-      }
+      name: 'modalTokenSecret',
+      message: 'Modal token secret:',
+      validate: (input) => input?.trim() ? true : 'Token secret is required',
     });
-
+  } else if (provider === 'daytona') {
     prompts.push({
       type: 'input',
-      name: 'vercelToken',
-      message: 'Vercel Access Token:',
-      when: (answers) => answers.vercelAuthMethod === 'pat',
-      validate: (input) => {
-        if (!input || input.trim() === '') {
-          return 'Access token is required for PAT authentication';
-        }
-        return true;
-      }
+      name: 'daytonaApiKey',
+      message: 'Daytona API key:',
+      validate: (input) => input?.trim() ? true : 'API key is required',
     });
   }
 

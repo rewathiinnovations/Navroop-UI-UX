@@ -68,14 +68,22 @@ export async function saveStoredCoolifySettings(input: {
 }
 
 export async function getCoolifyCredentials() {
-  const envToken = process.env.COOLIFY_API_TOKEN?.trim() || '';
-  const envBaseUrl = process.env.COOLIFY_BASE_URL?.trim() || '';
+  const { getIntegration } = await import('@/lib/integrations/store');
+  const connected = await getIntegration('default', 'COOLIFY');
+  if (connected?.status === 'CONNECTED' && connected.secrets.token && connected.config.baseUrl) {
+    const token = connected.secrets.token;
+    return {
+      baseUrl: normalizeBaseUrl(connected.config.baseUrl),
+      token,
+      last4: last4FromSecret(token),
+      source: 'stored' as const,
+    };
+  }
   const stored = await getStoredCoolifySettings();
-  const token = envToken || stored.token || '';
   return {
-    baseUrl: normalizeBaseUrl(envBaseUrl || stored.baseUrl),
-    token: token || null,
-    last4: token ? last4FromSecret(token) : stored.last4,
-    source: (envToken ? 'env' : stored.token ? 'stored' : 'none') as 'env' | 'stored' | 'none',
+    baseUrl: normalizeBaseUrl(stored.baseUrl),
+    token: stored.token || null,
+    last4: stored.token ? last4FromSecret(stored.token) : stored.last4,
+    source: (stored.token ? 'stored' : 'none') as 'env' | 'stored' | 'none',
   };
 }

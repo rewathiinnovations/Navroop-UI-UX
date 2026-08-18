@@ -20,24 +20,37 @@ export async function getSessionUser(): Promise<SessionUser | null> {
 
   const user = await prisma.user.findUnique({
     where: { id },
-    select: { id: true, email: true, name: true, role: true, avatarUrl: true },
+    select: { id: true, email: true, name: true, role: true, avatarUrl: true, isActive: true },
   });
-  return user;
+  if (!user || !user.isActive) return null;
+  return {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    role: user.role,
+    avatarUrl: user.avatarUrl,
+  };
 }
 
-export async function requireSessionUser() {
+export async function requireSessionUser(): Promise<
+  | { user: SessionUser; error: null; status: 200 }
+  | { user: null; error: 'Sign in required'; status: 401 }
+> {
   const user = await getSessionUser();
   if (!user) {
-    return { user: null as SessionUser | null, error: 'Sign in required' as const, status: 401 as const };
+    return { user: null, error: 'Sign in required', status: 401 };
   }
-  return { user, error: null, status: 200 as const };
+  return { user, error: null, status: 200 };
 }
 
-export async function requireAdmin() {
+export async function requireAdmin(): Promise<
+  | { user: SessionUser; error: null; status: 200 }
+  | { user: null; error: 'Sign in required' | 'Admin access required'; status: 401 | 403 }
+> {
   const result = await requireSessionUser();
   if (!result.user) return result;
   if (result.user.role !== 'ADMIN') {
-    return { user: null as SessionUser | null, error: 'Admin access required' as const, status: 403 as const };
+    return { user: null, error: 'Admin access required', status: 403 };
   }
   return result;
 }

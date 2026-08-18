@@ -4,9 +4,11 @@ import { appConfig } from '@/config/app.config';
 import { getProviderForModel } from '@/lib/ai/provider-manager';
 import { buildCachedMessages } from '@/lib/generation/prompt-cache';
 import { resolveInputTokens } from '@/lib/generation/token-estimate';
+import { recordJobStepFailure } from '@/lib/jobs/step-failure';
 import { logGenerationEvent } from '@/lib/usage-costs';
 import { buildStablePromptPrefix } from '@/lib/stack-prompts';
 import { getStack } from '@/lib/stacks';
+import { sectionGenerateFailureMessage, sectionGenerationSeverity } from './copy';
 import type { ImportMode } from './mode';
 import { buildingSectionProgress } from './progress';
 import {
@@ -16,6 +18,14 @@ import {
 } from './prompts';
 import { formatDesignTokens } from './tokens';
 import type { GenerateSectionsResult, ImportSection, PageCapture, RehostedAsset } from './types';
+
+export type ImportCompleteXml = (input: {
+  stablePrefix: string;
+  volatileUser: string;
+  image?: Buffer;
+  projectId: string;
+  userId: string;
+}) => Promise<{ text: string; inputTokens: number }>;
 
 export function buildImportStablePrefix(stack: string, designDirection?: string | null) {
   return buildStablePromptPrefix(stack, designDirection);
@@ -166,17 +176,21 @@ export async function generateImportedSections(input: {
   sections: ImportSection[];
   assets: RehostedAsset[];
   onProgress?: (message: string) => void;
+  jobId?: string;
+  complete?: ImportCompleteXml;
 }): Promise<GenerateSectionsResult> {
+  const complete = input.complete ?? completeXml;
   const stablePrefix = buildImportStablePrefix(input.stack, input.designDirection);
   const tokens = formatDesignTokens(input.capture.tokens);
   const files: string[] = [];
   const paths: { path: string; label: string }[] = [];
+  const warnings: string[] = [];
   let inputTokens = 0;
+  let failedSections = 0;
 
   for (const [index, section] of input.sections.entries()) {
     input.onProgress?.(buildingSectionProgress(index + 1, input.sections.length));
     const path = sectionComponentPath(input.stack, section);
-    paths.push({ path, label: section.label });
     const crop = await cropSection(input.capture.desktopPng, section.approximateYRange).catch(
       () => input.capture.desktopPng,
     );
@@ -188,33 +202,63 @@ export async function generateImportedSections(input: {
       assets: assetsForSection(section, input.assets),
       designDirection: input.designDirection,
     })}\n\nWrite the component to <file path="${path}">.`;
-    const result = await completeXml({
+    try {
+      const result = await complete({
+        stablePrefix,
+        volatileUser: volatile,
+        image: crop,
+        projectId: input.projectId,
+        userId: input.userId,
+      });
+      inputTokens += result.inputTokens;
+      files.push(result.text);
+      paths.push({ path, label: section.label });
+    } catch (error) {
+      failedSections += 1;
+      const detail = error instanceof Error && error.message ? error.message : String(error ?? 'unknown error');
+      const message = sectionGenerateFailureMessage(section.label, detail);
+      warnings.push(message);
+      input.onProgress?.(message);
+      await recordJobStepFailure(input.jobId, {
+        key: `section:${section.id}`,
+        label: `Building ${section.label}`,
+        error: message,
+      });
+    }
+  }
+
+  if (sectionGenerationSeverity({ succeeded: paths.length, failed: failedSections }) === 'fallback') {
+    throw new Error(warnings[0] || 'No sections could be generated');
+  }
+
+  try {
+    const composition = await complete({
       stablePrefix,
-      volatileUser: volatile,
-      image: crop,
+      volatileUser: `${buildCompositionVolatilePrompt({
+        mode: input.mode,
+        tokens,
+        sectionFiles: paths,
+        designDirection: input.designDirection,
+      })}\n\n${compositionHint(input.stack)}`,
+      image: input.capture.desktopPng,
       projectId: input.projectId,
       userId: input.userId,
     });
-    inputTokens += result.inputTokens;
-    files.push(result.text);
+    inputTokens += composition.inputTokens;
+    files.push(composition.text);
+  } catch (error) {
+    const detail = error instanceof Error && error.message ? error.message : String(error ?? 'unknown error');
+    const message = `The imported sections were generated, but the layout could not be composed (${detail}) — open the section files and try again.`;
+    warnings.push(message);
+    input.onProgress?.(message);
+    await recordJobStepFailure(input.jobId, {
+      key: 'compose',
+      label: 'Composing layout',
+      error: message,
+    });
   }
 
-  const composition = await completeXml({
-    stablePrefix,
-    volatileUser: `${buildCompositionVolatilePrompt({
-      mode: input.mode,
-      tokens,
-      sectionFiles: paths,
-      designDirection: input.designDirection,
-    })}\n\n${compositionHint(input.stack)}`,
-    image: input.capture.desktopPng,
-    projectId: input.projectId,
-    userId: input.userId,
-  });
-  inputTokens += composition.inputTokens;
-  files.push(composition.text);
-
-  return { filesXml: joinFilesXml(files), inputTokens };
+  return { filesXml: joinFilesXml(files), inputTokens, warnings };
 }
 
 export async function generateImportFallback(input: {

@@ -18,11 +18,15 @@ import type { StackId } from "@/lib/stacks";
 type HomeLandingProps = {
   initialAuth?: AuthMode | null;
   nextPath?: string | null;
+  initialForgot?: boolean;
+  resetSuccess?: boolean;
 };
 
 export default function HomeLanding({
   initialAuth = null,
   nextPath = null,
+  initialForgot = false,
+  resetSuccess = false,
 }: HomeLandingProps) {
   const router = useRouter();
   const { data: session } = useSession();
@@ -114,6 +118,14 @@ export default function HomeLanding({
 
       <footer className="relative z-10 shrink-0 py-16 text-center text-[13px] text-[var(--studio-faint)]">
         © 2026 Navroop
+        {" · "}
+        <a href="/terms" className="hover:text-[var(--studio-fg)]">
+          Terms
+        </a>
+        {" · "}
+        <a href="/privacy" className="hover:text-[var(--studio-fg)]">
+          Privacy
+        </a>
       </footer>
 
       <AuthModal
@@ -122,6 +134,8 @@ export default function HomeLanding({
         onModeChange={setAuthMode}
         onClose={() => setAuthOpen(false)}
         nextPath={nextPath}
+        initialForgot={initialForgot}
+        resetSuccess={resetSuccess}
       />
     </div>
   );

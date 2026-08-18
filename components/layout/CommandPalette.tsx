@@ -7,14 +7,14 @@ import {
   useEffect,
   useRef,
   useState,
-  type KeyboardEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from 'react';
 import { useRouter } from 'next/navigation';
 import { Search } from 'lucide-react';
 import { cn } from '@/utils/cn';
 
-type PaletteProject = { id: string; name: string };
+type PaletteProject = { id: string; name: string; snippet?: string; status?: string };
 
 type CommandPaletteContextValue = {
   openPalette: () => void;
@@ -55,7 +55,7 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
+    const onKey = (event: globalThis.KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
         setOpen((current) => {
@@ -91,7 +91,7 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
       setLoading(true);
       try {
         const response = await fetch(
-          `/api/projects?search=${encodeURIComponent(needle)}`,
+          `/api/search?q=${encodeURIComponent(needle)}`,
           { signal: controller.signal },
         );
         if (!response.ok) return;
@@ -105,7 +105,7 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
       } finally {
         setLoading(false);
       }
-    }, 280);
+    }, 250);
 
     return () => {
       controller.abort();
@@ -120,7 +120,7 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
         closePalette();
       }
     };
-    const onKey = (event: KeyboardEvent) => {
+    const onKey = (event: globalThis.KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault();
         closePalette();
@@ -142,7 +142,7 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
     [closePalette, router],
   );
 
-  const onInputKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+  const onInputKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'ArrowDown') {
       event.preventDefault();
       setActiveIndex((index) => Math.min(index + 1, Math.max(results.length - 1, 0)));
@@ -193,7 +193,7 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
                 <p className="px-10 py-12 text-[13px] text-[var(--studio-muted)]">Searching…</p>
               )}
               {!loading && query.trim() && results.length === 0 && (
-                <p className="px-10 py-12 text-[13px] text-[var(--studio-muted)]">No matching projects</p>
+                <p className="px-10 py-12 text-[13px] text-[var(--studio-muted)]">Nothing found</p>
               )}
               {!loading && results.map((project, index) => (
                 <button
@@ -202,13 +202,26 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
                   onClick={() => goTo(project)}
                   onMouseEnter={() => setActiveIndex(index)}
                   className={cn(
-                    'flex w-full min-h-[44px] items-center rounded-10 px-10 text-left text-[14px] text-[var(--studio-fg)] transition-colors duration-200',
+                    'flex w-full min-h-[44px] flex-col items-start justify-center rounded-10 px-10 py-8 text-left transition-colors duration-200',
                     index === activeIndex
                       ? 'bg-[var(--studio-surface-hover)]'
                       : 'hover:bg-[var(--studio-surface-hover)]',
                   )}
                 >
-                  {project.name}
+                  <span className="flex w-full items-center justify-between gap-8">
+                    <span className="truncate text-[14px] text-[var(--studio-fg)]">{project.name}</span>
+                    {project.status ? (
+                      <span className="shrink-0 rounded-full border border-[var(--studio-line)] px-6 py-1 text-[11px] capitalize text-[var(--studio-muted)]">
+                        {project.status}
+                      </span>
+                    ) : null}
+                  </span>
+                  {project.snippet ? (
+                    <span
+                      className="mt-2 line-clamp-2 text-[12px] text-[var(--studio-faint)] [&_mark]:bg-transparent [&_mark]:font-medium [&_mark]:text-[var(--studio-fg)]"
+                      dangerouslySetInnerHTML={{ __html: project.snippet }}
+                    />
+                  ) : null}
                 </button>
               ))}
               {!query.trim() && (

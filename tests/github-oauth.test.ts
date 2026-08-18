@@ -1,10 +1,13 @@
 /**
  * GitHub OAuth account-linking + push verification (no UI).
- * Run: node --experimental-strip-types tests/github-oauth.test.ts
+ * Registered in `tests/setup/suites.ts` (DB_SUITES) and run by
+ * `tests/integration/legacy-db-suites.test.ts`. Needs no HTTP server.
  */
 import { resolve } from 'node:path';
+import { NextRequest } from 'next/server';
 import { config } from 'dotenv';
-import { PrismaClient } from '../generated/prisma/index.js';
+import { proxy } from '../proxy.js';
+import { testPrismaClient } from './setup/db.ts';
 import { decrypt, encrypt } from '../lib/crypto.js';
 import {
   CONNECT_FIRST_MESSAGE,
@@ -22,8 +25,13 @@ if (!process.env.AUTH_SECRET && !process.env.NEXTAUTH_SECRET && !process.env.ENC
   process.env.AUTH_SECRET = 'test-auth-secret-for-github-oauth-verification';
 }
 
-const BASE = process.env.APP_URL || 'http://localhost:3000';
-const prisma = new PrismaClient();
+/**
+ * Only the origin `proxy` parses out of the request URL. Nothing is dialled, so
+ * this is deliberately not `APP_URL` — the check must not depend on where a
+ * server happens to be running.
+ */
+const GATE_ORIGIN = 'http://localhost:3000';
+const prisma = testPrismaClient();
 
 let failed = 0;
 let passed = 0;
@@ -263,50 +271,69 @@ async function main() {
     assert(afterDisc == null, 'disconnect deletes GitHubConnection');
     assert(Boolean(projectAfterDisc?.githubRepoUrl), 'disconnect leaves project githubRepoUrl');
 
-    try {
-      const loggedOut = await fetch(`${BASE}/api/github/connect`, { redirect: 'manual' });
-      if (loggedOut.status >= 500) {
-        console.log('need server restart — /api/github/connect returned 500 (stale Next process)');
-      } else {
-        const location = loggedOut.headers.get('location') || '';
-        assert(
-          loggedOut.status >= 300 && loggedOut.status < 400,
-          'logged-out connect redirects',
-        );
-        assert(
-          location.includes('auth=login') && !location.includes('github.com/login/oauth'),
-          'logged-out connect goes to login, not GitHub',
-        );
-      }
-
-      const beforeCallback = await prisma.gitHubConnection.count();
-      const badState = await fetch(`${BASE}/api/github/callback?code=abc&state=wrong`, {
-        redirect: 'manual',
+    // The callback's rule is: verify the signed state, and only then upsert. Counting
+    // rows around the HTTP probe below cannot prove that — the request is denied at the
+    // API gate before the route runs, and the count would be read from the test
+    // database while the server writes to the application database, so the number could
+    // never move. Run the same composition here instead, in this database, where a
+    // regression in verifyOAuthState really does create a row and fail the count.
+    const rowsBefore = await prisma.gitHubConnection.count({ where: { userId: user.id } });
+    const acceptedBadStates = [
+      verifyOAuthState(cookieValue, 'wrong-state'),
+      verifyOAuthState(undefined, state),
+      verifyOAuthState(cookieValue, undefined),
+    ].filter(Boolean);
+    if (acceptedBadStates.length > 0) {
+      await upsertGitHubConnection(prisma, {
+        userId: user.id,
+        githubUserId: '99999',
+        githubUsername: 'state-check-bypassed',
+        accessToken: plain,
+        scope: 'repo',
       });
-      const afterCallback = await prisma.gitHubConnection.count();
-      if (badState.status >= 500) {
-        console.log('need server restart — /api/github/callback returned 500 (stale Next process)');
-      } else {
-        const badLoc = badState.headers.get('location') || '';
-        assert(badLoc.includes('github=error'), 'bad state redirects to github=error');
-      }
-      assert(afterCallback === beforeCallback, 'bad/missing state creates no GitHubConnection');
+    }
+    const rowsAfter = await prisma.gitHubConnection.count({ where: { userId: user.id } });
+    assert(acceptedBadStates.length === 0, 'no bad or missing state passes verification');
+    assert(rowsAfter === rowsBefore, 'a rejected state creates no GitHubConnection row');
 
-      const missingState = await fetch(`${BASE}/api/github/callback?code=abc`, {
-        redirect: 'manual',
-      });
-      if (missingState.status >= 500) {
-        console.log('need server restart — /api/github/callback (missing state) returned 500');
-      } else {
-        const missingLoc = missingState.headers.get('location') || '';
-        assert(missingLoc.includes('github=error'), 'missing state redirects to github=error');
-      }
-    } catch (error) {
-      console.log(
-        `HTTP checks skipped (server on ${BASE} not reachable):`,
-        error instanceof Error ? error.message : error,
+    // The guarantee: a caller with no session cookie is stopped at the API gate and is
+    // never handed on to GitHub's OAuth grant. The gate lives in `proxy.ts`, which
+    // answers JSON 401 with no Location header for every unauthenticated `/api` request.
+    //
+    // This used to be three `fetch` calls against APP_URL inside `try { … } catch {
+    // console.log('HTTP checks skipped') }`, with each assertion further skipped when the
+    // status was >= 500. That ran only where a dev server happens to be listening on
+    // :3000. In CI — the environment that gates a merge — Postgres is started and
+    // `pnpm run verify` runs Vitest with nothing on :3000, and Playwright's `webServer`
+    // exists only for the Playwright step, so the fetch rejected, the catch logged, and
+    // the suite exited 0 with four fewer assertions than it appeared to have.
+    //
+    // Calling `proxy` directly makes the same four assertions unconditional and removes
+    // the need for a server. A Playwright spec was the alternative, but the projects in
+    // `playwright.config.ts` select tests by exact filename, so a new spec would be
+    // collected by no project at all — the same silent skip in a different costume.
+    const gated: Array<[string, string]> = [
+      ['GET', '/api/github/connect'],
+      ['GET', '/api/github/callback?code=abc&state=wrong'],
+      ['GET', '/api/github/callback?code=abc'],
+    ];
+    for (const [method, target] of gated) {
+      const response = await proxy(new NextRequest(`${GATE_ORIGIN}${target}`, { method }));
+      assert(response.status === 401, `logged-out ${method} ${target} is denied by the API gate`);
+      assert(
+        !(response.headers.get('location') || '').includes('github.com/login/oauth'),
+        `logged-out ${target} never reaches the GitHub OAuth grant`,
+      );
+      assert(
+        (response.headers.get('content-type') || '').includes('application/json'),
+        `logged-out ${target} is denied with JSON, not a redirect`,
       );
     }
+
+    // Anti-vacuity: a gate that answered 401 for everything would satisfy the loop
+    // above while having broken the whole product.
+    const allowlisted = await proxy(new NextRequest(`${GATE_ORIGIN}/api/health`, { method: 'GET' }));
+    assert(allowlisted.status !== 401, 'the API gate still lets GET /api/health through');
   } finally {
     await prisma.gitHubConnection.deleteMany({ where: { userId: user.id } });
     await prisma.project.deleteMany({ where: { id: project.id } });
@@ -318,8 +345,12 @@ async function main() {
   if (failed > 0) process.exit(1);
 }
 
-main().catch(async (error) => {
+// Awaited, not floating. A detached `main()` resolves after the runner has moved on,
+// so a failure here was reported against whichever suite happened to be running next.
+try {
+  await main();
+} catch (error) {
   console.error(error);
   await prisma.$disconnect();
   process.exit(1);
-});
+}

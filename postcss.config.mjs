@@ -1,4 +1,4 @@
-export default {
+const postcssConfig = {
   plugins: {
     "postcss-import": {},
     "postcss-nesting": {},
@@ -6,3 +6,5 @@ export default {
     "autoprefixer": {},
   },
 };
+
+export default postcssConfig;

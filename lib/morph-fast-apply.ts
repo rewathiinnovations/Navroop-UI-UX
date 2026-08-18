@@ -75,6 +75,23 @@ export function parseMorphEdits(text: string): MorphEditBlock[] {
   return edits;
 }
 
+/** stdout only when the command itself succeeded. Empty stdout + exit 1 is "not found", not an empty file. */
+function successfulCommandStdout(result: unknown): string | null {
+  if (!result || typeof result !== 'object') return null;
+  const command = result as { stdout?: unknown; success?: unknown; exitCode?: unknown };
+  if (typeof command.stdout !== 'string') return null;
+  if (command.success === false) return null;
+  if (typeof command.exitCode === 'number' && command.exitCode !== 0) return null;
+  return command.stdout;
+}
+
+function commandFailed(result: unknown): boolean {
+  if (!result || typeof result !== 'object') return false;
+  const command = result as { success?: unknown; exitCode?: unknown };
+  if (command.success === false) return true;
+  return typeof command.exitCode === 'number' && command.exitCode !== 0;
+}
+
 // Read a file from sandbox: prefers cache, then sandbox.files, then commands.run("cat ...")
 async function readFileFromSandbox(sandbox: any, normalizedPath: string, fullPath: string): Promise<string> {
   // Try backend cache first
@@ -90,18 +107,18 @@ async function readFileFromSandbox(sandbox: any, normalizedPath: string, fullPat
   // Try provider runCommand (preferred for provider pattern)
   if (typeof sandbox?.runCommand === 'function') {
     try {
-      const res = await sandbox.runCommand(`cat ${normalizedPath}`);
-      if (res && typeof res.stdout === 'string') {
-        return res.stdout as string;
-      }
-    } catch {}
-    // fallback to absolute path
+      const relative = successfulCommandStdout(await sandbox.runCommand(`cat ${normalizedPath}`));
+      if (relative !== null) return relative;
+    } catch {
+      // Relative cat is a probe: cwd may not be the app root. Try the absolute path next.
+    }
     try {
-      const resAbs = await sandbox.runCommand(`cat ${fullPath}`);
-      if (resAbs && typeof resAbs.stdout === 'string') {
-        return resAbs.stdout as string;
-      }
-    } catch {}
+      const absolute = successfulCommandStdout(await sandbox.runCommand(`cat ${fullPath}`));
+      if (absolute !== null) return absolute;
+    } catch (error) {
+      if (!sandbox?.commands?.run) throw error;
+      // Absolute cat is still a probe; E2B commands.run is the last reader.
+    }
   }
 
   // Try shell cat via commands.run
@@ -125,16 +142,18 @@ async function writeFileToSandbox(sandbox: any, normalizedPath: string, fullPath
 
   // Provider pattern (runCommand redirect)
   if (typeof sandbox?.runCommand === 'function') {
-    // Ensure directory exists
+    // Ensure directory exists. A failed mkdir is not a fallback — the write cannot proceed.
     const dir = normalizedPath.includes('/') ? normalizedPath.substring(0, normalizedPath.lastIndexOf('/')) : '';
     if (dir) {
-      try { await sandbox.runCommand(`mkdir -p ${dir}`); } catch {}
+      const mkdir = await sandbox.runCommand(`mkdir -p ${dir}`);
+      if (commandFailed(mkdir)) {
+        throw new Error(`Failed to create directory ${dir} for ${normalizedPath}`);
+      }
     }
-    // Write via heredoc with proper escaping
     const heredoc = `bash -lc 'cat > ${normalizedPath} <<\"EOF\"\n${content.replace(/\\/g, '\\\\').replace(/\n/g, '\n').replace(/\$/g, '\$')}\nEOF'`;
-    const result = await sandbox.runCommand(heredoc);
-    if (result?.stdout || result?.stderr) {
-      // no-op
+    const written = await sandbox.runCommand(heredoc);
+    if (commandFailed(written)) {
+      throw new Error(`Failed to write file via shell: ${normalizedPath}`);
     }
     return;
   }

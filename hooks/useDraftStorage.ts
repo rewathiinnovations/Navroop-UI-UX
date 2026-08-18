@@ -6,21 +6,20 @@ import {
   isDesignDirectionId,
   type DesignDirectionId,
 } from "@/lib/design/directions";
-import { DEFAULT_IMPORT_MODE, parseDraftImportMode, resolveImportMode, type ImportMode } from "@/lib/import/mode";
+import { DEFAULT_IMPORT_MODE, resolveImportMode, type ImportMode } from "@/lib/import/mode";
 import { isStackId, type StackId } from "@/lib/stacks";
+import {
+  parseDraftRecord,
+  serializeDraftRecord,
+  type TemplateDraftRecord,
+} from "@/lib/templates/draft";
 
 export const PENDING_PROMPT_KEY = "navroop_pending_prompt";
 
 /** Hero / pending-prompt UI default. Matches Project.stack @default(NEXTJS). */
 export const DRAFT_DEFAULT_STACK: StackId = "NEXTJS";
 
-export type DraftRecord = {
-  text: string;
-  stack: StackId;
-  savedAt: number;
-  designDirection: DesignDirectionId;
-  importMode: ImportMode;
-};
+export type DraftRecord = TemplateDraftRecord;
 
 function resolveDraftStack(value: unknown): StackId {
   return isStackId(value) ? value : DRAFT_DEFAULT_STACK;
@@ -35,15 +34,7 @@ export function readDraftStorage(key: string): DraftRecord | null {
   try {
     const raw = window.localStorage.getItem(key);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<DraftRecord>;
-    if (typeof parsed.text !== "string") return null;
-    return {
-      text: parsed.text,
-      stack: resolveDraftStack(parsed.stack),
-      savedAt: typeof parsed.savedAt === "number" ? parsed.savedAt : Date.now(),
-      designDirection: resolveDraftDirection(parsed.designDirection),
-      importMode: parseDraftImportMode(parsed),
-    };
+    return parseDraftRecord(JSON.parse(raw));
   } catch {
     return null;
   }
@@ -55,6 +46,7 @@ export function writeDraftStorage(
   stack: StackId = DRAFT_DEFAULT_STACK,
   designDirection: DesignDirectionId = DEFAULT_DESIGN_DIRECTION,
   importMode: ImportMode = DEFAULT_IMPORT_MODE,
+  templateId: string | null = null,
 ) {
   if (typeof window === "undefined") return;
   const record: DraftRecord = {
@@ -63,8 +55,9 @@ export function writeDraftStorage(
     savedAt: Date.now(),
     designDirection: resolveDraftDirection(designDirection),
     importMode: resolveImportMode(importMode),
+    templateId,
   };
-  window.localStorage.setItem(key, JSON.stringify(record));
+  window.localStorage.setItem(key, serializeDraftRecord(record));
 }
 
 export function clearDraftStorage(key: string) {
@@ -77,6 +70,7 @@ export function useDraftStorage(key: string, debounceMs = 500) {
   const [stack, setStack] = useState<StackId>(DRAFT_DEFAULT_STACK);
   const [designDirection, setDesignDirection] = useState<DesignDirectionId>(DEFAULT_DESIGN_DIRECTION);
   const [importMode, setImportMode] = useState<ImportMode>(DEFAULT_IMPORT_MODE);
+  const [templateId, setTemplateId] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [loadedKey, setLoadedKey] = useState<string | null>(null);
 
@@ -86,6 +80,7 @@ export function useDraftStorage(key: string, debounceMs = 500) {
     setStack(stored?.stack ?? DRAFT_DEFAULT_STACK);
     setDesignDirection(stored?.designDirection ?? DEFAULT_DESIGN_DIRECTION);
     setImportMode(stored?.importMode ?? DEFAULT_IMPORT_MODE);
+    setTemplateId(stored?.templateId ?? null);
     setLoadedKey(key);
     setReady(true);
   }, [key]);
@@ -93,16 +88,22 @@ export function useDraftStorage(key: string, debounceMs = 500) {
   useEffect(() => {
     if (!ready || loadedKey !== key) return;
     const timer = window.setTimeout(() => {
-      writeDraftStorage(key, value, stack, designDirection, importMode);
+      writeDraftStorage(key, value, stack, designDirection, importMode, templateId);
     }, debounceMs);
     return () => window.clearTimeout(timer);
-  }, [debounceMs, designDirection, importMode, key, loadedKey, ready, stack, value]);
+  }, [debounceMs, designDirection, importMode, key, loadedKey, ready, stack, templateId, value]);
 
   const flush = useCallback(
-    (next = value, nextStack = stack, nextDirection = designDirection, nextImportMode = importMode) => {
-      writeDraftStorage(key, next, nextStack, nextDirection, nextImportMode);
+    (
+      next = value,
+      nextStack = stack,
+      nextDirection = designDirection,
+      nextImportMode = importMode,
+      nextTemplateId = templateId,
+    ) => {
+      writeDraftStorage(key, next, nextStack, nextDirection, nextImportMode, nextTemplateId);
     },
-    [designDirection, importMode, key, stack, value],
+    [designDirection, importMode, key, stack, templateId, value],
   );
 
   const clear = useCallback(() => {
@@ -111,6 +112,7 @@ export function useDraftStorage(key: string, debounceMs = 500) {
     setStack(DRAFT_DEFAULT_STACK);
     setDesignDirection(DEFAULT_DESIGN_DIRECTION);
     setImportMode(DEFAULT_IMPORT_MODE);
+    setTemplateId(null);
   }, [key]);
 
   return {
@@ -122,6 +124,8 @@ export function useDraftStorage(key: string, debounceMs = 500) {
     setDesignDirection,
     importMode,
     setImportMode,
+    templateId,
+    setTemplateId,
     ready,
     flush,
     clear,

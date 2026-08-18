@@ -1,0 +1,63 @@
+name: Nightly verify:full
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: openlovable
+          POSTGRES_PASSWORD: openlovable
+          POSTGRES_DB: openlovable_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U openlovable -d openlovable_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgresql://openlovable:openlovable@127.0.0.1:5433/openlovable
+      TEST_DATABASE_URL: postgresql://openlovable:openlovable@127.0.0.1:5433/openlovable_test
+      SHADOW_DATABASE_URL: postgresql://openlovable:openlovable@127.0.0.1:5433/openlovable_shadow
+      AUTH_SECRET: ci-auth-secret-not-for-production-use
+      NEXTAUTH_SECRET: ci-auth-secret-not-for-production-use
+      NEXTAUTH_URL: http://localhost:3000
+      APP_URL: http://localhost:3000
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+      NEXT_PUBLIC_WORKSPACE_NAME: Navroop
+      ENCRYPTION_KEY: ci-encryption-key-32-bytes-min!!
+      CRON_SECRET: ci-cron-secret-not-for-production-use
+      STORAGE_DRIVER: local
+      CI: '1'
+      FC_NUM_RUNS: '200'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.21.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec prisma migrate deploy
+        env:
+          DATABASE_URL: postgresql://openlovable:openlovable@127.0.0.1:5433/openlovable_test
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm run verify:full
+      - name: Upload Playwright traces
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-playwright
+          path: |
+            playwright-report
+            test-results
+          if-no-files-found: ignore

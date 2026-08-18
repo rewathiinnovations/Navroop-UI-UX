@@ -71,6 +71,8 @@ export const ShimmerSingle = ({
   );
 };
 
+const CHART_SHIMMER_HEIGHTS = [48, 72, 36, 80, 54, 66, 28, 70] as const;
+
 // Chart shimmer with fire glow effect
 export const ChartShimmer = ({
   className,
@@ -104,12 +106,12 @@ export const ChartShimmer = ({
 
       {/* Chart bars */}
       <div className="absolute bottom-0 left-0 right-0 flex items-end justify-between px-4 pb-4 gap-2">
-        {Array.from({ length: 8 }, (_, i) => (
+        {CHART_SHIMMER_HEIGHTS.map((height, i) => (
           <div
             key={i}
             className="flex-1 bg-gradient-to-t from-black-alpha-8 to-transparent rounded-t-4 animate-shimmer"
             style={{
-              height: `${Math.random() * 60 + 20}%`,
+              height: `${height}%`,
               animationDelay: `${i * 100}ms`,
             }}
           />

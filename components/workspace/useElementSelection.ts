@@ -15,11 +15,13 @@ export type ElementSelection = {
 
 function translateRect(iframe: HTMLIFrameElement, rect: SelectedElementRect): SelectedElementRect {
   const frame = iframe.getBoundingClientRect();
+  const layoutWidth = iframe.offsetWidth || frame.width;
+  const scale = layoutWidth ? frame.width / layoutWidth : 1;
   return {
-    top: frame.top + rect.top,
-    left: frame.left + rect.left,
-    width: rect.width,
-    height: rect.height,
+    top: frame.top + rect.top * scale,
+    left: frame.left + rect.left * scale,
+    width: rect.width * scale,
+    height: rect.height * scale,
   };
 }
 

@@ -12,6 +12,7 @@ export async function runProjectUrlImport(input: {
   stack: string;
   designDirection: string;
   onProgress?: (message: string) => void;
+  jobId?: string;
 }): Promise<UrlImportResult> {
   return runUrlImportPipeline({
     projectId: input.projectId,
@@ -20,6 +21,7 @@ export async function runProjectUrlImport(input: {
     stack: input.stack,
     designDirection: input.designDirection,
     userId: input.userId,
+    jobId: input.jobId,
     persistSource: async ({ capture, sections }) => {
       await upsertImportSource({
         projectId: input.projectId,
@@ -32,9 +34,11 @@ export async function runProjectUrlImport(input: {
     },
     onProgress: (message) => {
       input.onProgress?.(message);
-      void persistProjectGeneration(input.projectId, {
+      persistProjectGeneration(input.projectId, {
         generationStatus: 'generating',
         progressMessage: message,
+      }).catch((error) => {
+        console.warn('[import] progress persist failed', error);
       });
     },
   });

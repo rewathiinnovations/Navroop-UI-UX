@@ -1,10 +1,15 @@
 import { NextResponse } from 'next/server';
+import { jsonError } from '@/lib/api/error-response';
+import { requireSessionUser } from '@/lib/auth';
 
 declare global {
   var activeSandbox: any;
 }
 
 export async function POST() {
+  const auth = await requireSessionUser();
+  if (!auth.user) return jsonError(auth.error, 'UNAUTHORIZED', auth.status);
+
   try {
     if (!global.activeSandbox) {
       return NextResponse.json({ 
@@ -53,7 +58,7 @@ export async function POST() {
     return NextResponse.json({
       success: true,
       dataUrl,
-      fileName: 'vercel-sandbox-project.zip',
+      fileName: 'sandbox-project.zip',
       message: 'Zip file created successfully'
     });
     

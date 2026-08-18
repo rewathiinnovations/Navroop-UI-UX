@@ -3,13 +3,17 @@
 import { Prisma } from '@/generated/prisma';
 import { prisma } from '@/lib/db';
 import { requireAdmin } from '@/lib/auth';
-import { wouldRemoveLastAdmin } from '@/lib/team/last-admin';
+import { isLastAdminDbError, wouldRemoveLastAdmin } from '@/lib/team/last-admin';
+import { writeAudit } from '@/lib/audit/log';
 import {
   memberIdSchema,
   parseWithZod,
   updateMemberRoleSchema,
   type TeamRole,
 } from '@/lib/team/schema';
+import { asCreditActionErr } from '@/lib/plans/http';
+import { checkLimit } from '@/lib/plans/limits';
+import { WORKSPACE_ROW_ID } from '@/lib/storage/usage';
 
 export type ActionOk<T> = { ok: true; data: T };
 export type ActionErr = {
@@ -69,7 +73,7 @@ export async function listTeam() {
 }
 
 export async function updateMemberRole(userId: string, role: TeamRole) {
-  const { err } = await adminGate();
+  const { user, err } = await adminGate();
   if (err) return err;
 
   const parsed = parseWithZod(updateMemberRoleSchema, { userId, role });
@@ -88,17 +92,27 @@ export async function updateMemberRole(userId: string, role: TeamRole) {
       data: { role: parsed.data.role },
       select: memberSelect,
     });
+    await writeAudit({
+      actorId: user.id,
+      actorEmail: user.email,
+      action: 'member.role_change',
+      targetType: 'user',
+      targetId: member.id,
+      before: { role: existing.role },
+      after: { role: member.role },
+    });
     return { ok: true as const, data: member };
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
       return notFound();
     }
+    if (isLastAdminDbError(error)) return lastAdminErr();
     throw error;
   }
 }
 
 export async function deactivateMember(userId: string) {
-  const { err } = await adminGate();
+  const { user, err } = await adminGate();
   if (err) return err;
 
   const parsed = parseWithZod(memberIdSchema, { userId });
@@ -111,12 +125,26 @@ export async function deactivateMember(userId: string) {
     return lastAdminErr();
   }
 
-  const member = await prisma.user.update({
-    where: { id: parsed.data.userId },
-    data: { isActive: false },
-    select: memberSelect,
-  });
-  return { ok: true as const, data: member };
+  try {
+    const member = await prisma.user.update({
+      where: { id: parsed.data.userId },
+      data: { isActive: false },
+      select: memberSelect,
+    });
+    await writeAudit({
+      actorId: user.id,
+      actorEmail: user.email,
+      action: 'member.deactivate',
+      targetType: 'user',
+      targetId: member.id,
+      before: { isActive: existing.isActive },
+      after: { isActive: member.isActive },
+    });
+    return { ok: true as const, data: member };
+  } catch (error) {
+    if (isLastAdminDbError(error)) return lastAdminErr();
+    throw error;
+  }
 }
 
 export async function reactivateMember(userId: string) {
@@ -128,6 +156,9 @@ export async function reactivateMember(userId: string) {
 
   const existing = await loadMember(parsed.data.userId);
   if (!existing) return notFound();
+
+  const memberLimit = await checkLimit(WORKSPACE_ROW_ID, 'members');
+  if (!memberLimit.ok) return asCreditActionErr(memberLimit);
 
   const member = await prisma.user.update({
     where: { id: parsed.data.userId },

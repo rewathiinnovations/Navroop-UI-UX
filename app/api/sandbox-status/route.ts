@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 import { sandboxManager } from '@/lib/sandbox/sandbox-manager';
+import { jsonError } from '@/lib/api/error-response';
+import { requireSessionUser } from '@/lib/auth';
 
 declare global {
   var activeSandboxProvider: any;
@@ -8,6 +10,9 @@ declare global {
 }
 
 export async function GET() {
+  const auth = await requireSessionUser();
+  if (!auth.user) return jsonError(auth.error, 'UNAUTHORIZED', auth.status);
+
   try {
     // Check sandbox manager first, then fall back to global state
     const provider = sandboxManager.getActiveProvider() || global.activeSandboxProvider;

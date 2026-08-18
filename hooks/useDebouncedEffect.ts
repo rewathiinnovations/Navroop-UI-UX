@@ -60,7 +60,6 @@ export function useDebouncedEffect(
     callback,
     ignoreInitialCall,
     timeout,
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     ...deps
   ]);
 }

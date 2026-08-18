@@ -10,20 +10,36 @@ import {
   Globe,
   History,
   Loader2,
-  Monitor,
+  ChevronDown,
+  ExternalLink,
   PanelLeftClose,
   PanelLeftOpen,
   RefreshCw,
   Search,
   Images,
   Brain,
-  Smartphone,
+  Link2,
+  MoreHorizontal,
 } from 'lucide-react';
+import SaveAsTemplateDialog from '@/components/templates/SaveAsTemplateDialog';
+import { downloadProjectZip, formatExportBytes } from '@/lib/export/client';
 import { cn } from '@/utils/cn';
 import { pushProjectToGitHub } from '@/lib/github/actions';
 import { relativeTime } from '@/lib/projects/prompt';
 import Hint from './Hint';
-import { WORKSPACE_TABS, type SaveStatus, type ViewportSize, type WorkspacePage, type WorkspaceView } from './types';
+import PreviewDeviceToolbar from './PreviewDeviceToolbar';
+import PublishPanel from './PublishPanel';
+import {
+  formatPreviewSize,
+  getPreviewDevice,
+  openPreviewWindow,
+  rotateDeviceSize,
+  type PreviewDeviceKey,
+} from '@/lib/preview/devices';
+import { WORKSPACE_TABS, type SaveStatus, type WorkspacePage, type WorkspaceView } from './types';
+import PresenceAvatars from './PresenceAvatars';
+import type { PresenceViewer } from './useProjectPresence';
+import { LIVE_MODE_LABEL, LIVE_MODE_TOOLTIP } from '@/lib/preview/labels';
 
 const TAB_ICONS: Partial<Record<WorkspaceView, typeof Globe>> = {
   preview: Globe,
@@ -31,6 +47,7 @@ const TAB_ICONS: Partial<Record<WorkspaceView, typeof Globe>> = {
   seo: Search,
   assets: Images,
   brain: Brain,
+  domains: Link2,
 };
 
 function NavroopMark() {
@@ -75,17 +92,25 @@ export default function WorkspaceTopBar({
   pages,
   selectedPage,
   onSelectPage,
-  viewport,
-  onViewportChange,
   chatCollapsed,
   onToggleChat,
   onOpenHistory,
   onRefresh,
   onShare,
+  previewUrl = null,
+  previewDevice = 'desktop',
+  previewRotated = false,
+  onPreviewDeviceChange,
+  onTogglePreviewRotate,
   projectId,
   githubConnected = false,
   githubRepoUrl = null,
   sourceUrl = null,
+  presenceViewers = [],
+  liveMode = false,
+  liveModeLocked = false,
+  liveModeReason = null,
+  onToggleLiveMode,
 }: {
   projectName: string;
   saveState: SaveStatus;
@@ -96,17 +121,25 @@ export default function WorkspaceTopBar({
   pages: WorkspacePage[];
   selectedPage: string;
   onSelectPage: (path: string) => void;
-  viewport: ViewportSize;
-  onViewportChange: (viewport: ViewportSize) => void;
   chatCollapsed: boolean;
   onToggleChat: () => void;
   onOpenHistory: () => void;
   onRefresh: () => void;
   onShare?: () => void;
+  previewUrl?: string | null;
+  previewDevice?: PreviewDeviceKey;
+  previewRotated?: boolean;
+  onPreviewDeviceChange?: (key: PreviewDeviceKey) => void;
+  onTogglePreviewRotate?: () => void;
   projectId?: string | null;
   githubConnected?: boolean;
   githubRepoUrl?: string | null;
   sourceUrl?: string | null;
+  presenceViewers?: PresenceViewer[];
+  liveMode?: boolean;
+  liveModeLocked?: boolean;
+  liveModeReason?: string | null;
+  onToggleLiveMode?: () => void;
 }) {
   const router = useRouter();
   const [draft, setDraft] = useState(projectName);
@@ -115,7 +148,16 @@ export default function WorkspaceTopBar({
   const [pushSuccess, setPushSuccess] = useState(false);
   const [pushError, setPushError] = useState<string | null>(null);
   const [repoUrl, setRepoUrl] = useState(githubRepoUrl);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportHint, setExportHint] = useState<string | null>(null);
+  const moreRef = useRef<HTMLDivElement>(null);
+  const [compactPreview, setCompactPreview] = useState(false);
   const connectRef = useRef<HTMLDivElement>(null);
+  const previewRef = useRef<HTMLDivElement>(null);
+  const headerRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     setRepoUrl(githubRepoUrl);
@@ -140,6 +182,48 @@ export default function WorkspaceTopBar({
   }, [connectOpen]);
 
   useEffect(() => {
+    if (!previewOpen) return;
+    const onPointer = (event: MouseEvent) => {
+      if (!previewRef.current?.contains(event.target as Node)) setPreviewOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setPreviewOpen(false);
+    };
+    document.addEventListener('mousedown', onPointer);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onPointer);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [previewOpen]);
+
+  useEffect(() => {
+    if (!moreOpen) return;
+    const onPointer = (event: MouseEvent) => {
+      if (!moreRef.current?.contains(event.target as Node)) setMoreOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMoreOpen(false);
+    };
+    document.addEventListener('mousedown', onPointer);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onPointer);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [moreOpen]);
+
+  useEffect(() => {
+    const node = headerRef.current;
+    if (!node) return;
+    const observer = new ResizeObserver(([entry]) => {
+      setCompactPreview(entry.contentRect.width < 1180);
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
     setDraft(projectName);
   }, [projectName]);
 
@@ -152,7 +236,11 @@ export default function WorkspaceTopBar({
   const status = saveLabel(saveState, updatedAt);
 
   return (
-    <header className="relative z-20 flex h-52 shrink-0 items-center gap-12 border-b border-[var(--studio-line)] bg-[var(--studio-header-bg)] px-12 backdrop-blur-xl">
+    <>
+    <header
+      ref={headerRef}
+      className="relative z-20 flex h-52 shrink-0 items-center gap-12 border-b border-[var(--studio-line)] bg-[var(--studio-header-bg)] px-12 backdrop-blur-xl"
+    >
       <div className="flex min-w-0 flex-1 items-center gap-8">
         <NavroopMark />
         <input
@@ -253,16 +341,44 @@ export default function WorkspaceTopBar({
       </div>
 
       <div className="flex min-w-0 flex-1 items-center justify-end gap-6">
-        <Hint label={viewport === 'desktop' ? 'Desktop preview' : 'Mobile preview'}>
-          <button
-            type="button"
-            onClick={() => onViewportChange(viewport === 'desktop' ? 'mobile' : 'desktop')}
-            aria-label={viewport === 'desktop' ? 'Switch to mobile viewport' : 'Switch to desktop viewport'}
-            className="inline-flex size-36 items-center justify-center rounded-10 text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)]"
-          >
-            {viewport === 'desktop' ? <Monitor className="size-16" /> : <Smartphone className="size-16" />}
-          </button>
-        </Hint>
+        <PresenceAvatars viewers={presenceViewers} />
+        {view === 'preview' && onToggleLiveMode ? (
+          <Hint label={liveModeLocked ? liveModeReason || LIVE_MODE_TOOLTIP : LIVE_MODE_TOOLTIP}>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={liveMode}
+              aria-label={LIVE_MODE_LABEL}
+              disabled={liveModeLocked}
+              onClick={onToggleLiveMode}
+              className={cn(
+                'inline-flex min-h-[32px] items-center rounded-10 px-10 text-[12px] font-medium',
+                liveMode
+                  ? 'bg-[var(--studio-accent)] text-white'
+                  : 'text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)]',
+                liveModeLocked && 'cursor-not-allowed opacity-80',
+              )}
+            >
+              {LIVE_MODE_LABEL}
+            </button>
+          </Hint>
+        ) : null}
+        {view === 'preview' && onPreviewDeviceChange && onTogglePreviewRotate ? (
+          <PreviewDeviceToolbar
+            device={previewDevice}
+            rotated={previewRotated}
+            sizeLabel={(() => {
+              const spec = getPreviewDevice(previewDevice);
+              if (spec.width == null || spec.height == null) return '';
+              const size = previewRotated ? rotateDeviceSize(spec.width, spec.height) : spec;
+              return formatPreviewSize(size.width, size.height);
+            })()}
+            scaleLabel={null}
+            compact={compactPreview}
+            onDeviceChange={onPreviewDeviceChange}
+            onToggleRotate={onTogglePreviewRotate}
+          />
+        ) : null}
         <Hint label="Refresh preview">
           <button
             type="button"
@@ -273,6 +389,65 @@ export default function WorkspaceTopBar({
             <RefreshCw className="size-16" />
           </button>
         </Hint>
+        <div className="relative" ref={previewRef}>
+          <div className="inline-flex overflow-hidden rounded-10">
+            <Hint label="Open in new tab">
+              <button
+                type="button"
+                disabled={!previewUrl}
+                onClick={() => previewUrl && openPreviewWindow(previewUrl)}
+                aria-label="Open in new tab"
+                className="inline-flex size-36 items-center justify-center text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)] disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <ExternalLink className="size-16" />
+              </button>
+            </Hint>
+            <button
+              type="button"
+              disabled={!previewUrl}
+              aria-expanded={previewOpen}
+              aria-haspopup="menu"
+              aria-label="Open preview options"
+              onClick={() => setPreviewOpen((value) => !value)}
+              className="inline-flex size-28 items-center justify-center text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <ChevronDown className="size-12" />
+            </button>
+          </div>
+          {previewOpen && previewUrl ? (
+            <div
+              role="menu"
+              className="absolute top-full right-0 z-40 mt-6 w-[168px] rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] p-4 shadow-sm"
+            >
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  openPreviewWindow(previewUrl);
+                  setPreviewOpen(false);
+                }}
+                className="flex w-full rounded-8 px-10 py-8 text-left text-[12px] text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)]"
+              >
+                Full size
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  const mobile = getPreviewDevice('mobile');
+                  openPreviewWindow(previewUrl, {
+                    width: mobile.width ?? 390,
+                    height: mobile.height ?? 844,
+                  });
+                  setPreviewOpen(false);
+                }}
+                className="flex w-full rounded-8 px-10 py-8 text-left text-[12px] text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)]"
+              >
+                Mobile view
+              </button>
+            </div>
+          ) : null}
+        </div>
         <div className="relative flex flex-col items-end" ref={connectRef}>
           <div className="flex items-center gap-6">
             {githubConnected ? (
@@ -354,6 +529,64 @@ export default function WorkspaceTopBar({
             </div>
           )}
         </div>
+        {projectId ? (
+          <div className="relative" ref={moreRef}>
+            <button
+              type="button"
+              aria-expanded={moreOpen}
+              aria-haspopup="menu"
+              aria-label="Project actions"
+              onClick={() => setMoreOpen((value) => !value)}
+              className="inline-flex size-36 items-center justify-center rounded-10 text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)]"
+            >
+              <MoreHorizontal className="size-16" />
+            </button>
+            {moreOpen ? (
+              <div
+                role="menu"
+                className="absolute top-full right-0 z-40 mt-6 w-[200px] rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] p-4 shadow-sm"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMoreOpen(false);
+                    setSaveTemplateOpen(true);
+                  }}
+                  className="flex w-full rounded-8 px-10 py-8 text-left text-[12px] text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)]"
+                >
+                  Save as template
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={exporting || !projectId}
+                  onClick={() => {
+                    if (!projectId || exporting) return;
+                    setExporting(true);
+                    setExportHint(null);
+                    void downloadProjectZip(projectId).then((result) => {
+                      setExporting(false);
+                      if (!result.ok) {
+                        setExportHint(result.error);
+                        return;
+                      }
+                      setExportHint(formatExportBytes(result.bytes));
+                    });
+                    setMoreOpen(false);
+                  }}
+                  className="flex w-full items-center justify-between rounded-8 px-10 py-8 text-left text-[12px] text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)] disabled:opacity-50"
+                >
+                  <span>Download code</span>
+                  {exporting ? <Loader2 className="size-14 animate-spin" /> : null}
+                </button>
+                {exportHint ? (
+                  <p className="px-10 pb-6 text-[11px] text-[var(--studio-faint)]">{exportHint}</p>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         <button
           type="button"
           onClick={onShare}
@@ -361,16 +594,16 @@ export default function WorkspaceTopBar({
         >
           Share
         </button>
-        <Hint label="Coming soon">
-          <button
-            type="button"
-            disabled
-            className="inline-flex h-36 items-center rounded-full bg-[var(--studio-fg)] px-14 text-[13px] font-medium text-[var(--studio-bg)] disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Publish
-          </button>
-        </Hint>
+        <PublishPanel projectId={projectId} />
       </div>
     </header>
+    {projectId ? (
+      <SaveAsTemplateDialog
+        projectId={projectId}
+        open={saveTemplateOpen}
+        onClose={() => setSaveTemplateOpen(false)}
+      />
+    ) : null}
+    </>
   );
 }

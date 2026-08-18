@@ -4,14 +4,9 @@ import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 
 import { ArrowUp, Loader2, Mic, Paperclip } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import { useDraftStorage } from '@/hooks/useDraftStorage';
+import { chatPlaceholder, isChatBuilding, isChatLocked } from '@/lib/jobs/chat-ui';
 import Hint from './Hint';
 import type { ChatMode, ProjectPhase, SendMessageOptions } from './types';
-
-function placeholderForPhase(phase: ProjectPhase | null | undefined) {
-  if (phase === 'PLANNING') return 'Tell me what to change, or approve above…';
-  if (phase === 'BUILDING') return 'Building — hang tight…';
-  return 'Ask Navroop…';
-}
 
 export default function ChatInput({
   projectId,
@@ -19,14 +14,20 @@ export default function ChatInput({
   sending,
   disabled,
   phase,
+  jobStatus,
   sandboxLocked = false,
+  projectLocked = false,
+  recoveryActive = false,
 }: {
   projectId: string | null;
   onSend: (text: string, options: SendMessageOptions) => void;
   sending: boolean;
   disabled?: boolean;
   phase?: ProjectPhase | null;
+  jobStatus?: string | null;
   sandboxLocked?: boolean;
+  projectLocked?: boolean;
+  recoveryActive?: boolean;
 }) {
   const draftKey = `navroop_draft_${projectId || 'pending'}`;
   const { value, setValue, clear } = useDraftStorage(draftKey);
@@ -40,13 +41,21 @@ export default function ChatInput({
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
   }, [value]);
 
-  const building = phase === 'BUILDING';
+  const building = isChatBuilding({ phase, jobStatus, recoveryActive });
   const planning = phase === 'PLANNING';
   const showMode = !planning && !building;
-  const busy = sending || Boolean(disabled) || building || sandboxLocked;
+  const busy = isChatLocked({
+    sending,
+    disabled,
+    phase,
+    jobStatus,
+    recoveryActive,
+    sandboxLocked,
+    projectLocked,
+  });
   const canSend = Boolean(value.trim()) && !busy;
   const lockHint = sandboxLocked
-    ? 'Project wapas chalu ho raha hai... Ismein 30-60 second lag sakte hain'
+    ? 'Restarting the project... This can take 30–60 seconds'
     : null;
 
   const submit = () => {
@@ -81,7 +90,7 @@ export default function ChatInput({
           onChange={(event) => setValue(event.target.value)}
           onKeyDown={onKeyDown}
           rows={2}
-          placeholder={placeholderForPhase(phase)}
+          placeholder={chatPlaceholder({ phase, jobStatus, recoveryActive })}
           disabled={busy}
           className="w-full resize-none bg-transparent px-14 pt-12 pb-4 text-[14px] leading-6 text-[var(--studio-fg)] placeholder:text-[var(--studio-faint)] focus-visible:outline-none disabled:opacity-60"
         />

@@ -92,7 +92,7 @@ async function defaultComplete(userText: string) {
   const result = await generateText({
     model: client(actualModel),
     temperature: 0,
-    maxTokens: 400,
+    maxOutputTokens: 400,
     prompt: `${EXTRACT_INSTRUCTION}\n\nUser messages:\n${userText}`,
   });
   return result.text;

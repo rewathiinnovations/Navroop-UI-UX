@@ -14,6 +14,7 @@ export default function SkillsSettingsPage() {
             { href: '/settings/profile', label: 'Profile' },
             { href: '/settings/api-keys', label: 'API Keys' },
             { href: '/settings/skills', label: 'Skills', active: true },
+            { href: '/settings/usage', label: 'Usage' },
           ]}
         />
         <p className="mb-16 text-[13px] text-[var(--studio-muted)]">

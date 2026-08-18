@@ -6,6 +6,7 @@ async function fetchText(url: string): Promise<{ status: number; text: string; u
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
+    // Trusted host — do not route through safeFetch.
     const response = await fetch(url, { signal: controller.signal, redirect: 'follow' });
     const text = await response.text();
     const headers: Record<string, string> = {};
@@ -13,7 +14,10 @@ async function fetchText(url: string): Promise<{ status: number; text: string; u
       headers[key.toLowerCase()] = value;
     });
     return { status: response.status, text, url: response.url, headers };
-  } catch {
+  } catch (error) {
+    // status 0 is the "unreachable" sentinel the audit checks read, but the reason
+    // is only useful if it is logged.
+    console.warn('[seo] preview fetch failed', url, error);
     return { status: 0, text: '', url, headers: {} };
   } finally {
     clearTimeout(timer);

@@ -4,6 +4,14 @@ import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { getSessionUser, type SessionUser } from '@/lib/auth';
 import { getProviderForModel } from '@/lib/ai/provider-manager';
+import { completeWithProviderFailover } from '@/lib/ai/plan-complete';
+import {
+  jobErrorCodeForProviderFailure,
+  providerFailureMessage,
+  shouldFailover,
+} from '@/lib/ai/failover';
+import { modelIdForEntry } from '@/lib/ai/providers';
+import { ProviderRunError, type ProviderAttempt } from '@/lib/ai/run';
 import { appConfig } from '@/config/app.config';
 import { buildUiUxProMaxBrief } from '@/lib/ui-ux-pro-max/build-design-brief';
 import { looksLikeUrl } from '@/lib/projects/prompt';
@@ -17,6 +25,8 @@ import { resolveDirectionId } from '@/lib/design/directions';
 import { getCurrentProjectFiles } from '@/lib/github/current-files';
 import { injectMatchedSkills } from '@/lib/skills/inject';
 import { buildMemoryBlock } from '@/lib/memory/build-context';
+import { revertApprovedPlan } from '@/lib/projects/plan-compensate';
+import { planRetryKind } from '@/lib/projects/plan-retry';
 
 type ActionErr = {
   ok: false;
@@ -139,64 +149,78 @@ async function defaultCompletePlan(input: {
   promptContext: string;
   systemPrompt: string;
   stablePrefix?: string;
-}): Promise<PlanContent> {
-  const { client, actualModel } = getProviderForModel(appConfig.ai.defaultModel);
-  const model = client(actualModel);
+}): Promise<{ content: PlanContent; provider: string; model: string; attempts: ProviderAttempt[] }> {
   const userPrompt = `Create a website plan (no code) for:\n\n${input.promptContext}`;
-  const enableAnthropicCache = appConfig.ai.defaultModel.startsWith('anthropic/');
-  const cached = input.stablePrefix
-    ? buildCachedMessages({
-        stablePrefix: input.stablePrefix,
-        volatileUser: `${input.systemPrompt.replace(input.stablePrefix, '').trim()}\n\n${userPrompt}`,
-        enableAnthropicCache,
-      })
-    : null;
-
-  try {
-    const result = cached
-      ? await generateObject({
-          model,
-          schema: planContentSchema,
-          messages: cached,
-        })
-      : await generateObject({
-          model,
-          schema: planContentSchema,
-          system: input.systemPrompt,
-          prompt: userPrompt,
-        });
-    return result.object;
-  } catch {
-    const runText = async () => {
-      const result = cached
-        ? await generateText({
-            model,
-            messages: cached.map((message) => ({
-              ...message,
-              content:
-                message.role === 'user'
-                  ? `${message.content}\n\nReturn ONLY valid JSON for the plan shape. No code.`
-                  : message.content,
-            })),
+  const failover = await completeWithProviderFailover({
+    requestedModel: appConfig.ai.defaultModel,
+    run: async (entry, ctx) => {
+      const modelId = modelIdForEntry(entry);
+      const { client, actualModel } = getProviderForModel(modelId);
+      const model = client(actualModel);
+      const enableAnthropicCache = modelId.startsWith('anthropic/');
+      const cached = input.stablePrefix
+        ? buildCachedMessages({
+            stablePrefix: input.stablePrefix,
+            volatileUser: `${input.systemPrompt.replace(input.stablePrefix, '').trim()}\n\n${userPrompt}`,
+            enableAnthropicCache,
           })
-        : await generateText({
-            model,
-            system: input.systemPrompt,
-            prompt: `${userPrompt}\n\nReturn ONLY valid JSON for the plan shape. No code.`,
-          });
-      return parsePlanJson(result.text);
-    };
-    try {
-      return await runText();
-    } catch {
-      return await runText();
-    }
-  }
+        : null;
+      try {
+        const result = cached
+          ? await generateObject({
+              model,
+              schema: planContentSchema,
+              messages: cached,
+              abortSignal: ctx.signal,
+            })
+          : await generateObject({
+              model,
+              schema: planContentSchema,
+              system: input.systemPrompt,
+              prompt: userPrompt,
+              abortSignal: ctx.signal,
+            });
+        return result.object;
+      } catch (error) {
+        // Provider-side failures (401 / 429 / 5xx / timeout) switch immediately.
+        // A structured-output mismatch is a request-shape issue — try JSON text once.
+        if (shouldFailover(error)) throw error;
+        const result = cached
+          ? await generateText({
+              model,
+              abortSignal: ctx.signal,
+              messages: cached.map((message) => ({
+                ...message,
+                content:
+                  message.role === 'user'
+                    ? `${message.content}\n\nReturn ONLY valid JSON for the plan shape. No code.`
+                    : message.content,
+              })),
+            })
+          : await generateText({
+              model,
+              abortSignal: ctx.signal,
+              system: input.systemPrompt,
+              prompt: `${userPrompt}\n\nReturn ONLY valid JSON for the plan shape. No code.`,
+            });
+        return parsePlanJson(result.text);
+      }
+    },
+  });
+  return {
+    content: failover.result,
+    provider: failover.provider,
+    model: failover.model,
+    attempts: failover.attempts,
+  };
 }
 
 async function completePlan(promptContext: string, systemPrompt: string, stablePrefix?: string) {
-  const completer = planCompleterOverride ?? defaultCompletePlan;
-  return completer({ promptContext, systemPrompt, stablePrefix });
+  if (planCompleterOverride) {
+    const content = await planCompleterOverride({ promptContext, systemPrompt, stablePrefix });
+    return { content, provider: null as string | null, model: null as string | null, attempts: [] as ProviderAttempt[] };
+  }
+  return defaultCompletePlan({ promptContext, systemPrompt, stablePrefix });
 }
 
 export function combineBuildContext(initialPrompt: string, content: PlanContent) {
@@ -297,55 +321,129 @@ export async function generatePlan(
   if (!project) {
     throw new Error('Project not found');
   }
-
-  const directionId = resolveDirectionId(project.designDirection);
-  let memoryBlock = '';
-  try {
-    memoryBlock = (await buildMemoryBlock(projectId)).block;
-  } catch (error) {
-    console.warn('[memory] plan block failed', error);
-  }
-  const stablePrefix = buildStablePromptPrefix(project.stack, directionId, { memoryBlock });
-  const injected = await injectMatchedSkills(sourceMessage, promptContext);
-  let systemPrompt = buildPlanSystemPrompt(promptContext, project.stack, directionId, { memoryBlock });
-  if (injected.block) {
-    systemPrompt = `${stablePrefix}\n\n${injected.block}\n\n${systemPrompt.replace(stablePrefix, '').trim()}`;
-  }
-  const content = await completePlan(promptContext, systemPrompt, stablePrefix);
-
-  const latest = await prisma.projectPlan.findFirst({
-    where: { projectId },
-    orderBy: { version: 'desc' },
-    select: { version: true },
-  });
-  const version = latest ? latest.version + 1 : 1;
-
-  const created = await prisma.$transaction(async (tx) => {
-    await tx.projectPlan.updateMany({
-      where: { projectId, status: 'PENDING' },
-      data: { status: 'SUPERSEDED' },
-    });
-    return tx.projectPlan.create({
-      data: {
-        projectId,
-        version,
-        content,
-        status: 'PENDING',
-        trigger,
-        sourceMessage,
-      },
-    });
-  });
-
-  await logGenerationEvent({
+  const { beginJobHeartbeat, createOrReuseJob, failJob, markJobRunning, succeedJob } = await import('@/lib/jobs/lifecycle');
+  const { WORKSPACE_ROW_ID } = await import('@/lib/storage/usage');
+  const planJob = await createOrReuseJob({
     projectId,
+    workspaceId: WORKSPACE_ROW_ID,
     userId: project.ownerId,
-    kind: 'plan',
-    isUrlClone: false,
-    inputTokens: resolveInputTokens(null, `${systemPrompt}\n${promptContext}`),
+    kind: 'PLAN',
+    inputPrompt: sourceMessage,
   });
+  if (planJob.status === 'QUEUED') {
+    await markJobRunning(planJob.id, { chargeCredits: false, acquireProjectLock: false });
+  }
+  const planHeartbeat = beginJobHeartbeat(planJob.id);
+  // Anything that throws after this point still has to stop the interval and settle
+  // the job, or the PLAN job stays RUNNING with a fresh heartbeat (so the stale
+  // reaper never sees it) until the 20-minute hard timeout.
+  let jobSettled = false;
 
-  return created;
+  try {
+    const directionId = resolveDirectionId(project.designDirection);
+    let memoryBlock = '';
+    try {
+      memoryBlock = (await buildMemoryBlock(projectId)).block;
+    } catch (error) {
+      console.warn('[memory] plan block failed', error);
+    }
+    const stablePrefix = buildStablePromptPrefix(project.stack, directionId, { memoryBlock });
+    const injected = await injectMatchedSkills(sourceMessage, promptContext);
+    let systemPrompt = buildPlanSystemPrompt(promptContext, project.stack, directionId, { memoryBlock });
+    if (injected.block) {
+      systemPrompt = `${stablePrefix}\n\n${injected.block}\n\n${systemPrompt.replace(stablePrefix, '').trim()}`;
+    }
+    let content;
+    try {
+      const completed = await completePlan(promptContext, systemPrompt, stablePrefix);
+      content = completed.content;
+      if (completed.provider) {
+        const { getJob, updateJobFields } = await import('@/lib/jobs/store');
+        await updateJobFields(planJob.id, {
+          provider: completed.provider,
+          model: completed.model,
+        });
+        if (completed.attempts.length > 0) {
+          const current = await getJob(planJob.id);
+          await updateJobFields(planJob.id, {
+            resourceIds: {
+              ...(current?.resourceIds ?? {}),
+              providerAttempts: completed.attempts,
+            },
+          });
+        }
+      }
+    } catch (error) {
+      jobSettled = true;
+      const cause = error instanceof ProviderRunError ? error.causeError ?? error : error;
+      const attempts = error instanceof ProviderRunError ? error.attempts : [];
+      if (attempts.length > 0) {
+        const { getJob, updateJobFields } = await import('@/lib/jobs/store');
+        const current = await getJob(planJob.id);
+        await updateJobFields(planJob.id, {
+          resourceIds: {
+            ...(current?.resourceIds ?? {}),
+            providerAttempts: attempts,
+          },
+        });
+      }
+      await failJob(planJob.id, {
+        errorCode: jobErrorCodeForProviderFailure(cause),
+        errorMessage: providerFailureMessage(cause),
+        provider: attempts.find((row) => !row.ok)?.provider ?? null,
+        model: attempts.find((row) => !row.ok)?.model ?? null,
+      });
+      throw error;
+    }
+    const latest = await prisma.projectPlan.findFirst({
+      where: { projectId },
+      orderBy: { version: 'desc' },
+      select: { version: true },
+    });
+    const version = latest ? latest.version + 1 : 1;
+
+    const created = await prisma.$transaction(async (tx) => {
+      await tx.projectPlan.updateMany({
+        where: { projectId, status: 'PENDING' },
+        data: { status: 'SUPERSEDED' },
+      });
+      return tx.projectPlan.create({
+        data: {
+          projectId,
+          version,
+          content,
+          status: 'PENDING',
+          trigger,
+          sourceMessage,
+        },
+      });
+    });
+
+    await logGenerationEvent({
+      projectId,
+      userId: project.ownerId,
+      kind: 'plan',
+      isUrlClone: false,
+      inputTokens: resolveInputTokens(null, `${systemPrompt}\n${promptContext}`),
+    });
+    await succeedJob(planJob.id);
+    jobSettled = true;
+
+    return created;
+  } catch (error) {
+    if (!jobSettled) {
+      jobSettled = true;
+      await failJob(planJob.id, {
+        errorCode: 'plan_failed',
+        errorMessage: error instanceof Error ? error.message : 'Plan failed',
+      }).catch((failError) => {
+        console.warn('[plan] could not mark the plan job failed', failError);
+      });
+    }
+    throw error;
+  } finally {
+    planHeartbeat.stop();
+  }
 }
 
 export async function getLatestPlan(projectId: string) {
@@ -427,11 +525,26 @@ export async function requestFollowUpPlan(projectId: string, message: string) {
   });
 
   const promptContext = buildFollowUpPromptContext(parsed.data.message, project.lastCode);
-  const plan = await generatePlan(projectId, promptContext, 'followup', parsed.data.message);
-  return { ok: true as const, data: plan };
+  try {
+    const plan = await generatePlan(projectId, promptContext, 'followup', parsed.data.message);
+    return { ok: true as const, data: plan };
+  } catch (error) {
+    // The phase was moved to PLANNING before the plan existed. Without this rollback
+    // a failed plan leaves the project in PLANNING with nothing pending, and every
+    // later follow-up is refused with "A plan is already pending".
+    await prisma.project
+      .update({ where: { id: projectId }, data: { phase: 'COMPLETE' } })
+      .catch((rollbackError) => {
+        console.warn('[plan] could not roll the project phase back to COMPLETE', rollbackError);
+      });
+    throw error;
+  }
 }
 
-export async function approvePlan(projectId: string): Promise<ActionResult<{
+export async function approvePlan(
+  projectId: string,
+  input: { idempotencyKey?: string | null } = {},
+): Promise<ActionResult<{
   plan: Awaited<ReturnType<typeof generatePlan>>;
   phase: 'BUILDING';
 }>> {
@@ -472,6 +585,31 @@ export async function approvePlan(projectId: string): Promise<ActionResult<{
   const trigger: PlanTrigger = pending.trigger === 'followup' ? 'followup' : 'initial';
   const instruction = trigger === 'initial' ? project.initialPrompt : pending.sourceMessage;
   const promptContext = combineBuildContext(instruction, content);
+  const { createOrReuseJob } = await import('@/lib/jobs/lifecycle');
+  const { WORKSPACE_ROW_ID } = await import('@/lib/storage/usage');
+  try {
+    await createOrReuseJob({
+      projectId,
+      workspaceId: WORKSPACE_ROW_ID,
+      userId: user.id,
+      kind: trigger === 'followup' ? 'FOLLOWUP' : 'BUILD',
+      inputPrompt: promptContext,
+      planVersion: pending.version,
+      idempotencyKey: input.idempotencyKey ?? null,
+    });
+  } catch (error) {
+    // No job exists, so nothing will ever move this project out of BUILDING.
+    // Put the plan and the phase back so approving again just works. The revert is
+    // best effort: it must not mask the reason the job could not be created.
+    await revertApprovedPlan({ projectId, planId: pending.id }).catch((revertError) => {
+      console.error(
+        '[plan] approve compensation failed — project may be stuck in BUILDING',
+        { projectId, planId: pending.id },
+        revertError,
+      );
+    });
+    throw error;
+  }
   if (trigger === 'initial') {
     await startInitialGeneration({ projectId, userId: user.id, promptContext });
   } else {
@@ -482,6 +620,38 @@ export async function approvePlan(projectId: string): Promise<ActionResult<{
   // signal. persistProjectGeneration maps generationStatus "ready" → COMPLETE.
 
   return { ok: true, data: { plan: approved, phase: 'BUILDING' } };
+}
+
+/**
+ * Retry a failed PLAN using the recorded prompt. Reuses generatePlan (first
+ * plan) or requestFollowUpPlan (a live site). Does not start a build.
+ */
+export async function retryFailedPlan(projectId: string, prompt: string) {
+  const { user, err } = await requireActor();
+  if (!user) return err;
+
+  const source = String(prompt || '').trim();
+  if (!source) {
+    return { ok: false as const, error: 'A prompt is required to retry the plan', status: 400 };
+  }
+
+  const project = await prisma.project.findFirst({
+    where: { id: projectId, deletedAt: null },
+    select: { id: true, ownerId: true, phase: true },
+  });
+  if (!project) return notFound();
+  if (!canMutate(user, project.ownerId)) return forbidden();
+
+  const kind = planRetryKind(project.phase);
+  if (kind === 'blocked') {
+    return { ok: false as const, error: 'A build is already in progress', status: 409 };
+  }
+  if (kind === 'followup') {
+    return requestFollowUpPlan(projectId, source);
+  }
+
+  const plan = await generatePlan(projectId, source, 'initial', source);
+  return { ok: true as const, data: plan };
 }
 
 export async function getApprovedPlanGenerationContext(projectId: string) {
