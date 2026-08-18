@@ -9,6 +9,7 @@ import StatusBanner from '@/components/admin/StatusBanner';
 import { useEffect, useState } from 'react';
 import StudioButton from '@/components/app/studio/StudioButton';
 import { BACK_UP_NOW_LABEL } from '@/lib/backup/copy';
+import { notify, toMessage } from '@/lib/notify';
 import { formatAdminDateTime } from '../format-admin-date';
 
 type BackupAdminPayload = {
@@ -74,14 +75,23 @@ export default function BackupsAdmin({ initial }: { initial: BackupAdminPayload 
     return () => window.clearInterval(timer);
   }, [data.running, busy]);
 
+  // The route runs the backup synchronously (up to 5 minutes), so this keeps a
+  // pending toast on screen and settles it in place with the outcome.
   const runNow = async () => {
     setBusy(true);
     setError('');
+    const toastId = notify.loading('Backing up the database…');
     try {
       const response = await fetch('/api/admin/backups/run', { method: 'POST' });
       const payload = await response.json();
-      if (!response.ok) setError(payload.error || 'Backup failed');
+      if (!response.ok) {
+        notify.settle(toastId, 'error', payload.error || 'Backup failed');
+      } else {
+        notify.settle(toastId, 'success', 'Backup completed.');
+      }
       await refresh();
+    } catch (cause) {
+      notify.settle(toastId, 'error', toMessage(cause, 'Backup failed'));
     } finally {
       setBusy(false);
     }

@@ -4,7 +4,7 @@ import { Layers, Plus } from 'lucide-react';
 import AdminCard from '@/components/admin/AdminCard';
 import AdminPage from '@/components/admin/AdminPage';
 import { AdminTable, Td, Th, Tr } from '@/components/admin/AdminTable';
-import StatusBanner from '@/components/admin/StatusBanner';
+import { notify } from '@/lib/notify';
 import { FormEvent, useState } from 'react';
 import StudioButton from '@/components/app/studio/StudioButton';
 import StudioField from '@/components/app/studio/StudioField';
@@ -34,12 +34,10 @@ export default function PlansAdmin({
 }) {
   const [plans, setPlans] = useState(initialPlans);
   const [assigned, setAssigned] = useState(assignedPlanId);
-  const [error, setError] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
 
   const patch = async (id: string, body: Record<string, unknown>) => {
     setBusy(id);
-    setError('');
     try {
       const response = await fetch('/api/admin/plans', {
         method: 'PATCH',
@@ -48,7 +46,7 @@ export default function PlansAdmin({
       });
       const payload = await response.json();
       if (!response.ok) {
-        setError(payload.error || 'Could not update plan');
+        notify.error(payload.error || 'Could not update plan', { key: `plan-${id}` });
         return;
       }
       setPlans((current) =>
@@ -59,6 +57,11 @@ export default function PlansAdmin({
           return plan.id === id ? payload.plan : plan;
         }),
       );
+      notify.success(body.isDefault === true ? 'Default plan updated.' : 'Plan updated.', {
+        key: `plan-${id}`,
+      });
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not update plan', key: `plan-${id}` });
     } finally {
       setBusy(null);
     }
@@ -66,9 +69,9 @@ export default function PlansAdmin({
 
   const onCreate = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
     setBusy('create');
-    setError('');
     try {
       const response = await fetch('/api/admin/plans', {
         method: 'POST',
@@ -87,11 +90,14 @@ export default function PlansAdmin({
       });
       const payload = await response.json();
       if (!response.ok) {
-        setError(payload.error || 'Could not create plan');
+        notify.error(payload.error || 'Could not create plan', { key: 'plan-create' });
         return;
       }
       setPlans((current) => [...current, payload.plan]);
-      event.currentTarget.reset();
+      formElement.reset();
+      notify.success(`Plan “${payload.plan.name}” created.`, { key: 'plan-create' });
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not create plan', key: 'plan-create' });
     } finally {
       setBusy(null);
     }
@@ -99,7 +105,6 @@ export default function PlansAdmin({
 
   const assign = async (planId: string) => {
     setBusy(`assign:${planId}`);
-    setError('');
     try {
       const response = await fetch('/api/admin/plans', {
         method: 'POST',
@@ -108,10 +113,13 @@ export default function PlansAdmin({
       });
       const payload = await response.json();
       if (!response.ok) {
-        setError(payload.error || 'Could not assign plan');
+        notify.error(payload.error || 'Could not assign plan', { key: 'plan-assign' });
         return;
       }
       setAssigned(planId);
+      notify.success('Plan assigned to this workspace.', { key: 'plan-assign' });
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not assign plan', key: 'plan-assign' });
     } finally {
       setBusy(null);
     }
@@ -124,8 +132,6 @@ export default function PlansAdmin({
       description="How much each plan may generate, and which members are on it."
       width="wide"
     >
-      {error && <StatusBanner tone="error">{error}</StatusBanner>}
-
       <AdminCard icon={<Layers className="size-14" aria-hidden />} title="Plan limits">
         <AdminTable
           isEmpty={plans.length === 0}

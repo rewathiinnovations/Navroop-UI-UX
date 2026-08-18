@@ -8,6 +8,7 @@ import RecoveryPanel from './RecoveryPanel';
 import { isPublishRunning, type PublicGenerationJob } from '@/lib/jobs/types';
 import { PUBLISH_STEPPER, stepperIndex, type PublishStepKey } from '@/lib/publish/steps';
 import type { PublicDeployment } from '@/lib/publish/serialize';
+import { notify } from '@/lib/notify';
 
 type PublishState = {
   canPublish: boolean;
@@ -28,11 +29,17 @@ function formatWhen(value: string | null) {
   return date.toLocaleString();
 }
 
-function stepStatus(current: string | null | undefined, status: string, keys: readonly PublishStepKey[]) {
+function stepStatus(
+  current: string | null | undefined,
+  status: string,
+  keys: readonly PublishStepKey[],
+) {
   if (status === 'LIVE' && keys.includes('live')) return 'done';
   if (!current) return 'pending';
   const currentIndex = stepperIndex(current);
-  const rowIndex = PUBLISH_STEPPER.findIndex((row) => row.keys === keys || row.keys.some((key) => keys.includes(key)));
+  const rowIndex = PUBLISH_STEPPER.findIndex(
+    (row) => row.keys === keys || row.keys.some((key) => keys.includes(key)),
+  );
   if (status === 'FAILED' && rowIndex === currentIndex) return 'failed';
   if (rowIndex < currentIndex) return 'done';
   if (rowIndex === currentIndex) return status === 'LIVE' ? 'done' : 'running';
@@ -84,23 +91,45 @@ export default function PublishPanel({
 
   useEffect(() => {
     if (!sheetKind || !projectId) return;
-    const inFlight = isPublishRunning(state?.job ?? null) || deployment?.status === 'QUEUED' || deployment?.status === 'BUILDING';
+    const inFlight =
+      isPublishRunning(state?.job ?? null) ||
+      deployment?.status === 'QUEUED' ||
+      deployment?.status === 'BUILDING';
     if (!inFlight) return;
     const timer = window.setInterval(() => void load(), 2000);
     return () => window.clearInterval(timer);
-  }, [sheetKind, projectId, deployment?.status, deployment?.progressStep, state?.job?.status, state?.job?.currentStep]);
+  }, [
+    sheetKind,
+    projectId,
+    deployment?.status,
+    deployment?.progressStep,
+    state?.job?.status,
+    state?.job?.currentStep,
+  ]);
 
   useEffect(() => {
     if (!startedAt) return;
-    const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - startedAt) / 1000)), 1000);
+    const timer = window.setInterval(
+      () => setElapsed(Math.floor((Date.now() - startedAt) / 1000)),
+      1000,
+    );
     return () => window.clearInterval(timer);
   }, [startedAt]);
 
   useEffect(() => {
-    if (isPublishRunning(state?.job ?? null) || deployment?.status === 'QUEUED' || deployment?.status === 'BUILDING') {
+    if (
+      isPublishRunning(state?.job ?? null) ||
+      deployment?.status === 'QUEUED' ||
+      deployment?.status === 'BUILDING'
+    ) {
       setStartedAt((current) => current ?? Date.now());
     }
-    if (!isPublishRunning(state?.job ?? null) && (deployment?.status === 'LIVE' || deployment?.status === 'FAILED' || state?.job?.status === 'ABANDONED')) {
+    if (
+      !isPublishRunning(state?.job ?? null) &&
+      (deployment?.status === 'LIVE' ||
+        deployment?.status === 'FAILED' ||
+        state?.job?.status === 'ABANDONED')
+    ) {
       setStartedAt(null);
     }
   }, [deployment?.status, state?.job]);
@@ -127,15 +156,30 @@ export default function PublishPanel({
         body: JSON.stringify({ kind }),
       });
       const data = await response.json().catch(() => ({}));
-      if (response.ok) setState(data as PublishState);
-      else if (response.status === 409 && (data.code === 'PROJECT_LOCKED' || data.heldBy)) {
+      if (response.ok) {
+        setState(data as PublishState);
+        notify.info(kind === 'LIVE' ? 'Publishing to live…' : 'Building the preview…', {
+          key: 'publish',
+        });
+      } else if (response.status === 409 && (data.code === 'PROJECT_LOCKED' || data.heldBy)) {
         const { emitLockConflict, parseLockConflict } = await import('@/lib/projects/lock-client');
         const conflict = parseLockConflict(409, data);
         if (conflict) emitLockConflict(conflict);
+      } else if (response.status === 402) {
+        setLimitError(
+          typeof data.message === 'string'
+            ? data.message
+            : 'Plan limit is used up — talk to an admin',
+        );
+      } else {
+        notify.error(data.error || data.message, {
+          fallback: 'Could not start publishing',
+          key: 'publish',
+        });
+        await load();
       }
-      else if (response.status === 402) {
-        setLimitError(typeof data.message === 'string' ? data.message : 'Plan limit is used up — talk to an admin');
-      } else await load();
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not start publishing', key: 'publish' });
     } finally {
       setBusy(false);
     }
@@ -147,7 +191,9 @@ export default function PublishPanel({
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
     } catch {
-      /* ignore */
+      notify.warning('Could not copy — select the URL and copy it by hand.', {
+        key: 'publish-copy',
+      });
     }
   };
 
@@ -160,11 +206,25 @@ export default function PublishPanel({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password: next }),
       });
-      if (response.ok) {
-        const data = (await response.json()) as PublishState;
-        setState(data);
-        setPassword('');
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        notify.error(data.error, {
+          fallback: 'Could not update the password',
+          key: 'publish-password',
+        });
+        return;
       }
+      const data = (await response.json()) as PublishState;
+      setState(data);
+      setPassword('');
+      notify.success(next ? 'Password protection on.' : 'Password protection off.', {
+        key: 'publish-password',
+      });
+    } catch (cause) {
+      notify.error(cause, {
+        fallback: 'Could not update the password',
+        key: 'publish-password',
+      });
     } finally {
       setBusy(false);
     }
@@ -228,11 +288,16 @@ export default function PublishPanel({
               <div className="mb-16 rounded-12 border border-[var(--studio-line)] p-12">
                 <p className="text-[13px] text-[var(--studio-fg)]">{setupMessage}</p>
                 {state?.isAdmin ? (
-                  <a href="/admin/integrations" className="mt-8 inline-block text-[13px] text-[var(--studio-accent)]">
+                  <a
+                    href="/admin/integrations"
+                    className="mt-8 inline-block text-[13px] text-[var(--studio-accent)]"
+                  >
                     /admin/integrations
                   </a>
                 ) : (
-                  <p className="mt-8 text-[13px] text-[var(--studio-muted)]">Ask an admin to finish setup</p>
+                  <p className="mt-8 text-[13px] text-[var(--studio-muted)]">
+                    Ask an admin to finish setup
+                  </p>
                 )}
               </div>
             )}
@@ -320,7 +385,8 @@ export default function PublishPanel({
                 <p className="text-[12px] text-[var(--studio-faint)]">
                   {startedAt ? `${elapsed}s` : ''}
                 </p>
-                {state?.job && (state.job.status === 'ABANDONED' || state.job.status === 'FAILED') ? (
+                {state?.job &&
+                (state.job.status === 'ABANDONED' || state.job.status === 'FAILED') ? (
                   <RecoveryPanel
                     variant="publish"
                     kind={state.job.kind}
@@ -338,15 +404,24 @@ export default function PublishPanel({
                 ) : null}
                 <ol className="space-y-10">
                   {PUBLISH_STEPPER.map((row) => {
-                    const jobStep = state?.job?.steps?.find((step) => row.keys.includes(step.key as PublishStepKey));
+                    const jobStep = state?.job?.steps?.find((step) =>
+                      row.keys.includes(step.key as PublishStepKey),
+                    );
                     const current = state?.job?.currentStep || deployment?.progressStep;
-                    const status = jobStep?.status === 'failed'
-                      ? 'failed'
-                      : jobStep?.status === 'succeeded'
-                        ? 'done'
-                        : jobStep?.status === 'running'
-                          ? 'running'
-                          : stepStatus(current, isPublishRunning(state?.job ?? null) ? 'BUILDING' : deployment?.status ?? 'QUEUED', row.keys);
+                    const status =
+                      jobStep?.status === 'failed'
+                        ? 'failed'
+                        : jobStep?.status === 'succeeded'
+                          ? 'done'
+                          : jobStep?.status === 'running'
+                            ? 'running'
+                            : stepStatus(
+                                current,
+                                isPublishRunning(state?.job ?? null)
+                                  ? 'BUILDING'
+                                  : (deployment?.status ?? 'QUEUED'),
+                                row.keys,
+                              );
                     return (
                       <li key={row.label} className="flex items-start gap-10">
                         <span
@@ -362,12 +437,16 @@ export default function PublishPanel({
                           <p
                             className={cn(
                               'text-[13px]',
-                              status === 'failed' ? 'font-medium text-[var(--studio-danger)]' : 'text-[var(--studio-fg)]',
+                              status === 'failed'
+                                ? 'font-medium text-[var(--studio-danger)]'
+                                : 'text-[var(--studio-fg)]',
                             )}
                           >
                             {row.label}
                           </p>
-                          {status === 'running' && <Loader2 className="mt-4 size-14 animate-spin text-[var(--studio-muted)]" />}
+                          {status === 'running' && (
+                            <Loader2 className="mt-4 size-14 animate-spin text-[var(--studio-muted)]" />
+                          )}
                         </div>
                       </li>
                     );
@@ -381,12 +460,21 @@ export default function PublishPanel({
                 )}
                 {deployment?.status === 'FAILED' && (
                   <div className="space-y-8 rounded-12 border border-[var(--studio-danger)]/30 p-12">
-                    <p className="text-[13px] text-[var(--studio-danger)]">{deployment.lastError}</p>
+                    <p className="text-[13px] text-[var(--studio-danger)]">
+                      {deployment.lastError}
+                    </p>
                     {deployment.lastRequestId && (
-                      <p className="text-[11px] text-[var(--studio-faint)]">Request {deployment.lastRequestId}</p>
+                      <p className="text-[11px] text-[var(--studio-faint)]">
+                        Request {deployment.lastRequestId}
+                      </p>
                     )}
                     {deployment.buildLogUrl && (
-                      <a href={deployment.buildLogUrl} target="_blank" rel="noreferrer" className="text-[13px] text-[var(--studio-accent)]">
+                      <a
+                        href={deployment.buildLogUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-[13px] text-[var(--studio-accent)]"
+                      >
                         View build log
                       </a>
                     )}

@@ -24,7 +24,8 @@ export const COMPLETION_RULES = `OUTPUT FORMAT:
 - Full relative paths from the project root, stable across turns.
 - Complete files only. Never truncate, ellipsis, or ask to continue.
 - On a follow-up, emit only the files that change.
-- Escape apostrophes; straight quotes only.`;
+- Escape apostrophes; straight quotes only.
+- Showing code as content? Put it in a template literal and escape backticks and \${ — never paste raw JSX/HTML into text.`;
 
 export function buildVolatilePromptSuffix(ctx?: StackPromptContext | null): string {
   if (!ctx) return '';

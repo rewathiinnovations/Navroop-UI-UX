@@ -1,8 +1,11 @@
 /* Component-specific styles from firecrawl-marketing */
 
 /* UI Components (for Dashboard v2) */
-@import "./button.css";
-@import "./code.css";
+@import './button.css';
+@import './code.css';
+/* react-toastify injects its own base stylesheet at runtime; toast.css only
+   overrides it (see the note at the top of that file). */
+@import './toast.css';
 
 /* Additional component CSS will be added as we migrate more components */
 /* @import "./modal.css"; */

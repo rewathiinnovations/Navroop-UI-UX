@@ -1,0 +1,131 @@
+/* react-toastify themed onto the Fire design system.
+ *
+ * react-toastify v11 ships its own stylesheet *at runtime*: `ToastContainer`
+ * appends a <style> element to <head> when it mounts. That element therefore
+ * comes after this bundled file in document order, so an equal-specificity
+ * override here would lose the cascade.
+ *
+ * Every selector below is deliberately one step more specific than the
+ * library's (`:root:root` vs `:root`, `:root .Toastify__x` vs `.Toastify__x`)
+ * so these rules win on specificity rather than on order. Keep that prefix on
+ * anything added here, and do NOT `@import` the library CSS — it is already
+ * injected, and importing it only ships a second 17KB copy.
+ */
+
+:root:root {
+  /* Surface */
+  --toastify-color-light: var(--white);
+  --toastify-text-color-light: var(--accent-black);
+
+  /* Status colors, drawn from the design system palette */
+  --toastify-color-info: var(--accent-bluetron);
+  --toastify-color-success: #0f9d58;
+  --toastify-color-warning: var(--heat-100);
+  --toastify-color-error: var(--accent-crimson);
+
+  --toastify-icon-color-info: var(--toastify-color-info);
+  --toastify-icon-color-success: var(--toastify-color-success);
+  --toastify-icon-color-warning: var(--toastify-color-warning);
+  --toastify-icon-color-error: var(--toastify-color-error);
+
+  --toastify-spinner-color: var(--black-alpha-40);
+  --toastify-spinner-color-empty-area: var(--black-alpha-8);
+
+  --toastify-toast-width: 380px;
+  --toastify-toast-min-height: 56px;
+  --toastify-toast-padding: 12px 14px;
+  --toastify-toast-bd-radius: 12px;
+  --toastify-font-family: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --toastify-z-index: 9999;
+}
+
+/* The container is pinned to theme="light" (see components/ui/Toaster.tsx), so
+   dark mode works by redefining the *light* token set here. That keeps the
+   palette tied to the same `.dark` class as the rest of the app instead of to
+   the theme value react-toastify stamped onto each toast at creation time. */
+:root.dark {
+  --toastify-color-light: #1a1a1a;
+  --toastify-text-color-light: #f5f5f5;
+  --toastify-spinner-color: var(--white-alpha-56);
+  --toastify-spinner-color-empty-area: rgb(255 255 255 / 12%);
+}
+
+:root .Toastify__toast {
+  border: 1px solid var(--border-muted);
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 4%),
+    0 8px 24px -8px rgb(0 0 0 / 12%);
+  font-size: 14px;
+  line-height: 1.45;
+  align-items: flex-start;
+}
+
+:root.dark .Toastify__toast {
+  border-color: rgb(255 255 255 / 10%);
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 40%),
+    0 8px 24px -8px rgb(0 0 0 / 60%);
+}
+
+:root .Toastify__toast-body {
+  padding: 2px 0;
+  align-items: flex-start;
+  font-weight: 450;
+}
+
+:root .Toastify__toast-icon {
+  margin-top: 1px;
+  margin-inline-end: 10px;
+}
+
+/* A tinted left edge makes the toast type readable at a glance, rather than
+   relying on the icon color alone. */
+:root .Toastify__toast::before {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  width: 3px;
+  border-start-start-radius: var(--toastify-toast-bd-radius);
+  border-end-start-radius: var(--toastify-toast-bd-radius);
+  background: transparent;
+}
+
+:root .Toastify__toast--success::before {
+  background: var(--toastify-color-success);
+}
+
+:root .Toastify__toast--error::before {
+  background: var(--toastify-color-error);
+}
+
+:root .Toastify__toast--warning::before {
+  background: var(--toastify-color-warning);
+}
+
+:root .Toastify__toast--info::before {
+  background: var(--toastify-color-info);
+}
+
+:root .Toastify__progress-bar {
+  height: 2px;
+}
+
+:root .Toastify__close-button {
+  align-self: flex-start;
+  opacity: 0.45;
+  transition: opacity 150ms ease;
+}
+
+:root .Toastify__close-button:hover,
+:root .Toastify__close-button:focus-visible {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root .Toastify__toast,
+  :root .Toastify--animate {
+    animation-duration: 1ms !important;
+    transition-duration: 1ms !important;
+  }
+}

@@ -1,51 +1,55 @@
-"use client";
+'use client';
 
-import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
-import { useSession } from "next-auth/react";
-import StudioShell from "@/components/app/studio/StudioShell";
-import PromptHero, { type PromptHeroHandle } from "@/components/dashboard/PromptHero";
-import SetupChecklist from "@/components/dashboard/SetupChecklist";
-import ExamplePromptCards from "@/components/dashboard/ExamplePromptCards";
-import PromptTipsPanel from "@/components/dashboard/PromptTipsPanel";
-import ProjectCard from "@/components/dashboard/ProjectCard";
-import { loginModalHref } from "@/lib/auth/public-login";
-import { PENDING_PROMPT_KEY, clearDraftStorage, readDraftStorage, writeDraftStorage } from "@/hooks/useDraftStorage";
-import type { DesignDirectionId } from "@/lib/design/directions";
-import type { ImportMode } from "@/lib/import/mode";
-import { createProject } from "@/lib/projects/actions";
-import { armProjectGeneration } from "@/lib/projects/start-from-prompt";
-import type { StackId } from "@/lib/stacks";
+import Link from 'next/link';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { useSession } from 'next-auth/react';
+import StudioShell from '@/components/app/studio/StudioShell';
+import PromptHero, { type PromptHeroHandle } from '@/components/dashboard/PromptHero';
+import SetupChecklist from '@/components/dashboard/SetupChecklist';
+import ExamplePromptCards from '@/components/dashboard/ExamplePromptCards';
+import PromptTipsPanel from '@/components/dashboard/PromptTipsPanel';
+import ProjectCard from '@/components/dashboard/ProjectCard';
+import { loginModalHref } from '@/lib/auth/public-login';
+import { notify } from '@/lib/notify';
+import {
+  PENDING_PROMPT_KEY,
+  clearDraftStorage,
+  readDraftStorage,
+  writeDraftStorage,
+} from '@/hooks/useDraftStorage';
+import type { DesignDirectionId } from '@/lib/design/directions';
+import type { ImportMode } from '@/lib/import/mode';
+import { createProject } from '@/lib/projects/actions';
+import { armProjectGeneration } from '@/lib/projects/start-from-prompt';
+import type { StackId } from '@/lib/stacks';
 import {
   fetchProjectList,
   isProjectGenerating,
   type ListProject,
-} from "@/lib/projects/list-client";
+} from '@/lib/projects/list-client';
 
-type DashTab = "mine" | "recent" | "templates";
+type DashTab = 'mine' | 'recent' | 'templates';
 
 export default function DashboardPage() {
   const router = useRouter();
   const { data: session } = useSession();
-  const [tab, setTab] = useState<DashTab>("mine");
+  const [tab, setTab] = useState<DashTab>('mine');
   const [projects, setProjects] = useState<ListProject[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const [error, setError] = useState('');
   const heroRef = useRef<PromptHeroHandle>(null);
 
   const firstName =
-    session?.user?.name?.trim().split(/\s+/)[0] ||
-    session?.user?.email?.split("@")[0] ||
-    "there";
+    session?.user?.name?.trim().split(/\s+/)[0] || session?.user?.email?.split('@')[0] || 'there';
   const userId = session?.user?.id;
 
   const load = async (silent = false) => {
     if (!silent) setLoading(true);
-    const result = await fetchProjectList({ sort: "updatedAt" });
+    const result = await fetchProjectList({ sort: 'updatedAt' });
     if (!result.ok) {
       if (result.status === 401) {
-        router.push(loginModalHref("/dashboard"));
+        router.push(loginModalHref('/dashboard'));
         return;
       }
       setError(result.error);
@@ -53,7 +57,7 @@ export default function DashboardPage() {
       return;
     }
     setProjects(result.projects);
-    setError("");
+    setError('');
     if (!silent) setLoading(false);
   };
 
@@ -75,7 +79,7 @@ export default function DashboardPage() {
   }, [projects, userId]);
 
   const recent = useMemo(() => projects.slice(0, 8), [projects]);
-  const visible = tab === "mine" ? mine : recent;
+  const visible = tab === 'mine' ? mine : recent;
 
   const onSubmit = async (
     text: string,
@@ -83,7 +87,6 @@ export default function DashboardPage() {
     designDirection: DesignDirectionId,
     importMode: ImportMode,
   ) => {
-    setError("");
     const draft = readDraftStorage(PENDING_PROMPT_KEY);
     const created = await createProject({
       initialPrompt: text,
@@ -96,10 +99,12 @@ export default function DashboardPage() {
     });
     if (!created.ok) {
       if (created.status === 401) {
-        router.push(loginModalHref("/dashboard"));
+        router.push(loginModalHref('/dashboard'));
         return;
       }
-      setError(created.error);
+      // Toasted rather than inlined: the prompt hero is about to scroll away,
+      // and the failure has to stay readable wherever the user lands.
+      notify.error(created.error, { key: 'create-project' });
       return;
     }
     clearDraftStorage(PENDING_PROMPT_KEY);
@@ -108,7 +113,9 @@ export default function DashboardPage() {
   };
 
   const onRenamed = (id: string, name: string) => {
-    setProjects((current) => current.map((project) => (project.id === id ? { ...project, name } : project)));
+    setProjects((current) =>
+      current.map((project) => (project.id === id ? { ...project, name } : project)),
+    );
   };
 
   const onDuplicated = (project: ListProject) => {
@@ -138,12 +145,15 @@ export default function DashboardPage() {
         </div>
 
         <div className="mb-20 flex flex-wrap items-center justify-between gap-12">
-          <nav className="flex gap-4 border-b border-[var(--studio-line)]" aria-label="Project views">
+          <nav
+            className="flex gap-4 border-b border-[var(--studio-line)]"
+            aria-label="Project views"
+          >
             {(
               [
-                ["mine", "My projects"],
-                ["recent", "Recently viewed"],
-                ["templates", "Templates"],
+                ['mine', 'My projects'],
+                ['recent', 'Recently viewed'],
+                ['templates', 'Templates'],
               ] as const
             ).map(([id, label]) => (
               <button
@@ -152,15 +162,15 @@ export default function DashboardPage() {
                 onClick={() => setTab(id)}
                 className={`inline-flex min-h-[44px] items-center px-8 text-[14px] transition-colors duration-200 ${
                   tab === id
-                    ? "border-b-2 border-[var(--studio-fg)] text-[var(--studio-fg)]"
-                    : "text-[var(--studio-muted)] hover:text-[var(--studio-fg)]"
+                    ? 'border-b-2 border-[var(--studio-fg)] text-[var(--studio-fg)]'
+                    : 'text-[var(--studio-muted)] hover:text-[var(--studio-fg)]'
                 }`}
               >
                 {label}
               </button>
             ))}
           </nav>
-          {tab !== "templates" && (
+          {tab !== 'templates' && (
             <Link
               href="/projects"
               className="text-[13px] text-[var(--studio-muted)] hover:text-[var(--studio-fg)] transition-colors duration-200"
@@ -170,7 +180,7 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {tab === "templates" ? (
+        {tab === 'templates' ? (
           <div className="rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-28 py-40 text-center">
             <h2 className="text-[24px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">
               Templates
@@ -190,7 +200,10 @@ export default function DashboardPage() {
             {loading && (
               <div className="grid grid-cols-1 gap-16 sm:grid-cols-2 lg:grid-cols-3">
                 {[0, 1, 2, 3].map((key) => (
-                  <div key={key} className="h-240 rounded-12 bg-[var(--studio-skeleton)] animate-pulse" />
+                  <div
+                    key={key}
+                    className="h-240 rounded-12 bg-[var(--studio-skeleton)] animate-pulse"
+                  />
                 ))}
               </div>
             )}
@@ -198,10 +211,11 @@ export default function DashboardPage() {
             {!loading && visible.length === 0 && (
               <div className="rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-28 py-40">
                 <h2 className="text-center text-[24px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">
-                  Welcome to {process.env.NEXT_PUBLIC_WORKSPACE_NAME || "Navroop"}
+                  Welcome to {process.env.NEXT_PUBLIC_WORKSPACE_NAME || 'Navroop'}
                 </h2>
                 <p className="mx-auto mt-10 max-w-[480px] text-center text-[15px] leading-6 text-[var(--studio-muted)]">
-                  Start with a detailed prompt. Click a card to fill the box — nothing generates until you send it.
+                  Start with a detailed prompt. Click a card to fill the box — nothing generates
+                  until you send it.
                 </p>
                 <div className="mt-20">
                   <ExamplePromptCards

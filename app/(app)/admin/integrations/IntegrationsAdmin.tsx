@@ -4,6 +4,7 @@ import { Bug, Cloud, Github, Server, X } from 'lucide-react';
 import AdminCard from '@/components/admin/AdminCard';
 import AdminPage from '@/components/admin/AdminPage';
 import StatusBanner from '@/components/admin/StatusBanner';
+import { fetchJson, notify, toMessage } from '@/lib/notify';
 import StatusPill, { type StatusTone } from '@/components/admin/StatusPill';
 import { FormEvent, useMemo, useState, type ReactNode } from 'react';
 import StudioButton from '@/components/app/studio/StudioButton';
@@ -69,7 +70,6 @@ export default function IntegrationsAdmin({
   const [integrations, setIntegrations] = useState(initial.integrations);
   const [alert, setAlert] = useState(initial.alert);
   const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState('');
   const [githubOrg, setGithubOrg] = useState('');
   const [cfToken, setCfToken] = useState('');
   const [zones, setZones] = useState<Zone[] | null>(null);
@@ -139,8 +139,8 @@ export default function IntegrationsAdmin({
 
   const check = async (kind?: PublicIntegration['kind']) => {
     setBusy(kind ? `check:${kind}` : 'check');
-    setError('');
     setSentryVerify(null);
+    const toastId = notify.loading(kind ? `Checking ${kind}…` : 'Checking integrations…');
     try {
       const path =
         kind === 'SENTRY' ? '/api/integrations/sentry/verify' : '/api/admin/integrations/check';
@@ -150,11 +150,23 @@ export default function IntegrationsAdmin({
         body: JSON.stringify(kind && kind !== 'SENTRY' ? { kind } : {}),
       });
       const data = await response.json();
-      if (!response.ok) setError(data.error || 'Check failed');
-      else {
-        applyPayload(data);
-        if (kind === 'SENTRY' && data.result?.message) setSentryVerify(data.result.message);
+      if (!response.ok) {
+        notify.settle(toastId, 'error', data.error || 'Check failed');
+        return;
       }
+      applyPayload(data);
+      if (kind === 'SENTRY' && data.result?.message) setSentryVerify(data.result.message);
+      notify.settle(
+        toastId,
+        'success',
+        kind === 'SENTRY' && data.result?.message
+          ? data.result.message
+          : kind
+            ? `${kind} checked.`
+            : 'All integrations checked.',
+      );
+    } catch (cause) {
+      notify.settle(toastId, 'error', toMessage(cause, 'Check failed'));
     } finally {
       setBusy(null);
     }
@@ -163,7 +175,6 @@ export default function IntegrationsAdmin({
   const connectSentry = async (event: FormEvent) => {
     event.preventDefault();
     setBusy('sentry');
-    setError('');
     setSentryVerify(null);
     try {
       const response = await fetch('/api/integrations/sentry/connect', {
@@ -172,13 +183,17 @@ export default function IntegrationsAdmin({
         body: JSON.stringify({ dsn: sentryDsn, authToken: sentryToken || undefined }),
       });
       const data = await response.json();
-      if (!response.ok) setError(data.error || 'Sentry did not connect');
-      else {
-        applyPayload(data);
-        setSentryDsn('');
-        setSentryToken('');
-        if (data.message) setSentryVerify(data.message);
+      if (!response.ok) {
+        notify.error(data.error || 'Sentry did not connect', { key: 'sentry-connect' });
+        return;
       }
+      applyPayload(data);
+      setSentryDsn('');
+      setSentryToken('');
+      if (data.message) setSentryVerify(data.message);
+      notify.success(data.message || 'Sentry connected.', { key: 'sentry-connect' });
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Sentry did not connect', key: 'sentry-connect' });
     } finally {
       setBusy(null);
     }
@@ -186,7 +201,6 @@ export default function IntegrationsAdmin({
 
   const startSentryOauth = async () => {
     setBusy('sentry-oauth');
-    setError('');
     try {
       const response = await fetch('/api/integrations/sentry/start', {
         method: 'POST',
@@ -194,8 +208,18 @@ export default function IntegrationsAdmin({
         body: JSON.stringify({ clientId: sentryClientId, clientSecret: sentryClientSecret }),
       });
       const data = await response.json();
-      if (!response.ok) setError(data.error || 'Could not start Sentry OAuth');
-      else if (data.url) window.location.assign(data.url);
+      if (!response.ok) {
+        notify.error(data.error || 'Could not start Sentry OAuth', { key: 'sentry-oauth' });
+        return;
+      }
+      if (data.url) {
+        notify.info('Redirecting to Sentry…', { key: 'sentry-oauth' });
+        window.location.assign(data.url);
+      } else {
+        notify.warning('Sentry did not return a sign-in URL.', { key: 'sentry-oauth' });
+      }
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not start Sentry OAuth', key: 'sentry-oauth' });
     } finally {
       setBusy(null);
     }
@@ -204,7 +228,6 @@ export default function IntegrationsAdmin({
   const saveSentrySettings = async (event: FormEvent) => {
     event.preventDefault();
     setBusy('sentry-settings');
-    setError('');
     try {
       const response = await fetch('/api/integrations/sentry/settings', {
         method: 'POST',
@@ -223,8 +246,14 @@ export default function IntegrationsAdmin({
         }),
       });
       const data = await response.json();
-      if (!response.ok) setError(data.error || 'Could not save Sentry settings');
-      else applyPayload(data);
+      if (!response.ok) {
+        notify.error(data.error || 'Could not save Sentry settings', { key: 'sentry-settings' });
+        return;
+      }
+      applyPayload(data);
+      notify.success('Sentry settings saved.', { key: 'sentry-settings' });
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not save Sentry settings', key: 'sentry-settings' });
     } finally {
       setBusy(null);
     }
@@ -232,7 +261,6 @@ export default function IntegrationsAdmin({
 
   const restartApp = async () => {
     setBusy('sentry-restart');
-    setError('');
     try {
       const response = await fetch('/api/admin/integrations/sentry/restart', {
         method: 'POST',
@@ -240,36 +268,54 @@ export default function IntegrationsAdmin({
         body: JSON.stringify({ confirm: restartConfirm }),
       });
       const data = await response.json();
-      if (!response.ok) setError(data.error || 'Could not restart the application');
-      else setRestartOpen(false);
+      if (!response.ok) {
+        notify.error(data.error || 'Could not restart the application', { key: 'app-restart' });
+        return;
+      }
+      setRestartOpen(false);
+      notify.success('Restart requested — the application is coming back up.', {
+        key: 'app-restart',
+      });
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not restart the application', key: 'app-restart' });
     } finally {
       setBusy(null);
     }
   };
 
   const loadSentryOrgs = async () => {
-    const response = await fetch('/api/integrations/sentry/select');
-    const data = await response.json();
-    if (response.ok && Array.isArray(data.orgs)) {
-      setSentryOrgs(data.orgs);
-      if (data.orgs.length === 1) setSentryOrg(data.orgs[0].slug);
+    try {
+      const data = await fetchJson<{ orgs?: Array<{ slug: string; name: string }> }>(
+        '/api/integrations/sentry/select',
+      );
+      if (Array.isArray(data.orgs)) {
+        setSentryOrgs(data.orgs);
+        if (data.orgs.length === 1) setSentryOrg(data.orgs[0].slug);
+      }
+    } catch (cause) {
+      // Previously failed silently, leaving an empty org picker with no reason.
+      notify.error(cause, { fallback: 'Could not load Sentry organisations', key: 'sentry-orgs' });
     }
   };
 
   const loadSentryProjects = async (orgSlug: string) => {
-    const response = await fetch('/api/integrations/sentry/select', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ orgSlug, listProjects: true }),
-    });
-    const data = await response.json();
-    if (response.ok && Array.isArray(data.projects)) setSentryProjects(data.projects);
+    try {
+      const data = await fetchJson<{
+        projects?: Array<{ id: string; slug: string; name: string }>;
+      }>('/api/integrations/sentry/select', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgSlug, listProjects: true }),
+      });
+      if (Array.isArray(data.projects)) setSentryProjects(data.projects);
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not load Sentry projects', key: 'sentry-projects' });
+    }
   };
 
   const finishSentryOauth = async (createProject = false) => {
     if (!sentryOrg) return;
     setBusy('sentry-select');
-    setError('');
     try {
       const response = await fetch('/api/integrations/sentry/select', {
         method: 'POST',
@@ -281,8 +327,14 @@ export default function IntegrationsAdmin({
         }),
       });
       const data = await response.json();
-      if (!response.ok) setError(data.error || 'Could not finish Sentry OAuth');
-      else applyPayload(data);
+      if (!response.ok) {
+        notify.error(data.error || 'Could not finish Sentry OAuth', { key: 'sentry-select' });
+        return;
+      }
+      applyPayload(data);
+      notify.success('Sentry connected.', { key: 'sentry-select' });
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not finish Sentry OAuth', key: 'sentry-select' });
     } finally {
       setBusy(null);
     }
@@ -292,8 +344,11 @@ export default function IntegrationsAdmin({
     try {
       await navigator.clipboard.writeText(text);
       setSentryCopied(label);
+      notify.success('Copied to clipboard.', { key: 'integrations-copy' });
     } catch {
-      /* ignore */
+      notify.warning('Could not copy — select the value and copy it by hand.', {
+        key: 'integrations-copy',
+      });
     }
   };
 
@@ -307,7 +362,6 @@ export default function IntegrationsAdmin({
   const connectCloudflare = async (event: FormEvent) => {
     event.preventDefault();
     setBusy('cf');
-    setError('');
     try {
       const response = await fetch('/api/integrations/cloudflare', {
         method: 'POST',
@@ -316,16 +370,20 @@ export default function IntegrationsAdmin({
       });
       const data = await response.json();
       if (!response.ok) {
-        setError(data.error || 'Cloudflare did not connect');
+        notify.error(data.error || 'Cloudflare did not connect', { key: 'cloudflare' });
         return;
       }
       applyPayload(data);
       if (data.needsZone && Array.isArray(data.zones)) {
         setZones(data.zones);
+        notify.info('Token accepted — now pick the zone to use.', { key: 'cloudflare' });
         return;
       }
       setCfToken('');
       setZones(null);
+      notify.success('Cloudflare connected.', { key: 'cloudflare' });
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Cloudflare did not connect', key: 'cloudflare' });
     } finally {
       setBusy(null);
     }
@@ -334,7 +392,6 @@ export default function IntegrationsAdmin({
   const pickZone = async () => {
     if (!pickedZone) return;
     setBusy('cf-zone');
-    setError('');
     try {
       const response = await fetch('/api/integrations/cloudflare/zone', {
         method: 'POST',
@@ -342,12 +399,16 @@ export default function IntegrationsAdmin({
         body: JSON.stringify({ zoneId: pickedZone }),
       });
       const data = await response.json();
-      if (!response.ok) setError(data.error || 'Could not save the zone');
-      else {
-        applyPayload(data);
-        setZones(null);
-        setCfToken('');
+      if (!response.ok) {
+        notify.error(data.error || 'Could not save the zone', { key: 'cloudflare-zone' });
+        return;
       }
+      applyPayload(data);
+      setZones(null);
+      setCfToken('');
+      notify.success('Cloudflare zone saved.', { key: 'cloudflare-zone' });
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not save the zone', key: 'cloudflare-zone' });
     } finally {
       setBusy(null);
     }
@@ -356,7 +417,6 @@ export default function IntegrationsAdmin({
   const discoverCoolify = async (event: FormEvent) => {
     event.preventDefault();
     setBusy('coolify');
-    setError('');
     try {
       const response = await fetch('/api/integrations/coolify', {
         method: 'POST',
@@ -365,17 +425,22 @@ export default function IntegrationsAdmin({
       });
       const data = await response.json();
       if (!response.ok) {
-        setError(data.error || 'Coolify did not connect');
+        notify.error(data.error || 'Coolify did not connect', { key: 'coolify' });
         return;
       }
-      setServers(data.servers ?? []);
+      const discovered = (data.servers ?? []) as CoolifyServer[];
+      setServers(discovered);
       setProjects(data.projects ?? []);
       setSelectedServers(
-        Object.fromEntries(
-          (data.servers ?? []).map((row: CoolifyServer) => [row.uuid, { on: true, max: 50 }]),
-        ),
+        Object.fromEntries(discovered.map((row) => [row.uuid, { on: true, max: 50 }])),
       );
       if ((data.projects ?? []).length === 1) setProjectUuid(data.projects[0].uuid);
+      notify.success(
+        `Coolify connected — found ${discovered.length} server${discovered.length === 1 ? '' : 's'}.`,
+        { key: 'coolify' },
+      );
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Coolify did not connect', key: 'coolify' });
     } finally {
       setBusy(null);
     }
@@ -383,7 +448,6 @@ export default function IntegrationsAdmin({
 
   const createProject = async () => {
     setBusy('coolify-project');
-    setError('');
     try {
       const response = await fetch('/api/integrations/coolify', {
         method: 'POST',
@@ -391,12 +455,16 @@ export default function IntegrationsAdmin({
         body: JSON.stringify({ baseUrl: coolifyUrl, token: coolifyToken, createProject: true }),
       });
       const data = await response.json();
-      if (!response.ok) setError(data.error || 'Could not create the project');
-      else {
-        setProjects(data.projects ?? []);
-        const navroop = (data.projects ?? []).find((row: CoolifyProject) => row.name === 'Navroop');
-        if (navroop) setProjectUuid(navroop.uuid);
+      if (!response.ok) {
+        notify.error(data.error || 'Could not create the project', { key: 'coolify-project' });
+        return;
       }
+      setProjects(data.projects ?? []);
+      const navroop = (data.projects ?? []).find((row: CoolifyProject) => row.name === 'Navroop');
+      if (navroop) setProjectUuid(navroop.uuid);
+      notify.success('Coolify project created.', { key: 'coolify-project' });
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not create the project', key: 'coolify-project' });
     } finally {
       setBusy(null);
     }
@@ -407,7 +475,6 @@ export default function IntegrationsAdmin({
       .filter((row) => selectedServers[row.uuid]?.on)
       .map((row) => ({ ...row, maxDeployments: selectedServers[row.uuid]?.max ?? 50 }));
     setBusy('coolify-save');
-    setError('');
     try {
       const response = await fetch('/api/integrations/coolify/select', {
         method: 'POST',
@@ -419,12 +486,18 @@ export default function IntegrationsAdmin({
         }),
       });
       const data = await response.json();
-      if (!response.ok) setError(data.error || 'Could not save the servers');
-      else {
-        applyPayload(data);
-        setServers(null);
-        setCoolifyToken('');
+      if (!response.ok) {
+        notify.error(data.error || 'Could not save the servers', { key: 'coolify-save' });
+        return;
       }
+      applyPayload(data);
+      setServers(null);
+      setCoolifyToken('');
+      notify.success(`Saved ${chosen.length} server${chosen.length === 1 ? '' : 's'}.`, {
+        key: 'coolify-save',
+      });
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not save the servers', key: 'coolify-save' });
     } finally {
       setBusy(null);
     }
@@ -434,28 +507,32 @@ export default function IntegrationsAdmin({
     setDisconnectKind(kind);
     setDisconnectConfirm('');
     setDisconnectWarning(null);
-    const response = await fetch('/api/admin/integrations/disconnect', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ kind, confirm: '' }),
-    });
-    const data = await response.json().catch(() => ({}));
-    if (data.warning) setDisconnectWarning(data.warning);
+    try {
+      const response = await fetch('/api/admin/integrations/disconnect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind, confirm: '' }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (data.warning) setDisconnectWarning(data.warning);
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not reach the server', key: 'disconnect' });
+    }
   };
 
   const disconnect = async () => {
     if (!disconnectKind) return;
     setBusy('disconnect');
-    setError('');
+    const kind = disconnectKind;
     try {
       const response = await fetch('/api/admin/integrations/disconnect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ kind: disconnectKind, confirm: disconnectConfirm }),
+        body: JSON.stringify({ kind, confirm: disconnectConfirm }),
       });
       const data = await response.json();
       if (!response.ok) {
-        setError(data.error || 'Disconnect failed');
+        notify.error(data.error || 'Disconnect failed', { key: 'disconnect' });
         setDisconnectWarning(data.warning ?? null);
         return;
       }
@@ -463,8 +540,16 @@ export default function IntegrationsAdmin({
       setDisconnectKind(null);
       setDisconnectConfirm('');
       setDisconnectWarning(data.warning ?? null);
-      if (data.stillSendingUntilRestart === true)
-        setError('Restart required — this instance keeps sending events until the app restarts.');
+      if (data.stillSendingUntilRestart === true) {
+        notify.warning(
+          'Restart required — this instance keeps sending events until the app restarts.',
+          { key: 'disconnect', autoClose: 12000 },
+        );
+      } else {
+        notify.success(`${kind} disconnected.`, { key: 'disconnect' });
+      }
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Disconnect failed', key: 'disconnect' });
     } finally {
       setBusy(null);
     }
@@ -486,7 +571,6 @@ export default function IntegrationsAdmin({
           ))}
         </StatusBanner>
       )}
-      {error && <StatusBanner tone="error">{error}</StatusBanner>}
       {byKind.SENTRY?.restartRequired && (
         <StatusBanner
           tone="warning"
@@ -1114,8 +1198,11 @@ function Chip({ text }: { text: string }) {
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(text);
+      notify.success('Copied to clipboard.', { key: 'integrations-copy' });
     } catch {
-      /* ignore */
+      notify.warning('Could not copy — select the value and copy it by hand.', {
+        key: 'integrations-copy',
+      });
     }
   };
   return (

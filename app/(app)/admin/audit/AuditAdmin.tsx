@@ -8,6 +8,7 @@ import StatusBanner from '@/components/admin/StatusBanner';
 import { FormEvent, useEffect, useState } from 'react';
 import StudioButton from '@/components/app/studio/StudioButton';
 import StudioField from '@/components/app/studio/StudioField';
+import { notify } from '@/lib/notify';
 import { formatAdminDateTime } from '../format-admin-date';
 
 type AuditRow = {
@@ -38,7 +39,12 @@ export default function AuditAdmin() {
     return params.toString();
   };
 
-  const load = async () => {
+  /**
+   * `interactive` marks a load the user asked for (the Filter button). Those
+   * report failure as a toast; the initial page load keeps the inline banner,
+   * which doubles as the explanation for an empty table.
+   */
+  const load = async (interactive = false) => {
     setLoading(true);
     setError('');
     try {
@@ -49,10 +55,19 @@ export default function AuditAdmin() {
       }
       const payload = await response.json();
       if (!response.ok) {
-        setError(payload.error || 'Could not load audit log');
+        const message = payload.error || 'Could not load audit log';
+        if (interactive) notify.error(message, { key: 'audit-load' });
+        else setError(message);
         return;
       }
       setRows(payload.rows || []);
+      if (interactive) {
+        notify.success(`Loaded ${(payload.rows || []).length} entries.`, { key: 'audit-load' });
+      }
+    } catch (cause) {
+      const message = 'Could not load audit log';
+      if (interactive) notify.error(cause, { fallback: message, key: 'audit-load' });
+      else setError(message);
     } finally {
       setLoading(false);
     }
@@ -64,7 +79,7 @@ export default function AuditAdmin() {
 
   const onFilter = (event: FormEvent) => {
     event.preventDefault();
-    void load();
+    void load(true);
   };
 
   return (

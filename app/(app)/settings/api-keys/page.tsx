@@ -6,7 +6,13 @@ import StudioButton from '@/components/app/studio/StudioButton';
 import StudioField from '@/components/app/studio/StudioField';
 import PageTabs from '@/components/app/studio/PageTabs';
 import { useAuth } from '@/components/app/auth/AuthProvider';
-import { deleteApiKey, listPersonalApiKeys, setOrgApiKey, setPersonalApiKey } from '@/lib/api-keys/actions';
+import { notify } from '@/lib/notify';
+import {
+  deleteApiKey,
+  listPersonalApiKeys,
+  setOrgApiKey,
+  setPersonalApiKey,
+} from '@/lib/api-keys/actions';
 
 type PersonalKey = {
   provider: string;
@@ -68,15 +74,17 @@ export default function ApiKeysPage() {
     const secret = drafts[provider]?.trim();
     if (!secret) return;
     setSaving(`personal:${provider}`);
-    setError('');
     try {
       const result = await setPersonalApiKey(provider, secret);
       if (!result.ok) {
-        setError(result.error);
+        notify.error(result.error, { key: `key-${provider}` });
         return;
       }
       setDrafts((current) => ({ ...current, [provider]: '' }));
       await loadPersonal();
+      notify.success(`${provider} key saved.`, { key: `key-${provider}` });
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not save the key', key: `key-${provider}` });
     } finally {
       setSaving(null);
     }
@@ -84,14 +92,16 @@ export default function ApiKeysPage() {
 
   const removePersonal = async (provider: string) => {
     setSaving(`remove:${provider}`);
-    setError('');
     try {
       const result = await deleteApiKey(provider);
       if (!result.ok) {
-        setError(result.error);
+        notify.error(result.error, { key: `key-${provider}` });
         return;
       }
       await loadPersonal();
+      notify.success(`${provider} key removed.`, { key: `key-${provider}` });
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not remove the key', key: `key-${provider}` });
     } finally {
       setSaving(null);
     }
@@ -102,15 +112,20 @@ export default function ApiKeysPage() {
     const secret = orgDrafts[provider]?.trim();
     if (!secret) return;
     setSaving(`org:${provider}`);
-    setError('');
     try {
       const result = await setOrgApiKey(provider, secret);
       if (!result.ok) {
-        setError(result.error);
+        notify.error(result.error, { key: `org-key-${provider}` });
         return;
       }
       setOrgDrafts((current) => ({ ...current, [provider]: '' }));
       await Promise.all([loadOrg(), loadPersonal()]);
+      notify.success(`Team default for ${provider} saved.`, { key: `org-key-${provider}` });
+    } catch (cause) {
+      notify.error(cause, {
+        fallback: 'Could not save the team default',
+        key: `org-key-${provider}`,
+      });
     } finally {
       setSaving(null);
     }
@@ -119,7 +134,9 @@ export default function ApiKeysPage() {
   return (
     <StudioShell variant="workspace">
       <main className="mx-auto max-w-[720px] px-20 py-40">
-        <h1 className="text-[32px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">Settings</h1>
+        <h1 className="text-[32px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">
+          Settings
+        </h1>
         <PageTabs
           items={[
             { href: '/settings/profile', label: 'Profile' },
@@ -129,7 +146,8 @@ export default function ApiKeysPage() {
           ]}
         />
         <p className="mb-24 text-[14px] leading-6 text-[var(--studio-muted)]">
-          Personal keys override team defaults for your account. Only the last four characters are stored in the UI.
+          Personal keys override team defaults for your account. Only the last four characters are
+          stored in the UI.
         </p>
         {error && (
           <p className="mb-16 text-[13px] text-[var(--studio-danger)]" role="alert">
@@ -215,7 +233,10 @@ export default function ApiKeysPage() {
                         autoComplete="off"
                         value={orgDrafts[key.provider] || ''}
                         onChange={(event) =>
-                          setOrgDrafts((current) => ({ ...current, [key.provider]: event.target.value }))
+                          setOrgDrafts((current) => ({
+                            ...current,
+                            [key.provider]: event.target.value,
+                          }))
                         }
                         placeholder="Paste a team default key"
                       />

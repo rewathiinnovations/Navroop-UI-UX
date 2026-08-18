@@ -5,11 +5,11 @@ import AdminCard from '@/components/admin/AdminCard';
 import StatusPill from '@/components/admin/StatusPill';
 import AdminPage from '@/components/admin/AdminPage';
 import { AdminTable, Td, Th, Tr } from '@/components/admin/AdminTable';
-import StatusBanner from '@/components/admin/StatusBanner';
 import { useState } from 'react';
 import Link from 'next/link';
 import StudioButton from '@/components/app/studio/StudioButton';
 import ConfirmAction from '@/components/admin/ConfirmAction';
+import { notify, toMessage } from '@/lib/notify';
 
 export type PublicServer = {
   id: string;
@@ -26,8 +26,6 @@ export type PublicServer = {
 export default function ServersAdmin({ initial }: { initial: PublicServer[] }) {
   const [servers, setServers] = useState(initial);
   const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState('');
-  const [message, setMessage] = useState('');
   const refresh = async () => {
     const response = await fetch('/api/admin/servers');
     const data = await response.json().catch(() => ({}));
@@ -36,16 +34,17 @@ export default function ServersAdmin({ initial }: { initial: PublicServer[] }) {
 
   const test = async (id: string) => {
     setBusy(`test:${id}`);
-    setError('');
-    setMessage('');
+    const toastId = notify.loading('Testing the connection…');
     try {
       const response = await fetch(`/api/admin/servers/${id}/test`, { method: 'POST' });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        setError(data.error || 'The connection test failed');
+        notify.settle(toastId, 'error', data.error || 'The connection test failed');
         return;
       }
-      setMessage(`Connection ok${data.version ? ` (${data.version})` : ''}`);
+      notify.settle(toastId, 'success', `Connection ok${data.version ? ` (${data.version})` : ''}`);
+    } catch (cause) {
+      notify.settle(toastId, 'error', toMessage(cause, 'The connection test failed'));
     } finally {
       setBusy(null);
     }
@@ -67,15 +66,20 @@ export default function ServersAdmin({ initial }: { initial: PublicServer[] }) {
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        setError(data.error || 'Could not update the server');
+        notify.error(data.error || 'Could not update the server');
         return;
       }
+      notify.success(server.isActive ? `${server.name} deactivated.` : `${server.name} activated.`);
       await refresh();
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not update the server' });
     } finally {
       setBusy(null);
     }
   };
 
+  // Fired on blur of the inline limit input, where the toast is the only
+  // confirmation the value was actually persisted.
   const saveMax = async (id: string, maxDeployments: number) => {
     setBusy(`max:${id}`);
     try {
@@ -84,8 +88,14 @@ export default function ServersAdmin({ initial }: { initial: PublicServer[] }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ maxDeployments }),
       });
-      if (!response.ok) setError('Could not save the limit');
-      else await refresh();
+      if (!response.ok) {
+        notify.error('Could not save the limit', { key: `server-max-${id}` });
+        return;
+      }
+      notify.success(`Deployment limit set to ${maxDeployments}.`, { key: `server-max-${id}` });
+      await refresh();
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not save the limit', key: `server-max-${id}` });
     } finally {
       setBusy(null);
     }
@@ -97,9 +107,6 @@ export default function ServersAdmin({ initial }: { initial: PublicServer[] }) {
       title="Servers"
       description="The machines available to host published sites."
     >
-      {error && <StatusBanner tone="error">{error}</StatusBanner>}
-      {message && <StatusBanner tone="success">{message}</StatusBanner>}
-
       <AdminCard icon={<ServerIcon className="size-14" aria-hidden />} title="Servers">
         <p className="mb-16 text-[13px] text-[var(--studio-muted)]">
           Servers are discovered from{' '}

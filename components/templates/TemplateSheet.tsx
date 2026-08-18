@@ -8,6 +8,7 @@ import { DEFAULT_IMPORT_MODE } from '@/lib/import/mode';
 import { isStackId } from '@/lib/stacks';
 import { TEMPLATE_CATEGORY_LABELS, isTemplateCategory } from '@/lib/templates/categories';
 import type { PublicTemplate } from '@/lib/templates/types';
+import { notify, toMessage } from '@/lib/notify';
 
 export default function TemplateSheet({
   template,
@@ -18,14 +19,12 @@ export default function TemplateSheet({
 }) {
   const router = useRouter();
   const [prompt, setPrompt] = useState('');
-  const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     if (!template) return;
     const stored = readDraftStorage(PENDING_PROMPT_KEY);
     setPrompt(stored?.templateId === template.id && stored.text ? stored.text : template.prompt);
-    setError('');
   }, [template]);
 
   useEffect(() => {
@@ -35,7 +34,14 @@ export default function TemplateSheet({
       ? template.designDirection
       : 'minimal';
     const timer = window.setTimeout(() => {
-      writeDraftStorage(PENDING_PROMPT_KEY, prompt, stack, direction, DEFAULT_IMPORT_MODE, template.id);
+      writeDraftStorage(
+        PENDING_PROMPT_KEY,
+        prompt,
+        stack,
+        direction,
+        DEFAULT_IMPORT_MODE,
+        template.id,
+      );
     }, 400);
     return () => window.clearTimeout(timer);
   }, [prompt, template]);
@@ -46,9 +52,12 @@ export default function TemplateSheet({
     ? TEMPLATE_CATEGORY_LABELS[template.category]
     : template.category;
 
+  // Creating the project takes a while and ends in a navigation, so the
+  // feedback is a pending toast settled in place rather than a line in a sheet
+  // that is about to disappear.
   const create = async () => {
     setBusy(true);
-    setError('');
+    const toastId = notify.loading('Creating your project…');
     try {
       const response = await fetch(`/api/templates/${template.id}/create`, {
         method: 'POST',
@@ -58,29 +67,50 @@ export default function TemplateSheet({
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
         const message =
-          payload.error?.message || payload.error || payload.message || 'Could not create from this template';
-        setError(String(message));
+          payload.error?.message ||
+          payload.error ||
+          payload.message ||
+          'Could not create from this template';
+        notify.settle(toastId, 'error', String(message));
         return;
       }
       const id = payload.id || payload.project?.id;
       if (!id) {
-        setError('Could not create from this template');
+        notify.settle(toastId, 'error', 'Could not create from this template');
         return;
       }
+      notify.settle(toastId, 'success', 'Project created — opening it now.');
       router.push(`/project/${id}`);
+    } catch (cause) {
+      notify.settle(toastId, 'error', toMessage(cause, 'Could not create from this template'));
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/20" role="dialog" aria-modal="true" aria-labelledby="template-sheet-title">
-      <button type="button" className="h-full flex-1 cursor-default" aria-label="Close" onClick={onClose} />
+    <div
+      className="fixed inset-0 z-50 flex justify-end bg-black/20"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="template-sheet-title"
+    >
+      <button
+        type="button"
+        className="h-full flex-1 cursor-default"
+        aria-label="Close"
+        onClick={onClose}
+      />
       <aside className="flex h-full w-full max-w-[480px] flex-col border-l border-[var(--studio-line)] bg-[var(--studio-bg)] shadow-sm">
         <div className="flex items-start justify-between gap-12 border-b border-[var(--studio-line)] px-20 py-16">
           <div>
-            <p className="text-[11px] font-medium uppercase tracking-[0.06em] text-[var(--studio-faint)]">{category}</p>
-            <h2 id="template-sheet-title" className="mt-4 text-[22px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">
+            <p className="text-[11px] font-medium uppercase tracking-[0.06em] text-[var(--studio-faint)]">
+              {category}
+            </p>
+            <h2
+              id="template-sheet-title"
+              className="mt-4 text-[22px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]"
+            >
               {template.name}
             </h2>
           </div>
@@ -115,7 +145,9 @@ export default function TemplateSheet({
             </a>
           ) : null}
           <label className="block">
-            <span className="mb-6 block text-[12px] font-medium text-[var(--studio-fg)]">Prompt</span>
+            <span className="mb-6 block text-[12px] font-medium text-[var(--studio-fg)]">
+              Prompt
+            </span>
             <textarea
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
@@ -123,11 +155,6 @@ export default function TemplateSheet({
               className="w-full rounded-12 border border-[var(--studio-line-strong)] bg-[var(--studio-surface)] px-12 py-10 text-[13px] leading-5 text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
             />
           </label>
-          {error ? (
-            <p className="text-[13px] text-[var(--studio-danger)]" role="alert">
-              {error}
-            </p>
-          ) : null}
         </div>
         <div className="border-t border-[var(--studio-line)] px-20 py-14">
           <button

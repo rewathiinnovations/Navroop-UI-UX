@@ -6,6 +6,8 @@ STACK (STATIC HTML — NO FRAMEWORK, NO JSX, NO BUILD TOOLS):
 - Vanilla JS only (inline <script> or .js). NO React, Vue, Svelte, JSX, or TypeScript.
 - NO Vite, Next.js, npm scripts, package.json, or bundler config.
 - Tailwind via CDN in <head> (https://cdn.tailwindcss.com). querySelector + addEventListener.
+- Check index.html and the existing pages before adding files. Nav markup is repeated per page — edit every page that shows it.
+- Edits: 1 file for a style/text change on one page. Never regenerate the site.
 
 FILES:
 - index.html is the entry: full document, Tailwind CDN in the head.

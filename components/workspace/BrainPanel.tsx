@@ -12,7 +12,13 @@ import {
   reactivateMemory,
   updateMemory,
 } from '@/lib/memory/actions';
-import { MEMORY_CATEGORIES, MEMORY_TOKEN_BUDGET, type MemoryCategory, type PublicMemory } from '@/lib/memory/types';
+import {
+  MEMORY_CATEGORIES,
+  MEMORY_TOKEN_BUDGET,
+  type MemoryCategory,
+  type PublicMemory,
+} from '@/lib/memory/types';
+import { notify } from '@/lib/notify';
 
 const CATEGORY_LABEL: Record<MemoryCategory, string> = {
   design: 'Design',
@@ -54,10 +60,13 @@ function MemoryRow({
     setBusy(true);
     const result = await updateMemory(entry.id, draft);
     setBusy(false);
-    if (result.ok) {
-      onChanged(result.data);
-      setEditing(false);
+    if (!result.ok) {
+      notify.error(result.error, { key: `memory-${entry.id}` });
+      return;
     }
+    onChanged(result.data);
+    setEditing(false);
+    notify.success('Memory updated.', { key: `memory-${entry.id}` });
   };
 
   return (
@@ -92,7 +101,12 @@ function MemoryRow({
               setBusy(true);
               const result = await archiveMemory(entry.id);
               setBusy(false);
-              if (result.ok) onChanged(result.data, true);
+              if (!result.ok) {
+                notify.error(result.error, { key: `memory-${entry.id}` });
+                return;
+              }
+              onChanged(result.data, true);
+              notify.success('Memory archived.', { key: `memory-${entry.id}` });
             }}
             className="text-[12px] font-medium text-[var(--studio-muted)] hover:text-[var(--studio-fg)]"
           >
@@ -118,7 +132,6 @@ function AddEntry({
   const [content, setContent] = useState('');
   const [category, setCategory] = useState<MemoryCategory>('design');
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
 
   if (disabled) return null;
 
@@ -128,7 +141,6 @@ function AddEntry({
       onSubmit={async (event) => {
         event.preventDefault();
         setBusy(true);
-        setError('');
         const result = await createMemory({
           scope,
           projectId: scope === 'PROJECT' ? projectId : null,
@@ -137,11 +149,12 @@ function AddEntry({
         });
         setBusy(false);
         if (!result.ok) {
-          setError(result.error);
+          notify.error(result.error, { key: `memory-add-${scope}` });
           return;
         }
         setContent('');
         onCreated(result.data);
+        notify.success('Entry added to the brain.', { key: `memory-add-${scope}` });
       }}
     >
       <div className="flex flex-wrap gap-8">
@@ -172,11 +185,6 @@ function AddEntry({
           Add entry
         </button>
       </div>
-      {error && (
-        <p className="text-[12px] text-[var(--studio-danger)]" role="alert">
-          {error}
-        </p>
-      )}
     </form>
   );
 }
@@ -208,18 +216,23 @@ function PendingStrip({
           return (
             <li key={entry.id} className="rounded-10 border border-amber-200 bg-white px-12 py-10">
               <p className="text-[11px] uppercase tracking-[0.06em] text-[var(--studio-faint)]">
-                {CATEGORY_LABEL[entry.category]} · {entry.scope === 'WORKSPACE' ? 'Workspace' : 'This project'}
+                {CATEGORY_LABEL[entry.category]} ·{' '}
+                {entry.scope === 'WORKSPACE' ? 'Workspace' : 'This project'}
               </p>
               {editing ? (
                 <textarea
                   value={draft}
-                  onChange={(event) => setDrafts((current) => ({ ...current, [entry.id]: event.target.value }))}
+                  onChange={(event) =>
+                    setDrafts((current) => ({ ...current, [entry.id]: event.target.value }))
+                  }
                   maxLength={500}
                   rows={2}
                   className="mt-6 w-full rounded-8 border border-[var(--studio-line)] px-8 py-6 text-[13px]"
                 />
               ) : (
-                <p className="mt-6 text-[13px] leading-5 text-[var(--studio-fg)]">{entry.content}</p>
+                <p className="mt-6 text-[13px] leading-5 text-[var(--studio-fg)]">
+                  {entry.content}
+                </p>
               )}
               {canEdit && (
                 <div className="mt-8 flex flex-wrap gap-8">
@@ -227,7 +240,14 @@ function PendingStrip({
                     type="button"
                     onClick={async () => {
                       const result = await reactivateMemory(entry.id);
-                      if (result.ok) onChanged(result.data);
+                      if (!result.ok) {
+                        notify.error(result.error, { key: `memory-${entry.id}` });
+                        return;
+                      }
+                      onChanged(result.data);
+                      notify.success('Memory approved — it will be injected from now on.', {
+                        key: `memory-${entry.id}`,
+                      });
                     }}
                     className="text-[12px] font-medium text-[var(--studio-fg)] hover:underline"
                   >
@@ -238,12 +258,20 @@ function PendingStrip({
                       type="button"
                       onClick={async () => {
                         const updated = await updateMemory(entry.id, draft);
-                        if (!updated.ok) return;
-                        const approved = await reactivateMemory(entry.id);
-                        if (approved.ok) {
-                          setEditingId(null);
-                          onChanged(approved.data);
+                        if (!updated.ok) {
+                          notify.error(updated.error, { key: `memory-${entry.id}` });
+                          return;
                         }
+                        const approved = await reactivateMemory(entry.id);
+                        if (!approved.ok) {
+                          notify.error(approved.error, { key: `memory-${entry.id}` });
+                          return;
+                        }
+                        setEditingId(null);
+                        onChanged(approved.data);
+                        notify.success('Memory saved and approved.', {
+                          key: `memory-${entry.id}`,
+                        });
                       }}
                       className="text-[12px] font-medium text-[var(--studio-fg)] hover:underline"
                     >
@@ -262,7 +290,12 @@ function PendingStrip({
                     type="button"
                     onClick={async () => {
                       const result = await archiveMemory(entry.id);
-                      if (result.ok) onChanged(result.data, true);
+                      if (!result.ok) {
+                        notify.error(result.error, { key: `memory-${entry.id}` });
+                        return;
+                      }
+                      onChanged(result.data, true);
+                      notify.success('Suggestion dismissed.', { key: `memory-${entry.id}` });
                     }}
                     className="text-[12px] font-medium text-[var(--studio-muted)] hover:text-[var(--studio-fg)]"
                   >
@@ -295,24 +328,28 @@ export default function BrainPanel({ projectId }: { projectId: string }) {
 
   const refreshBudget = async () => {
     const result = await getMemoryBudget(projectId);
-    if (result.ok) setBudget({ tokenEstimate: result.data.tokenEstimate, truncated: result.data.truncated });
+    if (result.ok)
+      setBudget({ tokenEstimate: result.data.tokenEstimate, truncated: result.data.truncated });
   };
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    void Promise.all([listBrainMemories(projectId), getMemoryBudget(projectId)]).then(([list, usage]) => {
-      if (cancelled) return;
-      setLoading(false);
-      if (!list.ok) {
-        setError(list.error);
-        return;
-      }
-      setWorkspace(list.data.workspace);
-      setProject(list.data.project);
-      setCanEditProject(isAdmin || Boolean(user?.id));
-      if (usage.ok) setBudget({ tokenEstimate: usage.data.tokenEstimate, truncated: usage.data.truncated });
-    });
+    void Promise.all([listBrainMemories(projectId), getMemoryBudget(projectId)]).then(
+      ([list, usage]) => {
+        if (cancelled) return;
+        setLoading(false);
+        if (!list.ok) {
+          setError(list.error);
+          return;
+        }
+        setWorkspace(list.data.workspace);
+        setProject(list.data.project);
+        setCanEditProject(isAdmin || Boolean(user?.id));
+        if (usage.ok)
+          setBudget({ tokenEstimate: usage.data.tokenEstimate, truncated: usage.data.truncated });
+      },
+    );
     return () => {
       cancelled = true;
     };
@@ -327,11 +364,7 @@ export default function BrainPanel({ projectId }: { projectId: string }) {
     setCanEditProject(true);
   }, [isAdmin, user?.id]);
 
-  const replaceIn = (
-    setter: typeof setWorkspace,
-    row: PublicMemory,
-    removed?: boolean,
-  ) => {
+  const replaceIn = (setter: typeof setWorkspace, row: PublicMemory, removed?: boolean) => {
     setter((current) => {
       const next = current.filter((item) => item.id !== row.id);
       if (removed || row.status === 'ARCHIVED') return next;
@@ -456,8 +489,8 @@ export default function BrainPanel({ projectId }: { projectId: string }) {
         </p>
         {budget?.truncated && (
           <p className="mt-4 text-[12px] text-amber-800" role="status">
-            Some rules are not injected — the block is truncated at the 1500-token budget. Archive unused
-            entries so later rules can take effect.
+            Some rules are not injected — the block is truncated at the 1500-token budget. Archive
+            unused entries so later rules can take effect.
           </p>
         )}
       </footer>

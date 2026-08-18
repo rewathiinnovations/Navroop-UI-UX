@@ -9,6 +9,7 @@ import StudioField from '@/components/app/studio/StudioField';
 import PageTabs from '@/components/app/studio/PageTabs';
 import { useAuth } from '@/components/app/auth/AuthProvider';
 import { changePassword, updateProfile, uploadAvatar } from '@/lib/profile/actions';
+import { notify } from '@/lib/notify';
 import StorageUsage from '@/components/settings/StorageUsage';
 
 function initials(name: string) {
@@ -31,15 +32,12 @@ export default function ProfileSettingsPage() {
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [profileMessage, setProfileMessage] = useState('');
-  const [profileError, setProfileError] = useState('');
-  const [passwordMessage, setPasswordMessage] = useState('');
+  // Only the local password-mismatch check renders inline, next to the fields
+  // it refers to. Every server outcome is toasted instead.
   const [passwordError, setPasswordError] = useState('');
   const [savingProfile, setSavingProfile] = useState(false);
   const [savingPassword, setSavingPassword] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
-  const [dataRequestMessage, setDataRequestMessage] = useState('');
-  const [dataRequestError, setDataRequestError] = useState('');
   const [dataRequesting, setDataRequesting] = useState(false);
 
   useEffect(() => {
@@ -51,13 +49,11 @@ export default function ProfileSettingsPage() {
 
   const saveProfile = async (event: FormEvent) => {
     event.preventDefault();
-    setProfileError('');
-    setProfileMessage('');
     setSavingProfile(true);
     try {
       const result = await updateProfile({ name, avatarUrl });
       if (!result.ok) {
-        setProfileError(result.error);
+        notify.error(result.error, { key: 'profile-save' });
         return;
       }
       await update({
@@ -66,7 +62,9 @@ export default function ProfileSettingsPage() {
       setName(result.data.name);
       setAvatarUrl(result.data.avatarUrl || '');
       setPreviewBroken(false);
-      setProfileMessage('Profile saved.');
+      notify.success('Profile saved.', { key: 'profile-save' });
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not save your profile', key: 'profile-save' });
     } finally {
       setSavingProfile(false);
     }
@@ -75,7 +73,6 @@ export default function ProfileSettingsPage() {
   const savePassword = async (event: FormEvent) => {
     event.preventDefault();
     setPasswordError('');
-    setPasswordMessage('');
     if (newPassword !== confirmPassword) {
       setPasswordError('New password and confirmation do not match');
       return;
@@ -84,13 +81,15 @@ export default function ProfileSettingsPage() {
     try {
       const result = await changePassword(currentPassword, newPassword);
       if (!result.ok) {
-        setPasswordError(result.error);
+        notify.error(result.error, { key: 'password-change' });
         return;
       }
       setCurrentPassword('');
       setNewPassword('');
       setConfirmPassword('');
-      setPasswordMessage('Password updated.');
+      notify.success('Password updated.', { key: 'password-change' });
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not update the password', key: 'password-change' });
     } finally {
       setSavingPassword(false);
     }
@@ -102,7 +101,9 @@ export default function ProfileSettingsPage() {
   return (
     <StudioShell variant="workspace">
       <main className="mx-auto max-w-[640px] px-20 py-40">
-        <h1 className="text-[32px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">Settings</h1>
+        <h1 className="text-[32px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">
+          Settings
+        </h1>
         <PageTabs
           items={[
             { href: '/settings/profile', label: 'Profile', active: true },
@@ -143,15 +144,13 @@ export default function ProfileSettingsPage() {
                     const file = event.target.files?.[0];
                     event.target.value = '';
                     if (!file) return;
-                    setProfileError('');
-                    setProfileMessage('');
                     setUploadingAvatar(true);
                     try {
                       const formData = new FormData();
                       formData.set('file', file);
                       const result = await uploadAvatar(formData);
                       if (!result.ok) {
-                        setProfileError(result.error);
+                        notify.error(result.error, { key: 'avatar-upload' });
                         return;
                       }
                       await update({
@@ -159,7 +158,12 @@ export default function ProfileSettingsPage() {
                       });
                       setAvatarUrl(result.data.avatarUrl || '');
                       setPreviewBroken(false);
-                      setProfileMessage('Avatar uploaded.');
+                      notify.success('Avatar uploaded.', { key: 'avatar-upload' });
+                    } catch (cause) {
+                      notify.error(cause, {
+                        fallback: 'Could not upload the image',
+                        key: 'avatar-upload',
+                      });
                     } finally {
                       setUploadingAvatar(false);
                     }
@@ -192,16 +196,10 @@ export default function ProfileSettingsPage() {
           />
           <div className="space-y-8">
             <StudioField id="email" label="Email" value={user?.email || ''} disabled readOnly />
-            <p className="text-[12px] text-[var(--studio-muted)]">contact an admin to change this</p>
-          </div>
-
-          {profileError && (
-            <p className="flex items-start gap-8 text-[13px] text-[var(--studio-danger)]" role="alert">
-              <CircleAlert className="mt-2 size-16" aria-hidden />
-              {profileError}
+            <p className="text-[12px] text-[var(--studio-muted)]">
+              contact an admin to change this
             </p>
-          )}
-          {profileMessage && <p className="text-[13px] text-[var(--studio-muted)]">{profileMessage}</p>}
+          </div>
 
           <StudioButton type="submit" variant="primary" disabled={savingProfile}>
             {savingProfile ? 'Saving…' : 'Save profile'}
@@ -241,12 +239,14 @@ export default function ProfileSettingsPage() {
             required
           />
           {passwordError && (
-            <p className="flex items-start gap-8 text-[13px] text-[var(--studio-danger)]" role="alert">
+            <p
+              className="flex items-start gap-8 text-[13px] text-[var(--studio-danger)]"
+              role="alert"
+            >
               <CircleAlert className="mt-2 size-16" aria-hidden />
               {passwordError}
             </p>
           )}
-          {passwordMessage && <p className="text-[13px] text-[var(--studio-muted)]">{passwordMessage}</p>}
           <StudioButton type="submit" variant="ghost" disabled={savingPassword}>
             {savingPassword ? 'Updating…' : 'Update password'}
           </StudioButton>
@@ -266,8 +266,6 @@ export default function ProfileSettingsPage() {
                 variant="ghost"
                 disabled={dataRequesting}
                 onClick={async () => {
-                  setDataRequestError('');
-                  setDataRequestMessage('');
                   setDataRequesting(true);
                   try {
                     const response = await fetch('/api/legal/data-request', {
@@ -277,10 +275,22 @@ export default function ProfileSettingsPage() {
                     });
                     const data = await response.json().catch(() => ({}));
                     if (!response.ok) {
-                      setDataRequestError(String(data.error || 'Could not send request'));
+                      notify.error(String(data.error || 'Could not send request'), {
+                        key: 'data-request',
+                      });
                       return;
                     }
-                    setDataRequestMessage('Request sent to administrators.');
+                    notify.success(
+                      kind === 'deletion'
+                        ? 'Deletion request sent to administrators.'
+                        : 'Export request sent to administrators.',
+                      { key: 'data-request' },
+                    );
+                  } catch (cause) {
+                    notify.error(cause, {
+                      fallback: 'Could not send request',
+                      key: 'data-request',
+                    });
                   } finally {
                     setDataRequesting(false);
                   }
@@ -294,12 +304,6 @@ export default function ProfileSettingsPage() {
               </StudioButton>
             ))}
           </div>
-          {dataRequestError && (
-            <p className="text-[13px] text-[var(--studio-danger)]" role="alert">
-              {dataRequestError}
-            </p>
-          )}
-          {dataRequestMessage && <p className="text-[13px] text-[var(--studio-muted)]">{dataRequestMessage}</p>}
         </section>
       </main>
     </StudioShell>

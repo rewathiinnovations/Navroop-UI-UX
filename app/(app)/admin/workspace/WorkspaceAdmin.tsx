@@ -5,6 +5,7 @@ import ConfirmAction from '@/components/admin/ConfirmAction';
 import { FormEvent, useState } from 'react';
 import StudioButton from '@/components/app/studio/StudioButton';
 import StudioField from '@/components/app/studio/StudioField';
+import { fetchJson, notify } from '@/lib/notify';
 
 export default function WorkspaceAdmin({
   initial,
@@ -22,29 +23,40 @@ export default function WorkspaceAdmin({
   const [spendLimit, setSpendLimit] = useState(initial.monthlySpendLimitUsd?.toString() ?? '');
   const [paused, setPaused] = useState(initial.generationPaused);
   const [pauseReason, setPauseReason] = useState(initial.pauseReason ?? null);
-  const [message, setMessage] = useState('');
-  const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
   const saveCap = async (event: FormEvent) => {
     event.preventDefault();
     setBusy(true);
-    setError('');
-    setMessage('');
     try {
-      const response = await fetch('/api/admin/workspace', {
+      await fetchJson('/api/admin/workspace', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           memberMonthlyCreditCap: cap.trim() === '' ? null : Number(cap),
         }),
       });
-      const payload = await response.json();
-      if (!response.ok) {
-        setError(payload.error || 'Could not save');
-        return;
-      }
-      setMessage('Member cap saved.');
+      notify.success('Member cap saved.', { key: 'workspace-cap' });
+    } catch (error) {
+      notify.error(error, { fallback: 'Could not save', key: 'workspace-cap' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveSpendLimit = async () => {
+    setBusy(true);
+    try {
+      await fetchJson('/api/admin/workspace', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          monthlySpendLimitUsd: spendLimit.trim() === '' ? null : Number(spendLimit),
+        }),
+      });
+      notify.success('Spend limit saved.', { key: 'workspace-spend-limit' });
+    } catch (error) {
+      notify.error(error, { fallback: 'Could not save', key: 'workspace-spend-limit' });
     } finally {
       setBusy(false);
     }
@@ -53,22 +65,24 @@ export default function WorkspaceAdmin({
   // Pausing is confirmed by ConfirmAction on the button; resuming is one click.
   const togglePause = async () => {
     setBusy(true);
-    setError('');
-    setMessage('');
     try {
-      const response = await fetch('/api/admin/workspace', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ generationPaused: !paused }),
-      });
-      const payload = await response.json();
-      if (!response.ok) {
-        setError(payload.error || 'Could not update pause');
-        return;
-      }
+      const payload = await fetchJson<{ generationPaused?: boolean; pauseReason?: string | null }>(
+        '/api/admin/workspace',
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ generationPaused: !paused }),
+        },
+      );
       setPaused(Boolean(payload.generationPaused));
       setPauseReason(payload.pauseReason ?? null);
-      setMessage(payload.generationPaused ? 'Generation paused.' : 'Generation resumed.');
+      if (payload.generationPaused) {
+        notify.warning('Generation paused for the whole workspace.', { key: 'workspace-pause' });
+      } else {
+        notify.success('Generation resumed.', { key: 'workspace-pause' });
+      }
+    } catch (error) {
+      notify.error(error, { fallback: 'Could not update pause', key: 'workspace-pause' });
     } finally {
       setBusy(false);
     }
@@ -101,30 +115,7 @@ export default function WorkspaceAdmin({
           type="button"
           variant="ghost"
           disabled={busy}
-          onClick={() => {
-            void (async () => {
-              setBusy(true);
-              setError('');
-              setMessage('');
-              try {
-                const response = await fetch('/api/admin/workspace', {
-                  method: 'PATCH',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    monthlySpendLimitUsd: spendLimit.trim() === '' ? null : Number(spendLimit),
-                  }),
-                });
-                const payload = await response.json();
-                if (!response.ok) {
-                  setError(payload.error || 'Could not save');
-                  return;
-                }
-                setMessage('Spend limit saved.');
-              } finally {
-                setBusy(false);
-              }
-            })();
-          }}
+          onClick={() => void saveSpendLimit()}
         >
           Save spend limit
         </StudioButton>
@@ -177,12 +168,6 @@ export default function WorkspaceAdmin({
           80% credit alert already sent this period.
         </p>
       )}
-      {error && (
-        <p className="mt-16 text-[13px] text-[var(--studio-danger)]" role="alert">
-          {error}
-        </p>
-      )}
-      {message && <p className="mt-16 text-[13px] text-[var(--studio-muted)]">{message}</p>}
     </AdminPage>
   );
 }

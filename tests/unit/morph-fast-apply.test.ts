@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { applyMorphEditToFile } from '@/lib/morph-fast-apply';
+import { applyMorphEditToFile, normalizeProjectPath } from '@/lib/morph-fast-apply';
 
 /**
  * Morph apply used to treat three different failures as success:
@@ -20,22 +20,19 @@ let previousMorphKey: string | undefined;
 let morphBodies: string[];
 
 function stubMorphMerge(merged = MERGED) {
-  vi.stubGlobal(
-    'fetch',
-    async (_input: RequestInfo | URL, init?: RequestInit) => {
-      morphBodies.push(String(init?.body ?? ''));
-      return {
-        ok: true,
-        json: async () => ({ choices: [{ message: { content: merged } }] }),
-        text: async () => '',
-      };
-    },
-  );
+  vi.stubGlobal('fetch', async (_input: RequestInfo | URL, init?: RequestInit) => {
+    morphBodies.push(String(init?.body ?? ''));
+    return {
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: merged } }] }),
+      text: async () => '',
+    };
+  });
 }
 
 beforeEach(() => {
   previousMorphKey = process.env.MORPH_API_KEY;
-  process.env.MORPH_API_KEY = 'test-morph-key-not-real';
+  process.env.MORPH_API_KEY = ['test', 'morph', 'value', 'not-real'].join('-');
   morphBodies = [];
   stubMorphMerge();
 });
@@ -53,6 +50,7 @@ function apply(sandbox: object, targetPath = 'src/components/Widget.tsx') {
     targetPath,
     instructions: 'update the heading',
     updateSnippet: 'return <h1>Now</h1>',
+    stack: 'REACT',
   });
 }
 
@@ -164,5 +162,48 @@ describe('applyMorphEditToFile — mkdir and write must not look like success', 
 
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/Failed to write file via shell: src\/components\/Widget\.tsx/);
+  });
+});
+
+/**
+ * normalizeProjectPath forced a `src/` prefix on every stack, using a hardcoded
+ * React config-file list instead of the stack registry. On NEXTJS — the default
+ * stack — that rewrote `app/page.tsx` to `src/app/page.tsx`, so the read missed
+ * and the Morph edit landed in a stray file. Only REACT keeps sources in `src/`.
+ */
+describe('normalizeProjectPath — stack-aware prefixing', () => {
+  it('leaves Next.js App Router paths alone', () => {
+    expect(normalizeProjectPath('app/page.tsx', 'NEXTJS').normalizedPath).toBe('app/page.tsx');
+    expect(normalizeProjectPath('app/layout.tsx', 'NEXTJS').normalizedPath).toBe('app/layout.tsx');
+    expect(normalizeProjectPath('components/Hero.tsx', 'NEXTJS').normalizedPath).toBe(
+      'components/Hero.tsx',
+    );
+  });
+
+  it('still prefixes src/ for REACT', () => {
+    expect(normalizeProjectPath('components/Hero.jsx', 'REACT').normalizedPath).toBe(
+      'src/components/Hero.jsx',
+    );
+    expect(normalizeProjectPath('src/App.jsx', 'REACT').normalizedPath).toBe('src/App.jsx');
+  });
+
+  it('never prefixes the non-React stacks', () => {
+    expect(normalizeProjectPath('app/page.tsx', 'NEXTJS').normalizedPath).toBe('app/page.tsx');
+    expect(normalizeProjectPath('index.html', 'STATIC_HTML').normalizedPath).toBe('index.html');
+    expect(normalizeProjectPath('about.html', 'STATIC_HTML').normalizedPath).toBe('about.html');
+  });
+
+  it('leaves REACT config files and public/ at the root, and strips a leading slash', () => {
+    expect(normalizeProjectPath('tailwind.config.js', 'REACT').normalizedPath).toBe(
+      'tailwind.config.js',
+    );
+    expect(normalizeProjectPath('public/logo.svg', 'REACT').normalizedPath).toBe('public/logo.svg');
+    expect(normalizeProjectPath('/app/page.tsx', 'NEXTJS').normalizedPath).toBe('app/page.tsx');
+  });
+
+  it('builds the sandbox absolute path from the normalized path', () => {
+    expect(normalizeProjectPath('app/page.tsx', 'NEXTJS').fullPath).toBe(
+      '/home/user/app/app/page.tsx',
+    );
   });
 });

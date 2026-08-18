@@ -13,6 +13,7 @@ import {
   updateSkill,
   type PublicSkill,
 } from '@/lib/skills/actions';
+import { notify } from '@/lib/notify';
 
 type Draft = {
   id?: string;
@@ -54,8 +55,8 @@ export default function SkillsPanel() {
   const saveDraft = async (event: FormEvent) => {
     event.preventDefault();
     if (!draft || !isAdmin) return;
+    const isNew = !draft.id;
     setSaving(true);
-    setError('');
     try {
       const result = draft.id
         ? await updateSkill({
@@ -70,11 +71,14 @@ export default function SkillsPanel() {
             content: draft.content,
           });
       if (!result.ok) {
-        setError(result.error);
+        notify.error(result.error, { key: 'skill-save' });
         return;
       }
       setDraft(null);
       await load();
+      notify.success(isNew ? 'Skill created.' : 'Skill saved.', { key: 'skill-save' });
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not save the skill', key: 'skill-save' });
     } finally {
       setSaving(false);
     }
@@ -82,25 +86,27 @@ export default function SkillsPanel() {
 
   const toggle = async (skill: PublicSkill) => {
     if (!isAdmin) return;
-    setError('');
     const result = await toggleSkillEnabled(skill.id);
     if (!result.ok) {
-      setError(result.error);
+      notify.error(result.error, { key: `skill-${skill.id}` });
       return;
     }
     setSkills((current) => current.map((row) => (row.id === result.data.id ? result.data : row)));
+    notify.success(`“${result.data.name}” ${result.data.enabled ? 'enabled' : 'disabled'}.`, {
+      key: `skill-${skill.id}`,
+    });
   };
 
   const remove = async (skill: PublicSkill) => {
     if (!isAdmin) return;
-    setError('');
     const result = await deleteSkill(skill.id);
     if (!result.ok) {
-      setError(result.error);
+      notify.error(result.error, { key: `skill-${skill.id}` });
       return;
     }
     setSkills((current) => current.filter((row) => row.id !== skill.id));
     if (draft?.id === skill.id) setDraft(null);
+    notify.success(`“${skill.name}” deleted.`, { key: `skill-${skill.id}` });
   };
 
   return (
@@ -136,8 +142,12 @@ export default function SkillsPanel() {
             >
               <div className="flex items-start justify-between gap-12">
                 <div className="min-w-0">
-                  <p className="truncate text-[14px] font-medium text-[var(--studio-fg)]">{skill.name}</p>
-                  <p className="mt-4 text-[13px] leading-5 text-[var(--studio-muted)]">{skill.description}</p>
+                  <p className="truncate text-[14px] font-medium text-[var(--studio-fg)]">
+                    {skill.name}
+                  </p>
+                  <p className="mt-4 text-[13px] leading-5 text-[var(--studio-muted)]">
+                    {skill.description}
+                  </p>
                   <p className="mt-6 text-[12px] text-[var(--studio-faint)]">
                     Used {skill.usageCount} time{skill.usageCount === 1 ? '' : 's'}
                   </p>
@@ -194,7 +204,10 @@ export default function SkillsPanel() {
       )}
 
       {isAdmin && draft && (
-        <form onSubmit={saveDraft} className="space-y-16 rounded-12 border border-[var(--studio-line)] p-16">
+        <form
+          onSubmit={saveDraft}
+          className="space-y-16 rounded-12 border border-[var(--studio-line)] p-16"
+        >
           <h3 className="text-[15px] font-medium text-[var(--studio-fg)]">
             {draft.id ? 'Edit skill' : 'New skill'}
           </h3>

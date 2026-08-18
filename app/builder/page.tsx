@@ -1,41 +1,41 @@
-"use client";
+'use client';
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
-import { toast } from "sonner";
+import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { notify } from '@/lib/notify';
 
 export default function BuilderPage() {
-  const [targetUrl, setTargetUrl] = useState<string>("");
-  const [selectedStyle, setSelectedStyle] = useState<string>("modern");
+  const [targetUrl, setTargetUrl] = useState<string>('');
+  const [selectedStyle, setSelectedStyle] = useState<string>('modern');
   const [isLoading, setIsLoading] = useState(true);
-  const [previewUrl, setPreviewUrl] = useState<string>("");
-  const [progress, setProgress] = useState<string>("Initializing...");
-  const [generatedCode, setGeneratedCode] = useState<string>("");
+  const [previewUrl, setPreviewUrl] = useState<string>('');
+  const [progress, setProgress] = useState<string>('Initializing...');
+  const [generatedCode, setGeneratedCode] = useState<string>('');
   const router = useRouter();
 
   useEffect(() => {
     // Get the URL and style from sessionStorage
     const url = sessionStorage.getItem('targetUrl');
     const style = sessionStorage.getItem('selectedStyle');
-    
+
     if (!url) {
       router.push('/dashboard');
       return;
     }
-    
+
     setTargetUrl(url);
-    setSelectedStyle(style || "modern");
-    
+    setSelectedStyle(style || 'modern');
+
     // Start the website generation process
     // Function is declared below; mount-only effect.
     // eslint-disable-next-line react-hooks/immutability
-    generateWebsite(url, style || "modern");
+    generateWebsite(url, style || 'modern');
   }, [router]);
 
   const generateWebsite = async (url: string, style: string) => {
     try {
-      setProgress("Analyzing website...");
-      
+      setProgress('Analyzing website...');
+
       // For demo purposes, we'll generate a simple HTML template
       // In production, this would call the actual scraping and generation APIs
       const mockGeneratedCode = `
@@ -184,28 +184,27 @@ export default function BuilderPage() {
   </main>
 </body>
 </html>`;
-      
+
       setGeneratedCode(mockGeneratedCode);
-      
+
       // Create a blob URL for the preview
       const blob = new Blob([mockGeneratedCode], { type: 'text/html' });
       const blobUrl = URL.createObjectURL(blob);
       setPreviewUrl(blobUrl);
-      
-      setProgress("Website ready!");
+
+      setProgress('Website ready!');
       setIsLoading(false);
-      
+
       // Show success message
-      toast.success("Website generated successfully!");
-      
+      notify.success('Website generated successfully!');
     } catch (error) {
-      console.error("Error generating website:", error);
-      toast.error("Failed to generate website. Please try again.");
-      setProgress("Error occurred");
+      console.error('Error generating website:', error);
+      notify.error(error, { fallback: 'Failed to generate website. Please try again.' });
+      setProgress('Error occurred');
       setTimeout(() => router.push('/dashboard'), 2000);
     }
   };
-  
+
   const downloadCode = () => {
     const blob = new Blob([generatedCode], { type: 'text/html' });
     const url = URL.createObjectURL(blob);
@@ -216,7 +215,7 @@ export default function BuilderPage() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    toast.success("Code downloaded!");
+    notify.success('Code downloaded!');
   };
 
   return (
@@ -225,24 +224,24 @@ export default function BuilderPage() {
         {/* Sidebar */}
         <div className="w-80 bg-white border-r border-border-faint p-24 flex flex-col">
           <h2 className="text-title-small font-semibold mb-16">Building Your Website</h2>
-          
+
           <div className="space-y-12 flex-1">
             <div>
               <div className="text-label-small text-black-alpha-56 mb-4">Target URL</div>
               <div className="text-body-medium text-accent-black truncate">{targetUrl}</div>
             </div>
-            
+
             <div>
               <div className="text-label-small text-black-alpha-56 mb-4">Style</div>
               <div className="text-body-medium text-accent-black capitalize">{selectedStyle}</div>
             </div>
-            
+
             <div>
               <div className="text-label-small text-black-alpha-56 mb-4">Status</div>
               <div className="text-body-medium text-heat-100">{progress}</div>
             </div>
           </div>
-          
+
           <div className="space-y-8">
             {!isLoading && (
               <button
@@ -252,7 +251,7 @@ export default function BuilderPage() {
                 Download Code
               </button>
             )}
-            
+
             <button
               onClick={() => router.push('/dashboard')}
               className="w-full py-12 px-16 bg-black-alpha-4 hover:bg-black-alpha-6 rounded-10 text-label-medium transition-all"
@@ -261,7 +260,7 @@ export default function BuilderPage() {
             </button>
           </div>
         </div>
-        
+
         {/* Preview */}
         <div className="flex-1 bg-gray-50">
           {isLoading ? (
@@ -273,11 +272,7 @@ export default function BuilderPage() {
             </div>
           ) : (
             previewUrl && (
-              <iframe
-                src={previewUrl}
-                className="w-full h-full border-0"
-                title="Website Preview"
-              />
+              <iframe src={previewUrl} className="w-full h-full border-0" title="Website Preview" />
             )
           )}
         </div>

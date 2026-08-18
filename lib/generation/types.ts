@@ -128,6 +128,17 @@ export type StartApplyInput = {
   isEdit?: boolean;
   packages?: string[];
   sandboxId?: string | null;
+  /** Model fix attempts already spent on this build. 0 on a normal apply. */
+  autoFixAttempt?: number;
+  /** Previous failure signature, so a repeated failure stops the loop. */
+  previousBuildSignature?: string | null;
+};
+
+/** Returned on the apply `complete` frame when the build needs another pass. */
+export type BuildFixRequest = {
+  instruction: string;
+  attempt: number;
+  signature: string | null;
 };
 
 export type GenerateResult = {
