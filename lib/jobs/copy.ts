@@ -67,12 +67,6 @@ const CAUSE_LINES: Record<JobErrorCode, string> = {
   sandbox_unavailable: 'The workspace for this project could not be started',
   snapshot_unreadable:
     "We could not read this project's files from storage — try publish again in a few minutes",
-  sandbox_list_failed:
-    'We could not list the files in the live workspace — publish was not started from an older snapshot. Try again',
-  sandbox_file_unreadable:
-    'We could not read a file from the live workspace — publish was not started with an incomplete site. Try again',
-  sandbox_status_unknown:
-    'We could not tell whether the live workspace is still running — publish was not started from an older snapshot. Try again',
   provider_not_configured: NO_PROVIDER_CONFIGURED_MESSAGE,
   provider_quota_exhausted:
     'DeepSeek is out of quota — try again later, or check the plan and billing details on the DeepSeek account.',

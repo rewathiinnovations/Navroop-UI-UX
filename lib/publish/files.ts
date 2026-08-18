@@ -4,27 +4,8 @@ import type { JobErrorCode } from '@/lib/jobs/types';
 import { getStack, getStackListExtensions, type StackId } from '@/lib/stacks';
 import { log } from '@/lib/logger';
 
-export type PublishLiveFilesCode =
-  'sandbox_list_failed' | 'sandbox_file_unreadable' | 'sandbox_status_unknown';
-
-/**
- * A READY sandbox could not be listed, a listed file could not be read, or we
- * could not tell whether the sandbox was still there. Distinct from "no live
- * sandbox, use the checkpoint".
- */
-export class PublishLiveFilesError extends Error {
-  readonly code: PublishLiveFilesCode;
-
-  constructor(code: PublishLiveFilesCode, message: string) {
-    super(message);
-    this.name = 'PublishLiveFilesError';
-    this.code = code;
-  }
-}
-
 export function publishJobErrorCode(error: unknown): JobErrorCode {
   if (error instanceof SnapshotReadError) return 'snapshot_unreadable';
-  if (error instanceof PublishLiveFilesError) return error.code;
   return 'provider_error';
 }
 
@@ -138,9 +119,6 @@ export async function projectHasPublishableFiles(
     }
     if (error instanceof SnapshotReadError) {
       return { status: 'unavailable', reason: PUBLISH_FILES_UNAVAILABLE };
-    }
-    if (error instanceof PublishLiveFilesError) {
-      return { status: 'unavailable', reason: error.message };
     }
     throw error;
   }

@@ -39,9 +39,6 @@ const EXPECTED_CODES = [
   'settle_write_failed',
   'sandbox_unavailable',
   'snapshot_unreadable',
-  'sandbox_list_failed',
-  'sandbox_file_unreadable',
-  'sandbox_status_unknown',
   'provider_not_configured',
   'provider_quota_exhausted',
   'request_rejected',
@@ -161,27 +158,6 @@ describe('job error code copy', () => {
 
   it('the copy map holds exactly the expected codes and nothing more', () => {
     expect(knownJobErrorCodes().slice().sort()).toEqual([...EXPECTED_CODES].sort());
-  });
-
-  it('a failed live listing or file read does not claim the build failed', () => {
-    expect(recoveryCauseLine('sandbox_list_failed')).toBe(
-      'We could not list the files in the live workspace — publish was not started from an older snapshot. Try again',
-    );
-    expect(recoveryCauseLine('sandbox_file_unreadable')).toBe(
-      'We could not read a file from the live workspace — publish was not started with an incomplete site. Try again',
-    );
-    expect(recoveryCauseLine('sandbox_status_unknown')).toBe(
-      'We could not tell whether the live workspace is still running — publish was not started from an older snapshot. Try again',
-    );
-    for (const code of [
-      'sandbox_list_failed',
-      'sandbox_file_unreadable',
-      'sandbox_status_unknown',
-    ] as const) {
-      const cause = recoveryCauseLine(code);
-      expect(cause.toLowerCase()).not.toMatch(/build (failed|did not)/);
-      expect(cause.toLowerCase()).not.toContain('ai service');
-    }
   });
 
   it('a snapshot the store could not read does not claim the site was deleted or the build failed', () => {

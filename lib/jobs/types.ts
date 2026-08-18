@@ -80,9 +80,6 @@ export type JobErrorCode =
   | 'settle_write_failed'
   | 'sandbox_unavailable'
   | 'snapshot_unreadable'
-  | 'sandbox_list_failed'
-  | 'sandbox_file_unreadable'
-  | 'sandbox_status_unknown'
   | 'provider_not_configured'
   | 'provider_quota_exhausted'
   | 'request_rejected'
@@ -206,10 +203,10 @@ export function parseJobSteps(value: unknown): JobStep[] {
     .filter((entry): entry is JobStep => {
       return Boolean(
         entry &&
-          typeof entry === 'object' &&
-          typeof (entry as JobStep).key === 'string' &&
-          typeof (entry as JobStep).label === 'string' &&
-          typeof (entry as JobStep).status === 'string',
+        typeof entry === 'object' &&
+        typeof (entry as JobStep).key === 'string' &&
+        typeof (entry as JobStep).label === 'string' &&
+        typeof (entry as JobStep).status === 'string',
       );
     })
     .map((entry) => ({
@@ -227,7 +224,11 @@ function parseSandboxAttempts(value: unknown): SandboxAttemptRecord[] | null {
   const rows = value.flatMap((entry) => {
     if (!entry || typeof entry !== 'object') return [];
     const row = entry as SandboxAttemptRecord;
-    if (typeof row.configId !== 'string' || typeof row.driver !== 'string' || typeof row.at !== 'string') {
+    if (
+      typeof row.configId !== 'string' ||
+      typeof row.driver !== 'string' ||
+      typeof row.at !== 'string'
+    ) {
       return [];
     }
     const next: SandboxAttemptRecord = {
@@ -248,7 +249,11 @@ function parseSandboxSkipped(value: unknown): SandboxSkippedRecord[] | null {
   const rows = value.flatMap((entry) => {
     if (!entry || typeof entry !== 'object') return [];
     const row = entry as SandboxSkippedRecord;
-    if (typeof row.configId !== 'string' || typeof row.name !== 'string' || typeof row.reason !== 'string') {
+    if (
+      typeof row.configId !== 'string' ||
+      typeof row.name !== 'string' ||
+      typeof row.reason !== 'string'
+    ) {
       return [];
     }
     return [{ configId: row.configId, name: row.name, reason: row.reason }];
@@ -273,9 +278,7 @@ export function parseResourceIds(value: unknown): JobResourceIds | null {
 }
 
 export function filesToLastCode(files: PartialFile[]) {
-  return files
-    .map((file) => `<file path="${file.path}">\n${file.content}\n</file>`)
-    .join('\n');
+  return files.map((file) => `<file path="${file.path}">\n${file.content}\n</file>`).join('\n');
 }
 
 export function parsePartialFiles(value: unknown): PartialFile[] {
@@ -284,9 +287,9 @@ export function parsePartialFiles(value: unknown): PartialFile[] {
     .filter((entry): entry is PartialFile => {
       return Boolean(
         entry &&
-          typeof entry === 'object' &&
-          typeof (entry as PartialFile).path === 'string' &&
-          typeof (entry as PartialFile).content === 'string',
+        typeof entry === 'object' &&
+        typeof (entry as PartialFile).path === 'string' &&
+        typeof (entry as PartialFile).content === 'string',
       );
     })
     .map((entry) => ({ path: entry.path, content: entry.content }));
