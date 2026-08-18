@@ -9,7 +9,6 @@ export const CRON_STALE_MS: Record<string, number> = {
   'check-certs': 48 * 60 * 60 * 1000,
   'reap-jobs': 10 * 60 * 1000,
   'reap-sandboxes': 30 * 60 * 1000,
-  'check-sandbox-providers': 30 * 60 * 1000,
   'verify-storage': 8 * 24 * 60 * 60 * 1000,
   'cleanup-orphans': 48 * 60 * 60 * 1000,
   'sweep-tmp': 3 * 60 * 60 * 1000,
@@ -23,7 +22,6 @@ const JOB_LABEL: Record<string, string> = {
   'check-certs': 'certificate checks',
   'reap-jobs': 'job watchdog',
   'reap-sandboxes': 'sandbox idle reaper',
-  'check-sandbox-providers': 'provider health probes',
   'verify-storage': 'storage verification',
   'cleanup-orphans': 'orphan cleanup',
   'sweep-tmp': 'temporary file sweep',
@@ -46,11 +44,13 @@ export function evaluateSystemChecks(runs: CronRunRow[], now: Date = new Date())
   });
 }
 
-export async function sendSystemChecksDigest(deps: {
-  now?: Date;
-  runs?: CronRunRow[];
-  sendAdminEmail?: SendAdminEmail;
-} = {}) {
+export async function sendSystemChecksDigest(
+  deps: {
+    now?: Date;
+    runs?: CronRunRow[];
+    sendAdminEmail?: SendAdminEmail;
+  } = {},
+) {
   const now = deps.now ?? new Date();
   const runs = deps.runs ?? (await getObservabilityStore().listCronRuns());
   const rows = evaluateSystemChecks(runs, now);
@@ -61,7 +61,8 @@ export async function sendSystemChecksDigest(deps: {
   const lines = problems.map((row) => {
     const label = JOB_LABEL[row.name] || row.name;
     if (!row.lastRunAt) return `${label} (${row.name}) has never run`;
-    if (row.ok === false) return `${label} (${row.name}) failed${row.detail ? `: ${row.detail}` : ''}`;
+    if (row.ok === false)
+      return `${label} (${row.name}) failed${row.detail ? `: ${row.detail}` : ''}`;
     return `${label} (${row.name}) is stale (last run ${row.lastRunAt})`;
   });
   await resolveSendAdminEmail(deps.sendAdminEmail)(systemChecksDigestEmail({ lines }));

@@ -50,7 +50,12 @@ async function seed(projectId: string) {
   });
   await prisma.project.upsert({
     where: { id: projectId },
-    create: { id: projectId, name: 'Settle Report', ownerId: USER, initialPrompt: 'settle report probe' },
+    create: {
+      id: projectId,
+      name: 'Settle Report',
+      ownerId: USER,
+      initialPrompt: 'settle report probe',
+    },
     update: {},
   });
 }
@@ -75,8 +80,7 @@ async function terminalWriteThatFails(): Promise<never> {
 
 beforeEach(async () => {
   for (const projectId of PROJECTS) {
-    await prisma
-      .$executeRaw`DELETE FROM "GenerationJob" WHERE "projectId" = ${projectId}`.catch(
+    await prisma.$executeRaw`DELETE FROM "GenerationJob" WHERE "projectId" = ${projectId}`.catch(
       () => undefined,
     );
   }
@@ -84,8 +88,7 @@ beforeEach(async () => {
 
 afterAll(async () => {
   for (const projectId of PROJECTS) {
-    await prisma
-      .$executeRaw`DELETE FROM "GenerationJob" WHERE "projectId" = ${projectId}`.catch(
+    await prisma.$executeRaw`DELETE FROM "GenerationJob" WHERE "projectId" = ${projectId}`.catch(
       () => undefined,
     );
   }
@@ -200,10 +203,7 @@ function callsWithAttachedCatch(source: string, name: string): string[] {
 }
 
 describe('neither stream route discards a terminal job write', () => {
-  const routes = [
-    'app/api/generate-ai-code-stream/route.ts',
-    'app/api/apply-ai-code-stream/route.ts',
-  ];
+  const routes = ['app/api/generate-ai-code-stream/route.ts'];
 
   it.each(routes)('%s settles inside a try/catch that reports', (relativePath) => {
     const source = readFileSync(resolve(process.cwd(), relativePath), 'utf8');

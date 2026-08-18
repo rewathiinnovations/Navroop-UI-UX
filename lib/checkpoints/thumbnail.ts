@@ -1,7 +1,5 @@
 import { assetStorageKey } from '@/lib/assets/keys';
 import { optimizeImage } from '@/lib/assets/optimize';
-import { ensureSandbox } from '@/lib/sandbox/manager';
-import { sandboxManager } from '@/lib/sandbox/sandbox-manager';
 import { upload } from '@/lib/storage';
 import { adjustStorageBytes } from '@/lib/storage/usage';
 
@@ -41,95 +39,21 @@ async function captureWithPlaywright(previewUrl: string): Promise<Buffer> {
   }
 }
 
-async function captureWithE2B(previewUrl: string): Promise<Buffer> {
-  const provider =
-    sandboxManager.getActiveProvider() ||
-    (globalThis as { activeSandboxProvider?: { runCommand?: (cmd: string) => Promise<{ stdout?: string; success?: boolean }> } })
-      .activeSandboxProvider;
-  const sandbox = (globalThis as { activeSandbox?: { runCode?: (code: string) => Promise<{ logs?: { stdout?: string[] } }> } })
-    .activeSandbox;
-
-  const script = `
-import base64, os, subprocess, sys
-url = ${JSON.stringify(previewUrl)}
-out = "/tmp/navroop-ckpt.png"
-ok = False
-try:
-    subprocess.run(
-        ["npx", "--yes", "playwright", "screenshot", "--viewport-size=1280,800", url, out],
-        check=True,
-        timeout=30,
-        capture_output=True,
-    )
-    ok = os.path.exists(out)
-except Exception:
-    ok = False
-if not ok:
-    for bin_name in ("chromium", "chromium-browser", "google-chrome"):
-        try:
-            subprocess.run(
-                [bin_name, "--headless", "--disable-gpu", f"--window-size={1280},{800}", f"--screenshot={out}", url],
-                check=True,
-                timeout=30,
-                capture_output=True,
-            )
-            if os.path.exists(out):
-                ok = True
-                break
-        except Exception:
-            continue
-if not ok:
-    sys.exit(2)
-with open(out, "rb") as f:
-    print(base64.b64encode(f.read()).decode("ascii"))
-`;
-
-  if (sandbox?.runCode) {
-    const result = await sandbox.runCode(script);
-    const printed = result.logs?.stdout?.join('')?.trim() ?? '';
-    if (!printed) throw new Error('E2B screenshot produced no data');
-    return Buffer.from(printed, 'base64');
-  }
-
-  if (provider?.runCommand) {
-    const result = await provider.runCommand(
-      `python3 -c ${JSON.stringify(script)}`,
-    );
-    const printed = result.stdout?.replace(/^STDOUT:\s*/m, '').trim() ?? '';
-    const b64 = printed.split('\n').filter(Boolean).at(-1) ?? '';
-    if (!b64) throw new Error('E2B screenshot produced no data');
-    return Buffer.from(b64, 'base64');
-  }
-
-  throw new Error('No E2B sandbox available for thumbnail fallback');
-}
-
 /** Best-effort stored URL (or legacy data URL). Never throws to the caller. */
 export async function captureThumbnail(
   previewUrl?: string | null,
   projectId?: string,
 ): Promise<string | null> {
-  let url = previewUrl?.trim() || '';
-  if (!url && projectId) {
-    try {
-      const ensured = await ensureSandbox(projectId);
-      url = ensured.previewUrl || url;
-    } catch {
-      /* keep going — capture is best-effort */
-    }
-  }
+  // Only a real reachable URL can be shot. Previews now render in the user's
+  // browser from a srcdoc, so there is nothing server-side to visit unless the
+  // project has been published; callers pass that URL when they have it.
+  const url = previewUrl?.trim();
   if (!url) return null;
   try {
     const buffer = await captureWithPlaywright(url);
     return storeThumbnail(buffer, projectId);
   } catch (error) {
-    console.warn('[checkpoints] Playwright thumbnail failed, trying E2B fallback', error);
-    try {
-      const buffer = await captureWithE2B(url);
-      return storeThumbnail(buffer, projectId);
-    } catch (fallbackError) {
-      console.warn('[checkpoints] thumbnail capture failed', fallbackError);
-      return null;
-    }
+    console.warn('[checkpoints] thumbnail capture failed', error);
+    return null;
   }
 }

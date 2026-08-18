@@ -4,18 +4,35 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useTheme } from 'next-themes';
-import { BookOpen, Box, Gauge, KeyRound, LayoutTemplate, ListTodo, LogOut, Monitor, Moon, Plug, Sparkles, Sun, UserRound, Users } from 'lucide-react';
+import {
+  BookOpen,
+  Box,
+  Gauge,
+  KeyRound,
+  LayoutTemplate,
+  ListTodo,
+  LogOut,
+  Monitor,
+  Moon,
+  Plug,
+  Sparkles,
+  Sun,
+  UserRound,
+  Users,
+} from 'lucide-react';
 import { signOut } from 'next-auth/react';
 import { useAuth } from '@/components/app/auth/AuthProvider';
 import { cn } from '@/utils/cn';
 
 function initials(name: string) {
-  return name
-    .split(' ')
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase())
-    .join('') || 'N';
+  return (
+    name
+      .split(' ')
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part[0]?.toUpperCase())
+      .join('') || 'N'
+  );
 }
 
 export default function AccountMenu() {
@@ -88,8 +105,12 @@ export default function AccountMenu() {
           )}
         </span>
         <span className="min-w-0">
-          <span className="block truncate text-[13px] font-medium text-[var(--studio-fg)]">{user.name}</span>
-          <span className="block truncate text-[12px] text-[var(--studio-muted)]">{user.email}</span>
+          <span className="block truncate text-[13px] font-medium text-[var(--studio-fg)]">
+            {user.name}
+          </span>
+          <span className="block truncate text-[12px] text-[var(--studio-muted)]">
+            {user.email}
+          </span>
         </span>
       </button>
 
@@ -112,40 +133,71 @@ export default function AccountMenu() {
               )}
             </div>
             <div className="min-w-0">
-              <p className="truncate text-[14px] font-medium text-[var(--studio-fg)]">{user.name}</p>
+              <p className="truncate text-[14px] font-medium text-[var(--studio-fg)]">
+                {user.name}
+              </p>
               <p className="truncate text-[12px] text-[var(--studio-muted)]">{user.email}</p>
             </div>
           </div>
 
           <div className="p-6">
-            <MenuLink href="/settings/profile" icon={<UserRound className="size-16" />} onClick={() => setOpen(false)}>
+            <MenuLink
+              href="/settings/profile"
+              icon={<UserRound className="size-16" />}
+              onClick={() => setOpen(false)}
+            >
               Profile
             </MenuLink>
-            <MenuLink href="/settings/api-keys" icon={<KeyRound className="size-16" />} onClick={() => setOpen(false)}>
+            <MenuLink
+              href="/settings/api-keys"
+              icon={<KeyRound className="size-16" />}
+              onClick={() => setOpen(false)}
+            >
               API Keys
             </MenuLink>
-            <MenuLink href="/settings/skills" icon={<Sparkles className="size-16" />} onClick={() => setOpen(false)}>
+            <MenuLink
+              href="/settings/skills"
+              icon={<Sparkles className="size-16" />}
+              onClick={() => setOpen(false)}
+            >
               Skills
             </MenuLink>
-            <MenuLink href="/settings/usage" icon={<Gauge className="size-16" />} onClick={() => setOpen(false)}>
+            <MenuLink
+              href="/settings/usage"
+              icon={<Gauge className="size-16" />}
+              onClick={() => setOpen(false)}
+            >
               Usage
             </MenuLink>
             {user.role === 'ADMIN' && (
               <>
-                <MenuLink href="/admin/team" icon={<Users className="size-16" />} onClick={() => setOpen(false)}>
+                <MenuLink
+                  href="/admin/team"
+                  icon={<Users className="size-16" />}
+                  onClick={() => setOpen(false)}
+                >
                   Team
                 </MenuLink>
-                <MenuLink href="/admin/jobs" icon={<ListTodo className="size-16" />} onClick={() => setOpen(false)}>
+                <MenuLink
+                  href="/admin/jobs"
+                  icon={<ListTodo className="size-16" />}
+                  onClick={() => setOpen(false)}
+                >
                   Jobs
                 </MenuLink>
-                <MenuLink href="/admin/integrations" icon={<Plug className="size-16" />} onClick={() => setOpen(false)}>
+                <MenuLink
+                  href="/admin/integrations"
+                  icon={<Plug className="size-16" />}
+                  onClick={() => setOpen(false)}
+                >
                   Integrations
                 </MenuLink>
-                <MenuLink href="/admin/templates" icon={<LayoutTemplate className="size-16" />} onClick={() => setOpen(false)}>
+                <MenuLink
+                  href="/admin/templates"
+                  icon={<LayoutTemplate className="size-16" />}
+                  onClick={() => setOpen(false)}
+                >
                   Templates
-                </MenuLink>
-                <MenuLink href="/admin/sandbox-providers" icon={<Box className="size-16" />} onClick={() => setOpen(false)}>
-                  Sandbox providers
                 </MenuLink>
               </>
             )}
@@ -178,7 +230,11 @@ export default function AccountMenu() {
           </div>
 
           <div className="p-6 border-t border-[var(--studio-line)]">
-            <MenuLink href="#" icon={<BookOpen className="size-16" />} onClick={() => setOpen(false)}>
+            <MenuLink
+              href="#"
+              icon={<BookOpen className="size-16" />}
+              onClick={() => setOpen(false)}
+            >
               Documentation
             </MenuLink>
             <button

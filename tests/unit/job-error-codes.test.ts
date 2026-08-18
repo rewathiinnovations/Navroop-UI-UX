@@ -112,7 +112,10 @@ function codeBearingRegions(source: string): Array<{ text: string; offset: numbe
   for (const match of source.matchAll(ERROR_CODE_ASSIGNMENT)) {
     const start = match.index + match[0].length;
     const lineEnd = source.indexOf('\n', start);
-    regions.push({ text: source.slice(start, lineEnd === -1 ? source.length : lineEnd), offset: start });
+    regions.push({
+      text: source.slice(start, lineEnd === -1 ? source.length : lineEnd),
+      offset: start,
+    });
   }
   // Form two: a positional argument to a fail/abandon helper, across however many lines
   // the call spans.
@@ -170,7 +173,11 @@ describe('job error code copy', () => {
     expect(recoveryCauseLine('sandbox_status_unknown')).toBe(
       'We could not tell whether the live workspace is still running — publish was not started from an older snapshot. Try again',
     );
-    for (const code of ['sandbox_list_failed', 'sandbox_file_unreadable', 'sandbox_status_unknown'] as const) {
+    for (const code of [
+      'sandbox_list_failed',
+      'sandbox_file_unreadable',
+      'sandbox_status_unknown',
+    ] as const) {
       const cause = recoveryCauseLine(code);
       expect(cause.toLowerCase()).not.toMatch(/build (failed|did not)/);
       expect(cause.toLowerCase()).not.toContain('ai service');
@@ -257,21 +264,11 @@ describe('job error code copy', () => {
     }
   });
 
-  // Control for form two of the scan. `sandbox_unavailable` is handed to a route-local
-  // helper positionally, so it appears nowhere near an `errorCode:`; the first version of
-  // this walker read right past it and reported a clean tree. Pin the shape it missed.
+  // Control for form two of the scan: a code handed to a helper positionally
+  // appears nowhere near an `errorCode:`, and the first walker read straight
+  // past that shape.
   it('control: the scan finds a code passed positionally, not just via errorCode:', () => {
-    const locations = scanWrittenErrorCodes().get('sandbox_unavailable') ?? [];
-    expect(locations.length, 'positional settle-call scan found nothing').toBeGreaterThanOrEqual(2);
-    const applyHits = locations.filter((location) =>
-      location.includes('app/api/apply-ai-code-stream/route.ts'),
-    );
-    expect(applyHits.length, 'apply route no longer writes sandbox_unavailable').toBeGreaterThanOrEqual(
-      2,
-    );
-    expect(
-      locations.some((location) => location.includes('app/api/generate-ai-code-stream/route.ts')),
-      'generate route must fail the job when ensureSandbox fails',
-    ).toBe(true);
+    const locations = scanWrittenErrorCodes().get('settle_write_failed') ?? [];
+    expect(locations.length, 'positional settle-call scan found nothing').toBeGreaterThanOrEqual(1);
   });
 });

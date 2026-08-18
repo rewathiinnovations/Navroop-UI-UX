@@ -1,5 +1,5 @@
 /**
- * Consumption caps, sandbox minutes, provider failover/queue, spend ceiling.
+ * Consumption caps, provider failover/queue, spend ceiling.
  * Run: pnpm exec tsx tests/consumption.test.ts
  */
 import { resolve } from 'node:path';
@@ -12,11 +12,6 @@ import {
   LOOP_DETECTED_MESSAGE,
 } from '../lib/consumption/caps.ts';
 import { calculateEventCost, estimateTokenCostUsd } from '../lib/consumption/cost.ts';
-import {
-  SANDBOX_MINUTES_EXHAUSTED,
-  canColdStartSandbox,
-  sandboxMinutesBetween,
-} from '../lib/sandbox/minutes.ts';
 import { loadProviderChain } from '../lib/ai/providers.ts';
 import { shouldFailover } from '../lib/ai/failover.ts';
 import { createCircuitBreaker } from '../lib/ai/circuit.ts';
@@ -29,7 +24,6 @@ import {
   shouldAutoPauseSpend,
   shouldNotifySpend80,
 } from '../lib/plans/spend.ts';
-import { accrueSandboxMinutes, checkSandboxMinutes } from '../lib/sandbox/meter.ts';
 import { accrueSpend } from '../lib/plans/spend.ts';
 import { getProviderHealth } from '../lib/ai/circuit.ts';
 import { hashPassword } from '../lib/password.ts';
@@ -136,33 +130,6 @@ const withTokens = calculateEventCost('initial', false, {
 });
 const flat = calculateEventCost('initial', false);
 assert(withTokens !== flat, 'usage tracking uses token cost when tokens are present');
-
-// --- Part B: sandbox minute math ---
-
-const started = new Date('2026-08-17T12:00:00.000Z');
-assert(
-  sandboxMinutesBetween(started, new Date('2026-08-17T12:00:00.000Z')) === 0,
-  'zero elapsed is 0 minutes',
-);
-assert(
-  sandboxMinutesBetween(started, new Date('2026-08-17T12:00:30.000Z')) === 1,
-  '30s wall-clock ceils to 1 minute',
-);
-assert(
-  sandboxMinutesBetween(started, new Date('2026-08-17T12:07:00.000Z')) === 7,
-  '7 minutes matches wall-clock',
-);
-assert(
-  sandboxMinutesBetween(started, new Date('2026-08-17T12:07:01.000Z')) === 8,
-  '7m1s ceils to 8 minutes',
-);
-assert(canColdStartSandbox(299, 300) === true, 'one minute remaining allows a cold start');
-assert(canColdStartSandbox(300, 300) === false, 'exhausted minutes refuse a cold start');
-assert(canColdStartSandbox(301, 300) === false, 'over-limit minutes refuse a cold start');
-assert(
-  SANDBOX_MINUTES_EXHAUSTED === "This month's sandbox time is used up",
-  'cold-start English message',
-);
 
 // --- Part C: failover / queue / circuit ---
 
@@ -316,29 +283,6 @@ try {
       false, 0, 0, false
     )
   `;
-
-  const minutes = sandboxMinutesBetween(
-    new Date('2026-08-17T10:00:00.000Z'),
-    new Date('2026-08-17T10:12:00.000Z'),
-  );
-  await accrueSandboxMinutes(WS, minutes);
-  const afterAccrue = await prisma.$queryRaw<Array<{ sandboxMinutesUsed: number }>>`
-    SELECT "sandboxMinutesUsed" FROM "Workspace" WHERE id = ${WS}
-  `;
-  assert(
-    afterAccrue[0]?.sandboxMinutesUsed === 12,
-    'reaper/shutdown accrue adds wall-clock minutes',
-  );
-
-  await prisma.$executeRaw`
-    UPDATE "Workspace" SET "sandboxMinutesUsed" = 300 WHERE id = ${WS}
-  `;
-  const refused = await checkSandboxMinutes(WS);
-  assert(refused.ok === false, 'exhausted monthly minutes refuse a cold start');
-  assert(
-    refused.message === SANDBOX_MINUTES_EXHAUSTED,
-    'cold start uses the sandbox-time English message',
-  );
 
   await prisma.$executeRaw`
     UPDATE "Workspace"

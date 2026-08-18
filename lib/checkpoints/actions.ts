@@ -12,7 +12,6 @@ import {
   type SnapshotRecord,
 } from './snapshot';
 import { captureThumbnail } from './thumbnail';
-import { writeSnapshotToSandbox } from './write-sandbox';
 import { recordRevertRate } from '@/lib/signals/collect';
 import { adjustStorageBytes, WORKSPACE_ROW_ID } from '@/lib/storage/usage';
 import { checkLimit } from '@/lib/plans/limits';
@@ -104,7 +103,8 @@ function toPublic(row: {
     label: row.label,
     thumbnailUrl: row.thumbnailUrl,
     createdAt: row.createdAt.toISOString(),
-    trigger: row.trigger === 'restore' ? 'restore' : row.trigger === 'followup' ? 'followup' : 'initial',
+    trigger:
+      row.trigger === 'restore' ? 'restore' : row.trigger === 'followup' ? 'followup' : 'initial',
     sourceMessage: row.sourceMessage,
     isBookmarked: Boolean(row.isBookmarked),
     snapshotPruned: Boolean(row.snapshotPruned),
@@ -271,11 +271,24 @@ async function loadProjectForWrite(projectId: string) {
   });
 }
 
-async function writeCheckpointFiles(projectId: string, files: FileSnapshotEntry[], sandboxId?: string | null) {
+/**
+ * Restoring writes the snapshot back to `Project.lastCode`, which is the
+ * source of truth the in-browser preview renders from. This used to push the
+ * files into a sandbox VM; there is no VM now, and a restore that only touched
+ * a VM would be lost on the next reload.
+ */
+async function writeCheckpointFiles(projectId: string, files: FileSnapshotEntry[]) {
   if (files.length === 0) {
     throw new Error('Checkpoint has no files to write');
   }
-  await writeSnapshotToSandbox(projectId, files, sandboxId);
+  const lastCode = files
+    .map((file) => `<file path="${file.path}">\n${file.content}\n</file>`)
+    .join('\n\n');
+  await prisma.project.update({
+    where: { id: projectId },
+    data: { lastCode },
+  });
+  await bumpContentVersion(projectId);
 }
 
 function prunedError() {
@@ -325,7 +338,7 @@ export async function previewCheckpoint(projectId: string, checkpointId: string)
   const loaded = await loadSnapshotFiles(checkpoint);
   if (!loaded.ok) return loaded.err;
   if (loaded.files.length === 0) return prunedError();
-  await writeCheckpointFiles(projectId, loaded.files, project.sandboxId);
+  await writeCheckpointFiles(projectId, loaded.files);
   return { ok: true as const, data: toPublic(checkpoint) };
 }
 
@@ -347,7 +360,7 @@ export async function exitCheckpointPreview(projectId: string) {
   const loaded = await loadSnapshotFiles(latest);
   if (!loaded.ok) return loaded.err;
   if (latest.snapshotPruned || loaded.files.length === 0) return prunedError();
-  await writeCheckpointFiles(projectId, loaded.files, project.sandboxId);
+  await writeCheckpointFiles(projectId, loaded.files);
   return { ok: true as const, data: toPublic(latest) };
 }
 
@@ -371,7 +384,7 @@ export async function restoreCheckpoint(projectId: string, checkpointId: string)
   if (files.length === 0) return prunedError();
 
   const locked = await withProjectLock(projectId, user.id, 'generation', async () => {
-    await writeCheckpointFiles(projectId, files, project.sandboxId);
+    await writeCheckpointFiles(projectId, files);
     const created = await createCheckpoint(projectId, {
       trigger: 'restore',
       sourceMessage: null,

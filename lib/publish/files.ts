@@ -1,15 +1,11 @@
 import { prisma } from '@/lib/db';
 import { captureFileSnapshot, readSnapshot, SnapshotReadError } from '@/lib/checkpoints/snapshot';
 import type { JobErrorCode } from '@/lib/jobs/types';
-import { getLiveProvider } from '@/lib/sandbox/manager';
-import { SandboxFactory } from '@/lib/sandbox/factory';
 import { getStack, getStackListExtensions, type StackId } from '@/lib/stacks';
 import { log } from '@/lib/logger';
 
 export type PublishLiveFilesCode =
-  | 'sandbox_list_failed'
-  | 'sandbox_file_unreadable'
-  | 'sandbox_status_unknown';
+  'sandbox_list_failed' | 'sandbox_file_unreadable' | 'sandbox_status_unknown';
 
 /**
  * A READY sandbox could not be listed, a listed file could not be read, or we
@@ -70,88 +66,33 @@ function isPublishablePath(path: string, stack: StackId) {
   const parts = normalized.split('/');
   if (parts.some((part) => SKIP.has(part))) return false;
   const ext = normalized.includes('.') ? `.${normalized.split('.').pop()}` : '';
-  const allowed = new Set([...getStackListExtensions(stack), '.json', '.md', '.svg', '.txt', '.mjs', '.cjs']);
+  const allowed = new Set([
+    ...getStackListExtensions(stack),
+    '.json',
+    '.md',
+    '.svg',
+    '.txt',
+    '.mjs',
+    '.cjs',
+  ]);
   if (getStack(stack).configFiles.some((name) => normalized.endsWith(name))) return true;
   return allowed.has(ext.toLowerCase());
 }
 
-async function filesFromReadySandbox(project: {
-  id: string;
-  sandboxId: string;
-  stack: string;
-}): Promise<Record<string, string>> {
-  let provider = getLiveProvider(project.sandboxId);
-  if (!provider) {
-    try {
-      const created = SandboxFactory.create();
-      const alive = await created.reconnect(project.sandboxId, 3_000);
-      if (alive) provider = created;
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      log.warn('publish.sandbox_reconnect_failed', {
-        projectId: project.id,
-        sandboxId: project.sandboxId,
-        error: detail,
-      });
-      throw new PublishLiveFilesError('sandbox_status_unknown', publishReconnectUncertainMessage(detail));
-    }
-  }
-  if (!provider) return {};
-
-  let listed: string[];
-  try {
-    listed = await provider.listFiles();
-  } catch (error) {
-    if (error instanceof PublishLiveFilesError) throw error;
-    const detail = error instanceof Error ? error.message : String(error);
-    log.warn('publish.sandbox_list_failed', {
-      projectId: project.id,
-      sandboxId: project.sandboxId,
-      error: detail,
-    });
-    throw new PublishLiveFilesError('sandbox_list_failed', publishListFailedMessage(detail));
-  }
-
-  const stack = getStack(project.stack).id;
-  const files: Record<string, string> = {};
-  for (const raw of listed) {
-    const path = raw.replace(/^\.?\//, '');
-    if (!isPublishablePath(path, stack)) continue;
-    try {
-      files[path] = await provider.readFile(path);
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      throw new PublishLiveFilesError(
-        'sandbox_file_unreadable',
-        publishFileUnreadableMessage(path, detail),
-      );
-    }
-  }
-  return files;
-}
-
 /**
- * Publish files from a READY sandbox, else the latest Checkpoint.
- * A failed listing or file read on a READY sandbox is a failure — not a cue
- * to ship the last snapshot. No live sandbox (or reconnect said it is gone)
- * still uses the checkpoint. Does not call ensureSandbox.
+ * Publish files from the latest Checkpoint, else the project's stored code.
+ *
+ * There is no live sandbox to read any more: the project's files live in the
+ * database and are rendered in the browser, so the newest snapshot is the
+ * newest site.
  */
 export async function collectPublishFiles(projectId: string) {
   const project = await prisma.project.findFirst({
     where: { id: projectId },
-    select: { id: true, sandboxId: true, sandboxStatus: true, stack: true, lastCode: true },
+    select: { id: true, stack: true, lastCode: true },
   });
   if (!project) {
     throw new Error('Project not found');
-  }
-
-  if (project.sandboxStatus === 'READY' && project.sandboxId) {
-    const live = await filesFromReadySandbox({
-      id: project.id,
-      sandboxId: project.sandboxId,
-      stack: project.stack,
-    });
-    if (Object.keys(live).length > 0) return live;
   }
 
   const latest = await prisma.checkpoint.findFirst({
@@ -180,11 +121,11 @@ export const PUBLISH_FILES_UNAVAILABLE =
  * (`'unavailable'` is truthy and would offer Publish).
  */
 export type PublishableFilesState =
-  | { status: 'ready' }
-  | { status: 'empty' }
-  | { status: 'unavailable'; reason: string };
+  { status: 'ready' } | { status: 'empty' } | { status: 'unavailable'; reason: string };
 
-export async function projectHasPublishableFiles(projectId: string): Promise<PublishableFilesState> {
+export async function projectHasPublishableFiles(
+  projectId: string,
+): Promise<PublishableFilesState> {
   try {
     await collectPublishFiles(projectId);
     return { status: 'ready' };

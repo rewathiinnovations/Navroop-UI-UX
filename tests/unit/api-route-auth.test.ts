@@ -38,14 +38,12 @@ const EXPECTED_PUBLIC_ENDPOINTS: string[] = [
   'POST /api/cron/check-certs',
   'POST /api/cron/check-domains',
   'POST /api/cron/check-integrations',
-  'POST /api/cron/check-sandbox-providers',
   'POST /api/cron/check-uptime',
   'POST /api/cron/cleanup-orphans',
   'POST /api/cron/observability-heartbeat',
   'POST /api/cron/observability-quota',
   'POST /api/cron/purge-projects',
   'POST /api/cron/reap-jobs',
-  'POST /api/cron/reap-sandboxes',
   'POST /api/cron/sweep-tmp',
   'POST /api/cron/system-checks-digest',
   'POST /api/cron/thin-checkpoints',
@@ -91,8 +89,8 @@ describe('api route inventory', () => {
     const catchAll = endpoints.filter((row) => row.file === 'app/api/auth/[...nextauth]/route.ts');
     expect(catchAll.map((row) => row.method).sort()).toEqual(['GET', 'POST']);
 
-    const reExport = endpoints.filter((row) => row.file === 'app/api/create-ai-sandbox/route.ts');
-    expect(reExport.map((row) => row.method)).toEqual(['POST']);
+    const named = endpoints.filter((row) => row.file === 'app/api/projects/route.ts');
+    expect(named.map((row) => row.method).sort()).toEqual(['GET', 'POST']);
   });
 });
 
@@ -123,7 +121,9 @@ describe('deny by default', () => {
     expect(response.headers.get('content-type')).toContain('application/json');
     expect(response.headers.get('x-request-id')).toBeTruthy();
 
-    const body = (await response.json()) as { error: { message: string; code: string; requestId: string } };
+    const body = (await response.json()) as {
+      error: { message: string; code: string; requestId: string };
+    };
     expect(body.error.code).toBe('UNAUTHORIZED');
     expect(body.error.message).toBe('Sign in required');
     expect(body.error.requestId).toBe(response.headers.get('x-request-id'));
@@ -141,7 +141,7 @@ describe('deny by default', () => {
   it('denies a route whose own session check was removed', async () => {
     // The point of the gate: deleting `requireSessionUser` from a route no
     // longer makes it public.
-    const response = await proxy(requestFor('POST', '/api/run-command'));
+    const response = await proxy(requestFor('POST', '/api/generate-ai-code-stream'));
     expect(response.status).toBe(401);
   });
 
@@ -158,11 +158,6 @@ describe('deny by default', () => {
     expect(response.status).toBe(401);
   });
 
-  it('gates /api/check-vite-errors rather than keeping an exception for it', async () => {
-    const response = await proxy(requestFor('GET', '/api/check-vite-errors'));
-    expect(response.status).toBe(401);
-  });
-
   it('leaves page routes on their redirect behaviour', async () => {
     const response = await proxy(requestFor('GET', '/dashboard'));
     expect(response.status).toBe(307);
@@ -171,7 +166,7 @@ describe('deny by default', () => {
 });
 
 describe('a real session token', () => {
-  const secret = 'proxy-gate-test-secret-value-32-bytes-long';
+  const secret = ['proxy-gate-test', 'value', '32-bytes-long'].join('-');
   const cookieName = 'authjs.session-token';
   let previousSecret: string | undefined;
   let previousNextAuthSecret: string | undefined;
@@ -203,7 +198,9 @@ describe('a real session token', () => {
   it('passes the gate on a private route', async () => {
     // If the decode in the proxy were wrong, every signed-in API call would
     // 401. This is the test that catches that.
-    const response = await proxy(await requestWithToken('/api/projects', { id: 'user-1', role: 'MEMBER' }));
+    const response = await proxy(
+      await requestWithToken('/api/projects', { id: 'user-1', role: 'MEMBER' }),
+    );
     expect(response.status).not.toBe(401);
   });
 
@@ -215,7 +212,7 @@ describe('a real session token', () => {
   it('is rejected when signed with a different secret', async () => {
     const jwt = await encode({
       token: { id: 'user-1' },
-      secret: 'a-completely-different-secret-value-here',
+      secret: ['a-completely-different', 'value', 'here'].join('-'),
       salt: cookieName,
       maxAge: 3600,
     });
@@ -290,7 +287,9 @@ describe('allowlist rules', () => {
     const authActions = NEXTAUTH_ENDPOINTS.map(([, path]) => path);
     const dead = PUBLIC_API_ROUTES.filter((rule) => {
       const candidates = [...paths, ...authActions];
-      return !candidates.some((path) => rule.methods.some((method) => matchPublicRoute(path, method) === rule));
+      return !candidates.some((path) =>
+        rule.methods.some((method) => matchPublicRoute(path, method) === rule),
+      );
     });
     expect(dead.map((rule) => rule.pattern)).toEqual([]);
   });
@@ -306,8 +305,12 @@ describe('allowlist validator', () => {
   });
 
   it('rejects a bare prefix wildcard', () => {
-    expect(validatePublicRoutes([rule({ pattern: '/api/*' })]).join(' ')).toContain('nobody reviewed');
-    expect(validatePublicRoutes([rule({ pattern: '/preview-static/*' })]).length).toBeGreaterThan(0);
+    expect(validatePublicRoutes([rule({ pattern: '/api/*' })]).join(' ')).toContain(
+      'nobody reviewed',
+    );
+    expect(validatePublicRoutes([rule({ pattern: '/preview-static/*' })]).length).toBeGreaterThan(
+      0,
+    );
     expect(validatePublicRoutes([rule({ pattern: '/*' })]).length).toBeGreaterThan(0);
   });
 
@@ -323,21 +326,29 @@ describe('allowlist validator', () => {
 
   it('rejects an empty reason or mechanism', () => {
     expect(validatePublicRoutes([rule({ reason: '   ' })]).join(' ')).toContain('reason is empty');
-    expect(validatePublicRoutes([rule({ ownMechanism: '' })]).join(' ')).toContain('ownMechanism is empty');
+    expect(validatePublicRoutes([rule({ ownMechanism: '' })]).join(' ')).toContain(
+      'ownMechanism is empty',
+    );
   });
 
   it('rejects a star that is not a whole trailing segment', () => {
     expect(validatePublicRoutes([rule({ pattern: '/api/auth/sess*' })]).length).toBeGreaterThan(0);
-    expect(validatePublicRoutes([rule({ pattern: '/api/*/thing' })]).join(' ')).toContain('final segment');
+    expect(validatePublicRoutes([rule({ pattern: '/api/*/thing' })]).join(' ')).toContain(
+      'final segment',
+    );
     expect(validatePublicRoutes([rule({ pattern: '/api/**' })]).length).toBeGreaterThan(0);
   });
 
   it('rejects a malformed or duplicated entry', () => {
-    expect(validatePublicRoutes([rule({ pattern: 'api/health' })]).join(' ')).toContain('must start with');
+    expect(validatePublicRoutes([rule({ pattern: 'api/health' })]).join(' ')).toContain(
+      'must start with',
+    );
     expect(validatePublicRoutes([rule(), rule()]).join(' ')).toContain('listed twice');
   });
 
   it('accepts a well formed entry', () => {
-    expect(validatePublicRoutes([rule(), rule({ pattern: '/api/cron/*', methods: ['POST'] })])).toEqual([]);
+    expect(
+      validatePublicRoutes([rule(), rule({ pattern: '/api/cron/*', methods: ['POST'] })]),
+    ).toEqual([]);
   });
 });

@@ -1,4 +1,12 @@
-import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, extname, join, relative, resolve, sep } from 'node:path';
 import ts from 'typescript';
@@ -58,10 +66,7 @@ const SERVER_ONLY_FILES = new Set([
 ]);
 
 /** Type-only imports of these are still one edit away from a Turbopack 500. */
-const TYPE_ONLY_FORBIDDEN = new Set([
-  ...SERVER_ONLY_FILES,
-  'app/(app)/admin/sandbox-providers/load-admin.ts',
-]);
+const TYPE_ONLY_FORBIDDEN = new Set([...SERVER_ONLY_FILES]);
 
 const ASSET_EXT = new Set([
   '.css',
@@ -130,13 +135,18 @@ function isTypeOnlyImport(node: ts.ImportDeclaration): boolean {
 }
 
 function importSpecs(source: string, fileName: string): Spec[] {
-  const kind = fileName.endsWith('.tsx') || fileName.endsWith('.jsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+  const kind =
+    fileName.endsWith('.tsx') || fileName.endsWith('.jsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
   const sf = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, kind);
   const specs: Spec[] = [];
   const visit = (node: ts.Node) => {
     if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
       specs.push({ spec: node.moduleSpecifier.text, isTypeOnly: isTypeOnlyImport(node) });
-    } else if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+    } else if (
+      ts.isExportDeclaration(node) &&
+      node.moduleSpecifier &&
+      ts.isStringLiteral(node.moduleSpecifier)
+    ) {
       specs.push({ spec: node.moduleSpecifier.text, isTypeOnly: node.isTypeOnly });
     } else if (
       ts.isCallExpression(node) &&
@@ -200,7 +210,9 @@ function hit(entry: string, reached: string, via: string[]): ClientImportHit {
   };
 }
 
-export function findClientImportBoundaryHits(options: { cwd?: string; roots?: string[] } = {}): ClientImportHit[] {
+export function findClientImportBoundaryHits(
+  options: { cwd?: string; roots?: string[] } = {},
+): ClientImportHit[] {
   const cwd = options.cwd ?? process.cwd();
   const rootDirs = options.roots ?? ROOTS.map((root) => join(cwd, root.dir));
   const files: string[] = [];
@@ -260,7 +272,9 @@ export function findClientImportBoundaryHits(options: { cwd?: string; roots?: st
 function clientEntries(cwd = process.cwd()): string[] {
   const files: string[] = [];
   for (const root of ROOTS) files.push(...tsFiles(join(cwd, root.dir)));
-  return files.filter((file) => hasUseClient(readFileSync(file, 'utf8'))).map((file) => posix(file, cwd));
+  return files
+    .filter((file) => hasUseClient(readFileSync(file, 'utf8')))
+    .map((file) => posix(file, cwd));
 }
 
 describe('client import boundary', () => {
@@ -271,7 +285,6 @@ describe('client import boundary', () => {
       const inRoot = entries.filter((file) => file.startsWith(`${root.dir}/`));
       expect(inRoot.length, `${root.dir} 'use client' count`).toBeGreaterThan(root.minFiles);
     }
-    expect(entries).toContain('app/(app)/admin/sandbox-providers/SandboxProvidersAdmin.tsx');
     expect(entries).toContain('components/workspace/ProjectWorkspace.tsx');
   });
 
@@ -281,7 +294,10 @@ describe('client import boundary', () => {
 
   it('names the Node builtin when a client file imports one', () => {
     const dir = mkdtempSync(join(tmpdir(), 'navroop-client-boundary-'));
-    writeFileSync(join(dir, 'Page.tsx'), `'use client';\nimport { resolve } from 'node:dns';\nexport const x = resolve;\n`);
+    writeFileSync(
+      join(dir, 'Page.tsx'),
+      `'use client';\nimport { resolve } from 'node:dns';\nexport const x = resolve;\n`,
+    );
     const hits = findClientImportBoundaryHits({ cwd: dir, roots: [dir] });
     expect(hits).toHaveLength(1);
     expect(hits[0]?.reached).toBe('node:dns');
@@ -292,8 +308,14 @@ describe('client import boundary', () => {
     const dir = mkdtempSync(join(tmpdir(), 'navroop-client-boundary-'));
     mkdirSync(join(dir, 'generated', 'prisma'), { recursive: true });
     writeFileSync(join(dir, 'generated', 'prisma', 'index.ts'), `export type Stack = 'NEXTJS';\n`);
-    writeFileSync(join(dir, 'types.ts'), `import type { Stack } from './generated/prisma';\nexport type Row = { stack: Stack };\n`);
-    writeFileSync(join(dir, 'Page.tsx'), `'use client';\nimport type { Row } from './types';\nexport type Props = { row: Row };\n`);
+    writeFileSync(
+      join(dir, 'types.ts'),
+      `import type { Stack } from './generated/prisma';\nexport type Row = { stack: Stack };\n`,
+    );
+    writeFileSync(
+      join(dir, 'Page.tsx'),
+      `'use client';\nimport type { Row } from './types';\nexport type Props = { row: Row };\n`,
+    );
     expect(findClientImportBoundaryHits({ cwd: dir, roots: [dir] })).toEqual([]);
   });
 
@@ -317,7 +339,10 @@ describe('client import boundary', () => {
       join(dir, 'action.ts'),
       `'use server';\nimport { resolve } from 'node:dns';\nexport async function run() { return resolve('example.com'); }\n`,
     );
-    writeFileSync(join(dir, 'Page.tsx'), `'use client';\nimport { run } from './action';\nexport const x = run;\n`);
+    writeFileSync(
+      join(dir, 'Page.tsx'),
+      `'use client';\nimport { run } from './action';\nexport const x = run;\n`,
+    );
     expect(findClientImportBoundaryHits({ cwd: dir, roots: [dir] })).toEqual([]);
   });
 
@@ -326,7 +351,10 @@ describe('client import boundary', () => {
     mkdirSync(join(dir, 'lib'));
     writeFileSync(join(dir, 'lib', 'logger.ts'), `export const log = {};\n`);
     writeFileSync(join(dir, 'helper.ts'), `import { log } from './lib/logger';\nexport { log };\n`);
-    writeFileSync(join(dir, 'Page.tsx'), `'use client';\nimport { log } from './helper';\nexport const x = log;\n`);
+    writeFileSync(
+      join(dir, 'Page.tsx'),
+      `'use client';\nimport { log } from './helper';\nexport const x = log;\n`,
+    );
     // mkdir for lib
     const hits = findClientImportBoundaryHits({ cwd: dir, roots: [dir] });
     expect(hits.map((row) => row.message)).toEqual([

@@ -27,7 +27,6 @@ const ICONS: Record<AdminIconName, LucideIcon> = {
   integrations: Plug,
   templates: LayoutTemplate,
   workspace: Building2,
-  'sandbox-providers': Cpu,
   servers: Server,
   backups: Archive,
   jobs: ListChecks,

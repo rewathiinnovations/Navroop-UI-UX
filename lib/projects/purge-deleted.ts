@@ -3,18 +3,6 @@ import { deleteObject, listKeys } from '@/lib/storage';
 import { adjustStorageBytes } from '@/lib/storage/usage';
 import { purgeDeletedDays } from '@/lib/checkpoints/retention';
 
-async function killProjectSandbox(projectId: string, sandboxId: string | null) {
-  if (!sandboxId) return;
-  try {
-    const mod = await import('@/lib/sandbox/manager');
-    if (typeof mod.killSandbox === 'function') {
-      await mod.killSandbox(projectId);
-    }
-  } catch (error) {
-    console.warn('[purge-projects] killSandbox skipped', projectId, error);
-  }
-}
-
 export async function purgeDeletedProjects() {
   const days = await purgeDeletedDays();
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
@@ -50,7 +38,6 @@ export async function purgeDeletedProjects() {
       project.checkpoints.reduce((sum, row) => sum + (row.snapshotBytes ?? 0), 0) +
       project.projectAssets.reduce((sum, row) => sum + row.sizeBytes, 0);
 
-    await killProjectSandbox(project.id, project.sandboxId);
     try {
       const { purgeProjectPublishResources } = await import('@/lib/publish/cleanup');
       await purgeProjectPublishResources(project.id);

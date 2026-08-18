@@ -17,7 +17,6 @@ import type {
 import { appConfig } from '@/config/app.config';
 import { buildUiUxProMaxBrief } from '@/lib/ui-ux-pro-max/build-design-brief';
 import { getSessionUser } from '@/lib/auth';
-import { ensureSandbox, SandboxBootError } from '@/lib/sandbox/manager';
 import { looksLikeUrl } from '@/lib/projects/prompt';
 import { attachGenerationInputTokens, logGenerationEvent } from '@/lib/usage-costs';
 import { buildCachedMessages } from '@/lib/generation/prompt-cache';
@@ -45,7 +44,19 @@ import {
   SANDBOX_READ_FAILED_NOTICE,
   shouldRetrySandboxFileRead,
 } from '@/lib/generation/sandbox-read-notices';
-import { readSandboxFiles } from '@/lib/sandbox/read-files';
+
+/**
+ * There is no sandbox to read from any more: a project's files live in the
+ * database and render in the browser. The follow-up paths below still ask for
+ * a live file listing, so this reports it as unavailable rather than
+ * pretending an empty project.
+ */
+async function readSandboxFiles(): Promise<
+  | { ok: true; files: Record<string, string>; manifest?: FileManifest }
+  | { ok: false; error: string }
+> {
+  return { ok: false, error: 'No live workspace — files are read from the project instead.' };
+}
 import { log, logError } from '@/lib/logger';
 import { trackFailure, trackStart, trackSuccess } from '@/lib/observability/track';
 import { acquireLock, beginLockHeartbeat, releaseLock } from '@/lib/projects/lock';
@@ -395,30 +406,6 @@ async function generateAiCodeStream(request: NextRequest) {
           kind: 'followup',
           isUrlClone: looksLikeUrl(String(prompt || '')),
         });
-      }
-      if (projectId) {
-        try {
-          await ensureSandbox(projectId, { allowEmpty: true });
-        } catch (error) {
-          if (error instanceof SandboxBootError && error.code === 'NO_CHECKPOINT') {
-            // First edit of a project with no snapshot can still generate into an empty workspace.
-          } else {
-            const message =
-              error instanceof Error
-                ? `The workspace for this project could not be started. ${error.message}`
-                : 'The workspace for this project could not be started';
-            if (generationJob) {
-              await failJob(generationJob.id, {
-                errorCode: 'sandbox_unavailable',
-                errorMessage: message,
-              });
-            }
-            jobHeartbeat?.stop();
-            providerSlot?.release();
-            await releaseGenerationLock?.();
-            return jsonError(message, 'SANDBOX_UNAVAILABLE', 503);
-          }
-        }
       }
     }
 
@@ -777,7 +764,7 @@ User request: "${prompt}"`;
                           );
 
                           const promptLower = prompt.toLowerCase();
-                          const allFilePaths = Object.keys(manifest.files);
+                          const allFilePaths = Object.keys(manifest?.files ?? {});
 
                           // Look for component names mentioned in the prompt
                           if (promptLower.includes('hero')) {
@@ -810,7 +797,7 @@ User request: "${prompt}"`;
                           }
                         }
 
-                        const allFiles = Object.keys(manifest.files).filter(
+                        const allFiles = Object.keys(manifest?.files ?? {}).filter(
                           (path) => !targetFiles.includes(path),
                         );
 

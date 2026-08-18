@@ -29,12 +29,11 @@ describe('generate-ai-code-stream provider and sandbox preflight', () => {
     expect(source).toMatch(/executeWithCompletionFailover\(/);
   });
 
-  it('fails the job with sandbox_unavailable instead of warning-and-continuing', () => {
+  it('does not boot anything before generating', () => {
+    // Generation writes files to the database and the browser renders them.
+    // There is no workspace to start, so no pre-flight can fail the job.
     const source = generateRouteSource();
-    expect(source).toMatch(/errorCode:\s*['"]sandbox_unavailable['"]/);
-    expect(source).not.toMatch(
-      /console\.warn\(\s*['"]\[generate-ai-code-stream\] ensureSandbox failed/,
-    );
+    expect(source).not.toMatch(/ensureSandbox\(/);
   });
 
   it('settles a streamed BUILD through settleStreamedGeneration, not a bare succeedJob', () => {
