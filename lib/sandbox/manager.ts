@@ -309,6 +309,20 @@ export async function pollPreviewReady(
   });
 }
 
+/** Try each configured provider's reconnect; first to claim the id wins. */
+async function probeAcrossProviders(sandboxId: string): Promise<SandboxProvider | null> {
+  const rows = await listProviderConfigs();
+  for (const row of rows.filter((r) => r.isActive).concat(rows.filter((r) => !r.isActive))) {
+    try {
+      const candidate = SandboxFactory.fromRow(row);
+      if (await candidate.reconnect(sandboxId, PROBE_MS)) return candidate;
+    } catch {
+      // This vendor does not know the id (or cannot answer) — try the next.
+    }
+  }
+  return null;
+}
+
 async function providerFromConfigId(configId: string | null | undefined) {
   if (configId) {
     // The stored row is honoured even when deactivated: probing or killing an
@@ -331,8 +345,23 @@ async function probeExisting(
   stack: string,
   configId?: string | null,
 ): Promise<{ provider: SandboxProvider; previewUrl: string } | null> {
-  const provider = await providerFromConfigId(configId);
-  const alive = await provider.reconnect(sandboxId, PROBE_MS);
+  let provider: SandboxProvider;
+  let alive: boolean;
+  if (configId) {
+    provider = await providerFromConfigId(configId);
+    alive = await provider.reconnect(sandboxId, PROBE_MS);
+  } else {
+    // No stored provider for this sandboxId (a failed boot's leftover row).
+    // Guessing one row and letting its error propagate blocked every apply:
+    // Modal was asked about an E2B sandbox, was certain the id was invalid,
+    // and the whole apply failed as "could not tell". Ask every configured
+    // provider; whichever recognizes the id owns it, and none of them
+    // recognizing it means the sandbox is gone — boot fresh.
+    const claimed = await probeAcrossProviders(sandboxId);
+    if (!claimed) return null;
+    provider = claimed;
+    alive = true;
+  }
   if (!alive) return null;
   const info = provider.getSandboxInfo();
   const previewUrl = usablePreviewUrl(info?.url || provider.getSandboxUrl());

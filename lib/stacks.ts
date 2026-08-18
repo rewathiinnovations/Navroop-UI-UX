@@ -151,7 +151,9 @@ const STACKS: Record<StackId, StackDefinition> = {
     id: 'ASTRO',
     label: 'Astro',
     hasNodeDependencies: true,
-    devCommand: 'astro dev',
+    // Must bind 0.0.0.0:5173 or the sandbox preview proxy gets 403/refused —
+    // astro's defaults are localhost:4321.
+    devCommand: 'astro dev --host 0.0.0.0 --port 5173',
     installCommand: 'npm install',
     fileExtension: '.astro',
     sandboxTemplate: GENERIC_NODE_SANDBOX,
@@ -208,7 +210,8 @@ const STACKS: Record<StackId, StackDefinition> = {
     hasNodeDependencies: true,
     // TODO(nuxt): Vue 3 + Vite only — not Nuxt. Nuxt SSR is a separate follow-up.
     // Do not implement Nuxt here (no nuxt.config, no pages/ Nuxt conventions).
-    devCommand: 'vite dev',
+    // --host: bind 0.0.0.0 so the sandbox preview proxy can reach the server.
+    devCommand: 'vite dev --host',
     installCommand: 'npm install',
     fileExtension: '.vue',
     sandboxTemplate: GENERIC_NODE_SANDBOX,
@@ -239,7 +242,8 @@ const STACKS: Record<StackId, StackDefinition> = {
     label: 'SvelteKit (Vite)',
     hasNodeDependencies: true,
     // SvelteKit's Vite-based `vite dev` (not `svelte-kit dev`).
-    devCommand: 'vite dev',
+    // --host: bind 0.0.0.0 so the sandbox preview proxy can reach the server.
+    devCommand: 'vite dev --host',
     installCommand: 'npm install',
     fileExtension: '.svelte',
     sandboxTemplate: GENERIC_NODE_SANDBOX,
