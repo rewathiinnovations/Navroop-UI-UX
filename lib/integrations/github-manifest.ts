@@ -50,6 +50,10 @@ export function githubConnectorsManifest(input: {
     default_permissions: {
       contents: 'write',
       metadata: 'read',
+      // Repo creation (POST /user/repos) with a user-to-server token requires
+      // Administration write on the app — without it every push fails with
+      // GitHub's "Resource not accessible by integration".
+      administration: 'write',
     },
     default_events: [],
   };
