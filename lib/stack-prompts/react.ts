@@ -11,8 +11,9 @@ STACK (REACT + VITE SPA):
 - Check App.jsx before adding files. Nav lives in Header.jsx when one exists.
 - Edits: 1 file for style/text; 2 files max for a new component. Never recreate the app.
 
-OUTPUT:
-<file path="src/index.css">@tailwind base; @tailwind components; @tailwind utilities;</file>
-<file path="src/App.jsx">composes Header, main sections, Footer</file>
-<file path="src/components/Header.jsx">...</file>`;
+FILES (at least three — never one monolith):
+- src/App.tsx composes Header, the page sections, and Footer.
+- src/components/*.tsx for each section.
+- src/index.css holds the Tailwind directives.
+Use TypeScript (.tsx/.ts) and relative imports.`;
 }

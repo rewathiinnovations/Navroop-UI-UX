@@ -16,6 +16,7 @@ import { recordRevertRate } from '@/lib/signals/collect';
 import { adjustStorageBytes, WORKSPACE_ROW_ID } from '@/lib/storage/usage';
 import { checkLimit } from '@/lib/plans/limits';
 import { gzipSync } from 'node:zlib';
+import { toLastCode } from '@/lib/projects/last-code';
 import { bumpContentVersion, withProjectLock } from '@/lib/projects/lock';
 import { lockConflictAction } from '@/lib/projects/lock-http';
 
@@ -281,9 +282,7 @@ async function writeCheckpointFiles(projectId: string, files: FileSnapshotEntry[
   if (files.length === 0) {
     throw new Error('Checkpoint has no files to write');
   }
-  const lastCode = files
-    .map((file) => `<file path="${file.path}">\n${file.content}\n</file>`)
-    .join('\n\n');
+  const lastCode = toLastCode(Object.fromEntries(files.map((file) => [file.path, file.content])));
   await prisma.project.update({
     where: { id: projectId },
     data: { lastCode },

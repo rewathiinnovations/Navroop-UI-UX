@@ -11,10 +11,20 @@ export type StackPromptContext = {
   assetManifest?: string;
 };
 
-export const COMPLETION_RULES = `OUTPUT:
+export const COMPLETION_RULES = `OUTPUT FORMAT:
+- Explain your work in one short paragraph, then emit the files.
+- Every file goes in its own fenced block whose opening tag carries the path:
+  \`\`\`tsx{path=src/App.tsx}
+  // full file contents
+  \`\`\`
+- REQUIRED: every fence carries {path=...}. Never open a bare \`\`\`tsx fence.
+- REQUIRED: the first line inside a fence is code, never a filename or comment
+  repeating the path.
+- Never list file names outside a fence.
+- Full relative paths from the project root, stable across turns.
 - Complete files only. Never truncate, ellipsis, or ask to continue.
-- Escape apostrophes; straight quotes only.
-- XML: <file path="...">full contents</file>`;
+- On a follow-up, emit only the files that change.
+- Escape apostrophes; straight quotes only.`;
 
 export function buildVolatilePromptSuffix(ctx?: StackPromptContext | null): string {
   if (!ctx) return '';

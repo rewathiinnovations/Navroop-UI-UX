@@ -20,10 +20,25 @@ type Listener = () => void;
 type JobHandler = (job: RuntimeJob) => Promise<void>;
 
 type RuntimeJob =
-  | { id: string; type: 'generate'; input: StartGenerationInput; resolve: (value: GenerateResult) => void; reject: (error: unknown) => void }
-  | { id: string; type: 'apply'; input: StartApplyInput; resolve: (value: ApplyResult) => void; reject: (error: unknown) => void };
+  | {
+      id: string;
+      type: 'generate';
+      input: StartGenerationInput;
+      resolve: (value: GenerateResult) => void;
+      reject: (error: unknown) => void;
+    }
+  | {
+      id: string;
+      type: 'apply';
+      input: StartApplyInput;
+      resolve: (value: ApplyResult) => void;
+      reject: (error: unknown) => void;
+    };
 
-let state: GenerationState = { ...INITIAL_GENERATION_STATE, generationProgress: { ...EMPTY_GENERATION_PROGRESS, files: [] } };
+let state: GenerationState = {
+  ...INITIAL_GENERATION_STATE,
+  generationProgress: { ...EMPTY_GENERATION_PROGRESS, files: [] },
+};
 const listeners = new Set<Listener>();
 const jobHandlers = new Set<JobHandler>();
 const jobQueue: RuntimeJob[] = [];
@@ -103,7 +118,9 @@ export function setGenerationSandboxData(sandboxData: SandboxData | null) {
   patchGenerationState({ sandboxData });
 }
 
-export function setGenerationMessages(messages: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[])) {
+export function setGenerationMessages(
+  messages: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[]),
+) {
   const next = typeof messages === 'function' ? messages(state.messages) : messages;
   patchGenerationState({ messages: next });
 }
@@ -111,7 +128,7 @@ export function setGenerationMessages(messages: ChatMessage[] | ((prev: ChatMess
 export function addGenerationMessage(
   content: string,
   type: ChatMessage['type'],
-  metadata?: ChatMessage['metadata']
+  metadata?: ChatMessage['metadata'],
 ) {
   setGenerationMessages((prev) => {
     if (type === 'system' && prev.length > 0) {
@@ -136,7 +153,7 @@ export function surfacePreviewNotice(notice: string | null | undefined) {
 }
 
 export function setGenerationProgressState(
-  progress: GenerationProgressState | ((prev: GenerationProgressState) => GenerationProgressState)
+  progress: GenerationProgressState | ((prev: GenerationProgressState) => GenerationProgressState),
 ) {
   const next = typeof progress === 'function' ? progress(state.generationProgress) : progress;
   patchGenerationState({
@@ -146,7 +163,7 @@ export function setGenerationProgressState(
 }
 
 export function setCodeApplicationState(
-  next: CodeApplicationState | ((prev: CodeApplicationState) => CodeApplicationState)
+  next: CodeApplicationState | ((prev: CodeApplicationState) => CodeApplicationState),
 ) {
   patchGenerationState({
     codeApplicationState: typeof next === 'function' ? next(state.codeApplicationState) : next,
@@ -173,7 +190,8 @@ function applyStreamedCode(prev: GenerationProgressState, text: string): Generat
     files: [...prev.files],
   };
 
-  const fileRegex = /<file path="([^"]+)">([^]*?)<\/file>/g;
+  // Completed fenced blocks: ```lang{path=…} … ```
+  const fileRegex = new RegExp('```[^\\n`]*\\{path=([^}\\n]+)\\}\\n([^]*?)\\n```', 'g');
   const processedFiles = new Set(prev.files.map((file) => file.path));
   let match: RegExpExecArray | null;
 
@@ -208,8 +226,11 @@ function applyStreamedCode(prev: GenerationProgressState, text: string): Generat
     processedFiles.add(filePath);
   }
 
-  const lastFileMatch = newStreamedCode.match(/<file path="([^"]+)">([^]*?)$/);
-  if (lastFileMatch && !lastFileMatch[0].includes('</file>')) {
+  // The block still streaming: an opener with no closing fence after it.
+  const lastFileMatch = newStreamedCode.match(
+    new RegExp('```[^\\n`]*\\{path=([^}\\n]+)\\}\\n([^]*?)$'),
+  );
+  if (lastFileMatch && !/\n```/.test(lastFileMatch[2])) {
     const filePath = lastFileMatch[1];
     const partialContent = lastFileMatch[2];
     if (!processedFiles.has(filePath)) {
@@ -454,7 +475,13 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
   if (response.ok && contentType.includes('application/json')) {
     const body = (await response.json().catch(() => ({}))) as { reused?: boolean };
     if (body.reused) {
-      return { generatedCode: '', explanation: '', packagesToInstall: [], skillNames: [], alreadyRunning: true };
+      return {
+        generatedCode: '',
+        explanation: '',
+        packagesToInstall: [],
+        skillNames: [],
+        alreadyRunning: true,
+      };
     }
   }
 
@@ -490,7 +517,9 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
   }
 
   if (!response.ok || !response.body) {
-    throw new Error(response.ok ? 'Failed to generate code' : `HTTP error! status: ${response.status}`);
+    throw new Error(
+      response.ok ? 'Failed to generate code' : `HTTP error! status: ${response.status}`,
+    );
   }
 
   const reader = response.body.getReader();
@@ -514,7 +543,9 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
       try {
         const data = JSON.parse(line.slice(6));
         if (data.type === 'skills' && Array.isArray(data.names)) {
-          skillNames = data.names.filter((name: unknown): name is string => typeof name === 'string' && Boolean(name.trim()));
+          skillNames = data.names.filter(
+            (name: unknown): name is string => typeof name === 'string' && Boolean(name.trim()),
+          );
           setGenerationMessages((prev) => {
             const next = [...prev];
             for (let i = next.length - 1; i >= 0; i -= 1) {
@@ -558,7 +589,10 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
         } else if (data.type === 'stream' && data.raw) {
           setGenerationProgressState((prev) => applyStreamedCode(prev, data.text));
         } else if (data.type === 'app') {
-          setGenerationProgressState((prev) => ({ ...prev, status: 'Generated App.jsx structure' }));
+          setGenerationProgressState((prev) => ({
+            ...prev,
+            status: 'Generated App.jsx structure',
+          }));
         } else if (data.type === 'component') {
           setGenerationProgressState((prev) => ({
             ...prev,
@@ -576,13 +610,17 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
           explanation = data.explanation || '';
           packagesToInstall = data.packagesToInstall || [];
           if (Array.isArray(data.skillNames) && data.skillNames.length > 0) {
-            skillNames = data.skillNames.filter((name: unknown): name is string => typeof name === 'string');
+            skillNames = data.skillNames.filter(
+              (name: unknown): name is string => typeof name === 'string',
+            );
           }
           if (packagesToInstall.length > 0 && typeof window !== 'undefined') {
-            (window as unknown as { pendingPackages?: string[] }).pendingPackages = packagesToInstall;
+            (window as unknown as { pendingPackages?: string[] }).pendingPackages =
+              packagesToInstall;
           }
           patchGenerationState({ lastGeneratedCode: generatedCode || null });
-          const fileRegex = /<file path="([^"]+)">([^]*?)<\/file>/g;
+          // Completed fenced blocks: ```lang{path=…} … ```
+          const fileRegex = new RegExp('```[^\\n`]*\\{path=([^}\\n]+)\\}\\n([^]*?)\\n```', 'g');
           const parsedFiles: GenerationFile[] = [];
           let fileMatch: RegExpExecArray | null;
           while (generatedCode && (fileMatch = fileRegex.exec(generatedCode)) !== null) {
@@ -595,7 +633,7 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
           }
           setGenerationProgressState((prev) => ({
             ...prev,
-            status: `Generated ${(parsedFiles.length > 0 ? parsedFiles.length : prev.files.length)} file${(parsedFiles.length > 0 ? parsedFiles.length : prev.files.length) !== 1 ? 's' : ''}!`,
+            status: `Generated ${parsedFiles.length > 0 ? parsedFiles.length : prev.files.length} file${(parsedFiles.length > 0 ? parsedFiles.length : prev.files.length) !== 1 ? 's' : ''}!`,
             isGenerating: false,
             isStreaming: false,
             isThinking: false,
@@ -698,14 +736,20 @@ async function runApplyStream(input: StartApplyInput): Promise<ApplyResult> {
           case 'step':
             if (data.message?.includes('Installing') && data.packages) {
               setCodeApplicationState({ stage: 'installing', packages: data.packages });
-            } else if (data.message?.includes('Creating files') || data.message?.includes('Applying')) {
+            } else if (
+              data.message?.includes('Creating files') ||
+              data.message?.includes('Applying')
+            ) {
               setCodeApplicationState({ stage: 'applying', filesGenerated: [] });
             }
             break;
           case 'package-progress':
           case 'success':
             if (data.installedPackages) {
-              setCodeApplicationState((prev) => ({ ...prev, installedPackages: data.installedPackages }));
+              setCodeApplicationState((prev) => ({
+                ...prev,
+                installedPackages: data.installedPackages,
+              }));
             }
             break;
           case 'command':
@@ -714,7 +758,9 @@ async function runApplyStream(input: StartApplyInput): Promise<ApplyResult> {
             }
             break;
           case 'command-progress':
-            addGenerationMessage(`${data.action} command: ${data.command}`, 'command', { commandType: 'input' });
+            addGenerationMessage(`${data.action} command: ${data.command}`, 'command', {
+              commandType: 'input',
+            });
             break;
           case 'command-output':
             addGenerationMessage(data.output, 'command', {
@@ -723,8 +769,10 @@ async function runApplyStream(input: StartApplyInput): Promise<ApplyResult> {
             break;
           case 'command-complete':
             addGenerationMessage(
-              data.success ? 'Command completed successfully' : `Command failed with exit code ${data.exitCode}`,
-              'system'
+              data.success
+                ? 'Command completed successfully'
+                : `Command failed with exit code ${data.exitCode}`,
+              'system',
             );
             break;
           case 'complete':
@@ -735,7 +783,10 @@ async function runApplyStream(input: StartApplyInput): Promise<ApplyResult> {
             }, 3000);
             break;
           case 'error':
-            addGenerationMessage(`Error: ${data.message || data.error || 'Unknown error'}`, 'system');
+            addGenerationMessage(
+              `Error: ${data.message || data.error || 'Unknown error'}`,
+              'system',
+            );
             break;
           case 'warning':
           case 'info':

@@ -102,7 +102,13 @@ afterAll(async () => {
 describe('settleStreamedGeneration — stream files are not a finished site', () => {
   it('persists the streamed code server-side and succeeds, even with the sandbox dead', async () => {
     const job = await startBuild();
-    const streamedCode = '<file path="app/page.tsx">export default function Page() { return null; }</file>';
+    // The model replies in fenced blocks; lastCode is stored as <file> blocks.
+    const streamedCode = [
+      'Here is the page.',
+      '```tsx{path=app/page.tsx}',
+      'export default function Page() { return null; }',
+      '```',
+    ].join('\n');
 
     const settled = await settleStreamedGeneration({
       jobId: job.id,
@@ -120,10 +126,15 @@ describe('settleStreamedGeneration — stream files are not a finished site', ()
       where: { id: PROJECT },
       select: { lastCode: true, phase: true },
     });
-    expect(project.lastCode).toBe(streamedCode);
+    expect(project.lastCode).toBe(
+      [
+        '<file path="app/page.tsx">',
+        'export default function Page() { return null; }',
+        '</file>',
+      ].join('\n'),
+    );
     expect(project.phase).toBe('COMPLETE');
   });
-
 
   it('does not settle SUCCEEDED+COMPLETE with lastCode null when sandbox/persist missed', async () => {
     const job = await startBuild();
@@ -175,7 +186,13 @@ describe('settleStreamedGeneration — stack mismatch', () => {
     // The live Ember & Oak REACT build: gpt-4o-mini wrote a lone Next.js
     // app/page.tsx for a Vite project; it settled SUCCEEDED and the sandbox
     // then died booting it (npm ENOENT, no package.json).
-    const streamedCode = '<file path="app/page.tsx">export default function Page() { return null; }</file>';
+    // The model replies in fenced blocks; lastCode is stored as <file> blocks.
+    const streamedCode = [
+      'Here is the page.',
+      '```tsx{path=app/page.tsx}',
+      'export default function Page() { return null; }',
+      '```',
+    ].join('\n');
 
     const settled = await settleStreamedGeneration({
       jobId: job.id,

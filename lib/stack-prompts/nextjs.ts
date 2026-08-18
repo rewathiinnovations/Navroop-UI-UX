@@ -7,8 +7,8 @@ STACK (NEXT.JS — NOT a Vite/React SPA):
 - .tsx only. No src/App.jsx, vite.config, pages/ router, or react-router-dom.
 - Prefer next/link and next/image.
 
-OUTPUT:
-<file path="app/layout.tsx">root html/body + fonts + tokens</file>
-<file path="app/page.tsx">home</file>
-<file path="app/about/page.tsx">one page.tsx per extra route</file>`;
+FILES (at least three — never one monolith):
+- app/layout.tsx for root html/body, fonts and tokens.
+- app/page.tsx for the home route, one page.tsx per extra route.
+- components/*.tsx for each section.`;
 }

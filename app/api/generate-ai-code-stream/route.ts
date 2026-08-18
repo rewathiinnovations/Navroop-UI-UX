@@ -20,7 +20,14 @@ import { getSessionUser } from '@/lib/auth';
 import { looksLikeUrl } from '@/lib/projects/prompt';
 import { attachGenerationInputTokens, logGenerationEvent } from '@/lib/usage-costs';
 import { buildCachedMessages } from '@/lib/generation/prompt-cache';
-import { parseGeneratedFilesLenient } from '@/lib/generation/parse-files';
+import { filesFromReply } from '@/lib/generation/parse-blocks';
+
+/** Markdown code fence, kept in a constant so prompt strings stay readable. */
+const FENCE = '```';
+/** An opening fence carrying a {path=...} tag. */
+const FENCE_OPEN_RE = /```[^\n`]*\{path=([^}\n]+)\}/;
+/** A closing fence at the start of a line. */
+const FENCE_CLOSE_RE = /\n```/;
 import { selectFileContext } from '@/lib/generation/selective-context';
 import { resolveInputTokens } from '@/lib/generation/token-estimate';
 import {
@@ -1449,18 +1456,12 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
             contextParts.push(
               "ONLY create or modify the specific files needed for the user's request.",
             );
-            contextParts.push('\n⚠️ CRITICAL FILE OUTPUT FORMAT - VIOLATION = FAILURE:');
-            contextParts.push('YOU MUST OUTPUT EVERY FILE IN THIS EXACT XML FORMAT:');
-            contextParts.push('<file path="src/components/ComponentName.jsx">');
+            contextParts.push('\nFILE OUTPUT FORMAT — every file in its own fenced block:');
+            contextParts.push(`${FENCE}tsx{path=src/components/ComponentName.tsx}`);
             contextParts.push('// Complete file content here');
-            contextParts.push('</file>');
-            contextParts.push('<file path="src/index.css">');
-            contextParts.push('/* CSS content here */');
-            contextParts.push('</file>');
-            contextParts.push('\n❌ NEVER OUTPUT: "Generated Files: index.css, App.jsx"');
-            contextParts.push('❌ NEVER LIST FILE NAMES WITHOUT CONTENT');
-            contextParts.push('✅ ALWAYS: One <file> tag per file with COMPLETE content');
-            contextParts.push('✅ ALWAYS: Include EVERY file you modified');
+            contextParts.push(FENCE);
+            contextParts.push('Never list file names as plain text outside a fence.');
+            contextParts.push('Include every file you changed, with its complete contents.');
           } else if (!hasBackendFiles) {
             // First generation mode - make it beautiful!
             contextParts.push('\n🎨 FIRST GENERATION MODE - CREATE SOMETHING BEAUTIFUL!');
@@ -1477,9 +1478,11 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
             contextParts.push(
               '\nCreate a polished, professional application that works perfectly on first load.',
             );
-            contextParts.push('\n⚠️ OUTPUT FORMAT:');
-            contextParts.push('Use <file path="...">content</file> tags for EVERY file');
-            contextParts.push('NEVER output "Generated Files:" as plain text');
+            contextParts.push('\nOUTPUT FORMAT:');
+            contextParts.push(
+              `Every file in its own path-tagged fence: ${FENCE}tsx{path=src/App.tsx}`,
+            );
+            contextParts.push('Never list file names as plain text outside a fence.');
           }
 
           // Add conversation context (scraped websites, etc)
@@ -1515,9 +1518,9 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
               contextParts.push(
                 '\nIf you need to create a NEW file, then and only then output a full file:',
               );
-              contextParts.push('<file path="src/components/NewComponent.jsx">');
+              contextParts.push(`${FENCE}tsx{path=src/components/NewComponent.tsx}`);
               contextParts.push('// Full file content when creating new files');
-              contextParts.push('</file>');
+              contextParts.push(FENCE);
             }
             fullPrompt = `CONTEXT:\n${contextParts.join('\n')}\n\nUSER REQUEST:\n${prompt}`;
           }
@@ -1689,22 +1692,22 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
                 // Keep unmatched portion in buffer for next iteration
                 tagBuffer = searchText.substring(Math.max(0, lastIndex - 50)); // Keep last 50 chars
 
-                // Check for file boundaries
-                if (text.includes('<file path="')) {
-                  const pathMatch = text.match(/<file path="([^"]+)"/);
-                  if (pathMatch) {
-                    currentFilePath = pathMatch[1];
-                    isInFile = true;
-                    currentFile = text;
-                  }
+                // Track fenced file blocks as they stream: an opener with a
+                // {path=...} tag starts a file, and the next opener or the
+                // closing fence ends it.
+                const openMatch = text.match(FENCE_OPEN_RE);
+                if (openMatch) {
+                  currentFilePath = openMatch[1].trim().replace(/^\.?\//, '');
+                  isInFile = true;
+                  currentFile = '';
                 }
 
-                // Check for file end
-                if (isInFile && currentFile.includes('</file>')) {
+                if (isInFile && currentFilePath && FENCE_CLOSE_RE.test(currentFile)) {
                   isInFile = false;
-                  const closed = currentFile.match(/<file path="[^"]+">([\s\S]*?)<\/file>/);
-                  if (jobProgress && currentFilePath) {
-                    const content = (closed?.[1] ?? '').trim();
+                  const body = currentFile.split(FENCE_CLOSE_RE)[0] ?? '';
+                  if (jobProgress) {
+                    // Drop the remainder of the opener line before the body.
+                    const content = body.replace(/^[^\n]*\n/, '').trim();
                     const fileAbort = capTracker.addFile(currentFilePath, content);
                     jobProgress.addFile(currentFilePath, content);
                     if (fileAbort) {
@@ -1712,7 +1715,6 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
                       throw fileAbort;
                     }
                   }
-
                   // Send component progress update
                   if (currentFilePath.includes('components/')) {
                     componentCount++;
@@ -1807,12 +1809,11 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
                 return packages;
               }
 
-              // Parse files and send progress for each. The lenient parser survives
-              // omitted </file> tags and mid-file truncation — the strict regex used
-              // to drop every file in that case and discard the whole stream.
-              for (const parsed of parseGeneratedFilesLenient(generatedCode)) {
-                const filePath = parsed.path;
-                const content = parsed.content;
+              // Parse files and send progress for each. The block parser carries
+              // llamacoder's tolerances for how models actually break the fence
+              // format — a glued opener, the path tag on the next line, a split
+              // closing brace, a stream cut before the final fence.
+              for (const [filePath, content] of Object.entries(filesFromReply(generatedCode))) {
                 const safe = sanitizeGenerationPath(filePath);
                 if (!safe.ok) continue;
                 files.push({ path: safe.path, content });
@@ -1863,9 +1864,8 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
                 model: entry.model,
                 chars: summary.chars,
                 preview: summary.preview,
-                fileOpen: summary.fileOpen,
-                fileClose: summary.fileClose,
-                markdownFences: summary.markdownFences,
+                pathFences: summary.pathFences,
+                fences: summary.fences,
               });
               return {
                 generatedCode,

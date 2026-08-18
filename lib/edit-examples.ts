@@ -19,10 +19,10 @@ INCORRECT APPROACH:
 - Modifying unrelated files
 
 EXPECTED OUTPUT:
-<file path="src/components/Header.jsx">
+\`\`\`jsx{path=src/components/Header.jsx}
 // Only the Header component with updated background
 // Preserving all existing functionality
-</file>
+\`\`\`
 
 ### Example 2: Add New Page
 USER: "Add a videos page"
@@ -37,13 +37,13 @@ INCORRECT APPROACH:
 - Recreating all existing pages
 
 EXPECTED OUTPUT:
-<file path="src/components/Videos.jsx">
+\`\`\`jsx{path=src/components/Videos.jsx}
 // New Videos component
-</file>
+\`\`\`
 
-<file path="src/App.jsx">
+\`\`\`jsx{path=src/App.jsx}
 // ONLY the routing update, preserving everything else
-</file>
+\`\`\`
 
 ### Example 3: Fix Styling Issue
 USER: "Fix the button styling on mobile"
@@ -79,16 +79,16 @@ CORRECT APPROACH:
 3. Add <Newsletter /> in the appropriate place in Footer
 
 EXPECTED OUTPUT:
-<file path="src/components/Newsletter.jsx">
+\`\`\`jsx{path=src/components/Newsletter.jsx}
 // New Newsletter component
-</file>
+\`\`\`
 
-<file path="src/components/Footer.jsx">
+\`\`\`jsx{path=src/components/Footer.jsx}
 // Updated Footer with Newsletter import and usage
 import Newsletter from './Newsletter';
 // ... existing code ...
 // Add <Newsletter /> in the render
-</file>
+\`\`\`
 
 ### Example 6: Add External Library
 USER: "Add animations with framer-motion to the hero"
@@ -99,10 +99,10 @@ CORRECT APPROACH:
 3. System will auto-install framer-motion
 
 EXPECTED OUTPUT:
-<file path="src/components/Hero.jsx">
+\`\`\`jsx{path=src/components/Hero.jsx}
 import { motion } from 'framer-motion';
 // ... rest of Hero with motion animations
-</file>
+\`\`\`
 
 ### Example 7: Remove Element
 USER: "Remove start deploying button"
@@ -118,10 +118,10 @@ INCORRECT APPROACH:
 - Redesigning the entire Hero
 
 EXPECTED OUTPUT:
-<file path="src/components/Hero.jsx">
+\`\`\`jsx{path=src/components/Hero.jsx}
 // Hero component with "start deploying" button removed
 // All other content preserved
-</file>
+\`\`\`
 
 ### Example 8: Delete Section
 USER: "Delete the testimonials section"
@@ -146,7 +146,7 @@ CORRECT APPROACH:
 5. Return the entire file, completely unchanged except for that single class modification.
 
 **Original File Content (BEFORE):**
-<file path="src/components/Hero.jsx">
+\`\`\`jsx{path=src/components/Hero.jsx}
 import React from 'react';
 
 export default function Hero() {
@@ -160,10 +160,10 @@ export default function Hero() {
     </div>
   );
 }
-</file>
+\`\`\`
 
 **Expected Output (AFTER):**
-<file path="src/components/Hero.jsx">
+\`\`\`jsx{path=src/components/Hero.jsx}
 import React from 'react';
 
 export default function Hero() {
@@ -177,7 +177,7 @@ export default function Hero() {
     </div>
   );
 }
-</file>
+\`\`\`
 
 NOTICE: Everything remains EXACTLY the same except 'bg-gray-900' → 'bg-blue-500'. 
 - The button still has bg-blue-600 (unchanged)

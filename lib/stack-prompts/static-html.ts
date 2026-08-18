@@ -7,7 +7,8 @@ STACK (STATIC HTML — NO FRAMEWORK, NO JSX, NO BUILD TOOLS):
 - NO Vite, Next.js, npm scripts, package.json, or bundler config.
 - Tailwind via CDN in <head> (https://cdn.tailwindcss.com). querySelector + addEventListener.
 
-OUTPUT:
-<file path="index.html"><!DOCTYPE html>… Tailwind CDN + page</file>
-<file path="about.html">additional pages as needed</file>`;
+FILES:
+- index.html is the entry: full document, Tailwind CDN in the head.
+- One .html per additional page, linked relatively.
+- styles.css / script.js only if the page needs more than utilities.`;
 }
