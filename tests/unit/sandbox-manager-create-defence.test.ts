@@ -36,8 +36,12 @@ describe('manager last-resort preview URL copy', () => {
     expect(sandboxCreatedWithoutPreviewUrlMessage('modal')).toBe(
       'Modal created a sandbox without a preview URL. The unused sandbox was asked to stop. Try again, or ask an admin to test the Modal provider on /admin/sandbox-providers.',
     );
+    // `row.driver`, not `selectedConfig.driver`: the missing-URL check moved inside the
+    // `createWithFailover` callback so the next provider gets a turn, and there the driver
+    // under test is the loop's candidate. The point of the assertion — that the sentence
+    // names a driver rather than being anonymous — is unchanged.
     expect(managerSource).toMatch(
-      /sandboxCreatedWithoutPreviewUrlMessage\(\s*selectedConfig\.driver\s*\)/,
+      /sandboxCreatedWithoutPreviewUrlMessage\(\s*row\.driver\s*\)/,
     );
     expect(managerSource).not.toMatch(
       /SandboxBootError\(\s*'dev',\s*'Sandbox created without a preview URL'/,

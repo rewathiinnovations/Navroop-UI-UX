@@ -77,7 +77,18 @@ test.describe('journey 2 — create project from a prompt', () => {
 
     const prompt = 'A one-page site for a neighbourhood bike repair shop';
     await page.getByPlaceholder(PROMPT_PLACEHOLDER).fill(prompt);
-    await page.getByRole('button', { name: 'Create project' }).click();
+
+    // Asserted rather than clicked straight through, because the failure this catches is
+    // silent: `useDraftStorage` restores the saved draft in a mount effect, and the textarea
+    // is server rendered, so it takes input before that effect runs. While the restore was
+    // unconditional it overwrote the typed prompt with the empty string and the button —
+    // disabled on an empty value — greyed back out. Clicking directly reports only
+    // "element is not enabled" after the full timeout, which says nothing about why.
+    const submit = page.getByRole('button', { name: 'Create project' });
+    await expect(submit, 'the typed prompt must survive draft hydration').toBeEnabled({
+      timeout: 30_000,
+    });
+    await submit.click();
 
     // The workspace top bar renders the stored name in an editable field. It exists only
     // once `/project/[id]` has loaded a project row, so this is the assertion that the

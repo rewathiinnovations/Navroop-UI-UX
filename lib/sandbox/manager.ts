@@ -36,7 +36,7 @@ import { checkSandboxMinutes, accrueProjectSandboxMinutes } from '@/lib/sandbox/
 import { idleMinutesFromEnv } from '@/lib/sandbox/minutes';
 import { DRIVER_CAPABILITIES, NoProviderAvailableError } from '@/lib/sandbox/provider';
 import { selectProvider, toCandidate } from '@/lib/sandbox/router';
-import { createWithFailover } from '@/lib/sandbox/failover';
+import { createWithFailover, isSandboxBootFailover } from '@/lib/sandbox/failover';
 import { getProviderConfig, listProviderConfigs } from '@/lib/sandbox/store';
 import { accrueProviderUsage, rollAllProviderPeriods } from '@/lib/sandbox/accounting';
 import { migrateEnvSandboxProvider } from '@/lib/sandbox/migrate-env';
@@ -623,14 +623,68 @@ async function bootProject(
         .map(toCandidate)
         .filter((row) => row.id !== selected.id),
     ];
+    // The whole boot runs inside the failover, not just `createSandbox`.
+    //
+    // Creating the VM was the only step covered before, and it is the step that almost
+    // never fails: a provider hands back a handle and then never serves the dev server.
+    // That threw out here, past the loop, so one flaky provider failed every build on the
+    // instance while the next candidate — a different vendor, with credit — was never
+    // asked. Restore, install, the preview URL and the readiness poll all belong inside,
+    // and a provider that fails any of them is torn down before the next one is tried.
     const created = await createWithFailover({
       candidates: ordered,
+      isFailoverError: (error) => isSandboxBootFailover(error),
       create: async (row) => {
         const stored = await getProviderConfig(row.id);
         if (!stored) throw new Error('Provider config missing');
         const driver = SandboxFactory.fromRow(stored);
         const info = await createSandboxOrTerminate(driver, stack);
-        return { driver, info, row };
+        // Past this point the VM exists and is billable, so every exit that is not a
+        // usable preview has to stop it before handing the next candidate a turn.
+        try {
+          if (files.length > 0) {
+            setStep(projectId, 'restore');
+            await writeFiles(driver, files);
+            setStep(projectId, 'install');
+            await driver.installAndStartDev(stack);
+          } else {
+            setStep(projectId, 'install');
+            await driver.setupViteApp(stack);
+          }
+
+          setStep(projectId, 'dev');
+          const publicUrl = DRIVER_CAPABILITIES[row.driver]?.publicPreviewUrl;
+          const previewUrl = driver.getSandboxUrl() || info.url || '';
+          if (!previewUrl && publicUrl) {
+            throw new SandboxBootError('dev', sandboxCreatedWithoutPreviewUrlMessage(row.driver), {
+              requestId,
+            });
+          }
+
+          setStep(projectId, 'ready');
+          if (publicUrl && previewUrl) {
+            await pollPreviewReady(previewUrl, requestId, { driver: row.driver });
+          }
+          return { driver, info, row, previewUrl, publicUrl };
+        } catch (error) {
+          const outcome = await teardownProvider(driver);
+          await recordTeardownIfLeaked(outcome, {
+            projectId,
+            providerConfigId: row.id,
+            driver: row.driver,
+            source: 'boot',
+          });
+          // Re-word with what teardown actually managed, so the reader is told whether the
+          // abandoned VM is still costing them anything.
+          if (error instanceof SandboxBootError) {
+            throw new SandboxBootError(
+              error.step,
+              applySandboxBootTeardownOutcome(error, row.driver, outcome),
+              { code: error.code, requestId: error.requestId, previewLastError: error.previewLastError },
+            );
+          }
+          throw error;
+        }
       },
       onAttempt: async (attempt) => {
         attempts.push(attempt);
@@ -648,40 +702,22 @@ async function bootProject(
           await recordSandboxAttempts(project.activeJobId, attempts, null);
           return;
         }
-        // create() returning a handle is not a READY boot — persist ok:true after poll.
+        // A handle is not a READY boot, but this callback now runs after the readiness
+        // poll, so ok:true here does mean the preview answered.
       },
     });
     provider = created.driver;
     selectedConfig = created.row;
     const createdInfo = created.info;
+    const previewUrl = created.previewUrl;
 
-    if (files.length > 0) {
-      setStep(projectId, 'restore');
-      await writeFiles(provider, files);
-      setStep(projectId, 'install');
-      await provider.installAndStartDev(stack);
-    } else {
-      setStep(projectId, 'install');
-      await provider.setupViteApp(stack);
-    }
-
-    setStep(projectId, 'dev');
-    const publicUrl = DRIVER_CAPABILITIES[selectedConfig.driver]?.publicPreviewUrl;
-    const previewUrl = provider.getSandboxUrl() || createdInfo.url || '';
-    if (!previewUrl && publicUrl) {
-      throw new SandboxBootError('dev', sandboxCreatedWithoutPreviewUrlMessage(selectedConfig.driver), {
-        requestId,
-      });
-    }
-    if (!publicUrl) {
+    // Deferred out of the loop deliberately: written for the provider that actually won,
+    // so failing over from a static-only vendor to a public-preview one cannot leave the
+    // project pinned to STATIC.
+    if (!created.publicUrl) {
       await prisma.$executeRaw`
         UPDATE "Project" SET "previewMode" = 'STATIC'::"PreviewMode" WHERE id = ${projectId}
       `;
-    }
-
-    setStep(projectId, 'ready');
-    if (publicUrl && previewUrl) {
-      await pollPreviewReady(previewUrl, requestId, { driver: selectedConfig.driver });
     }
 
     bindLegacyGlobals(provider, stack);
