@@ -1,6 +1,20 @@
 'use client';
 
+import {
+  AlertOctagon,
+  Brain,
+  Bug,
+  DollarSign,
+  FolderOpen,
+  ShieldAlert,
+  Sparkles,
+  Users2,
+} from 'lucide-react';
+import AdminCard from '@/components/admin/AdminCard';
 import AdminPage from '@/components/admin/AdminPage';
+import { AdminTable, Td, Th, Tr } from '@/components/admin/AdminTable';
+import StatTile from '@/components/admin/StatTile';
+import StatusBanner from '@/components/admin/StatusBanner';
 import { Fragment, FormEvent, useEffect, useMemo, useState } from 'react';
 import StudioButton from '@/components/app/studio/StudioButton';
 import StudioField from '@/components/app/studio/StudioField';
@@ -191,76 +205,62 @@ export default function UsageDashboard() {
 
   return (
     <AdminPage
+      icon="usage"
       title="Usage"
       description="What was generated, by whom, and what it cost."
       width="wide"
+      actions={
+        <form onSubmit={applyRange} className="flex flex-wrap items-end gap-8">
+          <StudioField
+            id="usage-from"
+            label="From"
+            type="date"
+            value={from}
+            onChange={(event) => setFrom(event.target.value)}
+            required
+          />
+          <StudioField
+            id="usage-to"
+            label="To"
+            type="date"
+            value={to}
+            onChange={(event) => setTo(event.target.value)}
+            required
+          />
+          <StudioButton type="submit" variant="ghost" disabled={loading}>
+            Apply
+          </StudioButton>
+        </form>
+      }
     >
-      <form onSubmit={applyRange} className="mb-24 flex flex-col gap-12 sm:flex-row sm:items-end">
-        <StudioField
-          id="usage-from"
-          label="From"
-          type="date"
-          value={from}
-          onChange={(event) => setFrom(event.target.value)}
-          required
-        />
-        <StudioField
-          id="usage-to"
-          label="To"
-          type="date"
-          value={to}
-          onChange={(event) => setTo(event.target.value)}
-          required
-        />
-        <StudioButton type="submit" variant="ghost" disabled={loading}>
-          Apply
-        </StudioButton>
-      </form>
+      {error && <StatusBanner tone="error">{error}</StatusBanner>}
 
-      {error && (
-        <p className="mb-16 text-[13px] text-[var(--studio-danger)]" role="alert">
-          {error}
-        </p>
-      )}
-
-      <div className="mb-24 grid grid-cols-1 gap-12 sm:grid-cols-3">
-        {[
-          { label: 'Total Projects', value: summary ? String(summary.totalProjects) : '—' },
-          { label: 'Total Generations', value: summary ? String(summary.totalGenerations) : '—' },
-          {
-            label: 'Estimated Spend',
-            value: summary ? formatMoney(summary.totalEstimatedCost) : '—',
-            hint: 'Estimate — not live billing',
-          },
-        ].map((card) => (
-          <div
-            key={card.label}
-            className="rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-18"
-          >
-            <p className="text-[12px] uppercase tracking-[0.08em] text-[var(--studio-faint)]">
-              {card.label}
-            </p>
-            <p className="mt-8 text-[28px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">
-              {card.value}
-            </p>
-            {'hint' in card && card.hint && (
-              <p className="mt-4 text-[12px] text-[var(--studio-muted)]">{card.hint}</p>
-            )}
-          </div>
-        ))}
+      <div className="grid grid-cols-1 gap-12 sm:grid-cols-3">
+        <StatTile
+          icon={<FolderOpen className="size-16" aria-hidden />}
+          value={summary ? summary.totalProjects : '—'}
+          label="Total projects"
+        />
+        <StatTile
+          icon={<Users2 className="size-16" aria-hidden />}
+          value={summary ? summary.totalGenerations : '—'}
+          label="Total generations"
+        />
+        <StatTile
+          icon={<DollarSign className="size-16" aria-hidden />}
+          value={summary ? formatMoney(summary.totalEstimatedCost) : '—'}
+          label="Estimated spend"
+          hint="Estimate — not live billing"
+        />
       </div>
 
       {teardownLeaks.open.length > 0 && (
-        <section className="mb-24 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-16">
-          <h2 className="text-[16px] font-medium text-[var(--studio-fg)]">
-            Sandboxes that could not be stopped
-          </h2>
-          <p className="mt-4 text-[12px] text-[var(--studio-muted)]">
-            A kill was asked and the provider did not confirm the VM is gone. These may still be
-            billed. {teardownLeaks.total} recorded; {teardownLeaks.open.length} still open. The idle
-            reaper retries them unless the provider circuit is open.
-          </p>
-          <ul className="mt-12 space-y-8">
+        <AdminCard
+          icon={<AlertOctagon className="size-14" aria-hidden />}
+          title="Sandboxes that could not be stopped"
+          description={`A kill was asked and the provider did not confirm the VM is gone. These may still be billed. ${teardownLeaks.total} recorded; ${teardownLeaks.open.length} still open. The idle reaper retries them unless the provider circuit is open.`}
+        >
+          <ul className="space-y-8">
             {teardownLeaks.open.map((leak) => (
               <li
                 key={`${leak.projectId || 'none'}:${leak.sandboxId || leak.at}`}
@@ -273,19 +273,16 @@ export default function UsageDashboard() {
               </li>
             ))}
           </ul>
-        </section>
+        </AdminCard>
       )}
 
       {ssrfRejects.total > 0 && (
-        <section className="mb-24 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-16">
-          <h2 className="text-[16px] font-medium text-[var(--studio-fg)]">
-            Private-range import blocks
-          </h2>
-          <p className="mt-4 text-[12px] text-[var(--studio-muted)]">
-            Repeated SSRF-style import attempts (private / localhost / link-local).{' '}
-            {ssrfRejects.total} total.
-          </p>
-          <ul className="mt-12 space-y-8">
+        <AdminCard
+          icon={<ShieldAlert className="size-14" aria-hidden />}
+          title="Private-range import blocks"
+          description={`Repeated SSRF-style import attempts (private / localhost / link-local). ${ssrfRejects.total} total.`}
+        >
+          <ul className="space-y-8">
             {Object.entries(ssrfRejects.byUser)
               .sort((a, b) => b[1] - a[1])
               .map(([userId, count]) => {
@@ -303,18 +300,16 @@ export default function UsageDashboard() {
                 );
               })}
           </ul>
-        </section>
+        </AdminCard>
       )}
 
       {qualityIssues.length > 0 && (
-        <section className="mb-24 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-16">
-          <h2 className="text-[16px] font-medium text-[var(--studio-fg)]">
-            Recurring code-quality issues
-          </h2>
-          <p className="mt-4 text-[12px] text-[var(--studio-muted)]">
-            Frequent finding categories across recent CodeAudits — use these to tighten base-rules.
-          </p>
-          <ul className="mt-12 space-y-8">
+        <AdminCard
+          icon={<Bug className="size-14" aria-hidden />}
+          title="Recurring code-quality issues"
+          description="Frequent finding categories across recent CodeAudits — use these to tighten base-rules."
+        >
+          <ul className="space-y-8">
             {qualityIssues.map((issue) => (
               <li
                 key={issue.category}
@@ -328,125 +323,103 @@ export default function UsageDashboard() {
               </li>
             ))}
           </ul>
-        </section>
+        </AdminCard>
       )}
 
-      <div className="overflow-hidden rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)]">
-        <table className="w-full text-left text-[14px]">
-          <thead className="border-b border-[var(--studio-line)] text-[12px] uppercase tracking-[0.08em] text-[var(--studio-faint)]">
-            <tr>
-              <th className="px-16 py-12 font-medium">Member</th>
-              <th className="px-16 py-12 font-medium">Projects</th>
-              <th className="px-16 py-12 font-medium">Generations</th>
-              <th className="px-16 py-12 font-medium">Estimated spend</th>
-            </tr>
-          </thead>
-          <tbody>
-            {members.map((member) => (
-              <Fragment key={member.userId}>
-                <tr
-                  className="cursor-pointer border-b border-[var(--studio-line)] last:border-0 hover:bg-[var(--studio-surface-hover)]"
-                  onClick={() => void toggleMember(member)}
-                >
-                  <td className="px-16 py-14">
-                    <div className="font-medium text-[var(--studio-fg)]">{member.name}</div>
-                    <div className="text-[12px] text-[var(--studio-muted)]">{member.email}</div>
-                  </td>
-                  <td className="px-16 py-14 text-[var(--studio-muted)]">{member.projectCount}</td>
-                  <td className="px-16 py-14 text-[var(--studio-muted)]">
-                    {member.generationCount}
-                  </td>
-                  <td className="px-16 py-14 text-[var(--studio-muted)]">
-                    {formatMoney(member.estimatedCost)}
-                  </td>
-                </tr>
-                {expanded === member.userId && (
-                  <tr className="border-b border-[var(--studio-line)] last:border-0">
-                    <td colSpan={4} className="px-16 py-14">
-                      {member.projects.length === 0 ? (
-                        <p className="text-[13px] text-[var(--studio-muted)]">
-                          No projects in this range.
-                        </p>
-                      ) : loadingProjects &&
-                        member.projects.some((project) => !eventsByProject[project.id]) ? (
-                        <p className="text-[13px] text-[var(--studio-muted)]">Loading projects…</p>
-                      ) : (
-                        <div className="space-y-16">
-                          {member.projects.map((project) => (
-                            <div key={project.id}>
-                              <p className="mb-8 text-[13px] font-medium text-[var(--studio-fg)]">
-                                {project.name}
-                              </p>
-                              <ul className="space-y-4 text-[12px] text-[var(--studio-muted)]">
-                                {(eventsByProject[project.id] || []).map((event, index) => (
-                                  <li key={`${project.id}-${index}`}>
-                                    {event.kind} · {formatMoney(event.cost)} ·{' '}
-                                    {formatWhen(event.createdAt)}
-                                  </li>
-                                ))}
-                              </ul>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                )}
-              </Fragment>
-            ))}
-            {!loading && members.length === 0 && (
-              <tr>
-                <td colSpan={4} className="px-16 py-18 text-[13px] text-[var(--studio-muted)]">
-                  No usage in this range.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      <AdminCard icon={<Users2 className="size-14" aria-hidden />} title="By member">
+        <AdminTable
+          isEmpty={!loading && members.length === 0}
+          empty="No usage in this range."
+          head={
+            <>
+              <Th>Member</Th>
+              <Th>Projects</Th>
+              <Th>Generations</Th>
+              <Th>Estimated spend</Th>
+            </>
+          }
+        >
+          {members.map((member) => (
+            <Fragment key={member.userId}>
+              <Tr className="cursor-pointer" onClick={() => void toggleMember(member)}>
+                <Td>
+                  <div className="font-medium text-[var(--studio-fg)]">{member.name}</div>
+                  <div className="text-[12px] text-[var(--studio-muted)]">{member.email}</div>
+                </Td>
+                <Td muted>{member.projectCount}</Td>
+                <Td muted>{member.generationCount}</Td>
+                <Td muted>{formatMoney(member.estimatedCost)}</Td>
+              </Tr>
+              {expanded === member.userId && (
+                <Tr>
+                  <Td colSpan={4}>
+                    {member.projects.length === 0 ? (
+                      <p className="text-[13px] text-[var(--studio-muted)]">
+                        No projects in this range.
+                      </p>
+                    ) : loadingProjects &&
+                      member.projects.some((project) => !eventsByProject[project.id]) ? (
+                      <p className="text-[13px] text-[var(--studio-muted)]">Loading projects…</p>
+                    ) : (
+                      <div className="space-y-16">
+                        {member.projects.map((project) => (
+                          <div key={project.id}>
+                            <p className="mb-8 text-[13px] font-medium text-[var(--studio-fg)]">
+                              {project.name}
+                            </p>
+                            <ul className="space-y-4 text-[12px] text-[var(--studio-muted)]">
+                              {(eventsByProject[project.id] || []).map((event, index) => (
+                                <li key={`${project.id}-${index}`}>
+                                  {event.kind} · {formatMoney(event.cost)} ·{' '}
+                                  {formatWhen(event.createdAt)}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </Td>
+                </Tr>
+              )}
+            </Fragment>
+          ))}
+        </AdminTable>
+      </AdminCard>
 
-      <section className="mt-24 overflow-hidden rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)]">
-        <div className="border-b border-[var(--studio-line)] px-16 py-14">
-          <h2 className="text-[16px] font-medium text-[var(--studio-fg)]">Skills</h2>
-          <p className="mt-4 text-[12px] text-[var(--studio-muted)]">
-            Sorted by usage. Zero-usage skills never matched or are unused.
-          </p>
-        </div>
-        <table className="w-full text-left text-[14px]">
-          <thead className="border-b border-[var(--studio-line)] text-[12px] uppercase tracking-[0.08em] text-[var(--studio-faint)]">
-            <tr>
-              <th className="px-16 py-12 font-medium">Skill</th>
-              <th className="px-16 py-12 font-medium">Enabled</th>
-              <th className="px-16 py-12 font-medium">Usage</th>
-            </tr>
-          </thead>
-          <tbody>
-            {skills.map((skill) => (
-              <tr key={skill.id} className="border-b border-[var(--studio-line)] last:border-0">
-                <td className="px-16 py-14">
-                  <div className="font-medium text-[var(--studio-fg)]">{skill.name}</div>
-                  <div className="text-[12px] text-[var(--studio-muted)]">{skill.description}</div>
-                </td>
-                <td className="px-16 py-14 text-[var(--studio-muted)]">
-                  {skill.enabled ? 'On' : 'Off'}
-                </td>
-                <td className="px-16 py-14 text-[var(--studio-muted)]">{skill.usageCount}</td>
-              </tr>
-            ))}
-            {!loading && skills.length === 0 && (
-              <tr>
-                <td colSpan={3} className="px-16 py-18 text-[13px] text-[var(--studio-muted)]">
-                  No workspace skills yet.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </section>
+      <AdminCard
+        icon={<Sparkles className="size-14" aria-hidden />}
+        title="Skills"
+        description="Sorted by usage. Zero-usage skills never matched or are unused."
+      >
+        <AdminTable
+          isEmpty={!loading && skills.length === 0}
+          empty="No workspace skills yet."
+          head={
+            <>
+              <Th>Skill</Th>
+              <Th>Enabled</Th>
+              <Th align="right">Usage</Th>
+            </>
+          }
+        >
+          {skills.map((skill) => (
+            <Tr key={skill.id}>
+              <Td>
+                <div className="font-medium text-[var(--studio-fg)]">{skill.name}</div>
+                <div className="text-[12px] text-[var(--studio-muted)]">{skill.description}</div>
+              </Td>
+              <Td muted>{skill.enabled ? 'On' : 'Off'}</Td>
+              <Td align="right" muted>
+                {skill.usageCount}
+              </Td>
+            </Tr>
+          ))}
+        </AdminTable>
+      </AdminCard>
 
-      <section className="mt-24 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-14">
-        <h2 className="text-[16px] font-medium text-[var(--studio-fg)]">Brain memory</h2>
-        <p className="mt-4 text-[12px] text-[var(--studio-muted)]">
+      <AdminCard icon={<Brain className="size-14" aria-hidden />} title="Brain memory">
+        <p className="text-[13px] text-[var(--studio-muted)]">
           When off, auto-extraction after a generation does not run. Manual memory still injects.
         </p>
         <label className="mt-12 inline-flex items-center gap-8 text-[13px] text-[var(--studio-fg)]">
@@ -463,9 +436,9 @@ export default function UsageDashboard() {
               });
             }}
           />
-          memoryExtractionEnabled
+          Automatically extract memory after generation
         </label>
-      </section>
+      </AdminCard>
     </AdminPage>
   );
 }

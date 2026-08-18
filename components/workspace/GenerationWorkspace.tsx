@@ -19,7 +19,7 @@ import {
   BsFolder2Open,
   SiJavascript, 
   SiReact, 
-  SiCss, 
+  SiCss3, 
   SiJson 
 } from '@/lib/icons';
 import { motion } from 'framer-motion';
@@ -2088,7 +2088,7 @@ Tip: I automatically detect and install npm packages from your code imports (lik
     } else if (ext === 'tsx' || ext === 'ts') {
       return <SiReact style={{ width: '16px', height: '16px' }} className="text-blue-500" />;
     } else if (ext === 'css') {
-      return <SiCss style={{ width: '16px', height: '16px' }} className="text-blue-500" />;
+      return <SiCss3 style={{ width: '16px', height: '16px' }} className="text-blue-500" />;
     } else if (ext === 'json') {
       return <SiJson style={{ width: '16px', height: '16px' }} className="text-gray-600" />;
     } else {

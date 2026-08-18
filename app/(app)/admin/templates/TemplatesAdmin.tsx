@@ -1,8 +1,16 @@
 'use client';
 
+import { ImagePlus, LayoutTemplate, Plus } from 'lucide-react';
+import AdminCard from '@/components/admin/AdminCard';
 import AdminPage from '@/components/admin/AdminPage';
+import { AdminEmpty } from '@/components/admin/AdminTable';
+import StatusBanner from '@/components/admin/StatusBanner';
 import { FormEvent, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import StudioButton from '@/components/app/studio/StudioButton';
+import StudioField from '@/components/app/studio/StudioField';
+import StudioSelect from '@/components/app/studio/StudioSelect';
+import StudioTextarea from '@/components/app/studio/StudioTextarea';
 import { TEMPLATE_CATEGORIES, TEMPLATE_CATEGORY_LABELS } from '@/lib/templates/categories';
 import type { PublicTemplate } from '@/lib/templates/types';
 import { STACK_IDS, getStack } from '@/lib/stacks';
@@ -154,167 +162,155 @@ export default function TemplatesAdmin({
 
   return (
     <AdminPage
+      icon="templates"
       title="Templates"
-      description="The starting points members can pick when creating a project."
-    >
-      <div className="mb-20 flex flex-wrap items-center justify-between gap-12">
-        <p className="text-[14px] text-[var(--studio-muted)]">
-          Built-in and workspace templates. Reorder, toggle, and test prompts.
-        </p>
-        <button
+      description="Built-in and workspace templates. Reorder, toggle, and test prompts."
+      actions={
+        <StudioButton
           type="button"
+          variant="ghost"
           disabled={busy === 'thumbs'}
           onClick={() => void onThumbnails()}
-          className="inline-flex h-36 items-center rounded-10 border border-[var(--studio-line-strong)] px-12 text-[13px] text-[var(--studio-fg)] disabled:opacity-50"
         >
           {busy === 'thumbs' ? 'Generating…' : 'Generate thumbnails'}
-        </button>
-      </div>
-      {error ? (
-        <p className="mb-16 text-[13px] text-[var(--studio-danger)]" role="alert">
-          {error}
-        </p>
-      ) : null}
+        </StudioButton>
+      }
+    >
+      {error && <StatusBanner tone="error">{error}</StatusBanner>}
 
-      <form
-        onSubmit={(event) => void onCreate(event)}
-        className="mb-28 grid gap-10 rounded-12 border border-[var(--studio-line)] p-16"
-      >
-        <p className="text-[14px] font-medium text-[var(--studio-fg)]">New template</p>
-        <input
-          name="name"
-          required
-          placeholder="Name"
-          className="h-36 rounded-10 border border-[var(--studio-line-strong)] px-10 text-[13px]"
-        />
-        <input
-          name="description"
-          required
-          placeholder="One-line description"
-          className="h-36 rounded-10 border border-[var(--studio-line-strong)] px-10 text-[13px]"
-        />
-        <input
-          name="slug"
-          placeholder="slug (optional)"
-          className="h-36 rounded-10 border border-[var(--studio-line-strong)] px-10 text-[13px]"
-        />
-        <div className="flex flex-wrap gap-8">
-          <select
-            name="category"
-            className="h-36 rounded-10 border border-[var(--studio-line-strong)] px-10 text-[13px]"
-          >
-            {TEMPLATE_CATEGORIES.map((id) => (
-              <option key={id} value={id}>
-                {TEMPLATE_CATEGORY_LABELS[id]}
-              </option>
-            ))}
-          </select>
-          <select
-            name="stack"
-            defaultValue="NEXTJS"
-            className="h-36 rounded-10 border border-[var(--studio-line-strong)] px-10 text-[13px]"
-          >
-            {STACK_IDS.map((id) => (
-              <option key={id} value={id}>
-                {getStack(id).label}
-              </option>
-            ))}
-          </select>
-          <select
-            name="designDirection"
-            defaultValue="minimal"
-            className="h-36 rounded-10 border border-[var(--studio-line-strong)] px-10 text-[13px]"
-          >
-            {DESIGN_DIRECTION_IDS.map((id) => (
-              <option key={id} value={id}>
-                {id}
-              </option>
-            ))}
-          </select>
-          <label className="inline-flex items-center gap-6 text-[13px] text-[var(--studio-muted)]">
-            <input type="checkbox" name="isBuiltIn" /> Built-in
+      <AdminCard icon={<Plus className="size-14" aria-hidden />} title="New template">
+        <form onSubmit={(event) => void onCreate(event)} className="grid gap-12">
+          <StudioField id="template-name" name="name" label="Name" required />
+          <StudioField
+            id="template-description"
+            name="description"
+            label="One-line description"
+            required
+          />
+          <StudioField id="template-slug" name="slug" label="Slug (optional)" />
+          <div className="grid gap-12 sm:grid-cols-3">
+            <StudioSelect id="template-category" name="category" label="Category">
+              {TEMPLATE_CATEGORIES.map((id) => (
+                <option key={id} value={id}>
+                  {TEMPLATE_CATEGORY_LABELS[id]}
+                </option>
+              ))}
+            </StudioSelect>
+            <StudioSelect id="template-stack" name="stack" label="Stack" defaultValue="NEXTJS">
+              {STACK_IDS.map((id) => (
+                <option key={id} value={id}>
+                  {getStack(id).label}
+                </option>
+              ))}
+            </StudioSelect>
+            <StudioSelect
+              id="template-design-direction"
+              name="designDirection"
+              label="Design direction"
+              defaultValue="minimal"
+            >
+              {DESIGN_DIRECTION_IDS.map((id) => (
+                <option key={id} value={id}>
+                  {id}
+                </option>
+              ))}
+            </StudioSelect>
+          </div>
+          <label className="inline-flex w-fit items-center gap-8 text-[13px] text-[var(--studio-muted)]">
+            <input type="checkbox" name="isBuiltIn" /> Built-in (shared across every workspace)
           </label>
-        </div>
-        <textarea
-          name="prompt"
-          required
-          rows={6}
-          placeholder="Prompt"
-          className="rounded-10 border border-[var(--studio-line-strong)] px-10 py-8 text-[13px]"
-        />
-        <button
-          type="submit"
-          disabled={busy === 'create'}
-          className="inline-flex h-36 w-fit items-center rounded-10 bg-[var(--studio-fg)] px-14 text-[13px] font-medium text-[var(--studio-bg)] disabled:opacity-50"
-        >
-          {busy === 'create' ? 'Saving…' : 'Create template'}
-        </button>
-      </form>
+          <StudioTextarea id="template-prompt" name="prompt" label="Prompt" required rows={6} />
+          <div>
+            <StudioButton type="submit" disabled={busy === 'create'}>
+              {busy === 'create' ? 'Saving…' : 'Create template'}
+            </StudioButton>
+          </div>
+        </form>
+      </AdminCard>
 
-      <ul className="space-y-12">
-        {templates.map((template) => (
-          <li key={template.id} className="rounded-12 border border-[var(--studio-line)] p-16">
-            <div className="flex flex-wrap items-start justify-between gap-12">
-              <div>
-                <p className="text-[15px] font-medium text-[var(--studio-fg)]">{template.name}</p>
-                <p className="mt-4 text-[12px] text-[var(--studio-faint)]">
-                  {template.slug} · {template.category} · {template.stack} · used{' '}
-                  {template.usageCount}
-                  {template.workspaceId ? ' · workspace' : ' · shared'}
-                  {template.isActive ? '' : ' · inactive'}
-                </p>
-              </div>
-              <div className="flex flex-wrap gap-6">
-                <button
-                  type="button"
-                  disabled={busy === template.id}
-                  onClick={() => void patch(template.id, { isActive: !template.isActive })}
-                  className="inline-flex h-32 items-center rounded-8 border border-[var(--studio-line-strong)] px-10 text-[12px]"
-                >
-                  {template.isActive ? 'Deactivate' : 'Activate'}
-                </button>
-                <button
-                  type="button"
-                  disabled={busy === template.id}
-                  onClick={() =>
-                    void patch(template.id, { sortOrder: Math.max(0, template.sortOrder - 10) })
-                  }
-                  className="inline-flex h-32 items-center rounded-8 border border-[var(--studio-line-strong)] px-10 text-[12px]"
-                >
-                  Move up
-                </button>
-                <button
-                  type="button"
-                  disabled={busy === `test-${template.id}`}
-                  onClick={() => void onTest(template.id)}
-                  className="inline-flex h-32 items-center rounded-8 border border-[var(--studio-line-strong)] px-10 text-[12px]"
-                >
-                  Test
-                </button>
-                <label className="inline-flex h-32 cursor-pointer items-center rounded-8 border border-[var(--studio-line-strong)] px-10 text-[12px]">
-                  Upload thumbnail
-                  <input
-                    type="file"
-                    accept="image/png,image/jpeg"
-                    className="sr-only"
-                    onChange={(event) => void onUpload(template.id, event.target.files?.[0])}
-                  />
-                </label>
-              </div>
-            </div>
-            <textarea
-              defaultValue={template.prompt}
-              rows={5}
-              className="mt-12 w-full rounded-10 border border-[var(--studio-line)] px-10 py-8 text-[12px] leading-5"
-              onBlur={(event) => {
-                if (event.target.value !== template.prompt) {
-                  void patch(template.id, { prompt: event.target.value });
-                }
-              }}
-            />
-          </li>
-        ))}
-      </ul>
+      <AdminCard icon={<LayoutTemplate className="size-14" aria-hidden />} title="All templates">
+        {templates.length === 0 ? (
+          <AdminEmpty>No templates yet. Create one above.</AdminEmpty>
+        ) : (
+          <ul className="space-y-12">
+            {templates.map((template) => (
+              <li key={template.id} className="rounded-12 border border-[var(--studio-line)] p-16">
+                <div className="flex flex-wrap items-start justify-between gap-12">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-8">
+                      <p className="text-[15px] font-medium text-[var(--studio-fg)]">
+                        {template.name}
+                      </p>
+                      <span className="inline-flex items-center gap-6 rounded-full border border-[var(--studio-line)] px-8 py-2 text-[11px] text-[var(--studio-muted)]">
+                        <span
+                          className={`size-6 shrink-0 rounded-full ${template.isActive ? 'bg-[var(--studio-accent)]' : 'bg-[var(--studio-faint)]'}`}
+                          aria-hidden
+                        />
+                        {template.isActive ? 'Active' : 'Inactive'}
+                      </span>
+                    </div>
+                    <p className="mt-4 text-[12px] text-[var(--studio-faint)]">
+                      {template.slug} · {template.category} · {template.stack} · used{' '}
+                      {template.usageCount}
+                      {template.workspaceId ? ' · workspace' : ' · shared'}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-8">
+                    <StudioButton
+                      type="button"
+                      variant={template.isActive ? 'danger' : 'ghost'}
+                      disabled={busy === template.id}
+                      onClick={() => void patch(template.id, { isActive: !template.isActive })}
+                    >
+                      {template.isActive ? 'Deactivate' : 'Activate'}
+                    </StudioButton>
+                    <StudioButton
+                      type="button"
+                      variant="ghost"
+                      disabled={busy === template.id}
+                      onClick={() =>
+                        void patch(template.id, { sortOrder: Math.max(0, template.sortOrder - 10) })
+                      }
+                    >
+                      Move up
+                    </StudioButton>
+                    <StudioButton
+                      type="button"
+                      variant="ghost"
+                      disabled={busy === `test-${template.id}`}
+                      onClick={() => void onTest(template.id)}
+                    >
+                      {busy === `test-${template.id}` ? 'Testing…' : 'Test'}
+                    </StudioButton>
+                    <label className="inline-flex h-44 cursor-pointer items-center gap-6 rounded-full border border-[var(--studio-line-strong)] px-18 text-[14px] font-medium text-[var(--studio-fg)] transition-colors duration-200 hover:bg-[var(--studio-surface)]">
+                      <ImagePlus className="size-14" aria-hidden />
+                      Upload thumbnail
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg"
+                        className="sr-only"
+                        onChange={(event) => void onUpload(template.id, event.target.files?.[0])}
+                      />
+                    </label>
+                  </div>
+                </div>
+                <StudioTextarea
+                  id={`template-prompt-${template.id}`}
+                  label="Prompt"
+                  defaultValue={template.prompt}
+                  rows={5}
+                  className="mt-12"
+                  onBlur={(event) => {
+                    if (event.target.value !== template.prompt) {
+                      void patch(template.id, { prompt: event.target.value });
+                    }
+                  }}
+                />
+              </li>
+            ))}
+          </ul>
+        )}
+      </AdminCard>
     </AdminPage>
   );
 }

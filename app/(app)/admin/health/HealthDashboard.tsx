@@ -1,6 +1,20 @@
 'use client';
 
+import {
+  AlertTriangle,
+  Bug,
+  GitBranch,
+  HardDrive,
+  ListChecks,
+  Plug,
+  Server,
+  Sparkles,
+} from 'lucide-react';
+import AdminCard from '@/components/admin/AdminCard';
 import AdminPage from '@/components/admin/AdminPage';
+import StatTile from '@/components/admin/StatTile';
+import StatusBanner from '@/components/admin/StatusBanner';
+import StudioButton from '@/components/app/studio/StudioButton';
 import { useEffect, useState } from 'react';
 import { formatAdminDate, formatAdminDateTime } from '../format-admin-date';
 
@@ -80,6 +94,17 @@ type HealthPayload = {
   };
 };
 
+const JUMP_LINKS = [
+  { id: 'release', label: 'Release', icon: GitBranch },
+  { id: 'instance', label: 'Instance', icon: Server },
+  { id: 'volume', label: 'Volume', icon: HardDrive },
+  { id: 'error-tracking', label: 'Error tracking', icon: Bug },
+  { id: 'integrations', label: 'Integrations', icon: Plug },
+  { id: 'providers', label: 'AI providers', icon: Sparkles },
+  { id: 'checks', label: 'System checks', icon: ListChecks },
+  { id: 'errors', label: 'Top errors', icon: AlertTriangle },
+] as const;
+
 export default function HealthDashboard() {
   const [data, setData] = useState<HealthPayload | null>(null);
   const [error, setError] = useState('');
@@ -129,14 +154,8 @@ export default function HealthDashboard() {
           label: 'Sandboxes vs plan',
           value: `${data.sandboxes.current} / ${data.sandboxes.limit < 0 ? '∞' : data.sandboxes.limit}`,
         },
-        {
-          label: 'Orphan Coolify apps',
-          value: String(data.orphans?.coolify ?? 0),
-        },
-        {
-          label: 'Orphan DNS records',
-          value: String(data.orphans?.dns ?? 0),
-        },
+        { label: 'Orphan Coolify apps', value: String(data.orphans?.coolify ?? 0) },
+        { label: 'Orphan DNS records', value: String(data.orphans?.dns ?? 0) },
         {
           label: 'Orphan deploy repos (report only)',
           value: String(data.orphans?.repos ?? 0),
@@ -146,13 +165,52 @@ export default function HealthDashboard() {
 
   return (
     <AdminPage
+      icon="health"
       title="Health"
       description="Whether this installation is running correctly: release, storage, error tracking, and provider checks."
       width="wide"
     >
+      <nav
+        aria-label="Jump to a health section"
+        className="flex flex-wrap gap-6 border-b border-[var(--studio-line)] pb-16"
+      >
+        {JUMP_LINKS.map(({ id, label, icon: Icon }) => (
+          <a
+            key={id}
+            href={`#${id}`}
+            className="inline-flex items-center gap-6 rounded-full border border-[var(--studio-line)] px-10 py-6 text-[12px] text-[var(--studio-muted)] transition-colors duration-150 hover:border-[var(--studio-line-strong)] hover:text-[var(--studio-fg)]"
+          >
+            <Icon className="size-12" aria-hidden />
+            {label}
+          </a>
+        ))}
+      </nav>
+
+      {error && <StatusBanner tone="error">{error}</StatusBanner>}
+
+      <div className="grid grid-cols-1 gap-12 sm:grid-cols-2 xl:grid-cols-5">
+        {(loading && !data
+          ? Array.from({ length: 10 }, (_, i) => ({ label: '…', value: '—' }))
+          : cards
+        ).map((card, index) => (
+          <StatTile
+            key={`${card.label}-${index}`}
+            icon={<AlertTriangle className="size-15" aria-hidden />}
+            value={card.value}
+            label={card.label}
+            tone={
+              card.value !== '0' && card.value !== '—' && card.value !== '…' ? 'warning' : 'default'
+            }
+          />
+        ))}
+      </div>
+
       {data?.release && (
-        <section className="mb-24 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-18">
-          <h2 className="mb-8 text-[18px] font-medium text-[var(--studio-fg)]">Current release</h2>
+        <AdminCard
+          id="release"
+          icon={<GitBranch className="size-14" aria-hidden />}
+          title="Current release"
+        >
           <p className="text-[13px] text-[var(--studio-fg)]">
             <span className="font-medium">{data.release.sha}</span>
             {data.release.deployedAt !== '1970-01-01T00:00:00.000Z' ? (
@@ -178,49 +236,54 @@ export default function HealthDashboard() {
           <label className="mt-16 block text-[13px] text-[var(--studio-fg)]">
             Type <span className="font-medium">roll back</span> to confirm
             <input
-              className="mt-6 w-full rounded-12 border border-[var(--studio-line)] bg-[var(--studio-bg)] px-12 py-8 text-[13px]"
+              className="mt-6 h-40 w-full rounded-10 border border-[var(--studio-line-strong)] bg-[var(--studio-bg)] px-12 text-[13px] text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
               value={confirm}
               onChange={(event) => setConfirm(event.target.value)}
               autoComplete="off"
             />
           </label>
-          <button
-            type="button"
-            className="mt-12 rounded-12 border border-[var(--studio-line)] px-14 py-8 text-[13px] text-[var(--studio-fg)] disabled:opacity-50"
-            disabled={rollingBack || confirm.trim().toLowerCase() !== 'roll back'}
-            onClick={async () => {
-              setRollingBack(true);
-              setRollbackMessage('');
-              try {
-                const response = await fetch('/api/admin/health/rollback', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ confirmation: confirm }),
-                });
-                const payload = await response.json();
-                if (!response.ok) {
-                  setRollbackMessage(payload.error || 'Could not roll back');
-                  return;
+          <div className="mt-12">
+            <StudioButton
+              type="button"
+              variant="danger"
+              disabled={rollingBack || confirm.trim().toLowerCase() !== 'roll back'}
+              onClick={async () => {
+                setRollingBack(true);
+                setRollbackMessage('');
+                try {
+                  const response = await fetch('/api/admin/health/rollback', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ confirmation: confirm }),
+                  });
+                  const payload = await response.json();
+                  if (!response.ok) {
+                    setRollbackMessage(payload.error || 'Could not roll back');
+                    return;
+                  }
+                  setRollbackMessage(`Rollback requested to ${payload.sha}. ${payload.note || ''}`);
+                } finally {
+                  setRollingBack(false);
                 }
-                setRollbackMessage(`Rollback requested to ${payload.sha}. ${payload.note || ''}`);
-              } finally {
-                setRollingBack(false);
-              }
-            }}
-          >
-            Roll back to previous release
-          </button>
+              }}
+            >
+              {rollingBack ? 'Rolling back…' : 'Roll back to previous release'}
+            </StudioButton>
+          </div>
           {rollbackMessage ? (
             <p className="mt-8 text-[13px] text-[var(--studio-muted)]" role="status">
               {rollbackMessage}
             </p>
           ) : null}
-        </section>
+        </AdminCard>
       )}
 
       {data?.self && (
-        <section className="mb-24 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-18">
-          <h2 className="mb-8 text-[18px] font-medium text-[var(--studio-fg)]">This instance</h2>
+        <AdminCard
+          id="instance"
+          icon={<Server className="size-14" aria-hidden />}
+          title="This instance"
+        >
           <p className="text-[13px] text-[var(--studio-fg)]">
             Coolify application{' '}
             {data.self.coolifyAppUuid ? (
@@ -239,14 +302,15 @@ export default function HealthDashboard() {
           <p className="mt-8 text-[12px] text-[var(--studio-muted)]">
             {`${data.self.environment} · commit ${data.self.gitSha} · instance ${data.self.instanceId}`}
           </p>
-        </section>
+        </AdminCard>
       )}
 
       {data?.dataDir && (
-        <section className="mb-24 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-18">
-          <h2 className="mb-8 text-[18px] font-medium text-[var(--studio-fg)]">
-            Persistent volume
-          </h2>
+        <AdminCard
+          id="volume"
+          icon={<HardDrive className="size-14" aria-hidden />}
+          title="Persistent volume"
+        >
           <p
             className={
               data.dataDir.state === 'unwritable' || data.dataDir.warnLowSpace
@@ -309,12 +373,15 @@ export default function HealthDashboard() {
             The volume is a cache and bootstrap shortcut. If it is deleted, the next boot rebuilds
             it from Postgres or object storage. It is not included in the database backup.
           </p>
-        </section>
+        </AdminCard>
       )}
 
       {data?.errorTracking && (
-        <section className="mb-24 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-18">
-          <h2 className="mb-8 text-[18px] font-medium text-[var(--studio-fg)]">Error tracking</h2>
+        <AdminCard
+          id="error-tracking"
+          icon={<Bug className="size-14" aria-hidden />}
+          title="Error tracking"
+        >
           <p
             className={
               data.errorTracking.status === 'Healthy'
@@ -350,7 +417,7 @@ export default function HealthDashboard() {
               </p>
               <div className="mt-6 h-8 overflow-hidden rounded-12 bg-[var(--studio-bg)]">
                 <div
-                  className="h-full bg-[var(--studio-fg)]"
+                  className="h-full bg-[var(--studio-accent)]"
                   style={{
                     width: `${Math.min(
                       100,
@@ -406,68 +473,48 @@ export default function HealthDashboard() {
             {` · ${data.errorTracking.environment}`}
             {` · ${data.errorTracking.releaseSha}`}
           </p>
-          <button
-            type="button"
-            className="mt-14 rounded-12 border border-[var(--studio-line)] px-14 py-8 text-[13px] text-[var(--studio-fg)] disabled:opacity-50"
-            disabled={testBusy}
-            onClick={async () => {
-              setTestBusy(true);
-              setTestMessage('');
-              try {
-                const response = await fetch('/api/admin/health/sentry-test', { method: 'POST' });
-                const payload = await response.json();
-                if (!response.ok) {
-                  setTestMessage(payload.error || 'Could not send test event');
-                  return;
+          <div className="mt-14">
+            <StudioButton
+              type="button"
+              variant="ghost"
+              disabled={testBusy}
+              onClick={async () => {
+                setTestBusy(true);
+                setTestMessage('');
+                try {
+                  const response = await fetch('/api/admin/health/sentry-test', { method: 'POST' });
+                  const payload = await response.json();
+                  if (!response.ok) {
+                    setTestMessage(payload.error || 'Could not send test event');
+                    return;
+                  }
+                  setTestMessage(
+                    payload.received
+                      ? 'Test event received by Sentry.'
+                      : 'Test event was sent but not received within 60 seconds.',
+                  );
+                } finally {
+                  setTestBusy(false);
                 }
-                setTestMessage(
-                  payload.received
-                    ? 'Test event received by Sentry.'
-                    : 'Test event was sent but not received within 60 seconds.',
-                );
-              } finally {
-                setTestBusy(false);
-              }
-            }}
-          >
-            Send test event
-          </button>
+              }}
+            >
+              {testBusy ? 'Sending…' : 'Send test event'}
+            </StudioButton>
+          </div>
           {testMessage ? (
             <p className="mt-8 text-[13px] text-[var(--studio-muted)]" role="status">
               {testMessage}
             </p>
           ) : null}
-        </section>
+        </AdminCard>
       )}
 
-      {error && (
-        <p className="mb-16 text-[13px] text-[var(--studio-danger)]" role="alert">
-          {error}
-        </p>
-      )}
-
-      <div className="mb-24 grid grid-cols-1 gap-12 sm:grid-cols-3">
-        {(loading && !data
-          ? Array.from({ length: 7 }, (_, i) => ({ label: '…', value: '—' }))
-          : cards
-        ).map((card, index) => (
-          <div
-            key={`${card.label}-${index}`}
-            className="rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-18"
-          >
-            <p className="text-[12px] uppercase tracking-[0.08em] text-[var(--studio-faint)]">
-              {card.label}
-            </p>
-            <p className="mt-8 text-[28px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">
-              {card.value}
-            </p>
-          </div>
-        ))}
-      </div>
-
-      <section className="mb-32">
-        <h2 className="mb-12 text-[18px] font-medium text-[var(--studio-fg)]">Integrations</h2>
-        <ul className="space-y-8 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-14">
+      <AdminCard
+        id="integrations"
+        icon={<Plug className="size-14" aria-hidden />}
+        title="Integrations"
+      >
+        <ul className="space-y-8">
           {(data?.integrations || []).map((row) => (
             <li key={row.kind} className="text-[13px] text-[var(--studio-fg)]">
               <span className="font-medium">{row.kind}</span>
@@ -486,11 +533,14 @@ export default function HealthDashboard() {
             <li className="text-[13px] text-[var(--studio-muted)]">No integration rows found.</li>
           )}
         </ul>
-      </section>
+      </AdminCard>
 
-      <section className="mb-32">
-        <h2 className="mb-12 text-[18px] font-medium text-[var(--studio-fg)]">AI providers</h2>
-        <ul className="space-y-8 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-14">
+      <AdminCard
+        id="providers"
+        icon={<Sparkles className="size-14" aria-hidden />}
+        title="AI providers"
+      >
+        <ul className="space-y-8">
           {(data?.providers || []).map((row) => (
             <li key={row.id} className="text-[13px] text-[var(--studio-fg)]">
               <span className="font-medium">{row.provider}</span>
@@ -508,11 +558,14 @@ export default function HealthDashboard() {
             <li className="text-[13px] text-[var(--studio-muted)]">No providers configured.</li>
           )}
         </ul>
-      </section>
+      </AdminCard>
 
-      <section className="mb-32">
-        <h2 className="mb-12 text-[18px] font-medium text-[var(--studio-fg)]">System checks</h2>
-        <ul className="space-y-8 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-14">
+      <AdminCard
+        id="checks"
+        icon={<ListChecks className="size-14" aria-hidden />}
+        title="System checks"
+      >
+        <ul className="space-y-8">
           {(data?.systemChecks || []).map((row) => (
             <li
               key={row.name}
@@ -535,16 +588,19 @@ export default function HealthDashboard() {
             </li>
           )}
         </ul>
-      </section>
+      </AdminCard>
 
-      <section>
-        <h2 className="mb-12 text-[18px] font-medium text-[var(--studio-fg)]">Top error codes</h2>
+      <AdminCard
+        id="errors"
+        icon={<AlertTriangle className="size-14" aria-hidden />}
+        title="Top error codes"
+      >
         {(data?.topErrorCodes || []).length === 0 ? (
           <p className="text-[13px] text-[var(--studio-muted)]">
             No recurring errors in the last 7 days.
           </p>
         ) : (
-          <ul className="space-y-8 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-14">
+          <ul className="space-y-8">
             {data!.topErrorCodes.map((row) => (
               <li key={row.code} className="text-[13px] text-[var(--studio-fg)]">
                 <span className="font-medium">{row.code}</span>
@@ -553,7 +609,7 @@ export default function HealthDashboard() {
             ))}
           </ul>
         )}
-      </section>
+      </AdminCard>
     </AdminPage>
   );
 }

@@ -4,25 +4,28 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/utils/cn';
 import { ADMIN_NAV, isAdminNavItemActive } from './admin-nav';
+import AdminIcon from './AdminIcon';
 
 /**
- * Grouped admin navigation, rendered from the one nav definition.
+ * Grouped, icon-led admin navigation, rendered from the one nav definition.
  *
- * Grouping is the point: fourteen flat tabs gave no sense of what belonged with
- * what, and the strip silently changed between pages because six copies of the
- * list had drifted.
+ * The icon carries recognition once someone has used a section a few times —
+ * text-only rows all look the same at a glance, which is part of why the old
+ * flat tab strip gave no sense of place. The active row gets a filled pill in
+ * the accent-soft token rather than a plain underline, so "where am I" reads
+ * from peripheral vision, not from parsing text.
  */
 export default function AdminNav() {
   const pathname = usePathname() || '';
 
   return (
-    <nav aria-label="Admin" className="flex flex-col gap-20">
+    <nav aria-label="Admin" className="flex flex-col gap-18">
       {ADMIN_NAV.map((group) => (
         <div key={group.group}>
           <p className="mb-6 px-10 text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--studio-faint)]">
             {group.group}
           </p>
-          <div className="flex flex-col gap-2">
+          <div className="flex flex-col gap-1">
             {group.items.map((item) => {
               const active = isAdminNavItemActive(item, pathname);
               return (
@@ -32,13 +35,22 @@ export default function AdminNav() {
                   title={item.description}
                   aria-current={active ? 'page' : undefined}
                   className={cn(
-                    'flex min-h-36 items-center rounded-8 px-10 text-[13px] transition-colors duration-200',
+                    'group flex min-h-38 items-center gap-10 rounded-10 px-10 text-[13px] transition-colors duration-200',
                     active
-                      ? 'bg-[var(--studio-surface)] font-medium text-[var(--studio-fg)]'
-                      : 'text-[var(--studio-muted)] hover:bg-[var(--studio-surface)] hover:text-[var(--studio-fg)]',
+                      ? 'bg-[var(--studio-accent-soft)] font-medium text-[var(--studio-accent)]'
+                      : 'text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)]',
                   )}
                 >
-                  {item.label}
+                  <AdminIcon
+                    name={item.icon}
+                    className={cn(
+                      'size-15 shrink-0',
+                      active
+                        ? 'text-[var(--studio-accent)]'
+                        : 'text-[var(--studio-faint)] group-hover:text-[var(--studio-muted)]',
+                    )}
+                  />
+                  <span className="truncate">{item.label}</span>
                 </Link>
               );
             })}

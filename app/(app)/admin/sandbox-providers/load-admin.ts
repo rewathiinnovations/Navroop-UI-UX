@@ -15,7 +15,13 @@ export type SandboxProvidersAdminPayload = {
   nextPickReason: string | null;
   strategies: Array<{ id: string; help: string; selected: boolean }>;
   capabilities: ReturnType<typeof capabilityMatrix>;
-  labels: { addProvider: string; test: string; freeFirst: string; lastActive: string; defaultOrder: string };
+  labels: {
+    addProvider: string;
+    test: string;
+    freeFirst: string;
+    lastActive: string;
+    defaultOrder: string;
+  };
 };
 
 function toWireProvider(row: ReturnType<typeof toPublicProvider>) {
@@ -38,7 +44,10 @@ export async function loadSandboxProvidersAdmin(): Promise<SandboxProvidersAdmin
       estimateSeconds: 1,
     });
     nextPickReason = first.selectionReason ?? null;
-    ordered = [rows.find((row) => row.id === first.id)!, ...rows.filter((row) => row.id !== first.id)];
+    ordered = [
+      rows.find((row) => row.id === first.id)!,
+      ...rows.filter((row) => row.id !== first.id),
+    ];
   } catch {
     ordered = rows;
   }

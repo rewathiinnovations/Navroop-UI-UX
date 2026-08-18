@@ -1,6 +1,18 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import {
+  Archive,
+  Boxes,
+  Eye,
+  EyeOff,
+  HardDrive,
+  Mail,
+  Plug,
+  Sparkles,
+  SlidersHorizontal,
+  type LucideIcon,
+} from 'lucide-react';
 import AdminCard from '@/components/admin/AdminCard';
 import AdminPage from '@/components/admin/AdminPage';
 import StatusBanner from '@/components/admin/StatusBanner';
@@ -12,6 +24,16 @@ type Group = { id: string; label: string; blurb: string };
 type Bootstrap = { name: string; help: string; present: boolean };
 type Check = { label: string; ok: boolean; depth: 'live' | 'local'; message: string };
 
+const GROUP_ICON: Record<string, LucideIcon> = {
+  connectors: Plug,
+  ai: Sparkles,
+  tooling: Boxes,
+  email: Mail,
+  storage: HardDrive,
+  backups: Archive,
+  app: SlidersHorizontal,
+};
+
 const SOURCE_LABEL: Record<SettingSource, string> = {
   db: 'Set here',
   env: 'From environment',
@@ -19,18 +41,17 @@ const SOURCE_LABEL: Record<SettingSource, string> = {
   unset: 'Not set',
 };
 
+const SOURCE_DOT: Record<SettingSource, string> = {
+  db: 'bg-[var(--studio-accent)]',
+  env: 'bg-[var(--studio-muted)]',
+  fallback: 'bg-[var(--studio-faint)]',
+  unset: 'bg-transparent ring-1 ring-inset ring-[var(--studio-faint)]',
+};
+
 function SourceBadge({ source }: { source: SettingSource }) {
   return (
-    <span
-      className={cn(
-        'inline-flex shrink-0 items-center rounded-full border px-8 py-2 text-[11px]',
-        source === 'db' && 'border-[var(--studio-line-strong)] text-[var(--studio-fg)]',
-        source === 'env' && 'border-[var(--studio-line)] text-[var(--studio-muted)]',
-        source === 'fallback' && 'border-[var(--studio-line)] text-[var(--studio-muted)]',
-        source === 'unset' &&
-          'border-dashed border-[var(--studio-line)] text-[var(--studio-faint)]',
-      )}
-    >
+    <span className="inline-flex shrink-0 items-center gap-6 rounded-full border border-[var(--studio-line)] px-8 py-3 text-[11px] text-[var(--studio-muted)]">
+      <span className={cn('size-6 shrink-0 rounded-full', SOURCE_DOT[source])} aria-hidden />
       {SOURCE_LABEL[source]}
     </span>
   );
@@ -48,6 +69,7 @@ function SettingRow({
   const id = `setting-${setting.key.replace(/\./g, '-')}`;
   const secret = setting.kind === 'secret';
   const edited = draft !== undefined;
+  const [revealed, setRevealed] = useState(false);
   // A secret is never sent to the browser, so the field starts empty and its
   // placeholder carries the mask. Typing replaces it; leaving it alone keeps
   // whatever is stored.
@@ -81,17 +103,39 @@ function SettingRow({
             ))}
           </select>
         ) : (
-          <input
-            id={id}
-            type={secret ? 'password' : setting.kind === 'number' ? 'number' : 'text'}
-            inputMode={setting.kind === 'number' ? 'numeric' : undefined}
-            autoComplete="off"
-            spellCheck={false}
-            value={value}
-            placeholder={secret ? (setting.masked ?? 'Not set') : setting.placeholder}
-            onChange={(event) => onChange(setting.key, event.target.value)}
-            className="h-40 w-full max-w-[420px] rounded-10 border border-[var(--studio-line-strong)] bg-[var(--studio-bg)] px-12 text-[14px] text-[var(--studio-fg)] placeholder:text-[var(--studio-faint)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
-          />
+          <div className="relative w-full max-w-[420px]">
+            <input
+              id={id}
+              type={
+                secret && !revealed ? 'password' : setting.kind === 'number' ? 'number' : 'text'
+              }
+              inputMode={setting.kind === 'number' ? 'numeric' : undefined}
+              autoComplete="off"
+              spellCheck={false}
+              value={value}
+              placeholder={secret ? (setting.masked ?? 'Not set') : setting.placeholder}
+              onChange={(event) => onChange(setting.key, event.target.value)}
+              className={cn(
+                'h-40 w-full rounded-10 border border-[var(--studio-line-strong)] bg-[var(--studio-bg)] px-12 text-[14px] text-[var(--studio-fg)] placeholder:text-[var(--studio-faint)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]',
+                secret && 'pr-40',
+              )}
+            />
+            {secret && (
+              <button
+                type="button"
+                onClick={() => setRevealed((prev) => !prev)}
+                aria-label={revealed ? 'Hide value' : 'Show value'}
+                aria-pressed={revealed}
+                className="absolute inset-y-0 right-0 flex w-36 items-center justify-center text-[var(--studio-faint)] transition-colors duration-150 hover:text-[var(--studio-muted)]"
+              >
+                {revealed ? (
+                  <EyeOff className="size-15" aria-hidden />
+                ) : (
+                  <Eye className="size-15" aria-hidden />
+                )}
+              </button>
+            )}
+          </div>
         )}
 
         {setting.source === 'db' && !edited && (
@@ -139,6 +183,16 @@ export default function ConfigAdmin({
     }
     return map;
   }, [settings]);
+
+  const visibleGroups = useMemo(
+    () => groups.filter((group) => (byGroup.get(group.id) ?? []).length > 0),
+    [groups, byGroup],
+  );
+
+  const configuredCount = useMemo(
+    () => settings.filter((setting) => setting.configured).length,
+    [settings],
+  );
 
   const dirtyCount = Object.keys(drafts).length;
 
@@ -202,6 +256,7 @@ export default function ConfigAdmin({
 
   return (
     <AdminPage
+      icon="config"
       title="Configuration"
       description="Everything this installation needs in order to work. Values saved here are stored encrypted in the database and take effect immediately — there is no need to edit environment files or restart the server."
       actions={
@@ -218,6 +273,29 @@ export default function ConfigAdmin({
         </StudioButton>
       }
     >
+      <p className="text-[13px] text-[var(--studio-muted)]">
+        {configuredCount} of {settings.length} settings configured.
+      </p>
+
+      <nav
+        aria-label="Jump to a settings group"
+        className="flex flex-wrap gap-6 border-b border-[var(--studio-line)] pb-16"
+      >
+        {visibleGroups.map((group) => {
+          const Icon = GROUP_ICON[group.id] ?? SlidersHorizontal;
+          return (
+            <a
+              key={group.id}
+              href={`#${group.id}`}
+              className="inline-flex items-center gap-6 rounded-full border border-[var(--studio-line)] px-10 py-6 text-[12px] text-[var(--studio-muted)] transition-colors duration-150 hover:border-[var(--studio-line-strong)] hover:text-[var(--studio-fg)]"
+            >
+              <Icon className="size-12" aria-hidden />
+              {group.label}
+            </a>
+          );
+        })}
+      </nav>
+
       {error && <StatusBanner tone="error">{error}</StatusBanner>}
       {saved !== null && (
         <StatusBanner tone="success">
@@ -225,16 +303,17 @@ export default function ConfigAdmin({
         </StatusBanner>
       )}
 
-      {groups.map((group) => {
+      {visibleGroups.map((group) => {
         const rows = byGroup.get(group.id) ?? [];
-        if (rows.length === 0) return null;
         const checks = results[group.id];
+        const Icon = GROUP_ICON[group.id] ?? SlidersHorizontal;
         return (
           <AdminCard
             key={group.id}
             id={group.id}
             title={group.label}
             description={group.blurb}
+            icon={<Icon className="size-14" aria-hidden />}
             actions={
               <StudioButton
                 type="button"
