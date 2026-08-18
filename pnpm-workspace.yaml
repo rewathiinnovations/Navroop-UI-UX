@@ -1,7 +1,12 @@
 allowBuilds:
   '@prisma/client': true
   '@prisma/engines': true
+  '@sentry/cli': true
+  cbor-extract: true
+  esbuild: true
+  msw: true
   prisma: true
+  protobufjs: true
   sharp: true
   unrs-resolver: true
 minimumReleaseAgeExclude:
