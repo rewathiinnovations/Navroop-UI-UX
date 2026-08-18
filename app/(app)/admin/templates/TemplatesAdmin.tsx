@@ -6,9 +6,9 @@ import StatusPill from '@/components/admin/StatusPill';
 import AdminCard from '@/components/admin/AdminCard';
 import AdminPage from '@/components/admin/AdminPage';
 import { AdminEmpty } from '@/components/admin/AdminTable';
-import StatusBanner from '@/components/admin/StatusBanner';
 import { FormEvent, useState } from 'react';
 import { useUnsavedChangesWarning } from '@/hooks/useUnsavedChangesWarning';
+import { notify, toMessage } from '@/lib/notify';
 import { useRouter } from 'next/navigation';
 import StudioButton from '@/components/app/studio/StudioButton';
 import StudioField from '@/components/app/studio/StudioField';
@@ -34,7 +34,6 @@ export default function TemplatesAdmin({
 }) {
   const router = useRouter();
   const [templates, setTemplates] = useState(initialTemplates);
-  const [error, setError] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   // A template prompt is often paragraphs of hand-written text; losing it to a
   // stray tab close hurts. The form is uncontrolled, so dirtiness is tracked
@@ -54,7 +53,6 @@ export default function TemplatesAdmin({
 
   const patch = async (id: string, body: Record<string, unknown>) => {
     setBusy(id);
-    setError('');
     try {
       const response = await fetch(`/api/admin/templates/${id}`, {
         method: 'PATCH',
@@ -63,10 +61,13 @@ export default function TemplatesAdmin({
       });
       const payload = await response.json();
       if (!response.ok) {
-        setError(readError(payload, 'Could not update template'));
+        notify.error(readError(payload, 'Could not update template'), { key: `template-${id}` });
         return;
       }
       refresh(payload.template);
+      notify.success(`“${payload.template.name}” updated.`, { key: `template-${id}` });
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not update template', key: `template-${id}` });
     } finally {
       setBusy(null);
     }
@@ -74,9 +75,9 @@ export default function TemplatesAdmin({
 
   const onCreate = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
     setBusy('create');
-    setError('');
     try {
       const response = await fetch('/api/admin/templates', {
         method: 'POST',
@@ -94,12 +95,17 @@ export default function TemplatesAdmin({
       });
       const payload = await response.json();
       if (!response.ok) {
-        setError(readError(payload, 'Could not create template'));
+        notify.error(readError(payload, 'Could not create template'), { key: 'template-create' });
         return;
       }
       refresh(payload.template);
-      event.currentTarget.reset();
+      formElement.reset();
       setDraftingTemplate(false);
+      notify.success(`Template “${payload.template.name}” created.`, {
+        key: 'template-create',
+      });
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not create template', key: 'template-create' });
     } finally {
       setBusy(null);
     }
@@ -107,16 +113,23 @@ export default function TemplatesAdmin({
 
   const onTest = async (id: string) => {
     setBusy(`test-${id}`);
-    setError('');
+    const toastId = notify.loading('Creating a test project from this template…');
     try {
       const response = await fetch(`/api/admin/templates/${id}/test`, { method: 'POST' });
       const payload = await response.json();
       if (!response.ok) {
-        setError(readError(payload, 'Could not test this template'));
+        notify.settle(toastId, 'error', readError(payload, 'Could not test this template'));
         return;
       }
       const projectId = payload.id || payload.project?.id;
-      if (projectId) router.push(`/project/${projectId}`);
+      if (projectId) {
+        notify.settle(toastId, 'success', 'Test project created — opening it now.');
+        router.push(`/project/${projectId}`);
+      } else {
+        notify.settle(toastId, 'warning', 'The template ran but no project came back.');
+      }
+    } catch (cause) {
+      notify.settle(toastId, 'error', toMessage(cause, 'Could not test this template'));
     } finally {
       setBusy(null);
     }
@@ -124,24 +137,39 @@ export default function TemplatesAdmin({
 
   const onThumbnails = async () => {
     setBusy('thumbs');
-    setError('');
+    const toastId = notify.loading('Generating thumbnails…');
     try {
       const response = await fetch('/api/admin/templates/thumbnails', { method: 'POST' });
       const payload = await response.json();
       if (!response.ok) {
-        setError(readError(payload, 'Could not generate thumbnails'));
+        notify.settle(toastId, 'error', readError(payload, 'Could not generate thumbnails'));
         return;
       }
-      const failed = (payload.results || []).filter((row: { ok: boolean }) => !row.ok);
-      if (payload.message) setError(payload.message);
-      else if (failed.length) {
-        setError(
-          failed
-            .map((row: { slug: string; error?: string }) => `${row.slug}: ${row.error}`)
-            .join(' '),
+      const results = (payload.results || []) as Array<{
+        ok: boolean;
+        slug: string;
+        error?: string;
+      }>;
+      const failed = results.filter((row) => !row.ok);
+      // `payload.message` is the route's "nothing to do" note, not a failure —
+      // it used to be pushed through the error banner.
+      if (payload.message) {
+        notify.settle(toastId, 'info', payload.message);
+      } else if (failed.length) {
+        notify.settle(
+          toastId,
+          'warning',
+          `${failed.length} of ${results.length} failed — ${failed
+            .map((row) => `${row.slug}: ${row.error}`)
+            .join(', ')}`,
+          { autoClose: 10000 },
         );
+      } else {
+        notify.settle(toastId, 'success', `Generated ${results.length} thumbnails.`);
       }
       router.refresh();
+    } catch (cause) {
+      notify.settle(toastId, 'error', toMessage(cause, 'Could not generate thumbnails'));
     } finally {
       setBusy(null);
     }
@@ -150,7 +178,6 @@ export default function TemplatesAdmin({
   const onUpload = async (id: string, file: File | undefined) => {
     if (!file) return;
     setBusy(`up-${id}`);
-    setError('');
     try {
       const form = new FormData();
       form.set('file', file);
@@ -160,10 +187,13 @@ export default function TemplatesAdmin({
       });
       const payload = await response.json();
       if (!response.ok) {
-        setError(readError(payload, 'Could not upload thumbnail'));
+        notify.error(readError(payload, 'Could not upload thumbnail'), { key: `thumb-${id}` });
         return;
       }
       refresh(payload.template);
+      notify.success('Thumbnail uploaded.', { key: `thumb-${id}` });
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not upload thumbnail', key: `thumb-${id}` });
     } finally {
       setBusy(null);
     }
@@ -185,8 +215,6 @@ export default function TemplatesAdmin({
         </StudioButton>
       }
     >
-      {error && <StatusBanner tone="error">{error}</StatusBanner>}
-
       <Accordion
         icon={<Plus className="size-14" aria-hidden />}
         title="New template"

@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useState } from 'react';
 import { TEMPLATE_CATEGORIES, TEMPLATE_CATEGORY_LABELS } from '@/lib/templates/categories';
+import { notify, toMessage } from '@/lib/notify';
 
 export default function SaveAsTemplateDialog({
   projectId,
@@ -55,7 +56,12 @@ export default function SaveAsTemplateDialog({
         setError(payload.error?.message || payload.error || 'Could not save as template');
         return;
       }
-      setDone(payload.thumbnailWarning || 'Saved as a workspace template.');
+      const message = payload.thumbnailWarning || 'Saved as a workspace template.';
+      setDone(message);
+      // Also toasted so the confirmation survives closing the dialog.
+      notify.success(message, { key: 'save-as-template' });
+    } catch (cause) {
+      setError(toMessage(cause, 'Could not save as template'));
     } finally {
       setBusy(false);
     }

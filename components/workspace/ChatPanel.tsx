@@ -13,6 +13,7 @@ import Hint from './Hint';
 import PlanCard from './PlanCard';
 import type { Checkpoint, MessageFeedback, ProjectPhase, WorkspacePlan } from './types';
 import CreditLimitPanel from './CreditLimitPanel';
+import { notify } from '@/lib/notify';
 
 function producedGeneration(message: ChatMessage) {
   return (
@@ -221,7 +222,9 @@ export default function ChatPanel({
                         setCopiedKey(key);
                         window.setTimeout(() => setCopiedKey((current) => (current === key ? null : current)), 1200);
                       } catch {
-                        /* clipboard may be blocked */
+                        notify.warning('Could not copy — select the text and copy it by hand.', {
+                          key: 'chat-copy',
+                        });
                       }
                     }}
                     className="inline-flex size-28 items-center justify-center rounded-8 text-[var(--studio-faint)] hover:text-[var(--studio-fg)]"
@@ -249,8 +252,9 @@ export default function ChatPanel({
                             const stub = `${window.location.origin}/project/${projectId || 'unknown'}#msg-${index}`;
                             try {
                               await navigator.clipboard.writeText(stub);
+                              notify.success('Message link copied.', { key: 'chat-copy' });
                             } catch {
-                              /* ignore */
+                              notify.warning('Could not copy the link.', { key: 'chat-copy' });
                             }
                             setMenuFor(null);
                           }}

@@ -4,6 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import StudioShell from '@/components/app/studio/StudioShell';
 import StudioButton from '@/components/app/studio/StudioButton';
+import { notify, toMessage } from '@/lib/notify';
 import type { PublicDeployment } from '@/lib/publish/serialize';
 
 function statusLabel(status: string) {
@@ -16,11 +17,16 @@ function statusLabel(status: string) {
 export default function DeploymentsList({ initial }: { initial: PublicDeployment[] }) {
   const [rows, setRows] = useState(initial);
   const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState('');
 
   const act = async (id: string, action: 'stop' | 'redeploy' | 'delete', confirmSlug?: string) => {
     setBusy(`${action}:${id}`);
-    setError('');
+    const pending = { stop: 'Stopping…', redeploy: 'Redeploying…', delete: 'Deleting…' }[action];
+    const done = {
+      stop: 'Deployment stopped.',
+      redeploy: 'Redeploy started.',
+      delete: 'Deployment deleted.',
+    }[action];
+    const toastId = notify.loading(pending);
     try {
       const response = await fetch(`/api/deployments/${id}`, {
         method: 'POST',
@@ -29,9 +35,10 @@ export default function DeploymentsList({ initial }: { initial: PublicDeployment
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        setError(data.error || 'Action fail');
+        notify.settle(toastId, 'error', data.error || `Could not ${action} this deployment`);
         return;
       }
+      notify.settle(toastId, 'success', done);
       if (action === 'delete') {
         setRows((current) => current.filter((row) => row.id !== id));
         return;
@@ -39,6 +46,8 @@ export default function DeploymentsList({ initial }: { initial: PublicDeployment
       const list = await fetch('/api/deployments');
       const payload = await list.json().catch(() => ({}));
       if (list.ok && Array.isArray(payload.deployments)) setRows(payload.deployments);
+    } catch (cause) {
+      notify.settle(toastId, 'error', toMessage(cause, `Could not ${action} this deployment`));
     } finally {
       setBusy(null);
     }
@@ -51,7 +60,6 @@ export default function DeploymentsList({ initial }: { initial: PublicDeployment
         <p className="mt-8 text-[14px] text-[var(--studio-muted)]">
           Preview and live Coolify sites. Sandbox URLs are not listed here.
         </p>
-        {error && <p className="mt-12 text-[13px] text-[var(--studio-danger)]">{error}</p>}
 
         <div className="mt-24 overflow-x-auto rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)]">
           <table className="w-full text-left text-[14px]">

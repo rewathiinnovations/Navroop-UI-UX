@@ -9,6 +9,7 @@ import StatusBanner from '@/components/admin/StatusBanner';
 import { SkeletonTable } from '@/components/admin/AdminSkeleton';
 import { useEffect, useState } from 'react';
 import { jobAdminFailureLine } from '@/lib/jobs/admin-display';
+import { notify } from '@/lib/notify';
 import { sandboxChoiceLines } from '@/lib/jobs/sandbox-choice';
 import type { JobResourceIds } from '@/lib/jobs/types';
 
@@ -75,10 +76,13 @@ export default function JobsAdmin() {
       const response = await fetch(`/api/admin/jobs/${id}/abandon`, { method: 'POST' });
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
-        setError(payload.error?.message || payload.error || 'Could not abandon job');
+        notify.error(payload.error?.message || payload.error || 'Could not abandon job');
         return;
       }
+      notify.success('Job abandoned.');
       await load();
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not abandon job' });
     } finally {
       setBusy(null);
     }

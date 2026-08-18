@@ -14,6 +14,7 @@ import type { DesignDirectionId } from "@/lib/design/directions";
 import type { ImportMode } from "@/lib/import/mode";
 import { createProjectFromPrompt } from "@/lib/projects/start-from-prompt";
 import type { StackId } from "@/lib/stacks";
+import { notify } from "@/lib/notify";
 
 type HomeLandingProps = {
   initialAuth?: AuthMode | null;
@@ -33,7 +34,6 @@ export default function HomeLanding({
   const heroRef = useRef<PromptHeroHandle>(null);
   const [authOpen, setAuthOpen] = useState(Boolean(initialAuth));
   const [authMode, setAuthMode] = useState<AuthMode>(initialAuth || "signup");
-  const [error, setError] = useState("");
 
   useEffect(() => {
     if (!initialAuth) return;
@@ -43,7 +43,6 @@ export default function HomeLanding({
 
   const openAuth = (mode: AuthMode) => {
     heroRef.current?.flush();
-    setError("");
     setAuthMode(mode);
     setAuthOpen(true);
   };
@@ -54,7 +53,6 @@ export default function HomeLanding({
     designDirection: DesignDirectionId,
     importMode: ImportMode,
   ) => {
-    setError("");
     if (!session?.user) {
       openAuth("signup");
       return;
@@ -63,13 +61,13 @@ export default function HomeLanding({
     try {
       const created = await createProjectFromPrompt(value, stack, designDirection, importMode);
       if (!created.ok) {
-        setError(created.error);
+        notify.error(created.error, { key: "create-project" });
         return;
       }
       clearDraftStorage(PENDING_PROMPT_KEY);
       router.push(`/project/${created.project.id}`);
-    } catch {
-      setError("Could not create project");
+    } catch (cause) {
+      notify.error(cause, { fallback: "Could not create project", key: "create-project" });
     }
   };
 
@@ -108,11 +106,6 @@ export default function HomeLanding({
               </p>
             }
           />
-          {error && (
-            <p className="mt-12 text-center text-[14px] text-[var(--studio-danger)]" role="alert">
-              {error}
-            </p>
-          )}
         </div>
       </main>
 

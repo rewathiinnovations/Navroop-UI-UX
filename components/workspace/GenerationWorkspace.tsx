@@ -35,6 +35,7 @@ import { useGeneration } from '@/components/app/generation/GenerationProvider';
 import { applyPageCopy, shouldAddApplyChat } from '@/lib/generation/apply-page-copy';
 import { getGenerationState, surfacePreviewNotice } from '@/lib/generation/generation-runtime';
 import { isActiveGenerationStatus } from '@/lib/generation/types';
+import { notify } from '@/lib/notify';
 
 interface SandboxData {
   sandboxId: string;
@@ -2116,7 +2117,11 @@ Tip: I automatically detect and install npm packages from your code imports (lik
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
-        
+
+        // The chat carries the run-locally steps; the toast confirms the
+        // download itself, which lands away from the chat's focus.
+        notify.success('Download started.', { key: 'download-zip' });
+
         addChatMessage(
           'Your Vite app has been downloaded! To run it locally:\n' +
           '1. Unzip the file\n' +
@@ -2131,6 +2136,7 @@ Tip: I automatically detect and install npm packages from your code imports (lik
     } catch (error: any) {
       log(`Failed to create zip: ${error.message}`, 'error');
       addChatMessage(`Failed to create ZIP: ${error.message}`, 'system');
+      notify.error(error, { fallback: 'Could not create the ZIP', key: 'download-zip' });
     } finally {
       setLoading(false);
     }

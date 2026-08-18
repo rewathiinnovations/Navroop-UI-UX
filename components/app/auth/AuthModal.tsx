@@ -17,6 +17,7 @@ import { validateEmail } from "@/lib/email";
 import { safeNextPath } from "@/lib/auth/public-login";
 import { createProjectFromPrompt } from "@/lib/projects/start-from-prompt";
 import { TERMS_REQUIRED_MESSAGE } from "@/lib/legal/terms";
+import { notify } from "@/lib/notify";
 import {
   PENDING_PROMPT_KEY,
   clearDraftStorage,
@@ -76,7 +77,11 @@ export default function AuthModal({
     setAcceptTerms(false);
   }, [open, mode, initialForgot, resetSuccess]);
 
-  const finishAuthenticated = async () => {
+  const finishAuthenticated = async (welcome: string) => {
+    // Toasted rather than shown in the dialog: the dialog is about to close and
+    // the user lands on a different page.
+    notify.success(welcome, { key: "auth" });
+
     const draft = readDraftStorage(PENDING_PROMPT_KEY);
     const prompt = draft?.text.trim() || "";
     if (draft && prompt) {
@@ -93,6 +98,12 @@ export default function AuthModal({
         router.refresh();
         return;
       }
+      // The saved prompt could not be turned into a project — say so rather
+      // than dropping the user on the dashboard with no explanation.
+      notify.error(created.error, {
+        fallback: "Signed in, but that prompt could not be started.",
+        key: "auth-draft",
+      });
       onClose();
       router.push("/dashboard");
       router.refresh();
@@ -167,7 +178,9 @@ export default function AuthModal({
         setError(mode === "login" ? "Invalid email or password" : "Could not sign in");
         return;
       }
-      await finishAuthenticated();
+      await finishAuthenticated(
+        mode === "signup" ? "Account created — welcome aboard." : "Signed in.",
+      );
     } catch {
       setError(mode === "login" ? "Could not sign in" : "Could not create account");
     } finally {
@@ -190,10 +203,16 @@ export default function AuthModal({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: trimmedEmail }),
       });
-      setPanel("forgot-sent");
     } catch {
-      setPanel("forgot-sent");
+      // Deliberately indistinguishable from success: revealing whether the
+      // address exists would leak account membership.
     } finally {
+      // The panel says "check your inbox" either way; the toast repeats it so
+      // the confirmation survives closing the dialog.
+      setPanel("forgot-sent");
+      notify.info("If that address has an account, a reset link is on its way.", {
+        key: "auth-forgot",
+      });
       setLoading(false);
     }
   };
@@ -212,7 +231,7 @@ export default function AuthModal({
         setError("Could not sign in");
         return;
       }
-      await finishAuthenticated();
+      await finishAuthenticated(`Signed in as ${role}.`);
     } catch {
       setError("Could not sign in");
     } finally {

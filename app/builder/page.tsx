@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { toast } from "sonner";
+import { notify } from "@/lib/notify";
 
 export default function BuilderPage() {
   const [targetUrl, setTargetUrl] = useState<string>("");
@@ -196,11 +196,11 @@ export default function BuilderPage() {
       setIsLoading(false);
       
       // Show success message
-      toast.success("Website generated successfully!");
+      notify.success("Website generated successfully!");
       
     } catch (error) {
       console.error("Error generating website:", error);
-      toast.error("Failed to generate website. Please try again.");
+      notify.error(error, { fallback: "Failed to generate website. Please try again." });
       setProgress("Error occurred");
       setTimeout(() => router.push('/dashboard'), 2000);
     }
@@ -216,7 +216,7 @@ export default function BuilderPage() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    toast.success("Code downloaded!");
+    notify.success("Code downloaded!");
   };
 
   return (

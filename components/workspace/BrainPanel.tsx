@@ -13,6 +13,7 @@ import {
   updateMemory,
 } from '@/lib/memory/actions';
 import { MEMORY_CATEGORIES, MEMORY_TOKEN_BUDGET, type MemoryCategory, type PublicMemory } from '@/lib/memory/types';
+import { notify } from '@/lib/notify';
 
 const CATEGORY_LABEL: Record<MemoryCategory, string> = {
   design: 'Design',
@@ -54,10 +55,13 @@ function MemoryRow({
     setBusy(true);
     const result = await updateMemory(entry.id, draft);
     setBusy(false);
-    if (result.ok) {
-      onChanged(result.data);
-      setEditing(false);
+    if (!result.ok) {
+      notify.error(result.error, { key: `memory-${entry.id}` });
+      return;
     }
+    onChanged(result.data);
+    setEditing(false);
+    notify.success('Memory updated.', { key: `memory-${entry.id}` });
   };
 
   return (
@@ -92,7 +96,12 @@ function MemoryRow({
               setBusy(true);
               const result = await archiveMemory(entry.id);
               setBusy(false);
-              if (result.ok) onChanged(result.data, true);
+              if (!result.ok) {
+                notify.error(result.error, { key: `memory-${entry.id}` });
+                return;
+              }
+              onChanged(result.data, true);
+              notify.success('Memory archived.', { key: `memory-${entry.id}` });
             }}
             className="text-[12px] font-medium text-[var(--studio-muted)] hover:text-[var(--studio-fg)]"
           >
@@ -118,7 +127,6 @@ function AddEntry({
   const [content, setContent] = useState('');
   const [category, setCategory] = useState<MemoryCategory>('design');
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
 
   if (disabled) return null;
 
@@ -128,7 +136,6 @@ function AddEntry({
       onSubmit={async (event) => {
         event.preventDefault();
         setBusy(true);
-        setError('');
         const result = await createMemory({
           scope,
           projectId: scope === 'PROJECT' ? projectId : null,
@@ -137,11 +144,12 @@ function AddEntry({
         });
         setBusy(false);
         if (!result.ok) {
-          setError(result.error);
+          notify.error(result.error, { key: `memory-add-${scope}` });
           return;
         }
         setContent('');
         onCreated(result.data);
+        notify.success('Entry added to the brain.', { key: `memory-add-${scope}` });
       }}
     >
       <div className="flex flex-wrap gap-8">
@@ -172,11 +180,6 @@ function AddEntry({
           Add entry
         </button>
       </div>
-      {error && (
-        <p className="text-[12px] text-[var(--studio-danger)]" role="alert">
-          {error}
-        </p>
-      )}
     </form>
   );
 }
@@ -227,7 +230,14 @@ function PendingStrip({
                     type="button"
                     onClick={async () => {
                       const result = await reactivateMemory(entry.id);
-                      if (result.ok) onChanged(result.data);
+                      if (!result.ok) {
+                        notify.error(result.error, { key: `memory-${entry.id}` });
+                        return;
+                      }
+                      onChanged(result.data);
+                      notify.success('Memory approved — it will be injected from now on.', {
+                        key: `memory-${entry.id}`,
+                      });
                     }}
                     className="text-[12px] font-medium text-[var(--studio-fg)] hover:underline"
                   >
@@ -238,12 +248,20 @@ function PendingStrip({
                       type="button"
                       onClick={async () => {
                         const updated = await updateMemory(entry.id, draft);
-                        if (!updated.ok) return;
-                        const approved = await reactivateMemory(entry.id);
-                        if (approved.ok) {
-                          setEditingId(null);
-                          onChanged(approved.data);
+                        if (!updated.ok) {
+                          notify.error(updated.error, { key: `memory-${entry.id}` });
+                          return;
                         }
+                        const approved = await reactivateMemory(entry.id);
+                        if (!approved.ok) {
+                          notify.error(approved.error, { key: `memory-${entry.id}` });
+                          return;
+                        }
+                        setEditingId(null);
+                        onChanged(approved.data);
+                        notify.success('Memory saved and approved.', {
+                          key: `memory-${entry.id}`,
+                        });
                       }}
                       className="text-[12px] font-medium text-[var(--studio-fg)] hover:underline"
                     >
@@ -262,7 +280,12 @@ function PendingStrip({
                     type="button"
                     onClick={async () => {
                       const result = await archiveMemory(entry.id);
-                      if (result.ok) onChanged(result.data, true);
+                      if (!result.ok) {
+                        notify.error(result.error, { key: `memory-${entry.id}` });
+                        return;
+                      }
+                      onChanged(result.data, true);
+                      notify.success('Suggestion dismissed.', { key: `memory-${entry.id}` });
                     }}
                     className="text-[12px] font-medium text-[var(--studio-muted)] hover:text-[var(--studio-fg)]"
                   >

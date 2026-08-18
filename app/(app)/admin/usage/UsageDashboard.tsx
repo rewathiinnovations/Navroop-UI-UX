@@ -16,6 +16,7 @@ import AdminPage from '@/components/admin/AdminPage';
 import { AdminTable, Td, Th, Tr } from '@/components/admin/AdminTable';
 import StatTile from '@/components/admin/StatTile';
 import StatusBanner from '@/components/admin/StatusBanner';
+import { fetchJson, notify } from '@/lib/notify';
 import { SkeletonTable } from '@/components/admin/AdminSkeleton';
 import { Fragment, FormEvent, useEffect, useMemo, useState } from 'react';
 import StudioButton from '@/components/app/studio/StudioButton';
@@ -193,15 +194,23 @@ export default function UsageDashboard() {
     try {
       const results = await Promise.all(
         missing.map(async (project) => {
-          const response = await fetch(`/api/admin/usage/project/${project.id}`);
-          const data = await response.json();
-          return { id: project.id, events: (data.events || []) as ProjectEvent[] };
+          const data = await fetchJson<{ events?: ProjectEvent[] }>(
+            `/api/admin/usage/project/${project.id}`,
+          );
+          return { id: project.id, events: data.events || [] };
         }),
       );
       setEventsByProject((current) => {
         const next = { ...current };
         for (const row of results) next[row.id] = row.events;
         return next;
+      });
+    } catch (cause) {
+      // Without this the rejected Promise.all surfaced only as an unhandled
+      // rejection and the row just stayed blank.
+      notify.error(cause, {
+        fallback: 'Could not load usage for those projects',
+        key: `usage-projects-${member.userId}`,
       });
     } finally {
       setLoadingProjects(false);

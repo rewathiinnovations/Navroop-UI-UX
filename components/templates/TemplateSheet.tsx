@@ -8,6 +8,7 @@ import { DEFAULT_IMPORT_MODE } from '@/lib/import/mode';
 import { isStackId } from '@/lib/stacks';
 import { TEMPLATE_CATEGORY_LABELS, isTemplateCategory } from '@/lib/templates/categories';
 import type { PublicTemplate } from '@/lib/templates/types';
+import { notify, toMessage } from '@/lib/notify';
 
 export default function TemplateSheet({
   template,
@@ -18,14 +19,12 @@ export default function TemplateSheet({
 }) {
   const router = useRouter();
   const [prompt, setPrompt] = useState('');
-  const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     if (!template) return;
     const stored = readDraftStorage(PENDING_PROMPT_KEY);
     setPrompt(stored?.templateId === template.id && stored.text ? stored.text : template.prompt);
-    setError('');
   }, [template]);
 
   useEffect(() => {
@@ -46,9 +45,12 @@ export default function TemplateSheet({
     ? TEMPLATE_CATEGORY_LABELS[template.category]
     : template.category;
 
+  // Creating the project takes a while and ends in a navigation, so the
+  // feedback is a pending toast settled in place rather than a line in a sheet
+  // that is about to disappear.
   const create = async () => {
     setBusy(true);
-    setError('');
+    const toastId = notify.loading('Creating your project…');
     try {
       const response = await fetch(`/api/templates/${template.id}/create`, {
         method: 'POST',
@@ -59,15 +61,18 @@ export default function TemplateSheet({
       if (!response.ok) {
         const message =
           payload.error?.message || payload.error || payload.message || 'Could not create from this template';
-        setError(String(message));
+        notify.settle(toastId, 'error', String(message));
         return;
       }
       const id = payload.id || payload.project?.id;
       if (!id) {
-        setError('Could not create from this template');
+        notify.settle(toastId, 'error', 'Could not create from this template');
         return;
       }
+      notify.settle(toastId, 'success', 'Project created — opening it now.');
       router.push(`/project/${id}`);
+    } catch (cause) {
+      notify.settle(toastId, 'error', toMessage(cause, 'Could not create from this template'));
     } finally {
       setBusy(false);
     }
@@ -123,11 +128,6 @@ export default function TemplateSheet({
               className="w-full rounded-12 border border-[var(--studio-line-strong)] bg-[var(--studio-surface)] px-12 py-10 text-[13px] leading-5 text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
             />
           </label>
-          {error ? (
-            <p className="text-[13px] text-[var(--studio-danger)]" role="alert">
-              {error}
-            </p>
-          ) : null}
         </div>
         <div className="border-t border-[var(--studio-line)] px-20 py-14">
           <button

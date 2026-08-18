@@ -13,6 +13,7 @@ import {
   type PublicAsset,
 } from '@/lib/assets/actions';
 import type { GenerateAspect } from '@/lib/assets/generate-image';
+import { notify } from '@/lib/notify';
 
 const ASPECTS: Array<{ id: GenerateAspect; label: string }> = [
   { id: '16:9', label: '16:9' },
@@ -55,14 +56,18 @@ export default function AssetsPanel({ projectId }: { projectId: string }) {
     };
   }, [projectId]);
 
-  const run = async (label: string, work: () => Promise<PublicAsset | void>) => {
+  /**
+   * Every asset mutation funnels through here, so success and failure toasts
+   * live in one place rather than at each call site.
+   */
+  const run = async (label: string, done: string, work: () => Promise<PublicAsset | void>) => {
     setBusy(label);
-    setError('');
     try {
       const asset = await work();
       if (asset) setAssets((current) => [asset, ...current.filter((row) => row.id !== asset.id)]);
+      notify.success(done, { key: `asset-${label}` });
     } catch (caught) {
-      setError((caught as Error).message);
+      notify.error(caught, { key: `asset-${label}` });
     } finally {
       setBusy('');
     }
@@ -108,7 +113,7 @@ export default function AssetsPanel({ projectId }: { projectId: string }) {
             type="button"
             disabled={busy === 'generate'}
             onClick={() =>
-              void run('generate', async () => {
+              void run('generate', 'Image generated.', async () => {
                 const result = await generateProjectImage(projectId, prompt, aspect);
                 if (!result.ok) throw new Error(result.error);
                 setPrompt('');
@@ -137,7 +142,7 @@ export default function AssetsPanel({ projectId }: { projectId: string }) {
             type="button"
             disabled={busy === 'stock'}
             onClick={() =>
-              void run('stock', async () => {
+              void run('stock', 'Stock image added.', async () => {
                 const result = await searchProjectStock(projectId, stockQuery);
                 if (!result.ok) throw new Error(result.error);
                 setStockQuery('');
@@ -171,7 +176,7 @@ export default function AssetsPanel({ projectId }: { projectId: string }) {
                 const file = event.target.files?.[0];
                 event.target.value = '';
                 if (!file) return;
-                void run('upload', async () => {
+                void run('upload', 'Image uploaded.', async () => {
                   const formData = new FormData();
                   formData.set('file', file);
                   formData.set('altText', uploadAlt);
@@ -223,10 +228,11 @@ export default function AssetsPanel({ projectId }: { projectId: string }) {
                 if (!next || next === asset.altText) return;
                 void updateProjectAssetAlt(projectId, asset.id, next).then((result) => {
                   if (!result.ok) {
-                    setError(result.error);
+                    notify.error(result.error, { key: `asset-alt-${asset.id}` });
                     return;
                   }
                   setAssets((current) => current.map((row) => (row.id === asset.id ? result.data : row)));
+                  notify.success('Alt text saved.', { key: `asset-alt-${asset.id}` });
                 });
               }}
               className="mb-8 w-full rounded-8 border border-[var(--studio-line)] bg-[var(--studio-bg)] px-8 py-6 text-[12px] text-[var(--studio-fg)]"
@@ -234,7 +240,14 @@ export default function AssetsPanel({ projectId }: { projectId: string }) {
             <div className="flex gap-8">
               <button
                 type="button"
-                onClick={() => void navigator.clipboard.writeText(asset.url)}
+                onClick={() => {
+                  void navigator.clipboard
+                    .writeText(asset.url)
+                    .then(() => notify.success('Asset URL copied.', { key: 'asset-copy' }))
+                    .catch(() =>
+                      notify.warning('Could not copy the URL.', { key: 'asset-copy' }),
+                    );
+                }}
                 className="inline-flex h-32 items-center gap-4 rounded-full border border-[var(--studio-line)] px-10 text-[11px] text-[var(--studio-fg)]"
               >
                 <Copy className="size-12" />
@@ -256,10 +269,11 @@ export default function AssetsPanel({ projectId }: { projectId: string }) {
                 onConfirm={async () => {
                   const result = await deleteProjectAsset(projectId, asset.id);
                   if (!result.ok) {
-                    setError(result.error);
+                    notify.error(result.error, { key: `asset-${asset.id}` });
                     return;
                   }
                   setAssets((current) => current.filter((row) => row.id !== asset.id));
+                  notify.success('Asset deleted.', { key: `asset-${asset.id}` });
                 }}
               />
             </div>

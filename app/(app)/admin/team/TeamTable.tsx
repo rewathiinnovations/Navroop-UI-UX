@@ -7,6 +7,7 @@ import StatusPill from '@/components/admin/StatusPill';
 import { Users } from 'lucide-react';
 import { Fragment, useState } from 'react';
 import StudioButton from '@/components/app/studio/StudioButton';
+import { notify } from '@/lib/notify';
 import { deactivateMember, listTeam, reactivateMember, updateMemberRole } from '@/lib/team/actions';
 import { SELF_DEACTIVATE_ERROR, SELF_ROLE_ERROR, type TeamRole } from '@/lib/team/schema';
 import { formatAdminDate } from '../format-admin-date';
@@ -34,8 +35,6 @@ export default function TeamTable({
   selfId: string;
 }) {
   const [members, setMembers] = useState(initialMembers);
-  const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
-  const [rowNotes, setRowNotes] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
 
   const refresh = async () => {
@@ -43,30 +42,26 @@ export default function TeamTable({
     if (result.ok) setMembers(result.data.members);
   };
 
-  const setRowError = (userId: string, message: string) => {
-    setRowErrors((current) => ({ ...current, [userId]: message }));
-  };
-
-  const clearRowError = (userId: string) => {
-    setRowErrors((current) => {
-      const next = { ...current };
-      delete next[userId];
-      return next;
-    });
-  };
-
+  // Row feedback is toasted rather than rendered as an extra table row. Each
+  // toast is keyed by member so a repeated action replaces its own message
+  // instead of stacking, and names the member since the toast sits away from
+  // the row it describes.
   const onRole = async (userId: string, role: TeamRole) => {
     setBusy(`role:${userId}`);
-    clearRowError(userId);
     try {
       const result = await updateMemberRole(userId, role);
       if (!result.ok) {
-        setRowError(userId, result.error);
+        notify.error(result.error, { key: `team-${userId}` });
         return;
       }
       setMembers((current) =>
         current.map((member) => (member.id === userId ? result.data : member)),
       );
+      notify.success(`${result.data.email} is now ${role === 'ADMIN' ? 'an admin' : 'a member'}.`, {
+        key: `team-${userId}`,
+      });
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not change the role', key: `team-${userId}` });
     } finally {
       setBusy(null);
     }
@@ -74,20 +69,16 @@ export default function TeamTable({
 
   const onSendReset = async (member: Member) => {
     setBusy(`reset:${member.id}`);
-    clearRowError(member.id);
-    setRowNotes((current) => {
-      const next = { ...current };
-      delete next[member.id];
-      return next;
-    });
     try {
       const response = await fetch(`/api/admin/team/${member.id}/reset-link`, { method: 'POST' });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        setRowError(member.id, data.error || 'Could not send the link');
+        notify.error(data.error || 'Could not send the link', { key: `team-${member.id}` });
         return;
       }
-      setRowNotes((current) => ({ ...current, [member.id]: 'Reset link sent' }));
+      notify.success(`Reset link sent to ${member.email}.`, { key: `team-${member.id}` });
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not send the link', key: `team-${member.id}` });
     } finally {
       setBusy(null);
     }
@@ -95,16 +86,23 @@ export default function TeamTable({
 
   const onToggleActive = async (member: Member) => {
     setBusy(`active:${member.id}`);
-    clearRowError(member.id);
     try {
       const result = member.isActive
         ? await deactivateMember(member.id)
         : await reactivateMember(member.id);
       if (!result.ok) {
-        setRowError(member.id, result.error);
+        notify.error(result.error, { key: `team-${member.id}` });
         return;
       }
       setMembers((current) => current.map((row) => (row.id === member.id ? result.data : row)));
+      notify.success(
+        member.isActive
+          ? `${member.email} deactivated — they can no longer sign in.`
+          : `${member.email} reactivated.`,
+        { key: `team-${member.id}` },
+      );
+    } catch (cause) {
+      notify.error(cause, { fallback: 'Could not update the member', key: `team-${member.id}` });
     } finally {
       setBusy(null);
       void refresh();
@@ -223,24 +221,6 @@ export default function TeamTable({
                 </div>
               </Td>
             </Tr>
-            {rowNotes[member.id] && (
-              <Tr>
-                <Td className="pt-0" colSpan={7}>
-                  <span className="text-[12px] text-[var(--studio-accent)]" role="status">
-                    {rowNotes[member.id]}
-                  </span>
-                </Td>
-              </Tr>
-            )}
-            {rowErrors[member.id] && (
-              <Tr>
-                <Td className="pt-0" colSpan={7}>
-                  <span className="text-[12px] text-[var(--studio-danger)]" role="alert">
-                    {rowErrors[member.id]}
-                  </span>
-                </Td>
-              </Tr>
-            )}
           </Fragment>
         ))}
       </AdminTable>

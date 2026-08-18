@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Check, Copy, Globe, Lock, Trash2 } from 'lucide-react';
 import { cn } from '@/utils/cn';
+import { notify } from '@/lib/notify';
 import {
   addProjectDomain,
   checkProjectDomain,
@@ -44,7 +45,14 @@ function statusLabel(status: PublicCustomDomain['status']) {
 }
 
 async function copyText(value: string) {
-  await navigator.clipboard.writeText(value);
+  try {
+    await navigator.clipboard.writeText(value);
+    notify.success('Copied to clipboard.', { key: 'domain-copy' });
+  } catch {
+    notify.warning('Could not copy — select the value and copy it by hand.', {
+      key: 'domain-copy',
+    });
+  }
 }
 
 function InstructionTable({
@@ -132,14 +140,19 @@ export default function DomainsPanel({ projectId }: { projectId: string }) {
     return () => window.clearInterval(timer);
   }, [load, state?.domains]);
 
-  const run = async (label: string, work: () => Promise<void>) => {
+  /**
+   * Every domain mutation funnels through here, so success and failure toasts
+   * live in one place rather than at each call site. The inline `error` is left
+   * to `load`, where it explains an empty panel.
+   */
+  const run = async (label: string, done: string, work: () => Promise<void>) => {
     setBusy(label);
-    setError('');
     try {
       await work();
       await load();
+      notify.success(done, { key: `domain-${label}` });
     } catch (caught) {
-      setError((caught as Error).message);
+      notify.error(caught, { key: `domain-${label}` });
     } finally {
       setBusy('');
     }
@@ -226,7 +239,7 @@ export default function DomainsPanel({ projectId }: { projectId: string }) {
           type="button"
           disabled={!hostname.trim() || busy === 'add' || !state?.published}
           onClick={() =>
-            void run('add', async () => {
+            void run('add', 'Domain added — DNS changes can take a while.', async () => {
               const result = await addProjectDomain(projectId, { hostname, path });
               if (!result.ok) throw new Error(result.error);
               setHostname('');
@@ -267,7 +280,7 @@ export default function DomainsPanel({ projectId }: { projectId: string }) {
                     type="button"
                     className="text-[12px] text-[var(--studio-fg)]"
                     onClick={() =>
-                      void run(`primary-${domain.id}`, async () => {
+                      void run(`primary-${domain.id}`, `${domain.hostname} is now primary.`, async () => {
                         const result = await makeProjectDomainPrimary(projectId, domain.id);
                         if (!result.ok) throw new Error(result.error);
                       })
@@ -280,7 +293,7 @@ export default function DomainsPanel({ projectId }: { projectId: string }) {
                   type="button"
                   className="inline-flex items-center gap-4 text-[12px] text-[var(--studio-danger)]"
                   onClick={() =>
-                    void run(`remove-${domain.id}`, async () => {
+                    void run(`remove-${domain.id}`, `${domain.hostname} removed.`, async () => {
                       const result = await removeProjectDomain(projectId, domain.id, confirmById[domain.id]);
                       if (!result.ok) throw new Error(result.error);
                     })
@@ -362,7 +375,7 @@ export default function DomainsPanel({ projectId }: { projectId: string }) {
                 type="button"
                 className="h-32 rounded-full border border-[var(--studio-line)] px-12 text-[12px]"
                 onClick={() =>
-                  void run(`email-${domain.id}`, async () => {
+                  void run(`email-${domain.id}`, 'Instructions emailed to the client.', async () => {
                     const result = await emailProjectDomain(projectId, domain.id, emailById[domain.id] ?? '');
                     if (!result.ok) throw new Error(result.error);
                   })

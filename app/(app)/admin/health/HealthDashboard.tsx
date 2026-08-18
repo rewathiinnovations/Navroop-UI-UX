@@ -15,6 +15,7 @@ import AdminPage from '@/components/admin/AdminPage';
 import AdminTabs, { type AdminTab } from '@/components/admin/AdminTabs';
 import StatTile from '@/components/admin/StatTile';
 import StatusBanner from '@/components/admin/StatusBanner';
+import { notify, toMessage } from '@/lib/notify';
 import StudioButton from '@/components/app/studio/StudioButton';
 import { useEffect, useState } from 'react';
 import { formatAdminDate, formatAdminDateTime } from '../format-admin-date';
@@ -199,6 +200,7 @@ export default function HealthDashboard() {
               onClick={async () => {
                 setRollingBack(true);
                 setRollbackMessage('');
+                const toastId = notify.loading('Requesting rollback…');
                 try {
                   const response = await fetch('/api/admin/health/rollback', {
                     method: 'POST',
@@ -207,10 +209,15 @@ export default function HealthDashboard() {
                   });
                   const payload = await response.json();
                   if (!response.ok) {
+                    notify.settle(toastId, 'error', payload.error || 'Could not roll back');
                     setRollbackMessage(payload.error || 'Could not roll back');
                     return;
                   }
-                  setRollbackMessage(`Rollback requested to ${payload.sha}. ${payload.note || ''}`);
+                  const detail = `Rollback requested to ${payload.sha}. ${payload.note || ''}`.trim();
+                  notify.settle(toastId, 'success', detail);
+                  setRollbackMessage(detail);
+                } catch (cause) {
+                  notify.settle(toastId, 'error', toMessage(cause, 'Could not roll back'));
                 } finally {
                   setRollingBack(false);
                 }
@@ -430,18 +437,24 @@ export default function HealthDashboard() {
               onClick={async () => {
                 setTestBusy(true);
                 setTestMessage('');
+                // The route waits up to 60s for Sentry to acknowledge, so the
+                // pending toast is what tells the admin it is still working.
+                const toastId = notify.loading('Sending a test event to Sentry…');
                 try {
                   const response = await fetch('/api/admin/health/sentry-test', { method: 'POST' });
                   const payload = await response.json();
                   if (!response.ok) {
+                    notify.settle(toastId, 'error', payload.error || 'Could not send test event');
                     setTestMessage(payload.error || 'Could not send test event');
                     return;
                   }
-                  setTestMessage(
-                    payload.received
-                      ? 'Test event received by Sentry.'
-                      : 'Test event was sent but not received within 60 seconds.',
-                  );
+                  const detail = payload.received
+                    ? 'Test event received by Sentry.'
+                    : 'Test event was sent but not received within 60 seconds.';
+                  notify.settle(toastId, payload.received ? 'success' : 'warning', detail);
+                  setTestMessage(detail);
+                } catch (cause) {
+                  notify.settle(toastId, 'error', toMessage(cause, 'Could not send test event'));
                 } finally {
                   setTestBusy(false);
                 }
