@@ -47,9 +47,8 @@ afterAll(async () => {
 
 describe('lib raw SQL parses on Postgres', () => {
   it('project lock statements', async () => {
-    const { acquireLock, bumpContentVersion, getProjectLock, releaseLock, renewLock } = await import(
-      '@/lib/projects/lock'
-    );
+    const { acquireLock, bumpContentVersion, getProjectLock, releaseLock, renewLock } =
+      await import('@/lib/projects/lock');
     await parses(() => getProjectLock(BOGUS));
     await parses(() => acquireLock(BOGUS, BOGUS, 'generation'));
     await parses(() => renewLock(BOGUS, BOGUS));
@@ -92,26 +91,6 @@ describe('lib raw SQL parses on Postgres', () => {
     await parses(() => incrementPrivateReject(BOGUS));
   });
 
-  it('round-robin provider cursor', async () => {
-    const { selectProvider } = await import('@/lib/sandbox/router');
-    await parses(() => selectProvider({ strategy: 'round_robin', candidates: [] }));
-  });
-
-  it('sandbox minute meter', async () => {
-    const meter = await import('@/lib/sandbox/meter');
-    await parses(() => meter.readSandboxMinutesUsed(BOGUS));
-    await parses(() => meter.readMonthlySandboxMinutes(BOGUS));
-    await parses(() => meter.accrueSandboxMinutes(BOGUS, 3));
-  });
-
-  it('sandbox provider config store', async () => {
-    const store = await import('@/lib/sandbox/store');
-    await parses(() => store.listProviderConfigs());
-    await parses(() => store.getRoutingStrategy());
-    await parses(() => store.updateProviderConfig(BOGUS, { healthStatus: 'unknown' }));
-    await parses(() => store.deleteProviderConfig(BOGUS));
-  });
-
   it('workspace spend accrual, including the 80% and auto-pause claims', async () => {
     const { accrueSpend, readWorkspaceSpend } = await import('@/lib/plans/spend');
     await parses(() => readWorkspaceSpend(BOGUS));
@@ -121,9 +100,9 @@ describe('lib raw SQL parses on Postgres', () => {
     await prisma.$executeRaw`
       INSERT INTO "Workspace" (
         id, "storageBytes", "creditsUsed", "creditsPeriodStart",
-        "generationPaused", "sandboxMinutesUsed", "spendUsd", "spendAlert80Sent",
+        "generationPaused", "spendUsd", "spendAlert80Sent",
         "monthlySpendLimitUsd"
-      ) VALUES (${WS}, 0, 0, NOW(), false, 0, 0, false, 1)
+      ) VALUES (${WS}, 0, 0, NOW(), false, 0, false, 1)
     `;
     await parses(() => accrueSpend(WS, 0.85));
     await parses(() => accrueSpend(WS, 0.5));
@@ -181,7 +160,9 @@ describe('lib raw SQL parses on Postgres', () => {
   it('preview build statements', async () => {
     const db = await import('@/lib/preview/db');
     await parses(() => db.getProjectPreviewFields(BOGUS));
-    await parses(() => db.setProjectPreviewFields(BOGUS, { previewMode: 'STATIC', activePreviewBuildId: null }));
+    await parses(() =>
+      db.setProjectPreviewFields(BOGUS, { previewMode: 'STATIC', activePreviewBuildId: null }),
+    );
   });
 
   it('custom domain statements', async () => {
@@ -227,7 +208,13 @@ describe('lib raw SQL parses on Postgres', () => {
       for (const starred of [false, true]) {
         for (const search of [undefined, 'cafe']) {
           for (const sort of ['updatedAt', 'name', 'createdAt']) {
-            const { sql, values } = buildProjectListQuery({ userId: BOGUS, sort, search, mine, starred });
+            const { sql, values } = buildProjectListQuery({
+              userId: BOGUS,
+              sort,
+              search,
+              mine,
+              starred,
+            });
             expect(sql).not.toMatch(/\$\{/);
             await parses(() => prisma.$queryRawUnsafe(sql, ...values));
           }
@@ -261,13 +248,25 @@ describe('lib raw SQL parses on Postgres', () => {
     // These now execute for real: openlovable_test was two migrations behind, so the
     // tables did not exist and every statement here stopped at 42P01 without ever
     // reaching the planner. Asserting on the rows written proves the SQL round-trips.
-    await store.createCheck({ kind: 'raw_sql_probe', ok: true, detail: null, eventId: null, createdAt });
+    await store.createCheck({
+      kind: 'raw_sql_probe',
+      ok: true,
+      detail: null,
+      eventId: null,
+      createdAt,
+    });
     const checks = await store.listChecks('raw_sql_probe');
     expect(checks.length).toBeGreaterThan(0);
     expect(checks[0]?.kind).toBe('raw_sql_probe');
     expect(await store.listChecks()).not.toHaveLength(0);
 
-    await store.createCronRun({ name: 'raw_sql_probe', ok: true, durationMs: 1, detail: null, createdAt });
+    await store.createCronRun({
+      name: 'raw_sql_probe',
+      ok: true,
+      durationMs: 1,
+      detail: null,
+      createdAt,
+    });
     const runs = await store.listCronRuns('raw_sql_probe');
     expect(runs.length).toBeGreaterThan(0);
     expect(runs[0]?.name).toBe('raw_sql_probe');
@@ -287,7 +286,10 @@ describe('lib raw SQL parses on Postgres', () => {
     // the exact shape Postgres refuses: a placeholder where a literal must be.
     const days = 1;
     await expect(
-      parses(() => prisma.$executeRaw`DELETE FROM "CronRun" WHERE "createdAt" < NOW() - INTERVAL ${days}`),
+      parses(
+        () =>
+          prisma.$executeRaw`DELETE FROM "CronRun" WHERE "createdAt" < NOW() - INTERVAL ${days}`,
+      ),
     ).rejects.toThrow(/Postgres rejected the statement/);
   });
 });

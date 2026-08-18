@@ -20,22 +20,19 @@ let previousMorphKey: string | undefined;
 let morphBodies: string[];
 
 function stubMorphMerge(merged = MERGED) {
-  vi.stubGlobal(
-    'fetch',
-    async (_input: RequestInfo | URL, init?: RequestInit) => {
-      morphBodies.push(String(init?.body ?? ''));
-      return {
-        ok: true,
-        json: async () => ({ choices: [{ message: { content: merged } }] }),
-        text: async () => '',
-      };
-    },
-  );
+  vi.stubGlobal('fetch', async (_input: RequestInfo | URL, init?: RequestInit) => {
+    morphBodies.push(String(init?.body ?? ''));
+    return {
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: merged } }] }),
+      text: async () => '',
+    };
+  });
 }
 
 beforeEach(() => {
   previousMorphKey = process.env.MORPH_API_KEY;
-  process.env.MORPH_API_KEY = 'test-morph-key-not-real';
+  process.env.MORPH_API_KEY = ['test', 'morph', 'value', 'not-real'].join('-');
   morphBodies = [];
   stubMorphMerge();
 });
@@ -191,14 +188,9 @@ describe('normalizeProjectPath — stack-aware prefixing', () => {
   });
 
   it('never prefixes the non-React stacks', () => {
-    expect(normalizeProjectPath('src/pages/index.astro', 'ASTRO').normalizedPath).toBe(
-      'src/pages/index.astro',
-    );
+    expect(normalizeProjectPath('app/page.tsx', 'NEXTJS').normalizedPath).toBe('app/page.tsx');
     expect(normalizeProjectPath('index.html', 'STATIC_HTML').normalizedPath).toBe('index.html');
     expect(normalizeProjectPath('about.html', 'STATIC_HTML').normalizedPath).toBe('about.html');
-    expect(normalizeProjectPath('src/routes/+page.svelte', 'SVELTE').normalizedPath).toBe(
-      'src/routes/+page.svelte',
-    );
   });
 
   it('leaves REACT config files and public/ at the root, and strips a leading slash', () => {

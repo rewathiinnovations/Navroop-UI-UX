@@ -137,8 +137,8 @@ export default function InviteMember({
                     {created.member.email}
                   </span>{' '}
                   can sign in with this temporary password. It is shown only once — share it
-                  securely, and ask them to change it after signing in. You can also send them
-                  a reset link from the table at any time.
+                  securely, and ask them to change it after signing in. You can also send them a
+                  reset link from the table at any time.
                 </p>
                 <div className="flex items-center gap-8">
                   <code className="flex-1 truncate rounded-10 border border-[var(--studio-line-strong)] bg-[var(--studio-bg)] px-12 py-10 font-mono text-[14px] text-[var(--studio-fg)]">

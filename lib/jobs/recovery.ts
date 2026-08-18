@@ -42,6 +42,7 @@ export async function retryAbandonedJob(jobId: string, idempotencyKey?: string |
     attempt: job.attempt,
     maxAttempts: job.maxAttempts,
     filesWritten: job.filesWritten,
+    errorCode: job.errorCode,
   });
   const planContext = job.kind === 'BUILD' ? await getApprovedPlanGenerationContext(job.projectId) : '';
   const prompt = resume
@@ -79,6 +80,17 @@ export async function startOverJob(jobId: string) {
   await cancelJob(jobId, 'Start over');
   const phase = await resolveResumablePhase(job.projectId, 0);
   await setProjectResumablePhase(job.projectId, phase, 'idle');
+  if (phase === 'PLANNING') {
+    // An APPROVED plan renders no Approve button, so resetting to PLANNING
+    // while the plan stayed APPROVED stranded the project: "review the plan
+    // and approve" with nothing to click. Reopen the plan so the PlanCard
+    // offers Approve & Build again.
+    const { prisma } = await import('@/lib/db');
+    await prisma.projectPlan.updateMany({
+      where: { projectId: job.projectId, status: 'APPROVED' },
+      data: { status: 'PENDING' },
+    });
+  }
   return { ok: true as const, phase };
 }
 

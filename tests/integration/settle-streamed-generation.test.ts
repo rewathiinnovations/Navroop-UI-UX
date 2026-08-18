@@ -45,11 +45,9 @@ async function seed() {
       ownerId: USER,
       initialPrompt: 'Build Vaidya',
       lastCode: null,
-      sandboxStatus: 'FAILED',
     },
     update: {
       lastCode: null,
-      sandboxStatus: 'FAILED',
       phase: 'BUILDING',
       generationStatus: 'generating',
       progressMessage: null,
@@ -102,7 +100,13 @@ afterAll(async () => {
 describe('settleStreamedGeneration — stream files are not a finished site', () => {
   it('persists the streamed code server-side and succeeds, even with the sandbox dead', async () => {
     const job = await startBuild();
-    const streamedCode = '<file path="app/page.tsx">export default function Page() { return null; }</file>';
+    // The model replies in fenced blocks; lastCode is stored as <file> blocks.
+    const streamedCode = [
+      'Here is the page.',
+      '```tsx{path=app/page.tsx}',
+      'export default function Page() { return null; }',
+      '```',
+    ].join('\n');
 
     const settled = await settleStreamedGeneration({
       jobId: job.id,
@@ -120,12 +124,17 @@ describe('settleStreamedGeneration — stream files are not a finished site', ()
       where: { id: PROJECT },
       select: { lastCode: true, phase: true },
     });
-    expect(project.lastCode).toBe(streamedCode);
+    expect(project.lastCode).toBe(
+      [
+        '<file path="app/page.tsx">',
+        'export default function Page() { return null; }',
+        '</file>',
+      ].join('\n'),
+    );
     expect(project.phase).toBe('COMPLETE');
   });
 
-
-  it('does not settle SUCCEEDED+COMPLETE with lastCode null when sandbox/persist missed', async () => {
+  it('does not settle SUCCEEDED+COMPLETE with lastCode null when nothing parsed', async () => {
     const job = await startBuild();
 
     const settled = await settleStreamedGeneration({
@@ -149,7 +158,7 @@ describe('settleStreamedGeneration — stream files are not a finished site', ()
     expect(settled.outcome).toBe('failed');
     expect(row?.status).not.toBe('SUCCEEDED');
     expect(row?.status).toBe('FAILED');
-    expect(row?.errorCode).toBe('sandbox_unavailable');
+    expect(row?.errorCode).toBe('no_files_generated');
     expect(row?.filesWritten).toBe(11);
     expect(project?.lastCode).toBeNull();
     expect(project?.phase).not.toBe('COMPLETE');
@@ -166,5 +175,42 @@ describe('settleStreamedGeneration — stream files are not a finished site', ()
         errorMessage: settled.errorMessage,
       }),
     ).toBe(true);
+  });
+});
+
+describe('settleStreamedGeneration — stack mismatch', () => {
+  it('fails the job and does not persist code the stack cannot render', async () => {
+    const job = await startBuild();
+    // The live Ember & Oak REACT build: gpt-4o-mini wrote a lone Next.js
+    // app/page.tsx for a Vite project; it settled SUCCEEDED and the sandbox
+    // then died booting it (npm ENOENT, no package.json).
+    // The model replies in fenced blocks; lastCode is stored as <file> blocks.
+    const streamedCode = [
+      'Here is the page.',
+      '```tsx{path=app/page.tsx}',
+      'export default function Page() { return null; }',
+      '```',
+    ].join('\n');
+
+    const settled = await settleStreamedGeneration({
+      jobId: job.id,
+      producedFiles: 1,
+      streamedCode,
+      stackMismatchReason:
+        "The generated files don't match the React (Vite) project layout (expected src/App.jsx; got app/page.tsx).",
+    });
+
+    expect(settled.outcome).toBe('failed');
+    expect(settled.errorCode).toBe('stack_mismatch');
+    const [row] = await prisma.$queryRaw<Array<{ status: string; errorCode: string | null }>>`
+      SELECT status, "errorCode" FROM "GenerationJob" WHERE id = ${job.id}
+    `;
+    expect(row?.status).toBe('FAILED');
+    expect(row?.errorCode).toBe('stack_mismatch');
+    const project = await prisma.project.findUniqueOrThrow({
+      where: { id: PROJECT },
+      select: { lastCode: true },
+    });
+    expect(project.lastCode).toBeNull();
   });
 });

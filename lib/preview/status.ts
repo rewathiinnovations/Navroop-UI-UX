@@ -16,7 +16,10 @@ export type PublicPreviewStatus = {
   preparing: boolean;
 };
 
-export async function getPreviewStatus(projectId: string, userId: string): Promise<PublicPreviewStatus | null> {
+export async function getPreviewStatus(
+  projectId: string,
+  userId: string,
+): Promise<PublicPreviewStatus | null> {
   const project = await getProjectPreviewFields(projectId);
   if (!project) return null;
 
@@ -34,13 +37,12 @@ export async function getPreviewStatus(projectId: string, userId: string): Promi
   });
 
   const current = latest ?? active;
-  const lockedLive = project.previewMode === 'LIVE_SANDBOX';
+  // Live sandbox mode no longer exists — every project previews the same way.
+  const lockedLive = false;
   const preparing = current?.status === 'BUILDING' || current?.status === 'PENDING';
 
   const previewUrl =
-    lastReady?.status === 'READY'
-      ? await signedPreviewUrl({ projectId, userId })
-      : null;
+    lastReady?.status === 'READY' ? await signedPreviewUrl({ projectId, userId }) : null;
 
   return {
     mode: project.previewMode,

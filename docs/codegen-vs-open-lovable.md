@@ -6,7 +6,7 @@ Dated 2026-08-19. Re-run the commands in [Verifying this document](#verifying-th
 
 ## Summary
 
-**We are not behind upstream.** `firecrawl/main` is a *direct ancestor* of `HEAD` — merge-base and upstream tip are both `69bd93b` ("v3", 2025-11-19), and a live `git ls-remote` confirms the ref is current. Upstream has shipped **zero commits in nine months**. There is nothing to merge.
+**We are not behind upstream.** `firecrawl/main` is a _direct ancestor_ of `HEAD` — merge-base and upstream tip are both `69bd93b` ("v3", 2025-11-19), and a live `git ls-remote` confirms the ref is current. Upstream has shipped **zero commits in nine months**. There is nothing to merge.
 
 On design, accessibility, images, SEO, multi-stack support, provider failover, and job/credit accounting we are substantially ahead. Every real gap was self-inflicted by our own fork commits, and the five below have been fixed.
 
@@ -18,11 +18,11 @@ Morph is the headline feature of upstream's v3. Ours was broken two independent 
 
 **A1 — the on-switch and the API key read different sources.** Both routes gated on an env var while the code that actually calls Morph read the admin setting:
 
-| Location | Source |
-|---|---|
-| `app/api/generate-ai-code-stream/route.ts` | `process.env.MORPH_API_KEY` |
-| `app/api/apply-ai-code-stream/route.ts` | `process.env.MORPH_API_KEY` |
-| `lib/morph-fast-apply.ts` | `getSetting('tooling.morph.apiKey')` |
+| Location                                   | Source                               |
+| ------------------------------------------ | ------------------------------------ |
+| `app/api/generate-ai-code-stream/route.ts` | `process.env.MORPH_API_KEY`          |
+| `app/api/apply-ai-code-stream/route.ts`    | `process.env.MORPH_API_KEY`          |
+| `lib/morph-fast-apply.ts`                  | `getSetting('tooling.morph.apiKey')` |
 
 `tooling.morph.apiKey` declares `env: 'MORPH_API_KEY'` (`lib/settings/registry.ts`), so `getSetting` resolves **DB row → env var**. Enter the key in `/admin/config` — the documented path under this repo's `admin-panel-settings-over-env` convention — and `MORPH_API_KEY` stays unset, so the gate was `false`, the model was never told to emit `<edit>` blocks, and **Morph silently never ran**. The inverse (env set, DB blank) was worse: the model emitted `<edit>` blocks, the gate passed, and then every edit threw.
 
@@ -38,9 +38,9 @@ Fixing A1 alone would have immediately broken edits on the default stack, so bot
 
 `package.json` pins `ai ^5.0.0`; installed is **5.0.237**. v5 renamed two options, and the generate route still passed the v4 names:
 
-| v4 name (was) | v5 name (now) | Consequence while broken |
-|---|---|---|
-| `maxTokens: 8192` | `maxOutputTokens` | Output cap never applied |
+| v4 name (was)                   | v5 name (now)     | Consequence while broken                           |
+| ------------------------------- | ----------------- | -------------------------------------------------- |
+| `maxTokens: 8192`               | `maxOutputTokens` | Output cap never applied                           |
 | `experimental_providerMetadata` | `providerOptions` | **GPT-5 never received `reasoningEffort: 'high'`** |
 
 Verified against the installed type definitions:
@@ -54,7 +54,7 @@ node_modules/ai/dist/index.d.ts   maxOutputTokens: 6   maxTokens: 0
 
 **Fix:** renamed both, and replaced `: any` with `Parameters<typeof streamText>[0]`. The typing is the durable half — the renames alone would regress later. Verified in both directions: the new shape typechecks clean, and reintroducing `maxTokens` now fails with `TS2353: 'maxTokens' does not exist in type ...`.
 
-Because the cap had never actually applied, renaming it alone would have newly *imposed* an 8192-token ceiling and made truncation worse. `appConfig.ai.maxTokens` was raised 8000 → 32000 in the same change, and is taken as `min(config, plan.maxTokensPerJob)` so plan limits still win. The truncation-recovery call, which set no cap and ignored the existing `truncationRecoveryMaxTokens`, now honors it.
+Because the cap had never actually applied, renaming it alone would have newly _imposed_ an 8192-token ceiling and made truncation worse. `appConfig.ai.maxTokens` was raised 8000 → 32000 in the same change, and is taken as `min(config, plan.maxTokensPerJob)` so plan limits still win. The truncation-recovery call, which set no cap and ignored the existing `truncationRecoveryMaxTokens`, now honors it.
 
 ### C. The failover chain silently dropped to weak models — fixed
 
@@ -72,7 +72,7 @@ google:    'gemini-2.0-flash',         // older than app.config's 2.5-flash
 
 ### D. Model lineup was behind upstream — fixed
 
-Upstream's v3 was substantially *about* moving to Gemini 3 Pro. We carried the commit but reverted the choice and didn't offer the model at all:
+Upstream's v3 was substantially _about_ moving to Gemini 3 Pro. We carried the commit but reverted the choice and didn't offer the model at all:
 
 ```diff
 -    defaultModel: 'google/gemini-3-pro-preview',
@@ -100,7 +100,7 @@ Recorded because a structural diff makes them look like losses:
 - **Anti-recreate context survives** — the `RECENTLY CREATED/EDITED FILES (DO NOT RECREATE THESE)` block is present in the generate route.
 - **Route shrinkages are extractions** — `install-packages`, `get-sandbox-files`, and `analyze-edit-intent` became thin auth wrappers over `lib/`. The logic moved; it wasn't deleted.
 - **Dropping Vercel Sandbox was intentional** — replaced by the e2b/modal/daytona router. It is the only file upstream has that we don't.
-- **We fixed a real upstream Morph bug** — upstream treats a *failed* `cat` as an empty file; our `successfulCommandStdout()` checks `exitCode === 0`.
+- **We fixed a real upstream Morph bug** — upstream treats a _failed_ `cat` as an empty file; our `successfulCommandStdout()` checks `exitCode === 0`.
 
 ## Known remaining gap
 

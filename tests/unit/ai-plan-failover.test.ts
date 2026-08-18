@@ -18,9 +18,9 @@ function httpError(status: number, message: string) {
   return error;
 }
 
-const geminiQuota = httpError(
+const deepseekQuota = httpError(
   429,
-  'You exceeded your current quota. generate_content_free_tier_requests limit 20',
+  'You exceeded your current quota. Please check your plan and billing details',
 );
 
 const samplePlan = {
@@ -30,39 +30,34 @@ const samplePlan = {
 };
 
 const env = {
-  GEMINI_API_KEY: 'test-gemini',
-  OPENAI_API_KEY: 'test-openai',
-  GROQ_API_KEY: '',
+  DEEPSEEK_API_KEY: 'test-deepseek',
 };
 
-describe('plan path uses the same provider failover', () => {
-  it('switches from Gemini 429 quota to OpenAI and produces a plan', async () => {
+describe('plan path runs through the shared provider helper', () => {
+  it('produces a plan from the single configured provider', async () => {
     const called: string[] = [];
     const result = await completeWithProviderFailover({
-      requestedModel: 'google/gemini-2.5-flash',
       env,
       circuit: createCircuitBreaker(),
       run: async (entry) => {
         called.push(entry.provider);
-        if (entry.provider === 'google') throw geminiQuota;
         return samplePlan;
       },
     });
 
-    expect(called).toEqual(['google', 'openai']);
-    expect(result.provider).toBe('openai');
+    expect(called).toEqual(['deepseek']);
+    expect(result.provider).toBe('deepseek');
     expect(result.result).toEqual(samplePlan);
-    expect(result.failedOver).toBe(true);
+    expect(result.failedOver).toBe(false);
   });
 
-  it('records quota exhaustion, not an unresponsive service, when every provider is out', async () => {
+  it('records quota exhaustion, not an unresponsive service, when the provider is out', async () => {
     try {
       await completeWithProviderFailover({
-        requestedModel: 'google/gemini-2.5-flash',
         env,
         circuit: createCircuitBreaker(),
         run: async () => {
-          throw geminiQuota;
+          throw deepseekQuota;
         },
       });
       expect.fail('expected ProviderRunError');
@@ -73,7 +68,7 @@ describe('plan path uses the same provider failover', () => {
       expect(jobErrorCodeForProviderFailure(cause)).toBe('provider_quota_exhausted');
       const message = providerFailureMessage(cause);
       expect(message).toMatch(/quota/i);
-      expect(message).toMatch(/generate_content_free_tier_requests/);
+      expect(message).toMatch(/plan and billing details/);
       expect(message.toLowerCase()).not.toMatch(/did not respond|is down/);
       expect(recoveryCauseLine('provider_quota_exhausted')).toMatch(/quota/i);
       expect(recoveryCauseLine('provider_quota_exhausted').toLowerCase()).not.toMatch(

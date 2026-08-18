@@ -7,7 +7,6 @@ import {
 } from '@/lib/validation/build-check';
 import { MAX_AUTOFIX_ATTEMPTS, decideAutoFix } from '@/lib/validation/autofix-policy';
 import { buildBuildFixInstruction, filesFromErrors } from '@/lib/validation/fix-prompt';
-import type { SandboxRunner } from '@/lib/audit/types';
 
 /**
  * The orphaned lib/build-validator.ts fetched preview HTML and looked for
@@ -15,17 +14,6 @@ import type { SandboxRunner } from '@/lib/audit/types';
  * default stack) would pass every broken build. These cover the replacement:
  * run the stack's own build command, and refuse to retry when retrying is futile.
  */
-
-function runner(result: { stdout?: string; stderr?: string; exitCode?: number; success?: boolean }): SandboxRunner {
-  return {
-    runCommand: async () => ({
-      stdout: result.stdout ?? '',
-      stderr: result.stderr ?? '',
-      exitCode: result.exitCode ?? 0,
-      success: result.success ?? true,
-    }),
-  };
-}
 
 const NEXT_TYPE_ERROR = `
   ▲ Next.js 16.3.1
@@ -41,55 +29,71 @@ Failed to compile.
 Module not found: Can't resolve 'framer-motion' in '/home/user/app/components'
 `;
 
-describe('checkBuild — stack awareness', () => {
-  it('skips STATIC_HTML, which has no build step to fail', async () => {
-    const result = await checkBuild({ stack: 'STATIC_HTML', sandbox: runner({}) });
+describe('checkBuild — compiles the real project', () => {
+  it('skips STATIC_HTML, which has nothing to compile', async () => {
+    const result = await checkBuild({
+      stack: 'STATIC_HTML',
+      files: { 'index.html': '<h1>Hi</h1>' },
+    });
     expect(result.status).toBe('skipped');
     expect(result.skipReason).toBe('no-build-command');
   });
 
-  it('skips rather than fails when there is no sandbox', async () => {
-    const result = await checkBuild({ stack: 'NEXTJS', sandbox: null });
+  it('skips rather than fails when there are no files', async () => {
+    const result = await checkBuild({ stack: 'NEXTJS', files: {} });
     expect(result.status).toBe('skipped');
-    expect(result.skipReason).toBe('no-sandbox');
+    expect(result.skipReason).toBe('no-files');
   });
 
-  it('passes a clean NEXTJS build', async () => {
+  it('passes a project that compiles', async () => {
     const result = await checkBuild({
-      stack: 'NEXTJS',
-      sandbox: runner({ stdout: 'Compiled successfully', exitCode: 0 }),
+      stack: 'REACT',
+      files: {
+        'src/App.tsx': [
+          "import { Hero } from './Hero';",
+          'export default function App() { return <Hero />; }',
+        ].join('\n'),
+        'src/Hero.tsx': 'export function Hero() { return <h1>Hi</h1>; }',
+      },
     });
     expect(result.status).toBe('passed');
     expect(result.signature).toBeNull();
   });
 
-  it('catches a NEXTJS type error — the case the Vite-only validator passed', async () => {
+  it('catches an import that cannot resolve', async () => {
+    // The failure that actually reaches users: a file importing something the
+    // preview cannot load renders a blank frame rather than an error.
     const result = await checkBuild({
-      stack: 'NEXTJS',
-      sandbox: runner({ stdout: NEXT_TYPE_ERROR, exitCode: 1, success: false }),
-    });
-    expect(result.status).toBe('failed');
-    expect(result.errors.some((error) => error.file === 'app/page.tsx')).toBe(true);
-    expect(result.errors.some((error) => error.kind === 'type')).toBe(true);
-  });
-
-  it('treats a sandbox that cannot run commands as unknown, never as a code fault', async () => {
-    const broken: SandboxRunner = {
-      runCommand: async () => {
-        throw new Error('sandbox died');
+      stack: 'REACT',
+      files: {
+        'src/App.tsx': ["import { Gone } from './nope';", 'export default () => <Gone />;'].join(
+          '\n',
+        ),
       },
-    };
-    const result = await checkBuild({ stack: 'NEXTJS', sandbox: broken });
-    expect(result.status).toBe('skipped');
-  });
-
-  it('still reports a failure when the exit code is non-zero but nothing parses', async () => {
-    const result = await checkBuild({
-      stack: 'NEXTJS',
-      sandbox: runner({ stdout: 'Failed to compile.', exitCode: 1, success: false }),
     });
     expect(result.status).toBe('failed');
     expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.signature).toBeTruthy();
+  });
+
+  it('catches a syntax error', async () => {
+    const result = await checkBuild({
+      stack: 'REACT',
+      files: { 'src/App.tsx': 'export default function App() { return <div>;' },
+    });
+    expect(result.status).toBe('failed');
+    expect(result.errors.length).toBeGreaterThan(0);
+  });
+
+  it('gives the same signature for the same failure, so a retry loop can stop', async () => {
+    const files = {
+      'src/App.tsx': ["import { Gone } from './nope';", 'export default () => <Gone />;'].join(
+        '\n',
+      ),
+    };
+    const first = await checkBuild({ stack: 'REACT', files });
+    const second = await checkBuild({ stack: 'REACT', files });
+    expect(first.signature).toBe(second.signature);
   });
 });
 
@@ -112,7 +116,11 @@ describe('extractMissingPackages', () => {
 
 describe('parseBuildErrors', () => {
   it('deduplicates the same error repeated across framework layers', () => {
-    const repeated = ['Failed to compile.', "Module not found: Can't resolve 'x'", "Module not found: Can't resolve 'x'"].join('\n');
+    const repeated = [
+      'Failed to compile.',
+      "Module not found: Can't resolve 'x'",
+      "Module not found: Can't resolve 'x'",
+    ].join('\n');
     const messages = parseBuildErrors(repeated).map((error) => error.message);
     expect(new Set(messages).size).toBe(messages.length);
   });
@@ -130,14 +138,22 @@ describe('buildErrorSignature', () => {
   });
 
   it('ignores line drift so an edit above the fault does not read as progress', () => {
-    const a = buildErrorSignature([{ kind: 'type', message: 'Type error: bad', file: 'a.tsx', line: 10 }]);
-    const b = buildErrorSignature([{ kind: 'type', message: 'Type error: bad', file: 'a.tsx', line: 40 }]);
+    const a = buildErrorSignature([
+      { kind: 'type', message: 'Type error: bad', file: 'a.tsx', line: 10 },
+    ]);
+    const b = buildErrorSignature([
+      { kind: 'type', message: 'Type error: bad', file: 'a.tsx', line: 40 },
+    ]);
     expect(a).toBe(b);
   });
 
   it('differs when the error itself changes', () => {
-    const a = buildErrorSignature([{ kind: 'type', message: 'Type error: bad', file: 'a.tsx', line: 10 }]);
-    const b = buildErrorSignature([{ kind: 'syntax', message: 'Unexpected token', file: 'a.tsx', line: 10 }]);
+    const a = buildErrorSignature([
+      { kind: 'type', message: 'Type error: bad', file: 'a.tsx', line: 10 },
+    ]);
+    const b = buildErrorSignature([
+      { kind: 'syntax', message: 'Unexpected token', file: 'a.tsx', line: 10 },
+    ]);
     expect(a).not.toBe(b);
   });
 });
@@ -153,12 +169,18 @@ const failed = (overrides: Partial<Awaited<ReturnType<typeof checkBuild>>> = {})
 
 describe('decideAutoFix — when NOT to retry', () => {
   it('does nothing when the build passed', () => {
-    const decision = decideAutoFix({ result: { ...failed(), status: 'passed', errors: [], signature: null }, attempt: 0 });
+    const decision = decideAutoFix({
+      result: { ...failed(), status: 'passed', errors: [], signature: null },
+      attempt: 0,
+    });
     expect(decision).toEqual({ action: 'none', reason: 'build-passed' });
   });
 
   it('does nothing when the check was skipped — absence of evidence is not a fault', () => {
-    const decision = decideAutoFix({ result: { ...failed(), status: 'skipped', errors: [], signature: null }, attempt: 0 });
+    const decision = decideAutoFix({
+      result: { ...failed(), status: 'skipped', errors: [], signature: null },
+      attempt: 0,
+    });
     expect(decision).toEqual({ action: 'none', reason: 'build-skipped' });
   });
 
@@ -178,12 +200,23 @@ describe('decideAutoFix — when to retry', () => {
   it('installs rather than re-prompting when every error is a missing dependency', () => {
     const decision = decideAutoFix({
       result: failed({
-        errors: [{ kind: 'missing-package', message: "Can't resolve 'framer-motion'", file: null, line: null }],
+        errors: [
+          {
+            kind: 'missing-package',
+            message: "Can't resolve 'framer-motion'",
+            file: null,
+            line: null,
+          },
+        ],
         missingPackages: ['framer-motion'],
       }),
       attempt: 0,
     });
-    expect(decision).toEqual({ action: 'install', reason: 'missing-packages', packages: ['framer-motion'] });
+    expect(decision).toEqual({
+      action: 'install',
+      reason: 'missing-packages',
+      packages: ['framer-motion'],
+    });
   });
 
   it('re-prompts on a code error and advances the attempt counter', () => {
@@ -192,7 +225,11 @@ describe('decideAutoFix — when to retry', () => {
   });
 
   it('allows a second attempt when the failure changed', () => {
-    const decision = decideAutoFix({ result: failed(), attempt: 1, previousSignature: 'something:else' });
+    const decision = decideAutoFix({
+      result: failed(),
+      attempt: 1,
+      previousSignature: 'something:else',
+    });
     expect(decision).toMatchObject({ action: 'reprompt', attempt: 2 });
   });
 
@@ -202,9 +239,11 @@ describe('decideAutoFix — when to retry', () => {
     // code error — the orchestrator decides whether to act on it.
     const decision = decideAutoFix({
       result: failed({
-        errors: [{ kind: 'missing-package', message: "Can't resolve 'zod'", file: null, line: null }],
+        errors: [
+          { kind: 'missing-package', message: "Can't resolve 'zod'", file: null, line: null },
+        ],
         missingPackages: ['zod'],
-        signature: 'missing-package:?:can\'t resolve \'zod\'',
+        signature: "missing-package:?:can't resolve 'zod'",
       }),
       attempt: 1,
       previousSignature: 'type:app/page.tsx:type error: bad',

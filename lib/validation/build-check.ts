@@ -30,7 +30,7 @@ export type BuildCheckResult = {
   /** Stable across retries of the same failure. Null when nothing failed. */
   signature: string | null;
   /** Reason a check was skipped, for the job step. */
-  skipReason?: 'no-build-command' | 'no-sandbox';
+  skipReason?: 'no-build-command' | 'no-files';
 };
 
 /** Build output can be megabytes; only the tail matters and only some of it. */
@@ -38,7 +38,8 @@ const MAX_OUTPUT_CHARS = 20_000;
 const MAX_ERRORS = 10;
 
 /** Compilers say this when the build itself failed, not when code merely logs "error". */
-const BUILD_FAILED = /Failed to compile|Build failed|error during build|Type error:|SyntaxError|Module not found/i;
+const BUILD_FAILED =
+  /Failed to compile|Build failed|error during build|Type error:|SyntaxError|Module not found/i;
 
 const MISSING_PACKAGE_PATTERNS = [
   /Failed to resolve import ["']([^"']+)["']/g,
@@ -83,7 +84,8 @@ function locate(line: string): { file: string | null; line: number | null } {
 }
 
 function classify(line: string): BuildErrorKind {
-  if (/cannot find module|failed to resolve import|module not found/i.test(line)) return 'missing-package';
+  if (/cannot find module|failed to resolve import|module not found/i.test(line))
+    return 'missing-package';
   if (/syntaxerror|unexpected token|parsing error|unterminated/i.test(line)) return 'syntax';
   if (/type error|ts\d{4}|is not assignable|has no exported member/i.test(line)) return 'type';
   return 'unknown';
@@ -144,60 +146,67 @@ export function parseBuildErrors(output: string): BuildError[] {
 export function buildErrorSignature(errors: BuildError[]): string | null {
   if (errors.length === 0) return null;
   return errors
-    .map((error) => `${error.kind}:${error.file ?? '?'}:${error.message.toLowerCase().replace(/\s+/g, ' ')}`)
+    .map(
+      (error) =>
+        `${error.kind}:${error.file ?? '?'}:${error.message.toLowerCase().replace(/\s+/g, ' ')}`,
+    )
     .sort()
     .join('|');
 }
 
+/**
+ * Compiles the project the same way the preview does — esbuild over the
+ * generated files — and reports what failed.
+ *
+ * This used to shell `npm run build` into a sandbox VM. There is no VM now,
+ * and running the real bundler is a truer check anyway: it is exactly what the
+ * user's preview and the published build run, so a pass here means the site
+ * actually renders rather than that a package manager was happy.
+ */
 export async function checkBuild(input: {
   stack: StackId;
-  sandbox: SandboxRunner | null;
+  files: Record<string, string>;
 }): Promise<BuildCheckResult> {
-  const { stack, sandbox } = input;
-  const buildCommand = getStack(stack).buildCommand;
+  const { stack, files } = input;
 
-  // STATIC_HTML has no build step — there is nothing that can fail to compile.
-  if (!buildCommand) {
-    return { status: 'skipped', stack, errors: [], missingPackages: [], signature: null, skipReason: 'no-build-command' };
-  }
-  if (!sandbox) {
-    return { status: 'skipped', stack, errors: [], missingPackages: [], signature: null, skipReason: 'no-sandbox' };
-  }
-
-  let output: string;
-  let succeeded: boolean;
-  try {
-    const result = await sandbox.runCommand(buildCommand);
-    output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
-    succeeded = result.success !== false && result.exitCode === 0;
-  } catch (error) {
-    // A sandbox that cannot run a command tells us nothing about the code. Skip
-    // rather than fail, so an infrastructure blip never triggers a code rewrite.
+  // STATIC_HTML has no compile step — there is nothing that can fail to build.
+  if (stack === 'STATIC_HTML') {
     return {
       status: 'skipped',
       stack,
       errors: [],
       missingPackages: [],
       signature: null,
-      skipReason: 'no-sandbox',
+      skipReason: 'no-build-command',
+    };
+  }
+  if (Object.keys(files).length === 0) {
+    return {
+      status: 'skipped',
+      stack,
+      errors: [],
+      missingPackages: [],
+      signature: null,
+      skipReason: 'no-files',
     };
   }
 
-  if (succeeded && !BUILD_FAILED.test(output)) {
+  const { buildStaticSite } = await import('@/lib/preview/server-bundle');
+  const built = await buildStaticSite(stack, files);
+  if (built.ok) {
     return { status: 'passed', stack, errors: [], missingPackages: [], signature: null };
   }
 
-  const errors = parseBuildErrors(output);
-  // Exit code said failure but nothing parsed — keep it actionable rather than empty.
+  const errors = parseBuildErrors(built.error);
   if (errors.length === 0) {
-    errors.push({ kind: 'unknown', message: `Build command failed: ${buildCommand}`, file: null, line: null });
+    errors.push({ kind: 'unknown', message: built.error, file: null, line: null });
   }
 
   return {
     status: 'failed',
     stack,
     errors,
-    missingPackages: extractMissingPackages(output),
+    missingPackages: extractMissingPackages(built.error),
     signature: buildErrorSignature(errors),
   };
 }

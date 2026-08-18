@@ -21,7 +21,11 @@ export type AutoFixDecision =
   | { action: 'none'; reason: 'build-passed' | 'build-skipped' }
   | { action: 'install'; reason: 'missing-packages'; packages: string[] }
   | { action: 'reprompt'; instruction: string; attempt: number }
-  | { action: 'stop'; reason: 'attempts-exhausted' | 'no-progress' | 'not-actionable'; detail: string };
+  | {
+      action: 'stop';
+      reason: 'attempts-exhausted' | 'no-progress' | 'not-actionable';
+      detail: string;
+    };
 
 export function decideAutoFix(input: {
   result: BuildCheckResult;
@@ -42,13 +46,15 @@ export function decideAutoFix(input: {
     return {
       action: 'stop',
       reason: 'no-progress',
-      detail: 'The build failed the same way after a fix attempt, so further attempts were stopped.',
+      detail:
+        'The build failed the same way after a fix attempt, so further attempts were stopped.',
     };
   }
 
   // Every error is a missing dependency: install is cheaper, faster, and more
   // reliable than asking a model to rewrite imports it already believes are right.
-  const allMissing = result.errors.length > 0 && result.errors.every((error) => error.kind === 'missing-package');
+  const allMissing =
+    result.errors.length > 0 && result.errors.every((error) => error.kind === 'missing-package');
   if (allMissing && result.missingPackages.length > 0) {
     return { action: 'install', reason: 'missing-packages', packages: result.missingPackages };
   }
@@ -69,5 +75,9 @@ export function decideAutoFix(input: {
     };
   }
 
-  return { action: 'reprompt', instruction: buildBuildFixInstruction(result), attempt: attempt + 1 };
+  return {
+    action: 'reprompt',
+    instruction: buildBuildFixInstruction(result),
+    attempt: attempt + 1,
+  };
 }

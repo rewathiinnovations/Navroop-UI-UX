@@ -173,12 +173,18 @@ describe('every test file is reachable by a runner', () => {
     expect(all).toContain('package.json');
     expect(all).toContain('vitest.config.ts');
     for (const prefix of ['lib/', 'app/', 'components/', 'scripts/', 'prisma/', 'tests/', 'e2e/']) {
-      expect(all.some((file) => file.startsWith(prefix)), prefix).toBe(true);
+      expect(
+        all.some((file) => file.startsWith(prefix)),
+        prefix,
+      ).toBe(true);
     }
     // And it has to stop at build output, or this suite would read a few
     // hundred thousand files.
     for (const skipped of ['node_modules/', 'coverage/', 'generated/', '.next/']) {
-      expect(all.some((file) => file.startsWith(skipped)), skipped).toBe(false);
+      expect(
+        all.some((file) => file.startsWith(skipped)),
+        skipped,
+      ).toBe(false);
     }
   });
 

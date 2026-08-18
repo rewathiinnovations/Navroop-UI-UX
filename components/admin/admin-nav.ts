@@ -23,7 +23,6 @@ export type AdminIconName =
   | 'integrations'
   | 'templates'
   | 'workspace'
-  | 'sandbox-providers'
   | 'servers'
   | 'backups'
   | 'jobs'
@@ -114,13 +113,6 @@ export const ADMIN_NAV: AdminNavGroup[] = [
   {
     group: 'Infrastructure',
     items: [
-      {
-        href: '/admin/sandbox-providers',
-        label: 'Sandbox providers',
-        description:
-          'Which service runs generated code, and the order they are tried when one is unavailable.',
-        icon: 'sandbox-providers',
-      },
       {
         href: '/admin/servers',
         label: 'Servers',

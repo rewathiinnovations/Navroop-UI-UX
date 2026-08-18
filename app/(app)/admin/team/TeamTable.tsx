@@ -110,10 +110,7 @@ export default function TeamTable({
   };
 
   const onInvited = (invited: InvitedMember) => {
-    setMembers((current) => [
-      ...current,
-      { ...invited, isActive: true, _count: { projects: 0 } },
-    ]);
+    setMembers((current) => [...current, { ...invited, isActive: true, _count: { projects: 0 } }]);
   };
 
   return (

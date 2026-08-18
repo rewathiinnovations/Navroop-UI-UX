@@ -23,6 +23,18 @@ export type PreMigrateResult = {
   offending?: string[];
 };
 
+/**
+ * A migration may declare that its destructive statements were reviewed. This
+ * does NOT relax the deploy-time gate — `preMigrate` still demands
+ * ALLOW_DESTRUCTIVE_MIGRATION and a backup. It only lets such a migration live
+ * in the tree, so the repo policy is "annotated and reviewed", not "never".
+ */
+export const REVIEWED_DESTRUCTIVE_MARKER = 'navroop:reviewed-destructive';
+
+export function hasReviewedDestructiveMarker(sql: string): boolean {
+  return sql.includes(REVIEWED_DESTRUCTIVE_MARKER);
+}
+
 export function findDestructiveStatements(sql: string): string[] {
   const text = sql.replace(/--[^\n]*/g, '');
   return text
@@ -42,9 +54,7 @@ export function assertSafePrismaCommand(argv: string[], nodeEnv: string) {
   if (nodeEnv === 'development' || nodeEnv === 'test') return;
   const joined = argv.join(' ');
   if (/\bdb\s+push\b/.test(joined) || /\bmigrate\s+reset\b/.test(joined)) {
-    throw new Error(
-      'prisma db push and prisma migrate reset are not allowed outside development',
-    );
+    throw new Error('prisma db push and prisma migrate reset are not allowed outside development');
   }
 }
 

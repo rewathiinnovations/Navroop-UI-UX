@@ -6,21 +6,28 @@ import { appConfig } from '@/config/app.config';
 import SidebarInput from '@/components/app/generation/SidebarInput';
 import ProjectWorkspace from '@/components/workspace/ProjectWorkspace';
 import { pagesFromFiles } from '@/components/workspace/pages-from-files';
-import { shouldRequestFollowUpPlan, type ChatMode, type MessageSource, type ProjectPhase, type WorkspacePlan, type WorkspaceView } from '@/components/workspace/types';
+import {
+  shouldRequestFollowUpPlan,
+  type ChatMode,
+  type MessageSource,
+  type ProjectPhase,
+  type WorkspacePlan,
+  type WorkspaceView,
+} from '@/components/workspace/types';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 // Import icons from centralized module to avoid Turbopack chunk issues
-import { 
-  FiFile, 
-  FiChevronRight, 
+import {
+  FiFile,
+  FiChevronRight,
   FiChevronDown,
   FiGithub,
-  BsFolderFill, 
+  BsFolderFill,
   BsFolder2Open,
-  SiJavascript, 
-  SiReact, 
-  SiCss3, 
-  SiJson 
+  SiJavascript,
+  SiReact,
+  SiCss3,
+  SiJson,
 } from '@/lib/icons';
 import { motion } from 'framer-motion';
 import CodeApplicationProgress from '@/components/CodeApplicationProgress';
@@ -130,7 +137,9 @@ function AISandboxPage({
   const [urlInput, setUrlInput] = useState('');
   const [urlStatus, setUrlStatus] = useState<string[]>([]);
   const [showHomeScreen, setShowHomeScreen] = useState(true);
-  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(['app', 'src', 'src/components']));
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(
+    new Set(['app', 'src', 'src/components']),
+  );
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [homeScreenFading, setHomeScreenFading] = useState(false);
   const [homeUrlInput, setHomeUrlInput] = useState('');
@@ -147,7 +156,9 @@ function AISandboxPage({
   const [targetUrl, setTargetUrl] = useState<string>('');
   const [sidebarScrolled, setSidebarScrolled] = useState(false);
   const [screenshotCollapsed, setScreenshotCollapsed] = useState(false);
-  const [loadingStage, setLoadingStage] = useState<'gathering' | 'planning' | 'generating' | null>(null);
+  const [loadingStage, setLoadingStage] = useState<'gathering' | 'planning' | 'generating' | null>(
+    null,
+  );
   const [isStartingNewGeneration, setIsStartingNewGeneration] = useState(false);
   const [sandboxFiles, setSandboxFiles] = useState<Record<string, string>>({});
   const [hasInitialSubmission, setHasInitialSubmission] = useState<boolean>(false);
@@ -197,7 +208,7 @@ function AISandboxPage({
       cancelled = true;
     };
   }, [projectId, projectIdFromPath]);
-  
+
   const [conversationContext, setConversationContext] = useState<{
     scrapedWebsites: Array<{ url: string; content: any; timestamp: Date }>;
     generatedComponents: Array<{ name: string; path: string; content: string }>;
@@ -209,9 +220,9 @@ function AISandboxPage({
     generatedComponents: [],
     appliedCode: [],
     currentProject: '',
-    lastGeneratedCode: undefined
+    lastGeneratedCode: undefined,
   });
-  
+
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
   const codeDisplayRef = useRef<HTMLDivElement>(null);
@@ -235,25 +246,22 @@ function AISandboxPage({
     const initializePage = async () => {
       // Prevent double execution in React StrictMode
       if (sandboxCreated) return;
-      
+
       // First check URL parameters (from home page navigation)
       const urlParam = searchParams.get('url');
       const templateParam = searchParams.get('template');
       const detailsParam = searchParams.get('details');
-      
+
       // Then check session storage as fallback
       const storedUrl = urlParam || sessionStorage.getItem('targetUrl');
       const storedStyle = templateParam || sessionStorage.getItem('selectedStyle');
       const storedModel = sessionStorage.getItem('selectedModel');
       const storedInstructions = sessionStorage.getItem('additionalInstructions');
-      
+
       const projectIdParam = projectIdFromPath || searchParams.get('project');
       const live = attachToProject(projectIdParam);
       const liveMatches =
-        isJobActive &&
-        (projectIdParam
-          ? live.projectId === projectIdParam
-          : !storedUrl);
+        isJobActive && (projectIdParam ? live.projectId === projectIdParam : !storedUrl);
 
       if (liveMatches) {
         reconnectedRef.current = true;
@@ -270,9 +278,9 @@ function AISandboxPage({
           updateStatus('Sandbox active', true);
         }
         if (live.lastGeneratedCode) {
-          setConversationContext(prev => ({
+          setConversationContext((prev) => ({
             ...prev,
-            lastGeneratedCode: live.lastGeneratedCode || undefined
+            lastGeneratedCode: live.lastGeneratedCode || undefined,
           }));
         }
         setLoading(false);
@@ -282,7 +290,7 @@ function AISandboxPage({
       if (getGenerationState().messages.length === 0) {
         addChatMessage(
           'Welcome! I can help you generate code with full context of your sandbox files and structure. Just start chatting - I\'ll automatically create a sandbox for you if needed!\n\nTip: If you see package errors like "react-router-dom not found", just type "npm install" or "check packages" to automatically install missing packages.',
-          'system'
+          'system',
         );
       }
 
@@ -303,9 +311,9 @@ function AISandboxPage({
             if (project.model) setAiModel(project.model);
             if (project.lastCode) {
               pendingRestoreCodeRef.current = project.lastCode;
-              setConversationContext(prev => ({
+              setConversationContext((prev) => ({
                 ...prev,
-                lastGeneratedCode: project.lastCode
+                lastGeneratedCode: project.lastCode,
               }));
             }
             if (project.importSource?.sourceUrl) {
@@ -316,12 +324,15 @@ function AISandboxPage({
                 setShouldAutoGenerate(true);
               }
             }
-            if (isActiveGenerationStatus(project.generationStatus ?? project.status) && !isJobActive) {
+            if (
+              isActiveGenerationStatus(project.generationStatus ?? project.status) &&
+              !isJobActive
+            ) {
               addChatMessage(
                 project.progressMessage
                   ? `Previous generation stopped: ${project.progressMessage}`
                   : 'Previous generation was interrupted. Send a message to continue.',
-                'system'
+                'system',
               );
             } else {
               addChatMessage(`Opened saved project: ${loadedTitle}`, 'system');
@@ -343,18 +354,18 @@ function AISandboxPage({
       if (storedUrl) {
         // Mark that we have an initial submission since we're loading with a URL
         setHasInitialSubmission(true);
-        
-        // Clear sessionStorage after reading  
+
+        // Clear sessionStorage after reading
         sessionStorage.removeItem('targetUrl');
         sessionStorage.removeItem('selectedStyle');
         sessionStorage.removeItem('selectedModel');
         sessionStorage.removeItem('additionalInstructions');
         // Note: Don't clear siteMarkdown here, it will be cleared when used
-        
+
         // Set the values in the component state
         setHomeUrlInput(storedUrl);
         setSelectedStyle(storedStyle || 'modern');
-        
+
         // Add details to context if provided
         if (detailsParam) {
           setHomeContextInput(detailsParam);
@@ -370,47 +381,47 @@ function AISandboxPage({
             '6': 'Gradient Rich',
             '7': '3D Depth',
             '8': 'Retro Wave',
-            'modern': 'Modern clean and minimalist',
-            'playful': 'Fun colorful and playful',
-            'professional': 'Corporate professional and sleek',
-            'artistic': 'Creative artistic and unique'
+            modern: 'Modern clean and minimalist',
+            playful: 'Fun colorful and playful',
+            professional: 'Corporate professional and sleek',
+            artistic: 'Creative artistic and unique',
           };
           const styleName = styleNames[storedStyle] || storedStyle;
           let contextString = `${styleName} style design`;
-          
+
           // Add additional instructions if provided
           if (storedInstructions) {
             contextString += `. ${storedInstructions}`;
           }
-          
+
           setHomeContextInput(contextString);
         } else if (storedInstructions && !urlParam) {
           // Apply only instructions if no style but instructions are provided
           // and no screenshot URL is provided
           setHomeContextInput(storedInstructions);
         }
-        
+
         if (storedModel) {
           setAiModel(storedModel);
         }
-        
+
         // Skip the home screen and go directly to builder
         setShowHomeScreen(false);
         setHomeScreenFading(false);
-        
+
         // Set flag to auto-trigger generation after component updates
         setShouldAutoGenerate(true);
-        
+
         // Also set autoStart flag for the effect
         sessionStorage.setItem('autoStart', 'true');
       }
-      
+
       // Clear old conversation
       try {
         await fetch('/api/conversation-state', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'clear-old' })
+          body: JSON.stringify({ action: 'clear-old' }),
         });
         console.log('[home] Cleared old conversation data on mount');
       } catch (error) {
@@ -419,7 +430,7 @@ function AISandboxPage({
           addChatMessage('Failed to clear old conversation data.', 'error');
         }
       }
-      
+
       if (!isMounted) return;
 
       setLoading(true);
@@ -447,14 +458,14 @@ function AISandboxPage({
         }
       }
     };
-    
+
     initializePage();
 
     return () => {
       isMounted = false;
     };
   }, []); // Run only on mount
-  
+
   useEffect(() => {
     // Handle Escape key for home screen
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -466,11 +477,11 @@ function AISandboxPage({
         }, 500);
       }
     };
-    
+
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [showHomeScreen]);
-  
+
   // Start capturing screenshot if URL is provided on mount (from home screen)
   useEffect(() => {
     if (!showHomeScreen && homeUrlInput && !urlScreenshot && !isCapturingScreenshot) {
@@ -481,7 +492,7 @@ function AISandboxPage({
       // eslint-disable-next-line react-hooks/immutability -- declared later in this component
       captureUrlScreenshot(screenshotUrl);
     }
-  }, [showHomeScreen, homeUrlInput]);  
+  }, [showHomeScreen, homeUrlInput]);
 
   // Auto-start generation if flagged
   useEffect(() => {
@@ -496,8 +507,7 @@ function AISandboxPage({
         startGeneration();
       }, 1000);
     }
-  }, [showHomeScreen, homeUrlInput]);  
-
+  }, [showHomeScreen, homeUrlInput]);
 
   useEffect(() => {
     // Only check sandbox status on mount if we don't already have sandboxData
@@ -507,7 +517,7 @@ function AISandboxPage({
       // eslint-disable-next-line react-hooks/immutability -- declared later in this component
       checkSandboxStatus();
     }
-  }, []);  
+  }, []);
 
   useEffect(() => {
     if (chatMessagesRef.current) {
@@ -521,24 +531,22 @@ function AISandboxPage({
     if (shouldAutoGenerate && homeUrlInput && !showHomeScreen) {
       // Reset the flag
       setShouldAutoGenerate(false);
-      
+
       // Trigger generation after a short delay to ensure everything is set up
       const timer = setTimeout(() => {
         console.log('[generation] Auto-triggering generation from URL params');
         startGeneration();
       }, 1000);
-      
+
       return () => clearTimeout(timer);
     }
   }, [shouldAutoGenerate, homeUrlInput, showHomeScreen]);
 
   useEffect(() => {
     if (lastGeneratedCode) {
-      setConversationContext(prev => (
-        prev.lastGeneratedCode === lastGeneratedCode
-          ? prev
-          : { ...prev, lastGeneratedCode }
-      ));
+      setConversationContext((prev) =>
+        prev.lastGeneratedCode === lastGeneratedCode ? prev : { ...prev, lastGeneratedCode },
+      );
     }
   }, [lastGeneratedCode]);
 
@@ -562,7 +570,7 @@ function AISandboxPage({
   };
 
   const log = (message: string, type: 'info' | 'error' | 'command' = 'info') => {
-    setResponseArea(prev => [...prev, `[${type}] ${message}`]);
+    setResponseArea((prev) => [...prev, `[${type}] ${message}`]);
   };
 
   const checkAndInstallPackages = async () => {
@@ -572,53 +580,53 @@ function AISandboxPage({
       console.log('[checkAndInstallPackages] No sandbox data available yet');
       return;
     }
-    
+
     // Vite error checking removed - handled by template setup
     addChatMessage('Checking packages... Sandbox is ready with Vite configuration.', 'system');
   };
-  
+
   const handleSurfaceError = (_errors: any[]) => {
     // Function kept for compatibility but Vite errors are now handled by template
-    
+
     // Focus the input
     const textarea = document.querySelector('textarea') as HTMLTextAreaElement;
     if (textarea) {
       textarea.focus();
     }
   };
-  
+
   const installPackages = async (packages: string[]) => {
     if (!sandboxData) {
       addChatMessage('No active sandbox. Create a sandbox first!', 'system');
       return;
     }
-    
+
     try {
       const response = await fetch('/api/install-packages', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ packages })
+        body: JSON.stringify({ packages }),
       });
-      
+
       if (!response.ok) {
         throw new Error(`Failed to install packages: ${response.statusText}`);
       }
-      
+
       const reader = response.body?.getReader();
       const decoder = new TextDecoder();
-      
+
       while (reader) {
         const { done, value } = await reader.read();
         if (done) break;
-        
+
         const chunk = decoder.decode(value);
         const lines = chunk.split('\n');
-        
+
         for (const line of lines) {
           if (line.startsWith('data: ')) {
             try {
               const data = JSON.parse(line.slice(6));
-              
+
               switch (data.type) {
                 case 'command':
                   // Don't show npm install commands - they're handled by info messages
@@ -659,7 +667,7 @@ function AISandboxPage({
     try {
       const response = await fetch('/api/sandbox-status');
       const data = await response.json();
-      
+
       if (data.active && data.healthy && data.sandboxData) {
         console.log('[checkSandboxStatus] Setting sandboxData from API:', data.sandboxData);
         setSandboxData(data.sandboxData);
@@ -677,7 +685,9 @@ function AISandboxPage({
           updateStatus('No sandbox', false);
         } else {
           // Keep existing sandboxData and just update status
-          console.log('[checkSandboxStatus] Keeping existing sandboxData, sandbox inactive but data preserved');
+          console.log(
+            '[checkSandboxStatus] Keeping existing sandboxData, sandbox inactive but data preserved',
+          );
           updateStatus('Sandbox status unknown', false);
         }
       }
@@ -694,14 +704,14 @@ function AISandboxPage({
   };
 
   const sandboxCreationRef = useRef<boolean>(false);
-  
+
   const createSandbox = async (fromHomeScreen = false) => {
     // Prevent duplicate sandbox creation
     if (sandboxCreationRef.current) {
       console.log('[createSandbox] Sandbox creation already in progress, skipping...');
       return null;
     }
-    
+
     sandboxCreationRef.current = true;
     console.log('[createSandbox] Starting sandbox creation...');
     setLoading(true);
@@ -709,19 +719,19 @@ function AISandboxPage({
     updateStatus('Creating sandbox...', false);
     setResponseArea([]);
     setScreenshotError(null);
-    
+
     try {
       const response = await fetch('/api/create-ai-sandbox-v2', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           projectId: getGenerationState().projectId ?? projectId ?? projectIdFromPath,
-        })
+        }),
       });
-      
+
       const data = await response.json();
       console.log('[createSandbox] Response data:', data);
-      
+
       if (data.success) {
         sandboxCreationRef.current = false; // Reset the ref on success
         console.log('[createSandbox] Setting sandboxData from creation:', data);
@@ -730,7 +740,7 @@ function AISandboxPage({
         log('Sandbox created successfully!');
         log(`Sandbox ID: ${data.sandboxId}`);
         log(`URL: ${data.url}`);
-        
+
         // Update URL with sandbox ID
         const newParams = new URLSearchParams(searchParams.toString());
         newParams.set('sandbox', data.sandboxId);
@@ -739,16 +749,16 @@ function AISandboxPage({
         if (sandboxProjectId) {
           router.push(`/project/${sandboxProjectId}?${newParams.toString()}`, { scroll: false });
         }
-        
+
         // Fade out loading background after sandbox loads
         setTimeout(() => {
           setShowLoadingBackground(false);
         }, 3000);
-        
+
         if (data.structure) {
           displayStructure(data.structure);
         }
-        
+
         // Fetch sandbox files after creation
         setTimeout(fetchSandboxFiles, 1000);
 
@@ -757,25 +767,28 @@ function AISandboxPage({
           pendingRestoreCodeRef.current = null;
           await applyGeneratedCode(codeToRestore, false, data);
         }
-        
+
         // Vite is already started during setupViteApp
         // No need to restart it immediately after creation
         // Only restart if there's an actual issue later
         console.log('[createSandbox] Sandbox ready with Vite server running');
-        
+
         // Only add welcome message if not coming from home screen
         if (!fromHomeScreen) {
-          addChatMessage(`Sandbox created! ID: ${data.sandboxId}. I now have context of your sandbox and can help you build your app. Just ask me to create components and I'll automatically apply them!
+          addChatMessage(
+            `Sandbox created! ID: ${data.sandboxId}. I now have context of your sandbox and can help you build your app. Just ask me to create components and I'll automatically apply them!
 
-Tip: I automatically detect and install npm packages from your code imports (like react-router-dom, axios, etc.)`, 'system');
+Tip: I automatically detect and install npm packages from your code imports (like react-router-dom, axios, etc.)`,
+            'system',
+          );
         }
-        
+
         setTimeout(() => {
           if (iframeRef.current) {
             iframeRef.current.src = data.url;
           }
         }, 100);
-        
+
         void saveCurrentProject({
           sandboxId: data.sandboxId,
           previewUrl: data.url,
@@ -822,11 +835,19 @@ Tip: I automatically detect and install npm packages from your code imports (lik
         sandboxId: overrides?.sandboxId || sandboxData?.sandboxId || null,
         previewUrl: overrides?.previewUrl || sandboxData?.url || null,
         screenshot: urlScreenshot,
-        lastCode: getGenerationState().lastGeneratedCode || conversationContext.lastGeneratedCode || lastGeneratedCode || null,
+        lastCode:
+          getGenerationState().lastGeneratedCode ||
+          conversationContext.lastGeneratedCode ||
+          lastGeneratedCode ||
+          null,
         status: getGenerationState().status,
         progressMessage: getGenerationState().generationProgress.status || null,
-        sourceMessage: [...getGenerationState().messages].reverse().find((entry) => entry.type === 'user' && entry.content.trim())?.content,
-        source: [...getGenerationState().messages].reverse().find((entry) => entry.type === 'user' && entry.content.trim())?.metadata?.source,
+        sourceMessage: [...getGenerationState().messages]
+          .reverse()
+          .find((entry) => entry.type === 'user' && entry.content.trim())?.content,
+        source: [...getGenerationState().messages]
+          .reverse()
+          .find((entry) => entry.type === 'user' && entry.content.trim())?.metadata?.source,
       });
 
       if (!result.saved) {
@@ -867,9 +888,11 @@ Tip: I automatically detect and install npm packages from your code imports (lik
     try {
       // Show progress component instead of individual messages
       setCodeApplicationState({ stage: 'analyzing' });
-      
+
       // Get pending packages from tool calls
-      const pendingPackages = ((window as any).pendingPackages || []).filter((pkg: any) => pkg && typeof pkg === 'string');
+      const pendingPackages = ((window as any).pendingPackages || []).filter(
+        (pkg: any) => pkg && typeof pkg === 'string',
+      );
       if (pendingPackages.length > 0) {
         console.log('[applyGeneratedCode] Sending packages from tool calls:', pendingPackages);
         // Clear pending packages after use
@@ -877,7 +900,7 @@ Tip: I automatically detect and install npm packages from your code imports (lik
         // eslint-disable-next-line react-hooks/immutability
         (window as any).pendingPackages = [];
       }
-      
+
       // Stream is owned by GenerationProvider so leaving the workspace does not abort it
       const effectiveSandboxData = overrideSandboxData || sandboxData;
       const applyResult = await startApply({
@@ -899,7 +922,10 @@ Tip: I automatically detect and install npm packages from your code imports (lik
       // re-derive the policy. Absent buildFix means the loop is over.
       const buildFix = finalData?.buildFix;
       if (buildFix?.instruction) {
-        addChatMessage(`Build failed — attempting an automatic fix (${buildFix.attempt}/2).`, 'system');
+        addChatMessage(
+          `Build failed — attempting an automatic fix (${buildFix.attempt}/2).`,
+          'system',
+        );
         try {
           const fixResult = await startGenerationStream({
             prompt: buildFix.instruction,
@@ -939,257 +965,284 @@ Tip: I automatically detect and install npm packages from your code imports (lik
           autoCompletedComponents: finalData.autoCompletedComponents,
           warning: finalData.warning,
           missingImports: finalData.missingImports,
-          debug: finalData.debug
+          debug: finalData.debug,
         };
-        
+
         if (data.success) {
           const { results } = data;
-        
-        // Log package installation results without duplicate messages
-        if (results.packagesInstalled?.length > 0) {
-          log(`Packages installed: ${results.packagesInstalled.join(', ')}`);
-        }
-        
-        if (results.filesCreated?.length > 0) {
-          log('Files created:');
-          results.filesCreated.forEach((file: string) => {
-            log(`  ${file}`, 'command');
-          });
-          
-          // Verify files were actually created by refreshing the sandbox if needed
-          if (sandboxData?.sandboxId && results.filesCreated.length > 0) {
-            // Small delay to ensure files are written
-            setTimeout(() => {
-              // Force refresh the iframe to show new files
-              if (iframeRef.current) {
-                iframeRef.current.src = iframeRef.current.src;
-              }
-            }, 1000);
-          }
-        }
-        
-        if (results.filesUpdated?.length > 0) {
-          log('Files updated:');
-          results.filesUpdated.forEach((file: string) => {
-            log(`  ${file}`, 'command');
-          });
-        }
-        
-        // Update conversation context with applied code
-        setConversationContext(prev => ({
-          ...prev,
-          appliedCode: [...prev.appliedCode, {
-            files: [...(results.filesCreated || []), ...(results.filesUpdated || [])],
-            timestamp: new Date()
-          }]
-        }));
-        
-        if (results.commandsExecuted?.length > 0) {
-          log('Commands executed:');
-          results.commandsExecuted.forEach((cmd: string) => {
-            log(`  $ ${cmd}`, 'command');
-          });
-        }
-        
-        if (results.errors?.length > 0) {
-          results.errors.forEach((err: string) => {
-            log(err, 'error');
-          });
-        }
-        
-        if (data.structure) {
-          displayStructure(data.structure);
-        }
-        
-        if (data.explanation) {
-          log(data.explanation);
-        }
-        
-        if (data.autoCompleted) {
-          log('Auto-generating missing components...', 'command');
-          
-          if (data.autoCompletedComponents) {
-            setTimeout(() => {
-              log('Auto-generated missing components:', 'info');
-              data.autoCompletedComponents.forEach((comp: string) => {
-                log(`  ${comp}`, 'command');
-              });
-            }, 1000);
-          }
-        } else if (data.warning) {
-          log(data.warning, 'error');
-          
-          if (data.missingImports && data.missingImports.length > 0) {
-            const missingList = data.missingImports.join(', ');
-            addChatMessage(
-              `Ask me to "create the missing components: ${missingList}" to fix these import errors.`,
-              'system'
-            );
-          }
-        }
 
-        const applyCopy = applyPageCopy({
-          filesCreated: results.filesCreated,
-          filesUpdated: results.filesUpdated,
-          errors: results.errors,
-        });
-        log(applyCopy.message, applyCopy.warning ? 'error' : 'info');
-        const lastChat = getGenerationState().messages.at(-1)?.content;
-        if (shouldAddApplyChat(lastChat, applyCopy.message)) {
-          addChatMessage(
-            applyCopy.message,
-            'system',
-            !isEdit && results.filesCreated?.length > 0 ? { appliedFiles: results.filesCreated } : undefined,
-          );
-        }
-        void saveCurrentProject();
-        console.log('[applyGeneratedCode] Response data:', data);
-        console.log('[applyGeneratedCode] Debug info:', data.debug);
-        console.log('[applyGeneratedCode] Current sandboxData:', sandboxData);
-        console.log('[applyGeneratedCode] Current iframe element:', iframeRef.current);
-        console.log('[applyGeneratedCode] Current iframe src:', iframeRef.current?.src);
-        
-        // Set applying code state for edits to show loading overlay
-        // Removed overlay - changes apply directly
-        
-        if (results.filesCreated?.length > 0) {
-          setConversationContext(prev => ({
-            ...prev,
-            appliedCode: [...prev.appliedCode, {
-              files: results.filesCreated,
-              timestamp: new Date()
-            }]
-          }));
-          
-          // If there are failed packages, add a message about checking for errors
-          if (results.packagesFailed?.length > 0) {
-            addChatMessage(`⚠️ Some packages failed to install. Check the error banner above for details.`, 'system');
+          // Log package installation results without duplicate messages
+          if (results.packagesInstalled?.length > 0) {
+            log(`Packages installed: ${results.packagesInstalled.join(', ')}`);
           }
-          
-          // Fetch updated file structure
-          await fetchSandboxFiles();
-          
-          // Skip automatic package check - it's not needed here and can cause false "no sandbox" messages
-          // Packages are already installed during the apply-ai-code-stream process
-          
-          // Test build to ensure everything compiles correctly
-          // Skip build test for now - it's causing errors with undefined activeSandbox
-          // The build test was trying to access global.activeSandbox from the frontend,
-          // but that's only available in the backend API routes
-          console.log('[build-test] Skipping build test - would need API endpoint');
-          
-          // Force iframe refresh after applying code
-          const refreshDelay = appConfig.codeApplication.defaultRefreshDelay; // Allow Vite to process changes
-          
-          setTimeout(() => {
-            const currentSandboxData = effectiveSandboxData;
-            if (iframeRef.current && currentSandboxData?.url) {
-              console.log('[home] Refreshing iframe after code application...');
-              
-              // Method 1: Change src with timestamp
-              const urlWithTimestamp = `${currentSandboxData.url}?t=${Date.now()}&applied=true`;
-              iframeRef.current.src = urlWithTimestamp;
-              
-              // Method 2: Force reload after a short delay
+
+          if (results.filesCreated?.length > 0) {
+            log('Files created:');
+            results.filesCreated.forEach((file: string) => {
+              log(`  ${file}`, 'command');
+            });
+
+            // Verify files were actually created by refreshing the sandbox if needed
+            if (sandboxData?.sandboxId && results.filesCreated.length > 0) {
+              // Small delay to ensure files are written
               setTimeout(() => {
-                try {
-                  if (iframeRef.current?.contentWindow) {
-                    iframeRef.current.contentWindow.location.reload();
-                    console.log('[home] Force reloaded iframe content');
-                  }
-                } catch (e) {
-                  console.log('[home] Could not reload iframe (cross-origin):', e);
+                // Force refresh the iframe to show new files
+                if (iframeRef.current) {
+                  iframeRef.current.src = iframeRef.current.src;
                 }
-                // Reload completed
               }, 1000);
             }
-          }, refreshDelay);
-          
-          // Vite error checking removed - handled by template setup
-        }
-        
+          }
+
+          if (results.filesUpdated?.length > 0) {
+            log('Files updated:');
+            results.filesUpdated.forEach((file: string) => {
+              log(`  ${file}`, 'command');
+            });
+          }
+
+          // Update conversation context with applied code
+          setConversationContext((prev) => ({
+            ...prev,
+            appliedCode: [
+              ...prev.appliedCode,
+              {
+                files: [...(results.filesCreated || []), ...(results.filesUpdated || [])],
+                timestamp: new Date(),
+              },
+            ],
+          }));
+
+          if (results.commandsExecuted?.length > 0) {
+            log('Commands executed:');
+            results.commandsExecuted.forEach((cmd: string) => {
+              log(`  $ ${cmd}`, 'command');
+            });
+          }
+
+          if (results.errors?.length > 0) {
+            results.errors.forEach((err: string) => {
+              log(err, 'error');
+            });
+          }
+
+          if (data.structure) {
+            displayStructure(data.structure);
+          }
+
+          if (data.explanation) {
+            log(data.explanation);
+          }
+
+          if (data.autoCompleted) {
+            log('Auto-generating missing components...', 'command');
+
+            if (data.autoCompletedComponents) {
+              setTimeout(() => {
+                log('Auto-generated missing components:', 'info');
+                data.autoCompletedComponents.forEach((comp: string) => {
+                  log(`  ${comp}`, 'command');
+                });
+              }, 1000);
+            }
+          } else if (data.warning) {
+            log(data.warning, 'error');
+
+            if (data.missingImports && data.missingImports.length > 0) {
+              const missingList = data.missingImports.join(', ');
+              addChatMessage(
+                `Ask me to "create the missing components: ${missingList}" to fix these import errors.`,
+                'system',
+              );
+            }
+          }
+
+          const applyCopy = applyPageCopy({
+            filesCreated: results.filesCreated,
+            filesUpdated: results.filesUpdated,
+            errors: results.errors,
+          });
+          log(applyCopy.message, applyCopy.warning ? 'error' : 'info');
+          const lastChat = getGenerationState().messages.at(-1)?.content;
+          if (shouldAddApplyChat(lastChat, applyCopy.message)) {
+            addChatMessage(
+              applyCopy.message,
+              'system',
+              !isEdit && results.filesCreated?.length > 0
+                ? { appliedFiles: results.filesCreated }
+                : undefined,
+            );
+          }
+          void saveCurrentProject();
+          console.log('[applyGeneratedCode] Response data:', data);
+          console.log('[applyGeneratedCode] Debug info:', data.debug);
+          console.log('[applyGeneratedCode] Current sandboxData:', sandboxData);
+          console.log('[applyGeneratedCode] Current iframe element:', iframeRef.current);
+          console.log('[applyGeneratedCode] Current iframe src:', iframeRef.current?.src);
+
+          // Set applying code state for edits to show loading overlay
+          // Removed overlay - changes apply directly
+
+          if (results.filesCreated?.length > 0) {
+            setConversationContext((prev) => ({
+              ...prev,
+              appliedCode: [
+                ...prev.appliedCode,
+                {
+                  files: results.filesCreated,
+                  timestamp: new Date(),
+                },
+              ],
+            }));
+
+            // If there are failed packages, add a message about checking for errors
+            if (results.packagesFailed?.length > 0) {
+              addChatMessage(
+                `⚠️ Some packages failed to install. Check the error banner above for details.`,
+                'system',
+              );
+            }
+
+            // Fetch updated file structure
+            await fetchSandboxFiles();
+
+            // Skip automatic package check - it's not needed here and can cause false "no sandbox" messages
+            // Packages are already installed during the apply-ai-code-stream process
+
+            // Test build to ensure everything compiles correctly
+            // Skip build test for now - it's causing errors with undefined activeSandbox
+            // The build test was trying to access global.activeSandbox from the frontend,
+            // but that's only available in the backend API routes
+            console.log('[build-test] Skipping build test - would need API endpoint');
+
+            // Force iframe refresh after applying code
+            const refreshDelay = appConfig.codeApplication.defaultRefreshDelay; // Allow Vite to process changes
+
+            setTimeout(() => {
+              const currentSandboxData = effectiveSandboxData;
+              if (iframeRef.current && currentSandboxData?.url) {
+                console.log('[home] Refreshing iframe after code application...');
+
+                // Method 1: Change src with timestamp
+                const urlWithTimestamp = `${currentSandboxData.url}?t=${Date.now()}&applied=true`;
+                iframeRef.current.src = urlWithTimestamp;
+
+                // Method 2: Force reload after a short delay
+                setTimeout(() => {
+                  try {
+                    if (iframeRef.current?.contentWindow) {
+                      iframeRef.current.contentWindow.location.reload();
+                      console.log('[home] Force reloaded iframe content');
+                    }
+                  } catch (e) {
+                    console.log('[home] Could not reload iframe (cross-origin):', e);
+                  }
+                  // Reload completed
+                }, 1000);
+              }
+            }, refreshDelay);
+
+            // Vite error checking removed - handled by template setup
+          }
+
           // Give Vite HMR a moment to detect changes, then ensure refresh
           const currentSandboxData = effectiveSandboxData;
           if (iframeRef.current && currentSandboxData?.url) {
             // Wait for Vite to process the file changes
             // If packages were installed, wait longer for Vite to restart
-            const packagesInstalled = results?.packagesInstalled?.length > 0 || data.results?.packagesInstalled?.length > 0;
-            const refreshDelay = packagesInstalled ? appConfig.codeApplication.packageInstallRefreshDelay : appConfig.codeApplication.defaultRefreshDelay;
-            console.log(`[applyGeneratedCode] Packages installed: ${packagesInstalled}, refresh delay: ${refreshDelay}ms`);
-            
+            const packagesInstalled =
+              results?.packagesInstalled?.length > 0 || data.results?.packagesInstalled?.length > 0;
+            const refreshDelay = packagesInstalled
+              ? appConfig.codeApplication.packageInstallRefreshDelay
+              : appConfig.codeApplication.defaultRefreshDelay;
+            console.log(
+              `[applyGeneratedCode] Packages installed: ${packagesInstalled}, refresh delay: ${refreshDelay}ms`,
+            );
+
             setTimeout(async () => {
-            if (iframeRef.current && currentSandboxData?.url) {
-              console.log('[applyGeneratedCode] Starting iframe refresh sequence...');
-              console.log('[applyGeneratedCode] Current iframe src:', iframeRef.current.src);
-              console.log('[applyGeneratedCode] Sandbox URL:', currentSandboxData.url);
-              
-              // Method 1: Try direct navigation first
-              try {
-                const urlWithTimestamp = `${currentSandboxData.url}?t=${Date.now()}&force=true`;
-                console.log('[applyGeneratedCode] Attempting direct navigation to:', urlWithTimestamp);
-                
-                // Remove any existing onload handler
-                iframeRef.current.onload = null;
-                
-                // Navigate directly
-                iframeRef.current.src = urlWithTimestamp;
-                
-                // Wait a bit and check if it loaded
-                await new Promise(resolve => setTimeout(resolve, 2000));
-                
-                // Try to access the iframe content to verify it loaded
+              if (iframeRef.current && currentSandboxData?.url) {
+                console.log('[applyGeneratedCode] Starting iframe refresh sequence...');
+                console.log('[applyGeneratedCode] Current iframe src:', iframeRef.current.src);
+                console.log('[applyGeneratedCode] Sandbox URL:', currentSandboxData.url);
+
+                // Method 1: Try direct navigation first
                 try {
-                  const iframeDoc = iframeRef.current.contentDocument || iframeRef.current.contentWindow?.document;
-                  if (iframeDoc && iframeDoc.readyState === 'complete') {
-                    console.log('[applyGeneratedCode] Iframe loaded successfully');
+                  const urlWithTimestamp = `${currentSandboxData.url}?t=${Date.now()}&force=true`;
+                  console.log(
+                    '[applyGeneratedCode] Attempting direct navigation to:',
+                    urlWithTimestamp,
+                  );
+
+                  // Remove any existing onload handler
+                  iframeRef.current.onload = null;
+
+                  // Navigate directly
+                  iframeRef.current.src = urlWithTimestamp;
+
+                  // Wait a bit and check if it loaded
+                  await new Promise((resolve) => setTimeout(resolve, 2000));
+
+                  // Try to access the iframe content to verify it loaded
+                  try {
+                    const iframeDoc =
+                      iframeRef.current.contentDocument ||
+                      iframeRef.current.contentWindow?.document;
+                    if (iframeDoc && iframeDoc.readyState === 'complete') {
+                      console.log('[applyGeneratedCode] Iframe loaded successfully');
+                      return;
+                    }
+                  } catch {
+                    console.log(
+                      '[applyGeneratedCode] Cannot access iframe content (CORS), assuming loaded',
+                    );
                     return;
                   }
-                } catch {
-                  console.log('[applyGeneratedCode] Cannot access iframe content (CORS), assuming loaded');
-                  return;
+                } catch (e) {
+                  console.error('[applyGeneratedCode] Direct navigation failed:', e);
                 }
-              } catch (e) {
-                console.error('[applyGeneratedCode] Direct navigation failed:', e);
+
+                // Method 2: Force complete iframe recreation if direct navigation failed
+                console.log('[applyGeneratedCode] Falling back to iframe recreation...');
+                const parent = iframeRef.current.parentElement;
+                const newIframe = document.createElement('iframe');
+
+                // Copy attributes
+                newIframe.className = iframeRef.current.className;
+                newIframe.title = iframeRef.current.title;
+                newIframe.allow = iframeRef.current.allow;
+                // Copy sandbox attributes
+                const sandboxValue = iframeRef.current.getAttribute('sandbox');
+                if (sandboxValue) {
+                  newIframe.setAttribute('sandbox', sandboxValue);
+                }
+
+                // Remove old iframe
+                iframeRef.current.remove();
+
+                // Add new iframe
+                newIframe.src = `${currentSandboxData.url}?t=${Date.now()}&recreated=true`;
+                parent?.appendChild(newIframe);
+
+                // Update ref
+                (iframeRef as any).current = newIframe;
+
+                console.log('[applyGeneratedCode] Iframe recreated with new content');
+              } else {
+                console.error(
+                  '[applyGeneratedCode] No iframe or sandbox URL available for refresh',
+                );
               }
-              
-              // Method 2: Force complete iframe recreation if direct navigation failed
-              console.log('[applyGeneratedCode] Falling back to iframe recreation...');
-              const parent = iframeRef.current.parentElement;
-              const newIframe = document.createElement('iframe');
-              
-              // Copy attributes
-              newIframe.className = iframeRef.current.className;
-              newIframe.title = iframeRef.current.title;
-              newIframe.allow = iframeRef.current.allow;
-              // Copy sandbox attributes
-              const sandboxValue = iframeRef.current.getAttribute('sandbox');
-              if (sandboxValue) {
-                newIframe.setAttribute('sandbox', sandboxValue);
-              }
-              
-              // Remove old iframe
-              iframeRef.current.remove();
-              
-              // Add new iframe
-              newIframe.src = `${currentSandboxData.url}?t=${Date.now()}&recreated=true`;
-              parent?.appendChild(newIframe);
-              
-              // Update ref
-              (iframeRef as any).current = newIframe;
-              
-              console.log('[applyGeneratedCode] Iframe recreated with new content');
-            } else {
-              console.error('[applyGeneratedCode] No iframe or sandbox URL available for refresh');
-            }
-          }, refreshDelay); // Dynamic delay based on whether packages were installed
-        }
-        
+            }, refreshDelay); // Dynamic delay based on whether packages were installed
+          }
         } else {
           throw new Error(finalData?.error || 'Failed to apply code');
         }
       } else {
         // If no final data was received, still close loading
-        addChatMessage('Code application may have partially succeeded. Check the preview.', 'system');
+        addChatMessage(
+          'Code application may have partially succeeded. Check the preview.',
+          'system',
+        );
       }
     } catch (error: any) {
       if (error?.name === 'AbortError') return;
@@ -1197,9 +1250,9 @@ Tip: I automatically detect and install npm packages from your code imports (lik
     } finally {
       setLoading(false);
       // Clear isEdit flag after applying code
-      setGenerationProgress(prev => ({
+      setGenerationProgress((prev) => ({
         ...prev,
-        isEdit: false
+        isEdit: false,
       }));
     }
   };
@@ -1216,225 +1269,271 @@ Tip: I automatically detect and install npm packages from your code imports (lik
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
-        }
+        },
       });
-      
+
       if (response.ok) {
         const data = await response.json();
         if (data.success) {
           setSandboxFiles(data.files || {});
           setFileStructure(data.structure || '');
-          console.log('[fetchSandboxFiles] Updated file list:', Object.keys(data.files || {}).length, 'files');
+          console.log(
+            '[fetchSandboxFiles] Updated file list:',
+            Object.keys(data.files || {}).length,
+            'files',
+          );
         }
       }
     } catch (error) {
       console.error('[fetchSandboxFiles] Error fetching files:', error);
     }
   };
-  
-//   const restartViteServer = async () => {
-//     try {
-//       addChatMessage('Restarting Vite dev server...', 'system');
-//       
-//       const response = await fetch('/api/restart-vite', {
-//         method: 'POST',
-//         headers: { 'Content-Type': 'application/json' }
-//       });
-//       
-//       if (response.ok) {
-//         const data = await response.json();
-//         if (data.success) {
-//           addChatMessage('✓ Vite dev server restarted successfully!', 'system');
-//           
-//           // Refresh the iframe after a short delay
-//           setTimeout(() => {
-//             if (iframeRef.current && sandboxData?.url) {
-//               iframeRef.current.src = `${sandboxData.url}?t=${Date.now()}`;
-//             }
-//           }, 2000);
-//         } else {
-//           addChatMessage(`Failed to restart Vite: ${data.error}`, 'error');
-//         }
-//       } else {
-//         addChatMessage('Failed to restart Vite server', 'error');
-//       }
-//     } catch (error) {
-//       console.error('[restartViteServer] Error:', error);
-//       addChatMessage(`Error restarting Vite: ${error instanceof Error ? error.message : 'Unknown error'}`, 'error');
-//     }
-//   };
 
-//   const applyCode = async () => {
-//     const code = promptInput.trim();
-//     if (!code) {
-//       log('Please enter some code first', 'error');
-//       addChatMessage('No code to apply. Please generate code first.', 'system');
-//       return;
-//     }
-//     
-//     // Prevent double clicks
-//     if (loading) {
-//       console.log('[applyCode] Already loading, skipping...');
-//       return;
-//     }
-//     
-//     // Determine if this is an edit based on whether we have applied code before
-//     const isEdit = conversationContext.appliedCode.length > 0;
-//     await applyGeneratedCode(code, isEdit);
-//   };
+  //   const restartViteServer = async () => {
+  //     try {
+  //       addChatMessage('Restarting Vite dev server...', 'system');
+  //
+  //       const response = await fetch('/api/restart-vite', {
+  //         method: 'POST',
+  //         headers: { 'Content-Type': 'application/json' }
+  //       });
+  //
+  //       if (response.ok) {
+  //         const data = await response.json();
+  //         if (data.success) {
+  //           addChatMessage('✓ Vite dev server restarted successfully!', 'system');
+  //
+  //           // Refresh the iframe after a short delay
+  //           setTimeout(() => {
+  //             if (iframeRef.current && sandboxData?.url) {
+  //               iframeRef.current.src = `${sandboxData.url}?t=${Date.now()}`;
+  //             }
+  //           }, 2000);
+  //         } else {
+  //           addChatMessage(`Failed to restart Vite: ${data.error}`, 'error');
+  //         }
+  //       } else {
+  //         addChatMessage('Failed to restart Vite server', 'error');
+  //       }
+  //     } catch (error) {
+  //       console.error('[restartViteServer] Error:', error);
+  //       addChatMessage(`Error restarting Vite: ${error instanceof Error ? error.message : 'Unknown error'}`, 'error');
+  //     }
+  //   };
+
+  //   const applyCode = async () => {
+  //     const code = promptInput.trim();
+  //     if (!code) {
+  //       log('Please enter some code first', 'error');
+  //       addChatMessage('No code to apply. Please generate code first.', 'system');
+  //       return;
+  //     }
+  //
+  //     // Prevent double clicks
+  //     if (loading) {
+  //       console.log('[applyCode] Already loading, skipping...');
+  //       return;
+  //     }
+  //
+  //     // Determine if this is an edit based on whether we have applied code before
+  //     const isEdit = conversationContext.appliedCode.length > 0;
+  //     await applyGeneratedCode(code, isEdit);
+  //   };
 
   const renderMainContent = () => {
-    if (activeTab === 'generation' && (generationProgress.isGenerating || generationProgress.files.length > 0)) {
+    if (
+      activeTab === 'generation' &&
+      (generationProgress.isGenerating || generationProgress.files.length > 0)
+    ) {
       return (
         /* Generation Tab Content */
         <div className="absolute inset-0 flex overflow-hidden">
           {/* File Explorer - Hide during edits */}
           {!generationProgress.isEdit && (
             <div className="w-[250px] border-r border-gray-200 bg-white flex flex-col flex-shrink-0">
-            <div className="p-4 bg-gray-100 text-gray-900 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <BsFolderFill style={{ width: '16px', height: '16px' }} />
-                <span className="text-sm font-medium">Explorer</span>
-              </div>
-            </div>
-            
-            {/* File Tree */}
-            <div className="flex-1 overflow-y-auto p-4 scrollbar-hide">
-              <div className="text-sm">
-                {/* Root app folder */}
-                <div 
-                  className="flex items-center gap-2 py-0.5 px-3 hover:bg-gray-100 rounded cursor-pointer text-gray-700"
-                  onClick={() => toggleFolder('app')}
-                >
-                  {expandedFolders.has('app') ? (
-                    <FiChevronDown style={{ width: '16px', height: '16px' }} className="text-gray-600" />
-                  ) : (
-                    <FiChevronRight style={{ width: '16px', height: '16px' }} className="text-gray-600" />
-                  )}
-                  {expandedFolders.has('app') ? (
-                    <BsFolder2Open style={{ width: '16px', height: '16px' }} className="text-blue-500" />
-                  ) : (
-                    <BsFolderFill style={{ width: '16px', height: '16px' }} className="text-blue-500" />
-                  )}
-                  <span className="font-medium text-gray-800">app</span>
+              <div className="p-4 bg-gray-100 text-gray-900 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <BsFolderFill style={{ width: '16px', height: '16px' }} />
+                  <span className="text-sm font-medium">Explorer</span>
                 </div>
-                
-                {expandedFolders.has('app') && (
-                  <div className="ml-6">
-                    {/* Group files by directory */}
-                    {(() => {
-                      const fileTree: { [key: string]: Array<{ name: string; edited?: boolean }> } = {};
-                      
-                      // Create a map of edited files
-                      // const editedFiles = new Set(
-                      //   generationProgress.files
-                      //     .filter(f => f.edited)
-                      //     .map(f => f.path)
-                      // );
-                      
-                      // Process all files from generation progress
-                      generationProgress.files.forEach(file => {
-                        const parts = file.path.split('/');
-                        const dir = parts.length > 1 ? parts.slice(0, -1).join('/') : '';
-                        const fileName = parts[parts.length - 1];
-                        
-                        if (!fileTree[dir]) fileTree[dir] = [];
-                        fileTree[dir].push({
-                          name: fileName,
-                          edited: file.edited || false
-                        });
-                      });
-                      
-                      return Object.entries(fileTree).map(([dir, files]) => (
-                        <div key={dir} className="mb-1">
-                          {dir && (
-                            <div 
-                              className="flex items-center gap-2 py-0.5 px-3 hover:bg-gray-100 rounded cursor-pointer text-gray-700"
-                              onClick={() => toggleFolder(dir)}
-                            >
-                              {expandedFolders.has(dir) ? (
-                                <FiChevronDown style={{ width: '16px', height: '16px' }} className="text-gray-600" />
-                              ) : (
-                                <FiChevronRight style={{ width: '16px', height: '16px' }} className="text-gray-600" />
-                              )}
-                              {expandedFolders.has(dir) ? (
-                                <BsFolder2Open style={{ width: '16px', height: '16px' }} className="text-yellow-600" />
-                              ) : (
-                                <BsFolderFill style={{ width: '16px', height: '16px' }} className="text-yellow-600" />
-                              )}
-                              <span className="text-gray-700">{dir.split('/').pop()}</span>
-                            </div>
-                          )}
-                          {(!dir || expandedFolders.has(dir)) && (
-                            <div className={dir ? 'ml-8' : ''}>
-                              {files.sort((a, b) => a.name.localeCompare(b.name)).map(fileInfo => {
-                                const fullPath = dir ? `${dir}/${fileInfo.name}` : fileInfo.name;
-                                const isSelected = selectedFile === fullPath;
-                                
-                                return (
-                                  <div 
-                                    key={fullPath} 
-                                    className={`flex items-center gap-2 py-0.5 px-3 rounded cursor-pointer transition-all ${
-                                      isSelected 
-                                        ? 'bg-blue-500 text-white' 
-                                        : 'text-gray-700 hover:bg-gray-100'
-                                    }`}
-                                    onClick={() => handleFileClick(fullPath)}
-                                  >
-                                    {getFileIcon(fileInfo.name)}
-                                    <span className={`text-xs flex items-center gap-1 ${isSelected ? 'font-medium' : ''}`}>
-                                      {fileInfo.name}
-                                      {fileInfo.edited && (
-                                        <span className={`text-[10px] px-1 rounded ${
-                                          isSelected ? 'bg-blue-400' : 'bg-orange-500 text-white'
-                                        }`}>✓</span>
-                                      )}
-                                    </span>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </div>
-                      ));
-                    })()}
+              </div>
+
+              {/* File Tree */}
+              <div className="flex-1 overflow-y-auto p-4 scrollbar-hide">
+                <div className="text-sm">
+                  {/* Root app folder */}
+                  <div
+                    className="flex items-center gap-2 py-0.5 px-3 hover:bg-gray-100 rounded cursor-pointer text-gray-700"
+                    onClick={() => toggleFolder('app')}
+                  >
+                    {expandedFolders.has('app') ? (
+                      <FiChevronDown
+                        style={{ width: '16px', height: '16px' }}
+                        className="text-gray-600"
+                      />
+                    ) : (
+                      <FiChevronRight
+                        style={{ width: '16px', height: '16px' }}
+                        className="text-gray-600"
+                      />
+                    )}
+                    {expandedFolders.has('app') ? (
+                      <BsFolder2Open
+                        style={{ width: '16px', height: '16px' }}
+                        className="text-blue-500"
+                      />
+                    ) : (
+                      <BsFolderFill
+                        style={{ width: '16px', height: '16px' }}
+                        className="text-blue-500"
+                      />
+                    )}
+                    <span className="font-medium text-gray-800">app</span>
                   </div>
-                )}
+
+                  {expandedFolders.has('app') && (
+                    <div className="ml-6">
+                      {/* Group files by directory */}
+                      {(() => {
+                        const fileTree: {
+                          [key: string]: Array<{ name: string; edited?: boolean }>;
+                        } = {};
+
+                        // Create a map of edited files
+                        // const editedFiles = new Set(
+                        //   generationProgress.files
+                        //     .filter(f => f.edited)
+                        //     .map(f => f.path)
+                        // );
+
+                        // Process all files from generation progress
+                        generationProgress.files.forEach((file) => {
+                          const parts = file.path.split('/');
+                          const dir = parts.length > 1 ? parts.slice(0, -1).join('/') : '';
+                          const fileName = parts[parts.length - 1];
+
+                          if (!fileTree[dir]) fileTree[dir] = [];
+                          fileTree[dir].push({
+                            name: fileName,
+                            edited: file.edited || false,
+                          });
+                        });
+
+                        return Object.entries(fileTree).map(([dir, files]) => (
+                          <div key={dir} className="mb-1">
+                            {dir && (
+                              <div
+                                className="flex items-center gap-2 py-0.5 px-3 hover:bg-gray-100 rounded cursor-pointer text-gray-700"
+                                onClick={() => toggleFolder(dir)}
+                              >
+                                {expandedFolders.has(dir) ? (
+                                  <FiChevronDown
+                                    style={{ width: '16px', height: '16px' }}
+                                    className="text-gray-600"
+                                  />
+                                ) : (
+                                  <FiChevronRight
+                                    style={{ width: '16px', height: '16px' }}
+                                    className="text-gray-600"
+                                  />
+                                )}
+                                {expandedFolders.has(dir) ? (
+                                  <BsFolder2Open
+                                    style={{ width: '16px', height: '16px' }}
+                                    className="text-yellow-600"
+                                  />
+                                ) : (
+                                  <BsFolderFill
+                                    style={{ width: '16px', height: '16px' }}
+                                    className="text-yellow-600"
+                                  />
+                                )}
+                                <span className="text-gray-700">{dir.split('/').pop()}</span>
+                              </div>
+                            )}
+                            {(!dir || expandedFolders.has(dir)) && (
+                              <div className={dir ? 'ml-8' : ''}>
+                                {files
+                                  .sort((a, b) => a.name.localeCompare(b.name))
+                                  .map((fileInfo) => {
+                                    const fullPath = dir
+                                      ? `${dir}/${fileInfo.name}`
+                                      : fileInfo.name;
+                                    const isSelected = selectedFile === fullPath;
+
+                                    return (
+                                      <div
+                                        key={fullPath}
+                                        className={`flex items-center gap-2 py-0.5 px-3 rounded cursor-pointer transition-all ${
+                                          isSelected
+                                            ? 'bg-blue-500 text-white'
+                                            : 'text-gray-700 hover:bg-gray-100'
+                                        }`}
+                                        onClick={() => handleFileClick(fullPath)}
+                                      >
+                                        {getFileIcon(fileInfo.name)}
+                                        <span
+                                          className={`text-xs flex items-center gap-1 ${isSelected ? 'font-medium' : ''}`}
+                                        >
+                                          {fileInfo.name}
+                                          {fileInfo.edited && (
+                                            <span
+                                              className={`text-[10px] px-1 rounded ${
+                                                isSelected
+                                                  ? 'bg-blue-400'
+                                                  : 'bg-orange-500 text-white'
+                                              }`}
+                                            >
+                                              ✓
+                                            </span>
+                                          )}
+                                        </span>
+                                      </div>
+                                    );
+                                  })}
+                              </div>
+                            )}
+                          </div>
+                        ));
+                      })()}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
-          </div>
           )}
-          
+
           {/* Code Content */}
           <div className="flex-1 flex flex-col overflow-hidden">
             {/* Thinking Mode Display - Only show during active generation */}
-            {generationProgress.isGenerating && (generationProgress.isThinking || generationProgress.thinkingText) && (
-              <div className="px-6 pb-6">
-                <div className="flex items-center gap-2 mb-2">
-                  <div className="text-purple-600 font-medium flex items-center gap-2">
-                    {generationProgress.isThinking ? (
-                      <>
-                        <div className="w-3 h-3 bg-purple-600 rounded-full animate-pulse" />
-                        AI is thinking...
-                      </>
-                    ) : (
-                      <>
-                        <span className="text-purple-600">✓</span>
-                        Thought for {generationProgress.thinkingDuration || 0} seconds
-                      </>
-                    )}
+            {generationProgress.isGenerating &&
+              (generationProgress.isThinking || generationProgress.thinkingText) && (
+                <div className="px-6 pb-6">
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="text-purple-600 font-medium flex items-center gap-2">
+                      {generationProgress.isThinking ? (
+                        <>
+                          <div className="w-3 h-3 bg-purple-600 rounded-full animate-pulse" />
+                          AI is thinking...
+                        </>
+                      ) : (
+                        <>
+                          <span className="text-purple-600">✓</span>
+                          Thought for {generationProgress.thinkingDuration || 0} seconds
+                        </>
+                      )}
+                    </div>
                   </div>
+                  {generationProgress.thinkingText && (
+                    <div className="bg-purple-950 border border-purple-700 rounded-lg p-4 max-h-48 overflow-y-auto scrollbar-hide">
+                      <pre className="text-xs font-mono text-purple-300 whitespace-pre-wrap">
+                        {generationProgress.thinkingText}
+                      </pre>
+                    </div>
+                  )}
                 </div>
-                {generationProgress.thinkingText && (
-                  <div className="bg-purple-950 border border-purple-700 rounded-lg p-4 max-h-48 overflow-y-auto scrollbar-hide">
-                    <pre className="text-xs font-mono text-purple-300 whitespace-pre-wrap">
-                      {generationProgress.thinkingText}
-                    </pre>
-                  </div>
-                )}
-              </div>
-            )}
-            
+              )}
+
             {/* Live Code Display */}
             <div className="flex-1 rounded-lg p-6 flex flex-col min-h-0 overflow-hidden">
               <div className="flex-1 overflow-y-auto min-h-0 scrollbar-hide" ref={codeDisplayRef}>
@@ -1451,8 +1550,19 @@ Tip: I automatically detect and install npm packages from your code imports (lik
                           onClick={() => setSelectedFile(null)}
                           className="hover:bg-black/20 p-1 rounded transition-colors"
                         >
-                          <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          <svg
+                            width="16"
+                            height="16"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke="currentColor"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M6 18L18 6M6 6l12 12"
+                            />
                           </svg>
                         </button>
                       </div>
@@ -1476,7 +1586,9 @@ Tip: I automatically detect and install npm packages from your code imports (lik
                         >
                           {(() => {
                             // Find the file content from generated files
-                            const file = generationProgress.files.find(f => f.path === selectedFile);
+                            const file = generationProgress.files.find(
+                              (f) => f.path === selectedFile,
+                            );
                             return file?.content || '// File content will appear here';
                           })()}
                         </SyntaxHighlighter>
@@ -1495,8 +1607,12 @@ Tip: I automatically detect and install npm packages from your code imports (lik
                             <div className="absolute inset-0 border-8 border-green-500 rounded-full animate-spin border-t-transparent"></div>
                           </div>
                         </div>
-                        <h3 className="text-xl font-medium text-white mb-2">AI is analyzing your request</h3>
-                        <p className="text-gray-400 text-sm">{generationProgress.status || 'Preparing to generate code...'}</p>
+                        <h3 className="text-xl font-medium text-white mb-2">
+                          AI is analyzing your request
+                        </h3>
+                        <p className="text-gray-400 text-sm">
+                          {generationProgress.status || 'Preparing to generate code...'}
+                        </p>
                       </div>
                     </div>
                   ) : (
@@ -1533,24 +1649,36 @@ Tip: I automatically detect and install npm packages from your code imports (lik
                         <div className="px-4 py-2 bg-[#36322F] text-white flex items-center justify-between">
                           <div className="flex items-center gap-2">
                             <div className="w-16 h-16 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                            <span className="font-mono text-sm">{generationProgress.currentFile.path}</span>
-                            <span className={`px-2 py-0.5 text-xs rounded ${
-                              generationProgress.currentFile.type === 'css' ? 'bg-blue-600 text-white' :
-                              generationProgress.currentFile.type === 'javascript' ? 'bg-yellow-600 text-white' :
-                              generationProgress.currentFile.type === 'json' ? 'bg-green-600 text-white' :
-                              'bg-gray-200 text-gray-700'
-                            }`}>
-                              {generationProgress.currentFile.type === 'javascript' ? 'JSX' : generationProgress.currentFile.type.toUpperCase()}
+                            <span className="font-mono text-sm">
+                              {generationProgress.currentFile.path}
+                            </span>
+                            <span
+                              className={`px-2 py-0.5 text-xs rounded ${
+                                generationProgress.currentFile.type === 'css'
+                                  ? 'bg-blue-600 text-white'
+                                  : generationProgress.currentFile.type === 'javascript'
+                                    ? 'bg-yellow-600 text-white'
+                                    : generationProgress.currentFile.type === 'json'
+                                      ? 'bg-green-600 text-white'
+                                      : 'bg-gray-200 text-gray-700'
+                              }`}
+                            >
+                              {generationProgress.currentFile.type === 'javascript'
+                                ? 'JSX'
+                                : generationProgress.currentFile.type.toUpperCase()}
                             </span>
                           </div>
                         </div>
                         <div className="bg-gray-900 border border-gray-700 rounded">
                           <SyntaxHighlighter
                             language={
-                              generationProgress.currentFile.type === 'css' ? 'css' :
-                              generationProgress.currentFile.type === 'json' ? 'json' :
-                              generationProgress.currentFile.type === 'html' ? 'html' :
-                              'jsx'
+                              generationProgress.currentFile.type === 'css'
+                                ? 'css'
+                                : generationProgress.currentFile.type === 'json'
+                                  ? 'json'
+                                  : generationProgress.currentFile.type === 'html'
+                                    ? 'html'
+                                    : 'jsx'
                             }
                             style={vscDarkPlus}
                             customStyle={{
@@ -1567,31 +1695,42 @@ Tip: I automatically detect and install npm packages from your code imports (lik
                         </div>
                       </div>
                     )}
-                    
+
                     {/* Show completed files */}
                     {generationProgress.files.map((file, idx) => (
-                      <div key={idx} className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+                      <div
+                        key={idx}
+                        className="bg-white border border-gray-200 rounded-lg overflow-hidden"
+                      >
                         <div className="px-4 py-2 bg-[#36322F] text-white flex items-center justify-between">
                           <div className="flex items-center gap-2">
                             <span className="text-green-500">✓</span>
                             <span className="font-mono text-sm">{file.path}</span>
                           </div>
-                          <span className={`px-2 py-0.5 text-xs rounded ${
-                            file.type === 'css' ? 'bg-blue-600 text-white' :
-                            file.type === 'javascript' ? 'bg-yellow-600 text-white' :
-                            file.type === 'json' ? 'bg-green-600 text-white' :
-                            'bg-gray-200 text-gray-700'
-                          }`}>
+                          <span
+                            className={`px-2 py-0.5 text-xs rounded ${
+                              file.type === 'css'
+                                ? 'bg-blue-600 text-white'
+                                : file.type === 'javascript'
+                                  ? 'bg-yellow-600 text-white'
+                                  : file.type === 'json'
+                                    ? 'bg-green-600 text-white'
+                                    : 'bg-gray-200 text-gray-700'
+                            }`}
+                          >
                             {file.type === 'javascript' ? 'JSX' : file.type.toUpperCase()}
                           </span>
                         </div>
                         <div className="bg-gray-900 border border-gray-700  max-h-48 overflow-y-auto scrollbar-hide">
                           <SyntaxHighlighter
                             language={
-                              file.type === 'css' ? 'css' :
-                              file.type === 'json' ? 'json' :
-                              file.type === 'html' ? 'html' :
-                              'jsx'
+                              file.type === 'css'
+                                ? 'css'
+                                : file.type === 'json'
+                                  ? 'json'
+                                  : file.type === 'html'
+                                    ? 'html'
+                                    : 'jsx'
                             }
                             style={vscDarkPlus}
                             customStyle={{
@@ -1608,59 +1747,65 @@ Tip: I automatically detect and install npm packages from your code imports (lik
                         </div>
                       </div>
                     ))}
-                    
+
                     {/* Show remaining raw stream if there's content after the last file */}
-                    {!generationProgress.currentFile && generationProgress.streamedCode.length > 0 && (
-                      <div className="bg-black border border-gray-200 rounded-lg overflow-hidden">
-                        <div className="px-4 py-2 bg-[#36322F] text-white flex items-center justify-between">
-                          <div className="flex items-center gap-2">
-                            <div className="w-16 h-16 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
-                            <span className="font-mono text-sm">Processing...</span>
+                    {!generationProgress.currentFile &&
+                      generationProgress.streamedCode.length > 0 && (
+                        <div className="bg-black border border-gray-200 rounded-lg overflow-hidden">
+                          <div className="px-4 py-2 bg-[#36322F] text-white flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <div className="w-16 h-16 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
+                              <span className="font-mono text-sm">Processing...</span>
+                            </div>
+                          </div>
+                          <div className="bg-gray-900 border border-gray-700 rounded">
+                            <SyntaxHighlighter
+                              language="jsx"
+                              style={vscDarkPlus}
+                              customStyle={{
+                                margin: 0,
+                                padding: '1rem',
+                                fontSize: '0.75rem',
+                                background: 'transparent',
+                              }}
+                              showLineNumbers={false}
+                            >
+                              {(() => {
+                                // Show only the tail of the stream after the last file
+                                const lastFileEnd =
+                                  generationProgress.files.length > 0
+                                    ? generationProgress.streamedCode.lastIndexOf('</file>') + 7
+                                    : 0;
+                                let remainingContent = generationProgress.streamedCode
+                                  .slice(lastFileEnd)
+                                  .trim();
+
+                                // Remove explanation tags and content
+                                remainingContent = remainingContent
+                                  .replace(/<explanation>[\s\S]*?<\/explanation>/g, '')
+                                  .trim();
+
+                                // If only whitespace or nothing left, show loading message
+                                // Use "Loading sandbox..." instead of "Waiting for next file..." for better UX
+                                return remainingContent || 'Loading sandbox...';
+                              })()}
+                            </SyntaxHighlighter>
                           </div>
                         </div>
-                        <div className="bg-gray-900 border border-gray-700 rounded">
-                          <SyntaxHighlighter
-                            language="jsx"
-                            style={vscDarkPlus}
-                            customStyle={{
-                              margin: 0,
-                              padding: '1rem',
-                              fontSize: '0.75rem',
-                              background: 'transparent',
-                            }}
-                            showLineNumbers={false}
-                          >
-                            {(() => {
-                              // Show only the tail of the stream after the last file
-                              const lastFileEnd = generationProgress.files.length > 0 
-                                ? generationProgress.streamedCode.lastIndexOf('</file>') + 7
-                                : 0;
-                              let remainingContent = generationProgress.streamedCode.slice(lastFileEnd).trim();
-                              
-                              // Remove explanation tags and content
-                              remainingContent = remainingContent.replace(/<explanation>[\s\S]*?<\/explanation>/g, '').trim();
-
-                              // If only whitespace or nothing left, show loading message
-                              // Use "Loading sandbox..." instead of "Waiting for next file..." for better UX
-                              return remainingContent || 'Loading sandbox...';
-                            })()}
-                          </SyntaxHighlighter>
-                        </div>
-                      </div>
-                    )}
+                      )}
                   </div>
                 )}
               </div>
             </div>
-            
+
             {/* Progress indicator */}
             {generationProgress.components.length > 0 && (
               <div className="mx-6 mb-6">
                 <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
-                  <div 
+                  <div
                     className="h-full bg-gradient-to-r from-orange-500 to-orange-400 transition-all duration-300"
                     style={{
-                      width: `${(generationProgress.currentComponent / Math.max(generationProgress.components.length, 1)) * 100}%`
+                      width: `${(generationProgress.currentComponent / Math.max(generationProgress.components.length, 1)) * 100}%`,
                     }}
                   />
                 </div>
@@ -1671,30 +1816,38 @@ Tip: I automatically detect and install npm packages from your code imports (lik
       );
     } else if (activeTab === 'preview') {
       // Show loading state for initial generation or when starting a new generation with existing sandbox
-      const isInitialGeneration = !sandboxData?.url && (urlScreenshot || isCapturingScreenshot || isPreparingDesign || loadingStage);
+      const isInitialGeneration =
+        !sandboxData?.url &&
+        (urlScreenshot || isCapturingScreenshot || isPreparingDesign || loadingStage);
       const isNewGenerationWithSandbox = isStartingNewGeneration && sandboxData?.url;
-      const shouldShowLoadingOverlay = (isInitialGeneration || isNewGenerationWithSandbox) && 
-        (loading || generationProgress.isGenerating || isPreparingDesign || loadingStage || isCapturingScreenshot || isStartingNewGeneration);
-      
+      const shouldShowLoadingOverlay =
+        (isInitialGeneration || isNewGenerationWithSandbox) &&
+        (loading ||
+          generationProgress.isGenerating ||
+          isPreparingDesign ||
+          loadingStage ||
+          isCapturingScreenshot ||
+          isStartingNewGeneration);
+
       if (isInitialGeneration || isNewGenerationWithSandbox) {
         return (
           <div className="relative w-full h-full bg-gray-900">
             {/* Screenshot as background when available */}
             {urlScreenshot && (
               /* eslint-disable-next-line @next/next/no-img-element */
-              <img 
-                src={urlScreenshot} 
-                alt="Website preview" 
+              <img
+                src={urlScreenshot}
+                alt="Website preview"
                 className="absolute inset-0 w-full h-full object-cover transition-opacity duration-700"
-                style={{ 
+                style={{
                   opacity: isScreenshotLoaded ? 1 : 0,
-                  willChange: 'opacity'
+                  willChange: 'opacity',
                 }}
                 onLoad={() => setIsScreenshotLoaded(true)}
                 loading="eager"
               />
             )}
-            
+
             {/* Loading overlay - only show when actively processing initial generation */}
             {shouldShowLoadingOverlay && (
               <div className="absolute inset-0 bg-black/70 flex flex-col items-center justify-center backdrop-blur-sm">
@@ -1702,28 +1855,40 @@ Tip: I automatically detect and install npm packages from your code imports (lik
                 <div className="text-center max-w-md">
                   {/* Animated skeleton lines */}
                   <div className="mb-6 space-y-3">
-                    <div className="h-2 bg-gradient-to-r from-transparent via-white/20 to-transparent rounded animate-pulse" 
-                         style={{ animationDuration: '1.5s', animationDelay: '0s' }} />
-                    <div className="h-2 bg-gradient-to-r from-transparent via-white/20 to-transparent rounded animate-pulse w-4/5 mx-auto" 
-                         style={{ animationDuration: '1.5s', animationDelay: '0.2s' }} />
-                    <div className="h-2 bg-gradient-to-r from-transparent via-white/20 to-transparent rounded animate-pulse w-3/5 mx-auto" 
-                         style={{ animationDuration: '1.5s', animationDelay: '0.4s' }} />
+                    <div
+                      className="h-2 bg-gradient-to-r from-transparent via-white/20 to-transparent rounded animate-pulse"
+                      style={{ animationDuration: '1.5s', animationDelay: '0s' }}
+                    />
+                    <div
+                      className="h-2 bg-gradient-to-r from-transparent via-white/20 to-transparent rounded animate-pulse w-4/5 mx-auto"
+                      style={{ animationDuration: '1.5s', animationDelay: '0.2s' }}
+                    />
+                    <div
+                      className="h-2 bg-gradient-to-r from-transparent via-white/20 to-transparent rounded animate-pulse w-3/5 mx-auto"
+                      style={{ animationDuration: '1.5s', animationDelay: '0.4s' }}
+                    />
                   </div>
-                  
+
                   {/* Status text */}
                   <p className="text-white text-lg font-medium">
-                    {isCapturingScreenshot ? 'Analyzing website...' :
-                     isPreparingDesign ? 'Preparing design...' :
-                     generationProgress.isGenerating ? 'Generating code...' :
-                     'Loading...'}
+                    {isCapturingScreenshot
+                      ? 'Analyzing website...'
+                      : isPreparingDesign
+                        ? 'Preparing design...'
+                        : generationProgress.isGenerating
+                          ? 'Generating code...'
+                          : 'Loading...'}
                   </p>
-                  
+
                   {/* Subtle progress hint */}
                   <p className="text-white/60 text-sm mt-2">
-                    {isCapturingScreenshot ? 'Taking a screenshot of the site' :
-                     isPreparingDesign ? 'Understanding the layout and structure' :
-                     generationProgress.isGenerating ? 'Writing React components' :
-                     'Please wait...'}
+                    {isCapturingScreenshot
+                      ? 'Taking a screenshot of the site'
+                      : isPreparingDesign
+                        ? 'Understanding the layout and structure'
+                        : generationProgress.isGenerating
+                          ? 'Writing React components'
+                          : 'Please wait...'}
                   </p>
                 </div>
               </div>
@@ -1731,7 +1896,7 @@ Tip: I automatically detect and install npm packages from your code imports (lik
           </div>
         );
       }
-      
+
       // Show sandbox iframe - keep showing during edits, only hide during initial loading
       if (sandboxData?.url) {
         return (
@@ -1744,7 +1909,7 @@ Tip: I automatically detect and install npm packages from your code imports (lik
               allow="clipboard-write"
               sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
             />
-            
+
             {/* Package installation overlay - shows when installing packages or applying code */}
             {codeApplicationState.stage && codeApplicationState.stage !== 'complete' && (
               <div className="absolute inset-0 bg-white/95 backdrop-blur-sm flex items-center justify-center z-10">
@@ -1754,25 +1919,36 @@ Tip: I automatically detect and install npm packages from your code imports (lik
                     {codeApplicationState.stage === 'installing' ? (
                       <div className="w-16 h-16 mx-auto">
                         <svg className="w-full h-full animate-spin" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                          <circle
+                            className="opacity-25"
+                            cx="12"
+                            cy="12"
+                            r="10"
+                            stroke="currentColor"
+                            strokeWidth="4"
+                          ></circle>
+                          <path
+                            className="opacity-75"
+                            fill="currentColor"
+                            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                          ></path>
                         </svg>
                       </div>
                     ) : null}
                   </div>
-                  
+
                   <h3 className="text-lg font-semibold text-gray-900 mb-2">
                     {codeApplicationState.stage === 'analyzing' && 'Analyzing code...'}
                     {codeApplicationState.stage === 'installing' && 'Installing packages...'}
                     {codeApplicationState.stage === 'applying' && 'Applying changes...'}
                   </h3>
-                  
+
                   {/* Package list during installation */}
                   {codeApplicationState.stage === 'installing' && codeApplicationState.packages && (
                     <div className="mb-4">
                       <div className="flex flex-wrap gap-2 justify-center">
                         {codeApplicationState.packages.map((pkg, index) => (
-                          <span 
+                          <span
                             key={index}
                             className={`px-2 py-1 text-xs rounded-full transition-all ${
                               codeApplicationState.installedPackages?.includes(pkg)
@@ -1789,31 +1965,37 @@ Tip: I automatically detect and install npm packages from your code imports (lik
                       </div>
                     </div>
                   )}
-                  
+
                   {/* Files being generated */}
-                  {codeApplicationState.stage === 'applying' && codeApplicationState.filesGenerated && (
-                    <div className="text-sm text-gray-600">
-                      Creating {codeApplicationState.filesGenerated.length} files...
-                    </div>
-                  )}
-                  
+                  {codeApplicationState.stage === 'applying' &&
+                    codeApplicationState.filesGenerated && (
+                      <div className="text-sm text-gray-600">
+                        Creating {codeApplicationState.filesGenerated.length} files...
+                      </div>
+                    )}
+
                   <p className="text-sm text-gray-500 mt-2">
-                    {codeApplicationState.stage === 'analyzing' && 'Parsing generated code and detecting dependencies...'}
-                    {codeApplicationState.stage === 'installing' && 'This may take a moment while npm installs the required packages...'}
-                    {codeApplicationState.stage === 'applying' && 'Writing files to your sandbox environment...'}
+                    {codeApplicationState.stage === 'analyzing' &&
+                      'Parsing generated code and detecting dependencies...'}
+                    {codeApplicationState.stage === 'installing' &&
+                      'This may take a moment while npm installs the required packages...'}
+                    {codeApplicationState.stage === 'applying' &&
+                      'Writing files to your sandbox environment...'}
                   </p>
                 </div>
               </div>
             )}
-            
+
             {/* Show a subtle indicator when code is being edited/generated */}
-            {generationProgress.isGenerating && generationProgress.isEdit && !codeApplicationState.stage && (
-              <div className="absolute top-4 right-4 inline-flex items-center gap-2 px-3 py-1.5 bg-black/80 backdrop-blur-sm rounded-lg">
-                <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
-                <span className="text-white text-xs font-medium">Generating code...</span>
-              </div>
-            )}
-            
+            {generationProgress.isGenerating &&
+              generationProgress.isEdit &&
+              !codeApplicationState.stage && (
+                <div className="absolute top-4 right-4 inline-flex items-center gap-2 px-3 py-1.5 bg-black/80 backdrop-blur-sm rounded-lg">
+                  <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
+                  <span className="text-white text-xs font-medium">Generating code...</span>
+                </div>
+              )}
+
             {/* Refresh button */}
             <button
               onClick={() => {
@@ -1827,13 +2009,18 @@ Tip: I automatically detect and install npm packages from your code imports (lik
               title="Refresh sandbox"
             >
               <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                />
               </svg>
             </button>
           </div>
         );
       }
-      
+
       // Default state when no sandbox and no screenshot
       return (
         <div className="flex items-center justify-center h-full bg-gray-50 text-gray-600 text-lg">
@@ -1858,29 +2045,39 @@ Tip: I automatically detect and install npm packages from your code imports (lik
     return null;
   };
 
-  const sendChatMessage = async (override?: string, options?: { mode?: ChatMode; source?: MessageSource; silent?: boolean }) => {
+  const sendChatMessage = async (
+    override?: string,
+    options?: { mode?: ChatMode; source?: MessageSource; silent?: boolean },
+  ) => {
     const message = (typeof override === 'string' ? override : aiChatInput).trim();
     const mode = options?.mode || sendModeRef.current;
     if (options?.mode) sendModeRef.current = options.mode;
     if (!message) return;
-    
+
     if (!aiEnabled) {
       addChatMessage('AI is disabled. Please enable it first.', 'system');
       return;
     }
-    
+
     const source = options?.source && options.source !== 'chat' ? options.source : undefined;
     if (!options?.silent) {
       addChatMessage(message, 'user', source ? { source } : undefined);
     }
     setAiChatInput('');
-    
+
     // Check for special commands
     const lowerMessage = message.toLowerCase().trim();
-    if (lowerMessage === 'check packages' || lowerMessage === 'install packages' || lowerMessage === 'npm install') {
+    if (
+      lowerMessage === 'check packages' ||
+      lowerMessage === 'install packages' ||
+      lowerMessage === 'npm install'
+    ) {
       if (!sandboxData) {
         // More helpful message - user might be trying to run this too early
-        addChatMessage('The sandbox is still being set up. Please wait for the generation to complete, then try again.', 'system');
+        addChatMessage(
+          'The sandbox is still being set up. Please wait for the generation to complete, then try again.',
+          'system',
+        );
         return;
       }
       await checkAndInstallPackages();
@@ -1910,11 +2107,11 @@ Tip: I automatically detect and install npm packages from your code imports (lik
       }
       return;
     }
-    
+
     // Start sandbox creation in parallel if needed
     let sandboxPromise: Promise<void> | null = null;
     let sandboxCreating = false;
-    
+
     if (!sandboxData && shouldRequestSandbox('generate')) {
       sandboxCreating = true;
       addChatMessage('Creating sandbox while I plan your app...', 'system');
@@ -1923,14 +2120,14 @@ Tip: I automatically detect and install npm packages from your code imports (lik
         throw error;
       });
     }
-    
+
     // Determine if this is an edit
     const isEdit = conversationContext.appliedCode.length > 0;
-    
+
     try {
       // Generation tab is already active from scraping phase
-      setGenerationProgress(prev => ({
-        ...prev,  // Preserve all existing state
+      setGenerationProgress((prev) => ({
+        ...prev, // Preserve all existing state
         isGenerating: true,
         status: 'Starting AI generation...',
         components: [],
@@ -1945,12 +2142,12 @@ Tip: I automatically detect and install npm packages from your code imports (lik
         // Add isEdit flag to generation progress
         isEdit: isEdit,
         // Keep existing files for edits - we'll mark edited ones differently
-        files: prev.files
+        files: prev.files,
       }));
-      
+
       // Backend now manages file state - no need to fetch from frontend
       console.log('[chat] Using backend file cache for context');
-      
+
       const fullContext = {
         sandboxId: sandboxData?.sandboxId || (sandboxCreating ? 'pending' : null),
         structure: structureContent,
@@ -1958,14 +2155,14 @@ Tip: I automatically detect and install npm packages from your code imports (lik
         conversationContext: conversationContext,
         currentCode: promptInput,
         sandboxUrl: sandboxData?.url,
-        sandboxCreating: sandboxCreating
+        sandboxCreating: sandboxCreating,
       };
-      
+
       // Debug what we're sending
       console.log('[chat] Sending context to AI:');
       console.log('[chat] - sandboxId:', fullContext.sandboxId);
       console.log('[chat] - isEdit:', conversationContext.appliedCode.length > 0);
-      
+
       const streamResult = await startGenerationStream({
         prompt: message,
         model: aiModel,
@@ -1977,7 +2174,7 @@ Tip: I automatically detect and install npm packages from your code imports (lik
       });
       const generatedCode = streamResult.generatedCode;
       const explanation = streamResult.explanation;
-      
+
       if (generatedCode) {
         // Parse files from generated code for metadata
         const fileRegex = /<file path="([^"]+)">([^]*?)<\/file>/g;
@@ -1986,19 +2183,15 @@ Tip: I automatically detect and install npm packages from your code imports (lik
         while ((match = fileRegex.exec(generatedCode)) !== null) {
           generatedFiles.push(match[1]);
         }
-        
+
         // Show appropriate message based on edit mode
         if (isEdit && generatedFiles.length > 0) {
           // For edits, show which file(s) were edited
-          const editedFileNames = generatedFiles.map(f => f.split('/').pop()).join(', ');
-          addChatMessage(
-            explanation || `Updated ${editedFileNames}`,
-            'ai',
-            {
-              appliedFiles: [generatedFiles[0]], // Only show the first edited file
-              skillNames: streamResult.skillNames,
-            }
-          );
+          const editedFileNames = generatedFiles.map((f) => f.split('/').pop()).join(', ');
+          addChatMessage(explanation || `Updated ${editedFileNames}`, 'ai', {
+            appliedFiles: [generatedFiles[0]], // Only show the first edited file
+            skillNames: streamResult.skillNames,
+          });
         } else {
           // For new generation, show all files
           addChatMessage(explanation || 'Code generated!', 'ai', {
@@ -2006,11 +2199,11 @@ Tip: I automatically detect and install npm packages from your code imports (lik
             skillNames: streamResult.skillNames,
           });
         }
-        
+
         setPromptInput(generatedCode);
         // Don't show the Generated Code panel by default
         // setLeftPanelVisible(true);
-        
+
         // Wait for sandbox creation if it's still in progress
         let activeSandboxData = sandboxData;
         if (sandboxPromise) {
@@ -2023,31 +2216,41 @@ Tip: I automatically detect and install npm packages from your code imports (lik
               setSandboxData(newSandboxData);
             }
             // Remove the waiting message
-            setChatMessages(prev => prev.filter(msg => msg.content !== 'Waiting for sandbox to be ready...'));
+            setChatMessages((prev) =>
+              prev.filter((msg) => msg.content !== 'Waiting for sandbox to be ready...'),
+            );
           } catch (sandboxError: unknown) {
             const sandboxMessage =
-              sandboxError instanceof Error ? sandboxError.message : 'Sandbox creation failed. Cannot apply code.';
+              sandboxError instanceof Error
+                ? sandboxError.message
+                : 'Sandbox creation failed. Cannot apply code.';
             addChatMessage(sandboxMessage, 'system');
             markError(sandboxMessage);
             return;
           }
         }
-        
+
         if (activeSandboxData && generatedCode) {
           // For new sandbox creations, add a delay to ensure Vite is ready
           if (sandboxCreating) {
-            console.log('[startGeneration] New sandbox created, waiting for services to be ready...');
-            await new Promise(resolve => setTimeout(resolve, 2000));
+            console.log(
+              '[startGeneration] New sandbox created, waiting for services to be ready...',
+            );
+            await new Promise((resolve) => setTimeout(resolve, 2000));
           }
-          
+
           // Use isEdit flag that was determined at the start
           // Pass the sandbox data from the promise if it's different from the state
-          await applyGeneratedCode(generatedCode, isEdit, activeSandboxData !== sandboxData ? activeSandboxData : undefined);
+          await applyGeneratedCode(
+            generatedCode,
+            isEdit,
+            activeSandboxData !== sandboxData ? activeSandboxData : undefined,
+          );
         }
       }
-      
+
       // Show completion status briefly then switch to preview
-      setGenerationProgress(prev => ({
+      setGenerationProgress((prev) => ({
         ...prev,
         isGenerating: false,
         isStreaming: false,
@@ -2056,16 +2259,16 @@ Tip: I automatically detect and install npm packages from your code imports (lik
         // Clear thinking state on completion
         isThinking: false,
         thinkingText: undefined,
-        thinkingDuration: undefined
+        thinkingDuration: undefined,
       }));
-      
+
       setTimeout(() => {
         // Switch to preview but keep files for display
         setActiveTab('preview');
       }, 1000); // Reduced from 3000ms to 1000ms
     } catch (error: any) {
       if (error?.name === 'AbortError') return;
-      setChatMessages(prev => prev.filter(msg => msg.content !== 'Thinking...'));
+      setChatMessages((prev) => prev.filter((msg) => msg.content !== 'Thinking...'));
       addChatMessage(`Error: ${error.message}`, 'system');
       markError(error.message);
       setActiveTab('preview');
@@ -2088,29 +2291,28 @@ Tip: I automatically detect and install npm packages from your code imports (lik
     return () => clearTimeout(timer);
   }, [initialPhase, projectId]);
 
-
   const downloadZip = async () => {
     if (!sandboxData) {
       addChatMessage('Please wait for the sandbox to be created before downloading.', 'system');
       return;
     }
-    
+
     setLoading(true);
     log('Creating zip file...');
     addChatMessage('Creating ZIP file of your Vite app...', 'system');
-    
+
     try {
       const response = await fetch('/api/create-zip', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+        headers: { 'Content-Type': 'application/json' },
       });
-      
+
       const data = await response.json();
-      
+
       if (data.success) {
         log('Zip file created!');
         addChatMessage('ZIP file created! Download starting...', 'system');
-        
+
         const link = document.createElement('a');
         link.href = data.dataUrl;
         link.download = data.fileName || 'e2b-project.zip';
@@ -2124,11 +2326,11 @@ Tip: I automatically detect and install npm packages from your code imports (lik
 
         addChatMessage(
           'Your Vite app has been downloaded! To run it locally:\n' +
-          '1. Unzip the file\n' +
-          '2. Run: npm install\n' +
-          '3. Run: npm run dev\n' +
-          '4. Open http://localhost:5173',
-          'system'
+            '1. Unzip the file\n' +
+            '2. Run: npm install\n' +
+            '3. Run: npm run dev\n' +
+            '4. Open http://localhost:5173',
+          'system',
         );
       } else {
         throw new Error(data.error);
@@ -2147,12 +2349,12 @@ Tip: I automatically detect and install npm packages from your code imports (lik
       addChatMessage('No previous generation to re-apply', 'system');
       return;
     }
-    
+
     if (!sandboxData) {
       addChatMessage('Please create a sandbox first', 'system');
       return;
     }
-    
+
     addChatMessage('Re-applying last generation...', 'system');
     const isEdit = conversationContext.appliedCode.length > 0;
     await applyGeneratedCode(conversationContext.lastGeneratedCode, isEdit);
@@ -2182,7 +2384,7 @@ Tip: I automatically detect and install npm packages from your code imports (lik
 
   const getFileIcon = (fileName: string) => {
     const ext = fileName.split('.').pop()?.toLowerCase();
-    
+
     if (ext === 'jsx' || ext === 'js') {
       return <SiJavascript style={{ width: '16px', height: '16px' }} className="text-yellow-500" />;
     } else if (ext === 'tsx' || ext === 'ts') {
@@ -2196,346 +2398,346 @@ Tip: I automatically detect and install npm packages from your code imports (lik
     }
   };
 
-//   const clearChatHistory = () => {
-//     setChatMessages([{
-//       content: 'Chat history cleared. How can I help you?',
-//       type: 'system',
-//       timestamp: new Date()
-//     }]);
-//   };
-// 
+  //   const clearChatHistory = () => {
+  //     setChatMessages([{
+  //       content: 'Chat history cleared. How can I help you?',
+  //       type: 'system',
+  //       timestamp: new Date()
+  //     }]);
+  //   };
+  //
 
-//   const cloneWebsite = async () => {
-//     let url = urlInput.trim();
-//     if (!url) {
-//       setUrlStatus(prev => [...prev, 'Please enter a URL']);
-//       return;
-//     }
-//     
-//     if (!url.match(/^https?:\/\//i)) {
-//       url = 'https://' + url;
-//     }
-//     
-//     setUrlStatus([`Using: ${url}`, 'Starting to scrape...']);
-//     
-//     setUrlOverlayVisible(false);
-//     
-//     // Remove protocol for cleaner display
-//     const cleanUrl = url.replace(/^https?:\/\//i, '');
-//     addChatMessage(`Starting to clone ${cleanUrl}...`, 'system');
-//     
-//     // Capture screenshot immediately and switch to preview tab
-//     captureUrlScreenshot(url);
-//     
-//     try {
-//       addChatMessage('Scraping website content...', 'system');
-//       const scrapeResponse = await fetch('/api/scrape-url-enhanced', {
-//         method: 'POST',
-//         headers: { 'Content-Type': 'application/json' },
-//         body: JSON.stringify({ url })
-//       });
-//       
-//       if (!scrapeResponse.ok) {
-//         throw new Error(`Scraping failed: ${scrapeResponse.status}`);
-//       }
-//       
-//       const scrapeData = await scrapeResponse.json();
-//       
-//       if (!scrapeData.success) {
-//         throw new Error(scrapeData.error || 'Failed to scrape website');
-//       }
-//       
-//       addChatMessage(`Scraped ${scrapeData.content.length} characters from ${url}`, 'system');
-//       
-//       // Clear preparing design state and switch to generation tab
-//       setIsPreparingDesign(false);
-//       setActiveTab('generation');
-//       
-//       setConversationContext(prev => ({
-//         ...prev,
-//         scrapedWebsites: [...prev.scrapedWebsites, {
-//           url,
-//           content: scrapeData,
-//           timestamp: new Date()
-//         }],
-//         currentProject: `Clone of ${url}`
-//       }));
-//       
-//       // Start sandbox creation in parallel with code generation
-//       let sandboxPromise: Promise<any> | null = null;
-//       if (!sandboxData) {
-//         addChatMessage('Creating sandbox while generating your React app...', 'system');
-//         sandboxPromise = createSandbox(true);
-//       }
-//       
-//       addChatMessage('Analyzing and generating React recreation...', 'system');
-//       
-//       const recreatePrompt = `I scraped this website and want you to recreate it as a modern React application.
-// 
-// URL: ${url}
-// 
-// SCRAPED CONTENT:
-// ${scrapeData.content}
-// 
-// ${homeContextInput ? `ADDITIONAL CONTEXT/REQUIREMENTS FROM USER:
-// ${homeContextInput}
-// 
-// Please incorporate these requirements into the design and implementation.` : ''}
-// 
-// REQUIREMENTS:
-// 1. Create a COMPLETE React application with App.jsx as the main component
-// 2. App.jsx MUST import and render all other components
-// 3. Recreate the main sections and layout from the scraped content
-// 4. ${homeContextInput ? `Apply the user's context/theme: "${homeContextInput}"` : `Use a modern dark theme with excellent contrast:
-//    - Background: #0a0a0a
-//    - Text: #ffffff
-//    - Links: #60a5fa
-//    - Accent: #3b82f6`}
-// 5. Make it fully responsive
-// 6. Include hover effects and smooth transitions
-// 7. Create separate components for major sections (Header, Hero, Features, etc.)
-// 8. Use semantic HTML5 elements
-// 
-// IMPORTANT CONSTRAINTS:
-// - DO NOT use React Router or any routing libraries
-// - Use regular <a> tags with href="#section" for navigation, NOT Link or NavLink components
-// - This is a single-page application, no routing needed
-// - ALWAYS create src/App.jsx that imports ALL components
-// - Each component should be in src/components/
-// - Use Tailwind CSS for ALL styling (no custom CSS files)
-// - Make sure the app actually renders visible content
-// - Create ALL components that you reference in imports
-// 
-// IMAGE HANDLING RULES:
-// - When the scraped content includes images, USE THE ORIGINAL IMAGE URLS whenever appropriate
-// - Keep existing images from the scraped site (logos, product images, hero images, icons, etc.)
-// - Use the actual image URLs provided in the scraped content, not placeholders
-// - Only use placeholder images or generic services when no real images are available
-// - For company logos and brand images, ALWAYS use the original URLs to maintain brand identity
-// - If scraped data contains image URLs, include them in your img tags
-// - Example: If you see "https://example.com/logo.png" in the scraped content, use that exact URL
-// 
-// Focus on the key sections and content, making it clean and modern while preserving visual assets.`;
-//       
-//       setGenerationProgress(prev => ({
-//         isGenerating: true,
-//         status: 'Initializing AI...',
-//         components: [],
-//         currentComponent: 0,
-//         streamedCode: '',
-//         isStreaming: true,
-//         isThinking: false,
-//         thinkingText: undefined,
-//         thinkingDuration: undefined,
-//         // Keep previous files until new ones are generated
-//         files: prev.files || [],
-//         currentFile: undefined,
-//         lastProcessedPosition: 0
-//       }));
-//       
-//       // Switch to generation tab when starting
-//       setActiveTab('generation');
-//       
-//       const aiResponse = await fetch('/api/generate-ai-code-stream', {
-//         method: 'POST',
-//         headers: { 'Content-Type': 'application/json' },
-//         body: JSON.stringify({
-//           prompt: recreatePrompt,
-//           model: aiModel,
-//           context: {
-//             sandboxId: sandboxData?.id,
-//             structure: structureContent,
-//             conversationContext: conversationContext
-//           }
-//         })
-//       });
-//       
-//       if (!aiResponse.ok) {
-//         throw new Error(`AI generation failed: ${aiResponse.status}`);
-//       }
-//       
-//       const reader = aiResponse.body?.getReader();
-//       const decoder = new TextDecoder();
-//       let generatedCode = '';
-//       let explanation = '';
-//       
-//       if (reader) {
-//         while (true) {
-//           const { done, value } = await reader.read();
-//           if (done) break;
-//           
-//           const chunk = decoder.decode(value);
-//           const lines = chunk.split('\n');
-//           
-//           for (const line of lines) {
-//             if (line.startsWith('data: ')) {
-//               try {
-//                 const data = JSON.parse(line.slice(6));
-//                 
-//                 if (data.type === 'status') {
-//                   setGenerationProgress(prev => ({ ...prev, status: data.message }));
-//                 } else if (data.type === 'thinking') {
-//                   setGenerationProgress(prev => ({ 
-//                     ...prev, 
-//                     isThinking: true,
-//                     thinkingText: (prev.thinkingText || '') + data.text
-//                   }));
-//                 } else if (data.type === 'thinking_complete') {
-//                   setGenerationProgress(prev => ({ 
-//                     ...prev, 
-//                     isThinking: false,
-//                     thinkingDuration: data.duration
-//                   }));
-//                 } else if (data.type === 'conversation') {
-//                   // Add conversational text to chat only if it's not code
-//                   let text = data.text || '';
-//                   
-//                   // Remove package tags from the text
-//                   text = text.replace(/<package>[^<]*<\/package>/g, '');
-//                   text = text.replace(/<packages>[^<]*<\/packages>/g, '');
-//                   
-//                   // Filter out any XML tags and file content that slipped through
-//                   if (!text.includes('<file') && !text.includes('import React') && 
-//                       !text.includes('export default') && !text.includes('className=') &&
-//                       text.trim().length > 0) {
-//                     addChatMessage(text.trim(), 'ai');
-//                   }
-//                 } else if (data.type === 'stream' && data.raw) {
-//                   setGenerationProgress(prev => ({ 
-//                     ...prev, 
-//                     streamedCode: prev.streamedCode + data.text,
-//                     lastProcessedPosition: prev.lastProcessedPosition || 0
-//                   }));
-//                 } else if (data.type === 'component') {
-//                   setGenerationProgress(prev => ({
-//                     ...prev,
-//                     status: `Generated ${data.name}`,
-//                     components: [...prev.components, { 
-//                       name: data.name,
-//                       path: data.path,
-//                       completed: true
-//                     }],
-//                     currentComponent: prev.currentComponent + 1
-//                   }));
-//                 } else if (data.type === 'complete') {
-//                   generatedCode = data.generatedCode;
-//                   explanation = data.explanation;
-//                   
-//                   // Save the last generated code
-//                   setConversationContext(prev => ({
-//                     ...prev,
-//                     lastGeneratedCode: generatedCode
-//                   }));
-//                 }
-//               } catch (e) {
-//                 console.error('Error parsing streaming data:', e);
-//               }
-//             }
-//           }
-//         }
-//       }
-//       
-//       setGenerationProgress(prev => ({
-//         ...prev,
-//         isGenerating: false,
-//         isStreaming: false,
-//         status: 'Generation complete!',
-//         isEdit: prev.isEdit
-//       }));
-//       
-//       if (generatedCode) {
-//         addChatMessage('AI recreation generated!', 'system');
-//         
-//         // Add the explanation to chat if available
-//         if (explanation && explanation.trim()) {
-//           addChatMessage(explanation, 'ai');
-//         }
-//         
-//         setPromptInput(generatedCode);
-//         // Don't show the Generated Code panel by default
-//         // setLeftPanelVisible(true);
-//         
-//         // Wait for sandbox creation if it's still in progress
-//         let activeSandboxData = sandboxData;
-//         if (sandboxPromise) {
-//           addChatMessage('Waiting for sandbox to be ready...', 'system');
-//           try {
-//             const newSandboxData = await sandboxPromise;
-//             if (newSandboxData) {
-//               activeSandboxData = newSandboxData;
-//             }
-//             // Remove the waiting message
-//             setChatMessages(prev => prev.filter(msg => msg.content !== 'Waiting for sandbox to be ready...'));
-//           } catch (error: any) {
-//             addChatMessage('Sandbox creation failed. Cannot apply code.', 'system');
-//             throw error;
-//           }
-//         }
-//         
-//         // Only apply code if we have sandbox data
-//         if (activeSandboxData) {
-//           // First application for cloned site should not be in edit mode
-//           await applyGeneratedCode(generatedCode, false);
-//         }
-//         
-//         addChatMessage(
-//           `Successfully recreated ${url} as a modern React app${homeContextInput ? ` with your requested context: "${homeContextInput}"` : ''}! The scraped content is now in my context, so you can ask me to modify specific sections or add features based on the original site.`, 
-//           'ai',
-//           {
-//             scrapedUrl: url,
-//             scrapedContent: scrapeData,
-//             generatedCode: generatedCode
-//           }
-//         );
-//         
-//         setUrlInput('');
-//         setUrlStatus([]);
-//         setHomeContextInput('');
-//         
-//         // Clear generation progress and all screenshot/design states
-//         setGenerationProgress(prev => ({
-//           ...prev,
-//           isGenerating: false,
-//           isStreaming: false,
-//           status: 'Generation complete!'
-//         }));
-//         
-//         // Clear screenshot and preparing design states to prevent them from showing on next run
-//         setUrlScreenshot(null);
-//         setIsPreparingDesign(false);
-//         setTargetUrl('');
-//         setScreenshotError(null);
-//         setLoadingStage(null); // Clear loading stage
-//         setShowLoadingBackground(false); // Clear loading background
-//         
-//         setTimeout(() => {
-//           // Switch back to preview tab but keep files
-//           setActiveTab('preview');
-//         }, 1000); // Show completion briefly then switch
-//       } else {
-//         throw new Error('Failed to generate recreation');
-//       }
-//       
-//     } catch (error: any) {
-//       addChatMessage(`Failed to clone website: ${error.message}`, 'system');
-//       setUrlStatus([]);
-//       setIsPreparingDesign(false);
-//       // Clear all states on error
-//       setUrlScreenshot(null);
-//       setTargetUrl('');
-//       setScreenshotError(null);
-//       setLoadingStage(null);
-//       setGenerationProgress(prev => ({
-//         ...prev,
-//         isGenerating: false,
-//         isStreaming: false,
-//         status: '',
-//         // Keep files to display in sidebar
-//         files: prev.files
-//       }));
-//       setActiveTab('preview');
-//     }
-//   };
+  //   const cloneWebsite = async () => {
+  //     let url = urlInput.trim();
+  //     if (!url) {
+  //       setUrlStatus(prev => [...prev, 'Please enter a URL']);
+  //       return;
+  //     }
+  //
+  //     if (!url.match(/^https?:\/\//i)) {
+  //       url = 'https://' + url;
+  //     }
+  //
+  //     setUrlStatus([`Using: ${url}`, 'Starting to scrape...']);
+  //
+  //     setUrlOverlayVisible(false);
+  //
+  //     // Remove protocol for cleaner display
+  //     const cleanUrl = url.replace(/^https?:\/\//i, '');
+  //     addChatMessage(`Starting to clone ${cleanUrl}...`, 'system');
+  //
+  //     // Capture screenshot immediately and switch to preview tab
+  //     captureUrlScreenshot(url);
+  //
+  //     try {
+  //       addChatMessage('Scraping website content...', 'system');
+  //       const scrapeResponse = await fetch('/api/scrape-url-enhanced', {
+  //         method: 'POST',
+  //         headers: { 'Content-Type': 'application/json' },
+  //         body: JSON.stringify({ url })
+  //       });
+  //
+  //       if (!scrapeResponse.ok) {
+  //         throw new Error(`Scraping failed: ${scrapeResponse.status}`);
+  //       }
+  //
+  //       const scrapeData = await scrapeResponse.json();
+  //
+  //       if (!scrapeData.success) {
+  //         throw new Error(scrapeData.error || 'Failed to scrape website');
+  //       }
+  //
+  //       addChatMessage(`Scraped ${scrapeData.content.length} characters from ${url}`, 'system');
+  //
+  //       // Clear preparing design state and switch to generation tab
+  //       setIsPreparingDesign(false);
+  //       setActiveTab('generation');
+  //
+  //       setConversationContext(prev => ({
+  //         ...prev,
+  //         scrapedWebsites: [...prev.scrapedWebsites, {
+  //           url,
+  //           content: scrapeData,
+  //           timestamp: new Date()
+  //         }],
+  //         currentProject: `Clone of ${url}`
+  //       }));
+  //
+  //       // Start sandbox creation in parallel with code generation
+  //       let sandboxPromise: Promise<any> | null = null;
+  //       if (!sandboxData) {
+  //         addChatMessage('Creating sandbox while generating your React app...', 'system');
+  //         sandboxPromise = createSandbox(true);
+  //       }
+  //
+  //       addChatMessage('Analyzing and generating React recreation...', 'system');
+  //
+  //       const recreatePrompt = `I scraped this website and want you to recreate it as a modern React application.
+  //
+  // URL: ${url}
+  //
+  // SCRAPED CONTENT:
+  // ${scrapeData.content}
+  //
+  // ${homeContextInput ? `ADDITIONAL CONTEXT/REQUIREMENTS FROM USER:
+  // ${homeContextInput}
+  //
+  // Please incorporate these requirements into the design and implementation.` : ''}
+  //
+  // REQUIREMENTS:
+  // 1. Create a COMPLETE React application with App.jsx as the main component
+  // 2. App.jsx MUST import and render all other components
+  // 3. Recreate the main sections and layout from the scraped content
+  // 4. ${homeContextInput ? `Apply the user's context/theme: "${homeContextInput}"` : `Use a modern dark theme with excellent contrast:
+  //    - Background: #0a0a0a
+  //    - Text: #ffffff
+  //    - Links: #60a5fa
+  //    - Accent: #3b82f6`}
+  // 5. Make it fully responsive
+  // 6. Include hover effects and smooth transitions
+  // 7. Create separate components for major sections (Header, Hero, Features, etc.)
+  // 8. Use semantic HTML5 elements
+  //
+  // IMPORTANT CONSTRAINTS:
+  // - DO NOT use React Router or any routing libraries
+  // - Use regular <a> tags with href="#section" for navigation, NOT Link or NavLink components
+  // - This is a single-page application, no routing needed
+  // - ALWAYS create src/App.jsx that imports ALL components
+  // - Each component should be in src/components/
+  // - Use Tailwind CSS for ALL styling (no custom CSS files)
+  // - Make sure the app actually renders visible content
+  // - Create ALL components that you reference in imports
+  //
+  // IMAGE HANDLING RULES:
+  // - When the scraped content includes images, USE THE ORIGINAL IMAGE URLS whenever appropriate
+  // - Keep existing images from the scraped site (logos, product images, hero images, icons, etc.)
+  // - Use the actual image URLs provided in the scraped content, not placeholders
+  // - Only use placeholder images or generic services when no real images are available
+  // - For company logos and brand images, ALWAYS use the original URLs to maintain brand identity
+  // - If scraped data contains image URLs, include them in your img tags
+  // - Example: If you see "https://example.com/logo.png" in the scraped content, use that exact URL
+  //
+  // Focus on the key sections and content, making it clean and modern while preserving visual assets.`;
+  //
+  //       setGenerationProgress(prev => ({
+  //         isGenerating: true,
+  //         status: 'Initializing AI...',
+  //         components: [],
+  //         currentComponent: 0,
+  //         streamedCode: '',
+  //         isStreaming: true,
+  //         isThinking: false,
+  //         thinkingText: undefined,
+  //         thinkingDuration: undefined,
+  //         // Keep previous files until new ones are generated
+  //         files: prev.files || [],
+  //         currentFile: undefined,
+  //         lastProcessedPosition: 0
+  //       }));
+  //
+  //       // Switch to generation tab when starting
+  //       setActiveTab('generation');
+  //
+  //       const aiResponse = await fetch('/api/generate-ai-code-stream', {
+  //         method: 'POST',
+  //         headers: { 'Content-Type': 'application/json' },
+  //         body: JSON.stringify({
+  //           prompt: recreatePrompt,
+  //           model: aiModel,
+  //           context: {
+  //             sandboxId: sandboxData?.id,
+  //             structure: structureContent,
+  //             conversationContext: conversationContext
+  //           }
+  //         })
+  //       });
+  //
+  //       if (!aiResponse.ok) {
+  //         throw new Error(`AI generation failed: ${aiResponse.status}`);
+  //       }
+  //
+  //       const reader = aiResponse.body?.getReader();
+  //       const decoder = new TextDecoder();
+  //       let generatedCode = '';
+  //       let explanation = '';
+  //
+  //       if (reader) {
+  //         while (true) {
+  //           const { done, value } = await reader.read();
+  //           if (done) break;
+  //
+  //           const chunk = decoder.decode(value);
+  //           const lines = chunk.split('\n');
+  //
+  //           for (const line of lines) {
+  //             if (line.startsWith('data: ')) {
+  //               try {
+  //                 const data = JSON.parse(line.slice(6));
+  //
+  //                 if (data.type === 'status') {
+  //                   setGenerationProgress(prev => ({ ...prev, status: data.message }));
+  //                 } else if (data.type === 'thinking') {
+  //                   setGenerationProgress(prev => ({
+  //                     ...prev,
+  //                     isThinking: true,
+  //                     thinkingText: (prev.thinkingText || '') + data.text
+  //                   }));
+  //                 } else if (data.type === 'thinking_complete') {
+  //                   setGenerationProgress(prev => ({
+  //                     ...prev,
+  //                     isThinking: false,
+  //                     thinkingDuration: data.duration
+  //                   }));
+  //                 } else if (data.type === 'conversation') {
+  //                   // Add conversational text to chat only if it's not code
+  //                   let text = data.text || '';
+  //
+  //                   // Remove package tags from the text
+  //                   text = text.replace(/<package>[^<]*<\/package>/g, '');
+  //                   text = text.replace(/<packages>[^<]*<\/packages>/g, '');
+  //
+  //                   // Filter out any XML tags and file content that slipped through
+  //                   if (!text.includes('<file') && !text.includes('import React') &&
+  //                       !text.includes('export default') && !text.includes('className=') &&
+  //                       text.trim().length > 0) {
+  //                     addChatMessage(text.trim(), 'ai');
+  //                   }
+  //                 } else if (data.type === 'stream' && data.raw) {
+  //                   setGenerationProgress(prev => ({
+  //                     ...prev,
+  //                     streamedCode: prev.streamedCode + data.text,
+  //                     lastProcessedPosition: prev.lastProcessedPosition || 0
+  //                   }));
+  //                 } else if (data.type === 'component') {
+  //                   setGenerationProgress(prev => ({
+  //                     ...prev,
+  //                     status: `Generated ${data.name}`,
+  //                     components: [...prev.components, {
+  //                       name: data.name,
+  //                       path: data.path,
+  //                       completed: true
+  //                     }],
+  //                     currentComponent: prev.currentComponent + 1
+  //                   }));
+  //                 } else if (data.type === 'complete') {
+  //                   generatedCode = data.generatedCode;
+  //                   explanation = data.explanation;
+  //
+  //                   // Save the last generated code
+  //                   setConversationContext(prev => ({
+  //                     ...prev,
+  //                     lastGeneratedCode: generatedCode
+  //                   }));
+  //                 }
+  //               } catch (e) {
+  //                 console.error('Error parsing streaming data:', e);
+  //               }
+  //             }
+  //           }
+  //         }
+  //       }
+  //
+  //       setGenerationProgress(prev => ({
+  //         ...prev,
+  //         isGenerating: false,
+  //         isStreaming: false,
+  //         status: 'Generation complete!',
+  //         isEdit: prev.isEdit
+  //       }));
+  //
+  //       if (generatedCode) {
+  //         addChatMessage('AI recreation generated!', 'system');
+  //
+  //         // Add the explanation to chat if available
+  //         if (explanation && explanation.trim()) {
+  //           addChatMessage(explanation, 'ai');
+  //         }
+  //
+  //         setPromptInput(generatedCode);
+  //         // Don't show the Generated Code panel by default
+  //         // setLeftPanelVisible(true);
+  //
+  //         // Wait for sandbox creation if it's still in progress
+  //         let activeSandboxData = sandboxData;
+  //         if (sandboxPromise) {
+  //           addChatMessage('Waiting for sandbox to be ready...', 'system');
+  //           try {
+  //             const newSandboxData = await sandboxPromise;
+  //             if (newSandboxData) {
+  //               activeSandboxData = newSandboxData;
+  //             }
+  //             // Remove the waiting message
+  //             setChatMessages(prev => prev.filter(msg => msg.content !== 'Waiting for sandbox to be ready...'));
+  //           } catch (error: any) {
+  //             addChatMessage('Sandbox creation failed. Cannot apply code.', 'system');
+  //             throw error;
+  //           }
+  //         }
+  //
+  //         // Only apply code if we have sandbox data
+  //         if (activeSandboxData) {
+  //           // First application for cloned site should not be in edit mode
+  //           await applyGeneratedCode(generatedCode, false);
+  //         }
+  //
+  //         addChatMessage(
+  //           `Successfully recreated ${url} as a modern React app${homeContextInput ? ` with your requested context: "${homeContextInput}"` : ''}! The scraped content is now in my context, so you can ask me to modify specific sections or add features based on the original site.`,
+  //           'ai',
+  //           {
+  //             scrapedUrl: url,
+  //             scrapedContent: scrapeData,
+  //             generatedCode: generatedCode
+  //           }
+  //         );
+  //
+  //         setUrlInput('');
+  //         setUrlStatus([]);
+  //         setHomeContextInput('');
+  //
+  //         // Clear generation progress and all screenshot/design states
+  //         setGenerationProgress(prev => ({
+  //           ...prev,
+  //           isGenerating: false,
+  //           isStreaming: false,
+  //           status: 'Generation complete!'
+  //         }));
+  //
+  //         // Clear screenshot and preparing design states to prevent them from showing on next run
+  //         setUrlScreenshot(null);
+  //         setIsPreparingDesign(false);
+  //         setTargetUrl('');
+  //         setScreenshotError(null);
+  //         setLoadingStage(null); // Clear loading stage
+  //         setShowLoadingBackground(false); // Clear loading background
+  //
+  //         setTimeout(() => {
+  //           // Switch back to preview tab but keep files
+  //           setActiveTab('preview');
+  //         }, 1000); // Show completion briefly then switch
+  //       } else {
+  //         throw new Error('Failed to generate recreation');
+  //       }
+  //
+  //     } catch (error: any) {
+  //       addChatMessage(`Failed to clone website: ${error.message}`, 'system');
+  //       setUrlStatus([]);
+  //       setIsPreparingDesign(false);
+  //       // Clear all states on error
+  //       setUrlScreenshot(null);
+  //       setTargetUrl('');
+  //       setScreenshotError(null);
+  //       setLoadingStage(null);
+  //       setGenerationProgress(prev => ({
+  //         ...prev,
+  //         isGenerating: false,
+  //         isStreaming: false,
+  //         status: '',
+  //         // Keep files to display in sidebar
+  //         files: prev.files
+  //       }));
+  //       setActiveTab('preview');
+  //     }
+  //   };
 
   const captureUrlScreenshot = async (url: string) => {
     setIsCapturingScreenshot(true);
@@ -2544,9 +2746,9 @@ Tip: I automatically detect and install npm packages from your code imports (lik
       const response = await fetch('/api/scrape-screenshot', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url })
+        body: JSON.stringify({ url }),
       });
-      
+
       const data = await response.json();
       if (data.success && data.screenshot) {
         setIsScreenshotLoaded(false); // Reset loaded state for new screenshot
@@ -2578,24 +2780,29 @@ Tip: I automatically detect and install npm packages from your code imports (lik
 
   const startGeneration = async () => {
     if (!homeUrlInput.trim()) return;
-    if (isJobActive && generation.projectId && generation.projectId === projectId && generationProgress.isGenerating) {
+    if (
+      isJobActive &&
+      generation.projectId &&
+      generation.projectId === projectId &&
+      generationProgress.isGenerating
+    ) {
       return;
     }
 
     clearGeneration();
-    
+
     setHomeScreenFading(true);
-    
+
     // Set immediate loading state for better UX
     setIsStartingNewGeneration(true);
     setLoadingStage('gathering');
-    
+
     // Immediately switch to preview tab to show loading
     setActiveTab('preview');
-    
+
     // Set loading background to ensure proper visual feedback
     setShowLoadingBackground(true);
-    
+
     // Clear messages and immediately show the initial message
     setChatMessages([]);
     let displayUrl = homeUrlInput.trim();
@@ -2612,40 +2819,40 @@ Tip: I automatically detect and install npm packages from your code imports (lik
       brandExtensionMode
         ? `Analyzing brand from ${cleanUrl}...`
         : `Starting to clone ${cleanUrl}...`,
-      'system'
+      'system',
     );
-    
+
     // Start creating sandbox and capturing screenshot immediately in parallel
     const sandboxPromise = shouldRequestSandbox('generate')
       ? createSandbox(true)
       : Promise.resolve(null);
-    
+
     // Set loading stage immediately before hiding home screen
     setLoadingStage('gathering');
     // Also ensure we're on preview tab to show the loading overlay
     setActiveTab('preview');
-    
+
     // Always capture screenshot for new URLs, even if sandbox exists
     // This ensures the loading screen shows properly
     captureUrlScreenshot(displayUrl);
-    
+
     setTimeout(async () => {
       setShowHomeScreen(false);
       setHomeScreenFading(false);
-      
+
       // Clear the starting flag after transition
       setTimeout(() => {
         setIsStartingNewGeneration(false);
       }, 1000);
-      
+
       // Wait for sandbox to be ready (if it's still creating)
       const createdSandbox = await sandboxPromise;
-      
+
       // Now start the clone process which will stream the generation
       setUrlInput(homeUrlInput);
       setUrlOverlayVisible(false); // Make sure overlay is closed
       setUrlStatus(['Scraping website content...']);
-      
+
       try {
         // Scrape the website
         let url = homeUrlInput.trim();
@@ -2673,8 +2880,8 @@ Tip: I automatically detect and install npm packages from your code imports (lik
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               url,
-              prompt: brandExtensionPrompt
-            })
+              prompt: brandExtensionPrompt,
+            }),
           });
 
           if (!extractResponse.ok) {
@@ -2690,14 +2897,16 @@ Tip: I automatically detect and install npm packages from your code imports (lik
           // Display branding summary with visual UI
           addChatMessage(`Acquired branding format from ${cleanUrl}`, 'system', {
             brandingData: brandGuidelines.guidelines,
-            sourceUrl: cleanUrl
+            sourceUrl: cleanUrl,
           });
-          addChatMessage(`Building your custom component using these brand guidelines...`, 'system');
+          addChatMessage(
+            `Building your custom component using these brand guidelines...`,
+            'system',
+          );
 
           // Clear the flags after use
           sessionStorage.removeItem('brandExtensionMode');
           sessionStorage.removeItem('brandExtensionPrompt');
-
         } else {
           let id = projectId || projectIdFromPath;
           if (!id) {
@@ -2725,7 +2934,11 @@ Tip: I automatically detect and install npm packages from your code imports (lik
           };
         }
 
-        setUrlStatus(brandExtensionMode ? ['Brand styles extracted!', 'Building your component...'] : ['Website scraped successfully!', 'Generating React app...']);
+        setUrlStatus(
+          brandExtensionMode
+            ? ['Brand styles extracted!', 'Building your component...']
+            : ['Website scraped successfully!', 'Generating React app...'],
+        );
 
         // Clear preparing design state and switch to generation tab
         setIsPreparingDesign(false);
@@ -2748,14 +2961,17 @@ Tip: I automatically detect and install npm packages from your code imports (lik
         if (brandExtensionMode && brandGuidelines) {
           // === BRAND EXTENSION PROMPT ===
           // Store brand guidelines in conversation context
-          setConversationContext(prev => ({
+          setConversationContext((prev) => ({
             ...prev,
-            scrapedWebsites: [...prev.scrapedWebsites, {
-              url: url,
-              content: { brandGuidelines },
-              timestamp: new Date()
-            }],
-            currentProject: `Custom build using ${url} brand`
+            scrapedWebsites: [
+              ...prev.scrapedWebsites,
+              {
+                url: url,
+                content: { brandGuidelines },
+                timestamp: new Date(),
+              },
+            ],
+            currentProject: `Custom build using ${url} brand`,
           }));
 
           // Extract comprehensive brand data
@@ -2853,10 +3069,14 @@ STYLING REQUIREMENTS:
 - Create custom CSS classes in index.css for complex shadows/effects that can't be done with Tailwind
 
 FONT SETUP:
-${branding.typography?.fontFamilies?.primary ? `
+${
+  branding.typography?.fontFamilies?.primary
+    ? `
 - Add font family "${branding.typography.fontFamilies.primary}" to your CSS
 - Use font stack: ${branding.typography?.fontStacks?.body?.join(', ') || 'system-ui, sans-serif'}
-- Set body font size to ${branding.typography?.fontSizes?.body || '16px'}` : '- Use system fonts'}
+- Set body font size to ${branding.typography?.fontSizes?.body || '16px'}`
+    : '- Use system fonts'
+}
 
 COMPONENT STRUCTURE:
 - src/index.css - Include brand fonts, custom shadows/effects, and base styling
@@ -2872,21 +3092,23 @@ TECHNICAL REQUIREMENTS:
 - Buttons must have the exact styling specified in the guidelines
 
 Focus on building something NEW, minimal, and functional that perfectly matches the ${brandGuidelines.styleName || 'brand'} aesthetic and design system.`;
-
         } else {
           // === NORMAL CLONE MODE PROMPT ===
           // Store scraped data in conversation context
           if (!scrapeData) {
             throw new Error('Scrape data is missing');
           }
-          setConversationContext(prev => ({
+          setConversationContext((prev) => ({
             ...prev,
-            scrapedWebsites: [...prev.scrapedWebsites, {
-              url: url,
-              content: scrapeData,
-              timestamp: new Date()
-            }],
-            currentProject: `${url} Clone`
+            scrapedWebsites: [
+              ...prev.scrapedWebsites,
+              {
+                url: url,
+                content: scrapeData,
+                timestamp: new Date(),
+              },
+            ],
+            currentProject: `${url} Clone`,
           }));
 
           // Filter out style-related context when using screenshot/URL-based generation
@@ -2906,12 +3128,12 @@ Focus on building something NEW, minimal, and functional that perfectly matches 
               'Modern clean and minimalist style design',
               'Fun colorful and playful style design',
               'Corporate professional and sleek style design',
-              'Creative artistic and unique style design'
+              'Creative artistic and unique style design',
             ];
 
             // If the context exactly matches or starts with a style pattern, filter it out
-            const startsWithStyle = stylePatterns.some(pattern =>
-              homeContextInput.trim().startsWith(pattern)
+            const startsWithStyle = stylePatterns.some((pattern) =>
+              homeContextInput.trim().startsWith(pattern),
             );
 
             if (startsWithStyle) {
@@ -2925,10 +3147,14 @@ Focus on building something NEW, minimal, and functional that perfectly matches 
 
 ${JSON.stringify(scrapeData, null, 2)}
 
-${filteredContext ? `ADDITIONAL CONTEXT/REQUIREMENTS FROM USER:
+${
+  filteredContext
+    ? `ADDITIONAL CONTEXT/REQUIREMENTS FROM USER:
 ${filteredContext}
 
-Please incorporate these requirements into the design and implementation.` : ''}
+Please incorporate these requirements into the design and implementation.`
+    : ''
+}
 
 IMPORTANT INSTRUCTIONS:
 - Create a COMPLETE, working React application
@@ -2939,7 +3165,7 @@ IMPORTANT INSTRUCTIONS:
 - Create proper component structure
 - Make sure the app actually renders visible content
 - Create ALL components that you reference in imports
-${filteredContext ? '- Apply the user\'s context/theme requirements throughout the application' : ''}
+${filteredContext ? "- Apply the user's context/theme requirements throughout the application" : ''}
 
 Focus on the key sections and content, making it clean and modern.`;
         }
@@ -2956,30 +3182,26 @@ Focus on the key sections and content, making it clean and modern.`;
               sandboxId: activeSandbox?.sandboxId,
               structure: structureContent,
               conversationContext: conversationContext,
-              styleName: selectedStyle || homeContextInput
+              styleName: selectedStyle || homeContextInput,
             },
             sandboxData: activeSandbox,
           });
           generatedCode = streamResult.generatedCode;
           explanation = streamResult.explanation;
         }
-        
+
         if (generatedCode) {
           addChatMessage('AI recreation generated!', 'system');
-          
+
           // Add the explanation to chat if available
           if (explanation && explanation.trim()) {
             addChatMessage(explanation, 'ai');
           }
-          
+
           setPromptInput(generatedCode);
 
           // Apply the code (first time is not edit mode)
-          await applyGeneratedCode(
-            generatedCode,
-            false,
-            activeSandbox || undefined
-          );
+          await applyGeneratedCode(generatedCode, false, activeSandbox || undefined);
 
           addChatMessage(
             brandExtensionMode
@@ -2989,28 +3211,31 @@ Focus on the key sections and content, making it clean and modern.`;
             {
               scrapedUrl: url,
               scrapedContent: brandExtensionMode ? { brandGuidelines } : scrapeData,
-              generatedCode: generatedCode
-            }
+              generatedCode: generatedCode,
+            },
           );
-          
-          setConversationContext(prev => ({
+
+          setConversationContext((prev) => ({
             ...prev,
             generatedComponents: [],
-            appliedCode: [...prev.appliedCode, {
-              files: [],
-              timestamp: new Date()
-            }]
+            appliedCode: [
+              ...prev.appliedCode,
+              {
+                files: [],
+                timestamp: new Date(),
+              },
+            ],
           }));
         } else {
           throw new Error('Failed to generate recreation');
         }
-        
+
         setUrlInput('');
         setUrlStatus([]);
         setHomeContextInput('');
-        
+
         markReady();
-        
+
         // Clear screenshot and preparing design states to prevent them from showing on next run
         setIsScreenshotLoaded(false); // Reset loaded state
         setUrlScreenshot(null);
@@ -3020,7 +3245,7 @@ Focus on the key sections and content, making it clean and modern.`;
         setLoadingStage(null); // Clear loading stage
         setIsStartingNewGeneration(false); // Clear new generation flag
         setShowLoadingBackground(false); // Clear loading background
-        
+
         setTimeout(() => {
           // Switch back to preview tab but keep files
           setActiveTab('preview');
@@ -3160,7 +3385,10 @@ Focus on the key sections and content, making it clean and modern.`;
           await retryProjectPlan({ projectId: id, prompt });
           addChatMessage('Plan ready. Review and approve to apply these changes.', 'ai');
         } catch (error) {
-          addChatMessage(error instanceof Error ? error.message : 'Could not start a plan.', 'system');
+          addChatMessage(
+            error instanceof Error ? error.message : 'Could not start a plan.',
+            'system',
+          );
         }
       }}
       onRetryImport={async ({ sourceUrl: retryUrl, mode }) => {
@@ -3205,7 +3433,9 @@ export default function GenerationWorkspace({
   initialPlan?: WorkspacePlan | null;
 }) {
   return (
-    <Suspense fallback={<div className="flex items-center justify-center min-h-screen">Loading...</div>}>
+    <Suspense
+      fallback={<div className="flex items-center justify-center min-h-screen">Loading...</div>}
+    >
       <AISandboxPage
         githubConnected={githubConnected}
         githubRepoUrl={githubRepoUrl}

@@ -276,21 +276,24 @@ export default function UsageDashboard() {
         >
           <ul className="space-y-8">
             {/* Newest entries are appended, so the recent ones live at the end. */}
-            {teardownLeaks.open.slice(-LEAK_LIST_LIMIT).reverse().map((leak) => (
-              <li
-                key={`${leak.projectId || 'none'}:${leak.sandboxId || leak.at}`}
-                className="flex flex-col gap-2 text-[13px] sm:flex-row sm:items-baseline sm:justify-between"
-              >
-                <span className="text-[var(--studio-fg)]">
-                  {leak.driver || 'sandbox'} {leak.sandboxId || 'unknown id'} ({leak.source})
-                </span>
-                <span className="text-[var(--studio-faint)]">{leak.reason}</span>
-              </li>
-            ))}
+            {teardownLeaks.open
+              .slice(-LEAK_LIST_LIMIT)
+              .reverse()
+              .map((leak) => (
+                <li
+                  key={`${leak.projectId || 'none'}:${leak.sandboxId || leak.at}`}
+                  className="flex flex-col gap-2 text-[13px] sm:flex-row sm:items-baseline sm:justify-between"
+                >
+                  <span className="text-[var(--studio-fg)]">
+                    {leak.driver || 'sandbox'} {leak.sandboxId || 'unknown id'} ({leak.source})
+                  </span>
+                  <span className="text-[var(--studio-faint)]">{leak.reason}</span>
+                </li>
+              ))}
             {teardownLeaks.open.length > LEAK_LIST_LIMIT && (
               <li className="text-[13px] text-[var(--studio-faint)]">
-                …and {teardownLeaks.open.length - LEAK_LIST_LIMIT} more still open. The count
-                above is the full picture; this list shows the most recent.
+                …and {teardownLeaks.open.length - LEAK_LIST_LIMIT} more still open. The count above
+                is the full picture; this list shows the most recent.
               </li>
             )}
           </ul>
@@ -351,74 +354,76 @@ export default function UsageDashboard() {
         {loading && members.length === 0 ? (
           <SkeletonTable rows={4} cols={5} />
         ) : (
-        <AdminTable
-          isEmpty={!loading && members.length === 0}
-          empty="No usage in this range."
-          head={
-            <>
-              <Th>Member</Th>
-              <Th>Projects</Th>
-              <Th>Generations</Th>
-              <Th>Estimated spend</Th>
-              <Th align="right"> </Th>
-            </>
-          }
-        >
-          {members.map((member) => {
-            const isOpen = expanded === member.userId;
-            return (
-              <Fragment key={member.userId}>
-                <Tr className="cursor-pointer" onClick={() => void toggleMember(member)}>
-                  <Td>
-                    <div className="font-medium text-[var(--studio-fg)]">{member.name}</div>
-                    <div className="text-[12px] text-[var(--studio-muted)]">{member.email}</div>
-                  </Td>
-                  <Td muted>{member.projectCount}</Td>
-                  <Td muted>{member.generationCount}</Td>
-                  <Td muted>{formatMoney(member.estimatedCost)}</Td>
-                  <Td align="right">
-                    <ChevronDown
-                      className={`ml-auto size-14 text-[var(--studio-faint)] transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`}
-                      aria-hidden
-                    />
-                  </Td>
-                </Tr>
-                {isOpen && (
-                  <Tr>
-                    <Td colSpan={5}>
-                      {member.projects.length === 0 ? (
-                        <p className="text-[13px] text-[var(--studio-muted)]">
-                          No projects in this range.
-                        </p>
-                      ) : loadingProjects &&
-                        member.projects.some((project) => !eventsByProject[project.id]) ? (
-                        <p className="text-[13px] text-[var(--studio-muted)]">Loading projects…</p>
-                      ) : (
-                        <div className="space-y-16">
-                          {member.projects.map((project) => (
-                            <div key={project.id}>
-                              <p className="mb-8 text-[13px] font-medium text-[var(--studio-fg)]">
-                                {project.name}
-                              </p>
-                              <ul className="space-y-4 text-[12px] text-[var(--studio-muted)]">
-                                {(eventsByProject[project.id] || []).map((event, index) => (
-                                  <li key={`${project.id}-${index}`}>
-                                    {event.kind} · {formatMoney(event.cost)} ·{' '}
-                                    {formatWhen(event.createdAt)}
-                                  </li>
-                                ))}
-                              </ul>
-                            </div>
-                          ))}
-                        </div>
-                      )}
+          <AdminTable
+            isEmpty={!loading && members.length === 0}
+            empty="No usage in this range."
+            head={
+              <>
+                <Th>Member</Th>
+                <Th>Projects</Th>
+                <Th>Generations</Th>
+                <Th>Estimated spend</Th>
+                <Th align="right"> </Th>
+              </>
+            }
+          >
+            {members.map((member) => {
+              const isOpen = expanded === member.userId;
+              return (
+                <Fragment key={member.userId}>
+                  <Tr className="cursor-pointer" onClick={() => void toggleMember(member)}>
+                    <Td>
+                      <div className="font-medium text-[var(--studio-fg)]">{member.name}</div>
+                      <div className="text-[12px] text-[var(--studio-muted)]">{member.email}</div>
+                    </Td>
+                    <Td muted>{member.projectCount}</Td>
+                    <Td muted>{member.generationCount}</Td>
+                    <Td muted>{formatMoney(member.estimatedCost)}</Td>
+                    <Td align="right">
+                      <ChevronDown
+                        className={`ml-auto size-14 text-[var(--studio-faint)] transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`}
+                        aria-hidden
+                      />
                     </Td>
                   </Tr>
-                )}
-              </Fragment>
-            );
-          })}
-        </AdminTable>
+                  {isOpen && (
+                    <Tr>
+                      <Td colSpan={5}>
+                        {member.projects.length === 0 ? (
+                          <p className="text-[13px] text-[var(--studio-muted)]">
+                            No projects in this range.
+                          </p>
+                        ) : loadingProjects &&
+                          member.projects.some((project) => !eventsByProject[project.id]) ? (
+                          <p className="text-[13px] text-[var(--studio-muted)]">
+                            Loading projects…
+                          </p>
+                        ) : (
+                          <div className="space-y-16">
+                            {member.projects.map((project) => (
+                              <div key={project.id}>
+                                <p className="mb-8 text-[13px] font-medium text-[var(--studio-fg)]">
+                                  {project.name}
+                                </p>
+                                <ul className="space-y-4 text-[12px] text-[var(--studio-muted)]">
+                                  {(eventsByProject[project.id] || []).map((event, index) => (
+                                    <li key={`${project.id}-${index}`}>
+                                      {event.kind} · {formatMoney(event.cost)} ·{' '}
+                                      {formatWhen(event.createdAt)}
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </Td>
+                    </Tr>
+                  )}
+                </Fragment>
+              );
+            })}
+          </AdminTable>
         )}
       </AdminCard>
 
@@ -430,30 +435,30 @@ export default function UsageDashboard() {
         {loading && skills.length === 0 ? (
           <SkeletonTable rows={3} cols={4} />
         ) : (
-        <AdminTable
-          isEmpty={!loading && skills.length === 0}
-          empty="No workspace skills yet."
-          head={
-            <>
-              <Th>Skill</Th>
-              <Th>Enabled</Th>
-              <Th align="right">Usage</Th>
-            </>
-          }
-        >
-          {skills.map((skill) => (
-            <Tr key={skill.id}>
-              <Td>
-                <div className="font-medium text-[var(--studio-fg)]">{skill.name}</div>
-                <div className="text-[12px] text-[var(--studio-muted)]">{skill.description}</div>
-              </Td>
-              <Td muted>{skill.enabled ? 'On' : 'Off'}</Td>
-              <Td align="right" muted>
-                {skill.usageCount}
-              </Td>
-            </Tr>
-          ))}
-        </AdminTable>
+          <AdminTable
+            isEmpty={!loading && skills.length === 0}
+            empty="No workspace skills yet."
+            head={
+              <>
+                <Th>Skill</Th>
+                <Th>Enabled</Th>
+                <Th align="right">Usage</Th>
+              </>
+            }
+          >
+            {skills.map((skill) => (
+              <Tr key={skill.id}>
+                <Td>
+                  <div className="font-medium text-[var(--studio-fg)]">{skill.name}</div>
+                  <div className="text-[12px] text-[var(--studio-muted)]">{skill.description}</div>
+                </Td>
+                <Td muted>{skill.enabled ? 'On' : 'Off'}</Td>
+                <Td align="right" muted>
+                  {skill.usageCount}
+                </Td>
+              </Tr>
+            ))}
+          </AdminTable>
         )}
       </AdminCard>
 

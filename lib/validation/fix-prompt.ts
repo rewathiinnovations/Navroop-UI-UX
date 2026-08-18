@@ -13,7 +13,9 @@ function locate(error: BuildError): string {
 
 /** Files the compiler actually named — the edit should stay inside this set. */
 export function filesFromErrors(errors: BuildError[]): string[] {
-  return [...new Set(errors.map((error) => error.file).filter((file): file is string => Boolean(file)))];
+  return [
+    ...new Set(errors.map((error) => error.file).filter((file): file is string => Boolean(file))),
+  ];
 }
 
 export function buildBuildFixInstruction(result: BuildCheckResult): string {
@@ -27,7 +29,7 @@ export function buildBuildFixInstruction(result: BuildCheckResult): string {
   const files = filesFromErrors(result.errors);
 
   return [
-    "The site you just generated does not compile. Fix the build errors below. This is a build edit — change only what is required to make the build pass.",
+    'The site you just generated does not compile. Fix the build errors below. This is a build edit — change only what is required to make the build pass.',
     `Build errors:\n${list}`,
     files.length ? `Files named by the compiler: ${files.join(', ')}` : '',
     result.missingPackages.length

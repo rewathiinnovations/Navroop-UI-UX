@@ -14,8 +14,6 @@ export const PURE_SUITES = [
   ['pre-migrate', '../../tests/pre-migrate.test.ts'],
   ['sentry-scrub', '../../tests/sentry-scrub.test.ts'],
   ['url-guard', '../../tests/url-guard.test.ts'],
-  ['preview-builds', '../../tests/preview-builds.test.ts'],
-  ['sandbox-providers', '../../tests/sandbox-providers.test.ts'],
   ['publish-jobs', '../../tests/publish-jobs.test.ts'],
   ['backup', '../../tests/backup.test.ts'],
   ['assets', '../../tests/assets.test.ts'],

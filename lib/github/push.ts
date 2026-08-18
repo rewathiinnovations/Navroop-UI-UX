@@ -1,4 +1,5 @@
 import { CONNECT_FIRST_MESSAGE, decryptCallerAccessToken } from './connection';
+import { buildRepoFiles } from '@/lib/deploy/repo-files';
 import { getCurrentProjectFiles } from './current-files';
 import { createPrivateRepo, pushViaGitDataApi, type GithubFetch } from './git-data';
 import { uniqueRepoName } from './repo-name';
@@ -10,7 +11,9 @@ export type PushActor = { id: string; role: string };
 
 export type PushDeps = {
   githubFetch?: GithubFetch;
-  getFiles?: (project: { lastCode: string | null }) => Promise<Record<string, string>> | Record<string, string>;
+  getFiles?: (project: {
+    lastCode: string | null;
+  }) => Promise<Record<string, string>> | Record<string, string>;
   trySandboxGit?: (input: { token: string; fullName: string }) => Promise<boolean>;
 };
 
@@ -28,6 +31,7 @@ type PushDb = {
         id: true;
         name: true;
         ownerId: true;
+        stack: true;
         lastCode: true;
         githubRepoFullName: true;
         githubRepoUrl: true;
@@ -36,6 +40,7 @@ type PushDb = {
       id: string;
       name: string;
       ownerId: string;
+      stack: string;
       lastCode: string | null;
       githubRepoFullName: string | null;
       githubRepoUrl: string | null;
@@ -67,6 +72,7 @@ export async function pushProjectToGitHubForUser(
       id: true,
       name: true,
       ownerId: true,
+      stack: true,
       lastCode: true,
       githubRepoFullName: true,
       githubRepoUrl: true,
@@ -84,12 +90,15 @@ export async function pushProjectToGitHubForUser(
     return { ok: false as const, error: CONNECT_FIRST_MESSAGE, status: 400 as const };
   }
 
-  const files = deps.getFiles
+  const generated = deps.getFiles
     ? await deps.getFiles({ lastCode: project.lastCode })
     : getCurrentProjectFiles(project);
-  if (!files || Object.keys(files).length === 0) {
+  if (!generated || Object.keys(generated).length === 0) {
     return { ok: false as const, error: 'No project files to push', status: 400 as const };
   }
+  // Push a repository, not a folder of components: the stack scaffold,
+  // Dockerfile and ignore files go with it so the push is deployable as-is.
+  const files = buildRepoFiles(project.stack, generated, { projectName: project.name });
 
   const githubFetch = deps.githubFetch ?? fetch;
   let fullName = project.githubRepoFullName;

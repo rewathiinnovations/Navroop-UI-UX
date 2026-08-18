@@ -1,5 +1,5 @@
 import { withSentryConfig } from '@sentry/nextjs';
-import type { NextConfig } from "next";
+import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
   output: 'standalone',
@@ -11,8 +11,10 @@ const nextConfig: NextConfig = {
     'lighthouse',
     'chrome-launcher',
     'lighthouse-logger',
-    '@daytona/sdk',
     'form-data',
+    // Native binary with per-platform optional deps — bundling it breaks the
+    // server-side preview build.
+    'esbuild',
   ],
   outputFileTracingIncludes: {
     '/*': ['./generated/prisma/**/*'],
@@ -35,9 +37,9 @@ export default withSentryConfig(nextConfig, {
   // For all available options, see:
   // https://www.npmjs.com/package/@sentry/webpack-plugin#options
 
-  org: "rewathi",
+  org: 'rewathi',
 
-  project: "navroop-nextjs",
+  project: 'navroop-nextjs',
 
   // Only print logs for uploading source maps in CI
   silent: !process.env.CI,

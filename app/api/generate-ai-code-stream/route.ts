@@ -1,27 +1,43 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createGroq } from '@ai-sdk/groq';
-import { createAnthropic } from '@ai-sdk/anthropic';
 import { createOpenAI } from '@ai-sdk/openai';
-import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { streamText } from 'ai';
 import type { SandboxState } from '@/types/sandbox';
 import { selectFilesForEdit, getFileContents, formatFilesForAI } from '@/lib/context-selector';
-import { executeSearchPlan, formatSearchResultsForAI, selectTargetFile } from '@/lib/file-search-executor';
+import {
+  executeSearchPlan,
+  formatSearchResultsForAI,
+  selectTargetFile,
+} from '@/lib/file-search-executor';
 import { FileManifest } from '@/types/file-manifest';
-import type { ConversationState, ConversationMessage, ConversationEdit } from '@/types/conversation';
+import type {
+  ConversationState,
+  ConversationMessage,
+  ConversationEdit,
+} from '@/types/conversation';
 import { appConfig } from '@/config/app.config';
 import { isMorphConfigured } from '@/lib/morph-fast-apply';
 import { buildUiUxProMaxBrief } from '@/lib/ui-ux-pro-max/build-design-brief';
 import { getSessionUser } from '@/lib/auth';
-import { ensureSandbox, SandboxBootError } from '@/lib/sandbox/manager';
 import { looksLikeUrl } from '@/lib/projects/prompt';
 import { attachGenerationInputTokens, logGenerationEvent } from '@/lib/usage-costs';
 import { buildCachedMessages } from '@/lib/generation/prompt-cache';
+import { filesFromReply } from '@/lib/generation/parse-blocks';
+
+/** Markdown code fence, kept in a constant so prompt strings stay readable. */
+const FENCE = '```';
+/** An opening fence carrying a {path=...} tag. */
+const FENCE_OPEN_RE = /```[^\n`]*\{path=([^}\n]+)\}/;
+/** A closing fence at the start of a line. */
+const FENCE_CLOSE_RE = /\n```/;
 import { selectFileContext } from '@/lib/generation/selective-context';
 import { resolveInputTokens } from '@/lib/generation/token-estimate';
-import { buildStablePromptPrefix, buildVolatilePromptSuffix, getStackPrompt } from '@/lib/stack-prompts';
+import {
+  buildStablePromptPrefix,
+  buildVolatilePromptSuffix,
+  getStackPrompt,
+} from '@/lib/stack-prompts';
 import { resolveRequestGenerationProfile } from '@/lib/stack-resolve';
-import { packageNameFromImport, shouldSkipPackageInstall } from '@/lib/stacks';
+import { packageNameFromImport, shouldSkipPackageInstall, stackShapeMismatch } from '@/lib/stacks';
 import { loadAssetManifest } from '@/lib/assets/load-manifest';
 import { injectMatchedSkills } from '@/lib/skills/inject';
 import { buildMemoryBlock } from '@/lib/memory/build-context';
@@ -36,7 +52,19 @@ import {
   SANDBOX_READ_FAILED_NOTICE,
   shouldRetrySandboxFileRead,
 } from '@/lib/generation/sandbox-read-notices';
-import { readSandboxFiles } from '@/lib/sandbox/read-files';
+
+/**
+ * There is no sandbox to read from any more: a project's files live in the
+ * database and render in the browser. The follow-up paths below still ask for
+ * a live file listing, so this reports it as unavailable rather than
+ * pretending an empty project.
+ */
+async function readSandboxFiles(): Promise<
+  | { ok: true; files: Record<string, string>; manifest?: FileManifest }
+  | { ok: false; error: string }
+> {
+  return { ok: false, error: 'No live workspace — files are read from the project instead.' };
+}
 import { log, logError } from '@/lib/logger';
 import { trackFailure, trackStart, trackSuccess } from '@/lib/observability/track';
 import { acquireLock, beginLockHeartbeat, releaseLock } from '@/lib/projects/lock';
@@ -56,8 +84,8 @@ import { getDefaultCircuit } from '@/lib/ai/circuit';
 import { jobErrorCodeForProviderFailure, providerFailureMessage } from '@/lib/ai/failover';
 import { getDefaultProviderQueue, QUEUE_TIMEOUT_MESSAGE } from '@/lib/ai/queue';
 import {
-  failoverNotice,
   getProviderApiKey,
+  maxOutputTokensForEntry,
   modelIdForEntry,
   providerDisplayName,
   ProviderNotConfiguredError,
@@ -67,14 +95,22 @@ import {
 } from '@/lib/ai/providers';
 import { loadEffectiveProviderEnv } from '@/lib/ai/effective-env';
 import { clientForEntry } from '@/lib/ai/client-for-entry';
-import { bindStreamErrorCapture, EmptyCompletionError, producedNoChanges } from '@/lib/ai/empty-completion';
+import {
+  bindStreamErrorCapture,
+  EmptyCompletionError,
+  producedNoChanges,
+} from '@/lib/ai/empty-completion';
 import { sanitizeGenerationPath } from '@/lib/generation/parse-files';
 import {
   collectRecoveredStreamText,
   truncationRecoveryOutcome,
   type TruncationRecoveryOutcome,
 } from '@/lib/generation/truncation-recovery';
-import { executeWithCompletionFailover, ProviderRunError, type ProviderAttempt } from '@/lib/ai/run';
+import {
+  executeWithCompletionFailover,
+  ProviderRunError,
+  type ProviderAttempt,
+} from '@/lib/ai/run';
 import { describeNoChanges } from '@/lib/generation/no-changes';
 import { summarizeGenerationOutput } from '@/lib/generation/output-summary';
 
@@ -91,51 +127,31 @@ log.info('generation.provider_config', {
   hasAIGatewayKey: !!process.env.AI_GATEWAY_API_KEY,
 });
 
-const groq = createGroq({
-  apiKey: process.env.AI_GATEWAY_API_KEY ?? process.env.GROQ_API_KEY,
-  baseURL: isUsingAIGateway ? aiGatewayBaseURL : undefined,
-});
-
-const anthropic = createAnthropic({
-  apiKey: process.env.AI_GATEWAY_API_KEY ?? process.env.ANTHROPIC_API_KEY,
-  baseURL: isUsingAIGateway ? aiGatewayBaseURL : (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com/v1'),
-});
-
-const googleGenerativeAI = createGoogleGenerativeAI({
-  apiKey: process.env.AI_GATEWAY_API_KEY ?? process.env.GEMINI_API_KEY,
-  baseURL: isUsingAIGateway ? aiGatewayBaseURL : undefined,
-});
-
-const openai = createOpenAI({
-  apiKey: process.env.AI_GATEWAY_API_KEY ?? process.env.OPENAI_API_KEY,
-  baseURL: isUsingAIGateway ? aiGatewayBaseURL : process.env.OPENAI_BASE_URL,
-});
-
 // Helper function to analyze user preferences from conversation history
 function analyzeUserPreferences(messages: ConversationMessage[]): {
   commonPatterns: string[];
   preferredEditStyle: 'targeted' | 'comprehensive';
 } {
-  const userMessages = messages.filter(m => m.role === 'user');
+  const userMessages = messages.filter((m) => m.role === 'user');
   const patterns: string[] = [];
-  
+
   // Count edit-related keywords
   let targetedEditCount = 0;
   let comprehensiveEditCount = 0;
-  
-  userMessages.forEach(msg => {
+
+  userMessages.forEach((msg) => {
     const content = msg.content.toLowerCase();
-    
+
     // Check for targeted edit patterns
     if (content.match(/\b(update|change|fix|modify|edit|remove|delete)\s+(\w+\s+)?(\w+)\b/)) {
       targetedEditCount++;
     }
-    
+
     // Check for comprehensive edit patterns
     if (content.match(/\b(rebuild|recreate|redesign|overhaul|refactor)\b/)) {
       comprehensiveEditCount++;
     }
-    
+
     // Extract common request patterns
     if (content.includes('hero')) patterns.push('hero section edits');
     if (content.includes('header')) patterns.push('header modifications');
@@ -143,10 +159,10 @@ function analyzeUserPreferences(messages: ConversationMessage[]): {
     if (content.includes('button')) patterns.push('button updates');
     if (content.includes('animation')) patterns.push('animation requests');
   });
-  
+
   return {
     commonPatterns: [...new Set(patterns)].slice(0, 3), // Top 3 unique patterns
-    preferredEditStyle: targetedEditCount > comprehensiveEditCount ? 'targeted' : 'comprehensive'
+    preferredEditStyle: targetedEditCount > comprehensiveEditCount ? 'targeted' : 'comprehensive',
   };
 }
 
@@ -191,7 +207,11 @@ async function reportSettleFailure(input: {
   } catch (reportError) {
     // The reporters are documented as non-throwing; if that ever stops being true, say so
     // rather than losing the original failure.
-    console.error('[generate-ai-code-stream] Failed to report a lost settle:', summary, reportError);
+    console.error(
+      '[generate-ai-code-stream] Failed to report a lost settle:',
+      summary,
+      reportError,
+    );
   }
 }
 
@@ -223,7 +243,17 @@ async function generateAiCodeStream(request: NextRequest) {
   let jobProgress: ReturnType<typeof createProgressBatcher> | null = null;
   let providerSlot: ReturnType<ReturnType<typeof getDefaultProviderQueue>['acquire']> | null = null;
   try {
-    const { prompt, model: requestedModelRaw, context, isEdit = false, styleHint, projectId: requestProjectId, stack: requestStack, designDirection: requestDirection, idempotencyKey: requestIdempotencyKey } = await request.json();
+    const {
+      prompt,
+      model: requestedModelRaw,
+      context,
+      isEdit = false,
+      styleHint,
+      projectId: requestProjectId,
+      stack: requestStack,
+      designDirection: requestDirection,
+      idempotencyKey: requestIdempotencyKey,
+    } = await request.json();
     // Explicit only: defaulting this to appConfig.ai.defaultModel pushed that
     // model to the front of the chain and demoted the configured primary
     // (AI_PRIMARY_* / Admin -> Configuration). The concrete `model` used for
@@ -261,9 +291,10 @@ async function generateAiCodeStream(request: NextRequest) {
       lockHeartbeat = beginLockHeartbeat(lockProjectId, sessionUser.id);
     }
 
-    const idempotencyKey = typeof requestIdempotencyKey === 'string' && requestIdempotencyKey.trim()
-      ? requestIdempotencyKey.trim()
-      : null;
+    const idempotencyKey =
+      typeof requestIdempotencyKey === 'string' && requestIdempotencyKey.trim()
+        ? requestIdempotencyKey.trim()
+        : null;
     generationJob = lockProjectId
       ? await createOrReuseJob({
           projectId: lockProjectId,
@@ -275,7 +306,10 @@ async function generateAiCodeStream(request: NextRequest) {
           requestId: getRequestId(),
         })
       : null;
-    if (generationJob && (generationJob.status === 'RUNNING' || generationJob.status === 'SUCCEEDED')) {
+    if (
+      generationJob &&
+      (generationJob.status === 'RUNNING' || generationJob.status === 'SUCCEEDED')
+    ) {
       await releaseGenerationLock?.();
       return NextResponse.json({ job: toPublicJob(generationJob), reused: true });
     }
@@ -345,7 +379,7 @@ async function generateAiCodeStream(request: NextRequest) {
     const capTracker = new JobCapTracker(planCaps);
     let servedProvider = primaryProvider?.provider ?? null;
     let servedModel = primaryProvider?.model ?? null;
-    
+
     const generationProfile = await resolveRequestGenerationProfile({
       stack: requestStack,
       designDirection: requestDirection,
@@ -381,47 +415,42 @@ async function generateAiCodeStream(request: NextRequest) {
           isUrlClone: looksLikeUrl(String(prompt || '')),
         });
       }
-      if (projectId) {
-        try {
-          await ensureSandbox(projectId, { allowEmpty: true });
-        } catch (error) {
-          if (error instanceof SandboxBootError && error.code === 'NO_CHECKPOINT') {
-            // First edit of a project with no snapshot can still generate into an empty workspace.
-          } else {
-            const message =
-              error instanceof Error
-                ? `The workspace for this project could not be started. ${error.message}`
-                : 'The workspace for this project could not be started';
-            if (generationJob) {
-              await failJob(generationJob.id, {
-                errorCode: 'sandbox_unavailable',
-                errorMessage: message,
-              });
-            }
-            jobHeartbeat?.stop();
-            providerSlot?.release();
-            await releaseGenerationLock?.();
-            return jsonError(message, 'SANDBOX_UNAVAILABLE', 503);
-          }
-        }
-      }
     }
-    
-    // Initialize conversation state if not exists
+
+    // Initialize conversation state if not exists.
+    //
+    // The state is a server-global. Without project scoping it carried the
+    // previous project's "RECENTLY CREATED/EDITED FILES (DO NOT RECREATE)"
+    // list — Next.js app/ files — into a fresh REACT project's first build,
+    // and the model updated that phantom tree instead of following the
+    // stack prompt. A request for a different project starts clean.
+    const conversationProjectId =
+      (typeof requestProjectId === 'string' && requestProjectId) ||
+      (typeof context?.projectId === 'string' && context.projectId) ||
+      null;
+    if (global.conversationState && global.conversationState.projectId !== conversationProjectId) {
+      log.info('generation.conversation_state_reset', {
+        requestId: getRequestId(),
+        fromProjectId: global.conversationState.projectId ?? null,
+        toProjectId: conversationProjectId,
+      });
+      global.conversationState = null;
+    }
     if (!global.conversationState) {
       global.conversationState = {
         conversationId: `conv-${Date.now()}`,
+        projectId: conversationProjectId,
         startedAt: Date.now(),
         lastUpdated: Date.now(),
         context: {
           messages: [],
           edits: [],
           projectEvolution: { majorChanges: [] },
-          userPreferences: {}
-        }
+          userPreferences: {},
+        },
       };
     }
-    
+
     // Add user message to conversation history
     const userMessage: ConversationMessage = {
       id: `msg-${Date.now()}`,
@@ -429,43 +458,51 @@ async function generateAiCodeStream(request: NextRequest) {
       content: prompt,
       timestamp: Date.now(),
       metadata: {
-        sandboxId: context?.sandboxId
-      }
+        sandboxId: context?.sandboxId,
+      },
     };
     global.conversationState.context.messages.push(userMessage);
-    
+
     // Clean up old messages to prevent unbounded growth
     if (global.conversationState.context.messages.length > 20) {
       // Keep only the last 15 messages
-      global.conversationState.context.messages = global.conversationState.context.messages.slice(-15);
-      console.log('[generate-ai-code-stream] Trimmed conversation history to prevent context overflow');
+      global.conversationState.context.messages =
+        global.conversationState.context.messages.slice(-15);
+      console.log(
+        '[generate-ai-code-stream] Trimmed conversation history to prevent context overflow',
+      );
     }
-    
+
     // Clean up old edits
     if (global.conversationState.context.edits.length > 10) {
       global.conversationState.context.edits = global.conversationState.context.edits.slice(-8);
     }
-    
+
     // Debug: Show a sample of actual file content
     if (context?.currentFiles && Object.keys(context.currentFiles).length > 0) {
       const firstFile = Object.entries(context.currentFiles)[0];
       console.log('[generate-ai-code-stream] - sample file:', firstFile[0]);
-      console.log('[generate-ai-code-stream] - sample content preview:', 
-        typeof firstFile[1] === 'string' ? firstFile[1].substring(0, 100) + '...' : 'not a string');
+      console.log(
+        '[generate-ai-code-stream] - sample content preview:',
+        typeof firstFile[1] === 'string' ? firstFile[1].substring(0, 100) + '...' : 'not a string',
+      );
     }
-    
+
     if (!prompt) {
-      return NextResponse.json({ 
-        success: false, 
-        error: 'Prompt is required' 
-      }, { status: 400 });
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Prompt is required',
+        },
+        { status: 400 },
+      );
     }
-    
+
     // Create a stream for real-time updates
     const encoder = new TextEncoder();
     const stream = new TransformStream();
     const writer = stream.writable.getWriter();
-    
+
     // The client leaving is a fact the work loop has to be able to see. A swallowed write
     // failure is why generation kept burning tokens and credits for a reader that was gone.
     let clientDisconnected = false;
@@ -516,33 +553,41 @@ async function generateAiCodeStream(request: NextRequest) {
         await writeChunk(encoder.encode(': keepalive\n\n'));
       }
     };
-    
+
     // Start processing in background
     (async () => {
       try {
         // Send initial status
         await sendProgress({ type: 'status', message: 'Initializing AI...' });
-        
+
         // No keep-alive needed - sandbox provisioned for 10 minutes
-        
+
         // Check if we have a file manifest for edit mode
         let editContext = null;
         let enhancedSystemPrompt = '';
         let sandboxReadWarned = false;
-        
+
         if (isEdit) {
-          console.log('[generate-ai-code-stream] Edit mode detected - starting agentic search workflow');
+          console.log(
+            '[generate-ai-code-stream] Edit mode detected - starting agentic search workflow',
+          );
           console.log('[generate-ai-code-stream] Has fileCache:', !!global.sandboxState?.fileCache);
-          console.log('[generate-ai-code-stream] Has manifest:', !!global.sandboxState?.fileCache?.manifest);
-          
+          console.log(
+            '[generate-ai-code-stream] Has manifest:',
+            !!global.sandboxState?.fileCache?.manifest,
+          );
+
           const manifest: FileManifest | undefined = global.sandboxState?.fileCache?.manifest;
-          
+
           if (manifest) {
             await sendProgress({ type: 'status', message: '🔍 Creating search plan...' });
-            
+
             const fileContents = global.sandboxState.fileCache?.files || {};
-            console.log('[generate-ai-code-stream] Files available for search:', Object.keys(fileContents).length);
-            
+            console.log(
+              '[generate-ai-code-stream] Files available for search:',
+              Object.keys(fileContents).length,
+            );
+
             // STEP 1: Get search plan from AI
             try {
               const intent = await analyzeEditIntent({ prompt, manifest, model });
@@ -550,46 +595,47 @@ async function generateAiCodeStream(request: NextRequest) {
               if (intent.ok) {
                 const searchPlan = intent.searchPlan;
                 console.log('[generate-ai-code-stream] Search plan received:', searchPlan);
-                
-                await sendProgress({ 
-                  type: 'status', 
-                  message: `🔎 Searching for: "${searchPlan.searchTerms.join('", "')}"`
+
+                await sendProgress({
+                  type: 'status',
+                  message: `🔎 Searching for: "${searchPlan.searchTerms.join('", "')}"`,
                 });
-                
+
                 // STEP 2: Execute the search plan
-                const searchExecution = executeSearchPlan(searchPlan, 
+                const searchExecution = executeSearchPlan(
+                  searchPlan,
                   Object.fromEntries(
                     Object.entries(fileContents).map(([path, data]) => [
                       path.startsWith('/') ? path : `/home/user/app/${path}`,
-                      data.content
-                    ])
-                  )
+                      data.content,
+                    ]),
+                  ),
                 );
-                
+
                 console.log('[generate-ai-code-stream] Search execution:', {
                   success: searchExecution.success,
                   resultsCount: searchExecution.results.length,
                   filesSearched: searchExecution.filesSearched,
-                  time: searchExecution.executionTime + 'ms'
+                  time: searchExecution.executionTime + 'ms',
                 });
-                
+
                 if (searchExecution.success && searchExecution.results.length > 0) {
                   // STEP 3: Select the best target file
                   const target = selectTargetFile(searchExecution.results, searchPlan.editType);
-                  
+
                   if (target) {
-                    await sendProgress({ 
-                      type: 'status', 
-                      message: `✅ Found code in ${target.filePath.split('/').pop()} at line ${target.lineNumber}`
+                    await sendProgress({
+                      type: 'status',
+                      message: `✅ Found code in ${target.filePath.split('/').pop()} at line ${target.lineNumber}`,
                     });
-                    
+
                     console.log('[generate-ai-code-stream] Target selected:', target);
-                    
+
                     // Create surgical edit context with exact location
                     // normalizedPath would be: target.filePath.replace('/home/user/app/', '');
                     // fileContent available but not used in current implementation
                     // const fileContent = fileContents[normalizedPath]?.content || '';
-                    
+
                     // Build enhanced context with search results
                     enhancedSystemPrompt = `
 ${formatSearchResultsForAI(searchExecution.results)}
@@ -602,7 +648,7 @@ You have been given the EXACT location of the code to edit.
 
 Make ONLY the change requested by the user. Do not modify any other code.
 User request: "${prompt}"`;
-                    
+
                     // Set up edit context with just this one file
                     editContext = {
                       primaryFiles: [target.filePath],
@@ -613,18 +659,20 @@ User request: "${prompt}"`;
                         description: searchPlan.reasoning,
                         targetFiles: [target.filePath],
                         confidence: 0.95, // High confidence since we found exact location
-                        searchTerms: searchPlan.searchTerms
-                      }
+                        searchTerms: searchPlan.searchTerms,
+                      },
                     };
-                    
+
                     console.log('[generate-ai-code-stream] Surgical edit context created');
                   }
                 } else {
                   // Search failed - fall back to old behavior but inform user
-                  console.warn('[generate-ai-code-stream] Search found no results, falling back to broader context');
-                  await sendProgress({ 
-                    type: 'status', 
-                    message: '⚠️ Could not find exact match, using broader search...'
+                  console.warn(
+                    '[generate-ai-code-stream] Search found no results, falling back to broader context',
+                  );
+                  await sendProgress({
+                    type: 'status',
+                    message: '⚠️ Could not find exact match, using broader search...',
                   });
                 }
               } else {
@@ -650,9 +698,9 @@ User request: "${prompt}"`;
                 label: 'Plan the edit',
                 error: error instanceof Error ? error.message : String(error),
               });
-              await sendProgress({ 
-                type: 'status', 
-                message: '⚠️ Search workflow error, falling back to keyword method...'
+              await sendProgress({
+                type: 'status',
+                message: '⚠️ Search workflow error, falling back to keyword method...',
               });
               // Fall back to old method on any error if we have a manifest
               if (manifest) {
@@ -661,40 +709,47 @@ User request: "${prompt}"`;
             }
           } else {
             // Fall back to old method if AI analysis fails
-            console.warn('[generate-ai-code-stream] AI intent analysis failed, falling back to keyword method');
+            console.warn(
+              '[generate-ai-code-stream] AI intent analysis failed, falling back to keyword method',
+            );
             if (manifest) {
               editContext = selectFilesForEdit(prompt, manifest);
             } else {
               console.log('[generate-ai-code-stream] No manifest available for fallback');
-              await sendProgress({ 
-                type: 'status', 
-                message: '⚠️ No file manifest available, will use broad context'
+              await sendProgress({
+                type: 'status',
+                message: '⚠️ No file manifest available, will use broad context',
               });
             }
           }
-          
+
           // If we got an edit context from any method, use its system prompt
           if (editContext) {
             enhancedSystemPrompt = editContext.systemPrompt;
-            
-            await sendProgress({ 
-              type: 'status', 
-              message: `Identified edit type: ${editContext.editIntent?.description || 'Code modification'}`
+
+            await sendProgress({
+              type: 'status',
+              message: `Identified edit type: ${editContext.editIntent?.description || 'Code modification'}`,
             });
           } else if (!manifest) {
             console.log('[generate-ai-code-stream] WARNING: No manifest available for edit mode!');
-            
+
             // Try to fetch files from sandbox if we have one
             if (global.activeSandbox) {
-              await sendProgress({ type: 'status', message: 'Fetching current files from sandbox...' });
-              
+              await sendProgress({
+                type: 'status',
+                message: 'Fetching current files from sandbox...',
+              });
+
               try {
                 // Read files directly from sandbox
                 const filesData = await readSandboxFiles();
 
                 if (filesData.ok) {
                   const manifest = filesData.manifest;
-                  console.log('[generate-ai-code-stream] Successfully fetched manifest from sandbox');
+                  console.log(
+                    '[generate-ai-code-stream] Successfully fetched manifest from sandbox',
+                  );
 
                   {
                     // Analyze edit intent with the manifest we just read
@@ -703,38 +758,57 @@ User request: "${prompt}"`;
 
                       if (intent.ok) {
                         const searchPlan = intent.searchPlan;
-                        console.log('[generate-ai-code-stream] Search plan received (after fetch):', searchPlan);
-                        
+                        console.log(
+                          '[generate-ai-code-stream] Search plan received (after fetch):',
+                          searchPlan,
+                        );
+
                         // For now, fall back to keyword search since we don't have file contents for search execution
                         // This path happens when no manifest was initially available
                         let targetFiles: any[] = [];
                         if (!searchPlan || searchPlan.searchTerms.length === 0) {
-                          console.warn('[generate-ai-code-stream] No target files after fetch, searching for relevant files');
-                          
+                          console.warn(
+                            '[generate-ai-code-stream] No target files after fetch, searching for relevant files',
+                          );
+
                           const promptLower = prompt.toLowerCase();
-                          const allFilePaths = Object.keys(manifest.files);
-                          
+                          const allFilePaths = Object.keys(manifest?.files ?? {});
+
                           // Look for component names mentioned in the prompt
                           if (promptLower.includes('hero')) {
-                            targetFiles = allFilePaths.filter(p => p.toLowerCase().includes('hero'));
+                            targetFiles = allFilePaths.filter((p) =>
+                              p.toLowerCase().includes('hero'),
+                            );
                           } else if (promptLower.includes('header')) {
-                            targetFiles = allFilePaths.filter(p => p.toLowerCase().includes('header'));
+                            targetFiles = allFilePaths.filter((p) =>
+                              p.toLowerCase().includes('header'),
+                            );
                           } else if (promptLower.includes('footer')) {
-                            targetFiles = allFilePaths.filter(p => p.toLowerCase().includes('footer'));
+                            targetFiles = allFilePaths.filter((p) =>
+                              p.toLowerCase().includes('footer'),
+                            );
                           } else if (promptLower.includes('nav')) {
-                            targetFiles = allFilePaths.filter(p => p.toLowerCase().includes('nav'));
+                            targetFiles = allFilePaths.filter((p) =>
+                              p.toLowerCase().includes('nav'),
+                            );
                           } else if (promptLower.includes('button')) {
-                            targetFiles = allFilePaths.filter(p => p.toLowerCase().includes('button'));
+                            targetFiles = allFilePaths.filter((p) =>
+                              p.toLowerCase().includes('button'),
+                            );
                           }
-                          
+
                           if (targetFiles.length > 0) {
-                            console.log('[generate-ai-code-stream] Found target files by keyword search after fetch:', targetFiles);
+                            console.log(
+                              '[generate-ai-code-stream] Found target files by keyword search after fetch:',
+                              targetFiles,
+                            );
                           }
                         }
-                        
-                        const allFiles = Object.keys(manifest.files)
-                          .filter(path => !targetFiles.includes(path));
-                        
+
+                        const allFiles = Object.keys(manifest?.files ?? {}).filter(
+                          (path) => !targetFiles.includes(path),
+                        );
+
                         editContext = {
                           primaryFiles: targetFiles,
                           contextFiles: allFiles,
@@ -818,20 +892,23 @@ Remember: You are a SURGEON making a precise incision, not an artist repainting 
                             targetFiles: targetFiles,
                             confidence: searchPlan ? 0.85 : 0.6,
                             description: searchPlan?.reasoning || 'Keyword-based file selection',
-                            suggestedContext: []
-                          }
+                            suggestedContext: [],
+                          },
                         };
-                        
+
                         enhancedSystemPrompt = editContext.systemPrompt;
-                        
-                        await sendProgress({ 
-                          type: 'status', 
-                          message: `Identified edit type: ${editContext.editIntent.description}`
+
+                        await sendProgress({
+                          type: 'status',
+                          message: `Identified edit type: ${editContext.editIntent.description}`,
                         });
                       } else {
                         // Log and continue, as above: a missing plan costs
                         // precision, not the edit itself.
-                        console.error('[generate-ai-code-stream] Failed to get search plan after fetch:', intent.error);
+                        console.error(
+                          '[generate-ai-code-stream] Failed to get search plan after fetch:',
+                          intent.error,
+                        );
                         await recordJobStepFailure(generationJob?.id, {
                           key: 'analyze-edit-intent',
                           label: 'Plan the edit',
@@ -839,7 +916,10 @@ Remember: You are a SURGEON making a precise incision, not an artist repainting 
                         });
                       }
                     } catch (error) {
-                      console.error('[generate-ai-code-stream] Error analyzing intent after fetch:', error);
+                      console.error(
+                        '[generate-ai-code-stream] Error analyzing intent after fetch:',
+                        error,
+                      );
                       await recordJobStepFailure(generationJob?.id, {
                         key: 'analyze-edit-intent',
                         label: 'Plan the edit',
@@ -852,7 +932,10 @@ Remember: You are a SURGEON making a precise incision, not an artist repainting 
                   // context we do not have. Without it the model works from the
                   // prompt and the conversation alone, which is worse but still
                   // produces an edit.
-                  console.error('[generate-ai-code-stream] Failed to read sandbox files:', filesData.error);
+                  console.error(
+                    '[generate-ai-code-stream] Failed to read sandbox files:',
+                    filesData.error,
+                  );
                   if (!sandboxReadWarned) {
                     await sendProgress({
                       type: 'warning',
@@ -883,91 +966,108 @@ Remember: You are a SURGEON making a precise incision, not an artist repainting 
               }
             } else {
               console.log('[generate-ai-code-stream] No active sandbox to fetch files from');
-              await sendProgress({ 
-                type: 'warning', 
+              await sendProgress({
+                type: 'warning',
                 message: NO_PROJECT_FILES_NOTICE,
               });
               sandboxReadWarned = true;
               await recordJobStepFailure(generationJob?.id, {
                 key: 'read-sandbox-files',
                 label: 'Read current files',
-                error: 'No workspace was running for this project, so its current files could not be read.',
+                error:
+                  'No workspace was running for this project, so its current files could not be read.',
               });
             }
           }
         }
-        
+
         // Build conversation context for system prompt
         let conversationContext = '';
         if (global.conversationState && global.conversationState.context.messages.length > 1) {
           console.log('[generate-ai-code-stream] Building conversation context');
-          console.log('[generate-ai-code-stream] Total messages:', global.conversationState.context.messages.length);
-          console.log('[generate-ai-code-stream] Total edits:', global.conversationState.context.edits.length);
-          
+          console.log(
+            '[generate-ai-code-stream] Total messages:',
+            global.conversationState.context.messages.length,
+          );
+          console.log(
+            '[generate-ai-code-stream] Total edits:',
+            global.conversationState.context.edits.length,
+          );
+
           conversationContext = `\n\n## Conversation History (Recent)\n`;
-          
+
           // Include only the last 3 edits to save context
           const recentEdits = global.conversationState.context.edits.slice(-3);
           if (recentEdits.length > 0) {
-            console.log('[generate-ai-code-stream] Including', recentEdits.length, 'recent edits in context');
+            console.log(
+              '[generate-ai-code-stream] Including',
+              recentEdits.length,
+              'recent edits in context',
+            );
             conversationContext += `\n### Recent Edits:\n`;
-            recentEdits.forEach(edit => {
-              conversationContext += `- "${edit.userRequest}" → ${edit.editType} (${edit.targetFiles.map(f => f.split('/').pop()).join(', ')})\n`;
+            recentEdits.forEach((edit) => {
+              conversationContext += `- "${edit.userRequest}" → ${edit.editType} (${edit.targetFiles.map((f) => f.split('/').pop()).join(', ')})\n`;
             });
           }
-          
+
           // Include recently created files - CRITICAL for preventing duplicates
           const recentMsgs = global.conversationState.context.messages.slice(-5);
           const recentlyCreatedFiles: string[] = [];
-          recentMsgs.forEach(msg => {
+          recentMsgs.forEach((msg) => {
             if (msg.metadata?.editedFiles) {
               recentlyCreatedFiles.push(...msg.metadata.editedFiles);
             }
           });
-          
+
           if (recentlyCreatedFiles.length > 0) {
             const uniqueFiles = [...new Set(recentlyCreatedFiles)];
             conversationContext += `\n### 🚨 RECENTLY CREATED/EDITED FILES (DO NOT RECREATE THESE):\n`;
-            uniqueFiles.forEach(file => {
+            uniqueFiles.forEach((file) => {
               conversationContext += `- ${file}\n`;
             });
             conversationContext += `\nIf the user mentions any of these components, UPDATE the existing file!\n`;
           }
-          
+
           // Include only last 5 messages for context (reduced from 10)
           const recentMessages = recentMsgs;
-          if (recentMessages.length > 2) { // More than just current message
+          if (recentMessages.length > 2) {
+            // More than just current message
             conversationContext += `\n### Recent Messages:\n`;
-            recentMessages.slice(0, -1).forEach(msg => { // Exclude current message
+            recentMessages.slice(0, -1).forEach((msg) => {
+              // Exclude current message
               if (msg.role === 'user') {
-                const truncatedContent = msg.content.length > 100 ? msg.content.substring(0, 100) + '...' : msg.content;
+                const truncatedContent =
+                  msg.content.length > 100 ? msg.content.substring(0, 100) + '...' : msg.content;
                 conversationContext += `- "${truncatedContent}"\n`;
               }
             });
           }
-          
+
           // Include only last 2 major changes
-          const majorChanges = global.conversationState.context.projectEvolution.majorChanges.slice(-2);
+          const majorChanges =
+            global.conversationState.context.projectEvolution.majorChanges.slice(-2);
           if (majorChanges.length > 0) {
             conversationContext += `\n### Recent Changes:\n`;
-            majorChanges.forEach(change => {
+            majorChanges.forEach((change) => {
               conversationContext += `- ${change.description}\n`;
             });
           }
-          
+
           // Keep user preferences - they're concise
           const userPrefs = analyzeUserPreferences(global.conversationState.context.messages);
           if (userPrefs.commonPatterns.length > 0) {
             conversationContext += `\n### User Preferences:\n`;
             conversationContext += `- Edit style: ${userPrefs.preferredEditStyle}\n`;
           }
-          
+
           // Limit total conversation context length
           if (conversationContext.length > 2000) {
-            conversationContext = conversationContext.substring(0, 2000) + '\n[Context truncated to prevent length errors]';
+            conversationContext =
+              conversationContext.substring(0, 2000) +
+              '\n[Context truncated to prevent length errors]';
           }
         }
-        
+
         const uiUxBrief = buildUiUxProMaxBrief({
           prompt,
           styleHint: styleHint || context?.styleName || context?.conversationContext?.style,
@@ -987,7 +1087,9 @@ Remember: You are a SURGEON making a precise incision, not an artist repainting 
           }
         }
         // Stable prefix is byte-identical for the same stack + direction + ACTIVE memory.
-        const stablePrefix = buildStablePromptPrefix(projectStack, projectDirection, { memoryBlock });
+        const stablePrefix = buildStablePromptPrefix(projectStack, projectDirection, {
+          memoryBlock,
+        });
         // Skills are conditional and sit AFTER the cacheable prefix, never inside it.
         const injectedSkills = await injectMatchedSkills(prompt, conversationContext || '');
         if (injectedSkills.names.length > 0) {
@@ -1015,13 +1117,18 @@ Remember: You are a SURGEON making a precise incision, not an artist repainting 
           assetManifest,
         });
         // Keep getStackPrompt as the composed builder used by plan + this route.
-        let systemPrompt = getStackPrompt(projectStack, projectDirection, {
-          conversationContext,
-          uiUxBrief,
-          isEdit,
-          editContext: promptEditContext,
-          assetManifest,
-        }, { memoryBlock });
+        let systemPrompt = getStackPrompt(
+          projectStack,
+          projectDirection,
+          {
+            conversationContext,
+            uiUxBrief,
+            isEdit,
+            editContext: promptEditContext,
+            assetManifest,
+          },
+          { memoryBlock },
+        );
 
         // Gate on the admin setting, not MORPH_API_KEY — the applier reads the setting, so
         // an env-only check left the feature off whenever the key was entered in /admin/config.
@@ -1049,74 +1156,112 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
         let fullPrompt = prompt;
         if (context) {
           const contextParts = [];
-          
+
           if (context.sandboxId) {
             contextParts.push(`Current sandbox ID: ${context.sandboxId}`);
           }
-          
+
           if (context.structure) {
             contextParts.push(`Current file structure:\n${context.structure}`);
           }
-          
+
           // Use backend file cache instead of frontend-provided files
           let backendFiles = global.sandboxState?.fileCache?.files || {};
           let hasBackendFiles = Object.keys(backendFiles).length > 0;
-          
+
+          // The backend file cache is a server-global left by whichever sandbox
+          // last synced it — it is NOT scoped to this project. A REACT initial
+          // build once inherited the previous NEXTJS project's app/ tree as
+          // "EXISTING APPLICATION" context, and the model edited that tree
+          // instead of following the REACT stack prompt. Only trust the cache
+          // when it was written by this project's own sandbox.
+          // An initial build generates from scratch by definition. The
+          // "EXISTING APPLICATION — TARGETED EDIT REQUIRED" framing below is
+          // edit-only: fed to an initial build it makes the model edit
+          // whatever tree the cache happens to hold. (A stale client once
+          // stamped the previous project's sandboxId onto a new project row,
+          // which let the cache pass the ownership check and a REACT build
+          // "edited" the old project's Next.js files.)
+          if (hasBackendFiles && !isEdit) {
+            log.info('generation.backend_cache_skipped', {
+              requestId: getRequestId(),
+              reason: 'initial_build',
+            });
+            backendFiles = {};
+            hasBackendFiles = false;
+          }
+
           console.log('[generate-ai-code-stream] Backend file cache status:');
           console.log('[generate-ai-code-stream] - Has sandboxState:', !!global.sandboxState);
-          console.log('[generate-ai-code-stream] - Has fileCache:', !!global.sandboxState?.fileCache);
+          console.log(
+            '[generate-ai-code-stream] - Has fileCache:',
+            !!global.sandboxState?.fileCache,
+          );
           console.log('[generate-ai-code-stream] - File count:', Object.keys(backendFiles).length);
-          console.log('[generate-ai-code-stream] - Has manifest:', !!global.sandboxState?.fileCache?.manifest);
-          
+          console.log(
+            '[generate-ai-code-stream] - Has manifest:',
+            !!global.sandboxState?.fileCache?.manifest,
+          );
+
           // If no backend files and we're in edit mode, try to fetch from sandbox
-          if (shouldRetrySandboxFileRead({
-            hasBackendFiles,
-            isEdit,
-            hasActiveSandbox: Boolean(global.activeSandbox),
-          })) {
-            console.log('[generate-ai-code-stream] No backend files, attempting to fetch from sandbox...');
-            
+          if (
+            shouldRetrySandboxFileRead({
+              hasBackendFiles,
+              isEdit,
+              hasActiveSandbox: Boolean(global.activeSandbox),
+            })
+          ) {
+            console.log(
+              '[generate-ai-code-stream] No backend files, attempting to fetch from sandbox...',
+            );
+
             try {
               const filesData = await readSandboxFiles();
 
               if (filesData.ok) {
                 {
-                  console.log('[generate-ai-code-stream] Successfully fetched', Object.keys(filesData.files).length, 'files from sandbox');
-                  
+                  console.log(
+                    '[generate-ai-code-stream] Successfully fetched',
+                    Object.keys(filesData.files).length,
+                    'files from sandbox',
+                  );
+
                   // Initialize sandboxState if needed
                   if (!global.sandboxState) {
                     global.sandboxState = {
                       fileCache: {
                         files: {},
                         lastSync: Date.now(),
-                        sandboxId: context?.sandboxId || 'unknown'
-                      }
+                        sandboxId: context?.sandboxId || 'unknown',
+                      },
                     } as any;
                   } else if (!global.sandboxState.fileCache) {
                     global.sandboxState.fileCache = {
                       files: {},
                       lastSync: Date.now(),
-                      sandboxId: context?.sandboxId || 'unknown'
+                      sandboxId: context?.sandboxId || 'unknown',
                     };
                   }
-                  
+
                   // Store files in cache
                   for (const [path, content] of Object.entries(filesData.files)) {
                     const normalizedPath = path.replace('/home/user/app/', '');
                     if (global.sandboxState.fileCache) {
                       global.sandboxState.fileCache.files[normalizedPath] = {
                         content: content as string,
-                        lastModified: Date.now()
+                        lastModified: Date.now(),
                       };
                     }
                   }
-                  
+
                   if (filesData.manifest && global.sandboxState.fileCache) {
                     global.sandboxState.fileCache.manifest = filesData.manifest;
-                    
+
                     // Now try to analyze edit intent with the fetched manifest
                     if (!editContext) {
-                      console.log('[generate-ai-code-stream] Analyzing edit intent with fetched manifest');
+                      console.log(
+                        '[generate-ai-code-stream] Analyzing edit intent with fetched manifest',
+                      );
                       try {
                         const intent = await analyzeEditIntent({
                           prompt,
@@ -1125,19 +1270,29 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
                         });
 
                         if (intent.ok) {
-                          console.log('[generate-ai-code-stream] Search plan received:', intent.searchPlan);
-                          
+                          console.log(
+                            '[generate-ai-code-stream] Search plan received:',
+                            intent.searchPlan,
+                          );
+
                           // Create edit context from AI analysis
                           // Note: We can't execute search here without file contents, so fall back to keyword method
                           const fileContext = selectFilesForEdit(prompt, filesData.manifest);
                           editContext = fileContext;
                           enhancedSystemPrompt = fileContext.systemPrompt;
-                          
-                          console.log('[generate-ai-code-stream] Edit context created with', editContext.primaryFiles.length, 'primary files');
+
+                          console.log(
+                            '[generate-ai-code-stream] Edit context created with',
+                            editContext.primaryFiles.length,
+                            'primary files',
+                          );
                         } else {
                           // Log and continue: same trade-off as the other two
                           // planning call sites.
-                          console.error('[generate-ai-code-stream] Failed to get search plan:', intent.error);
+                          console.error(
+                            '[generate-ai-code-stream] Failed to get search plan:',
+                            intent.error,
+                          );
                           await recordJobStepFailure(generationJob?.id, {
                             key: 'analyze-edit-intent',
                             label: 'Plan the edit',
@@ -1145,7 +1300,10 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
                           });
                         }
                       } catch (error) {
-                        console.error('[generate-ai-code-stream] Failed to analyze edit intent:', error);
+                        console.error(
+                          '[generate-ai-code-stream] Failed to analyze edit intent:',
+                          error,
+                        );
                         await recordJobStepFailure(generationJob?.id, {
                           key: 'analyze-edit-intent',
                           label: 'Plan the edit',
@@ -1154,7 +1312,7 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
                       }
                     }
                   }
-                  
+
                   // Update variables
                   backendFiles = global.sandboxState.fileCache?.files || {};
                   hasBackendFiles = Object.keys(backendFiles).length > 0;
@@ -1164,7 +1322,10 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
                 // Log and continue: this is a best-effort attempt to recover a
                 // file cache we do not have. The generation proceeds with the
                 // context already assembled.
-                console.error('[generate-ai-code-stream] Failed to read sandbox files:', filesData.error);
+                console.error(
+                  '[generate-ai-code-stream] Failed to read sandbox files:',
+                  filesData.error,
+                );
                 if (!sandboxReadWarned) {
                   await sendProgress({
                     type: 'warning',
@@ -1187,17 +1348,23 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
               });
             }
           }
-          
+
           // Include current file contents from backend cache
           if (hasBackendFiles) {
             // If we have edit context, use intelligent file selection
             if (editContext && editContext.primaryFiles.length > 0) {
               contextParts.push('\nEXISTING APPLICATION - TARGETED EDIT MODE');
               contextParts.push(`\n${editContext.systemPrompt || enhancedSystemPrompt}\n`);
-              
+
               // Get contents of primary and context files
-              const primaryFileContents = await getFileContents(editContext.primaryFiles, global.sandboxState!.fileCache!.manifest!);
-              const contextFileContents = await getFileContents(editContext.contextFiles, global.sandboxState!.fileCache!.manifest!);
+              const primaryFileContents = await getFileContents(
+                editContext.primaryFiles,
+                global.sandboxState!.fileCache!.manifest!,
+              );
+              const contextFileContents = await getFileContents(
+                editContext.contextFiles,
+                global.sandboxState!.fileCache!.manifest!,
+              );
               const formattedFiles = formatFilesForAI(primaryFileContents, {});
               contextParts.push(formattedFiles);
               const selectedRest = selectFileContext({
@@ -1208,12 +1375,18 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
               if (selectedRest.formatted) {
                 contextParts.push(selectedRest.formatted);
               }
-              
-              contextParts.push('\nIMPORTANT: Only modify the files listed under "Files to Edit". The context files are provided for reference only.');
+
+              contextParts.push(
+                '\nIMPORTANT: Only modify the files listed under "Files to Edit". The context files are provided for reference only.',
+              );
             } else {
-              console.log('[generate-ai-code-stream] Selective file context (no edit-context primary set)');
+              console.log(
+                '[generate-ai-code-stream] Selective file context (no edit-context primary set)',
+              );
               contextParts.push('\nEXISTING APPLICATION - TARGETED EDIT REQUIRED');
-              contextParts.push('\nYou MUST analyze the user request and determine which specific file(s) to edit.');
+              contextParts.push(
+                '\nYou MUST analyze the user request and determine which specific file(s) to edit.',
+              );
               const recentPaths = (global.conversationState?.context.edits ?? [])
                 .flatMap((edit) => edit.targetFiles || [])
                 .slice(-12);
@@ -1226,10 +1399,14 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
                 `[generate-ai-code-stream] Selective context: ${selected.fullPaths.length} full, ${selected.pathOnly.length} path-only, ~${selected.estimatedTokens} tokens`,
               );
               contextParts.push(selected.formatted);
-              contextParts.push('\nEdit only the files required. Path-only entries are listed for orientation — do not regenerate them.');
+              contextParts.push(
+                '\nEdit only the files required. Path-only entries are listed for orientation — do not regenerate them.',
+              );
             }
           } else if (context.currentFiles && Object.keys(context.currentFiles).length > 0) {
-            console.log('[generate-ai-code-stream] Warning: Backend cache empty, using selective frontend files');
+            console.log(
+              '[generate-ai-code-stream] Warning: Backend cache empty, using selective frontend files',
+            );
             contextParts.push('\nEXISTING APPLICATION - DO NOT REGENERATE FROM SCRATCH');
             const recentPaths = (global.conversationState?.context.edits ?? [])
               .flatMap((edit) => edit.targetFiles || [])
@@ -1241,42 +1418,50 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
               primaryPaths: editContext?.primaryFiles,
             });
             contextParts.push(selected.formatted);
-            contextParts.push('\nThe listed full files already exist. Generate ONLY files that must change.');
+            contextParts.push(
+              '\nThe listed full files already exist. Generate ONLY files that must change.',
+            );
           }
-          
+
           // Add explicit edit mode indicator
           if (isEdit) {
             contextParts.push('\nEDIT MODE ACTIVE');
             contextParts.push('This is an incremental update to an existing application.');
-            contextParts.push('DO NOT regenerate App.jsx, index.css, or other core files unless explicitly requested.');
-            contextParts.push('ONLY create or modify the specific files needed for the user\'s request.');
-            contextParts.push('\n⚠️ CRITICAL FILE OUTPUT FORMAT - VIOLATION = FAILURE:');
-            contextParts.push('YOU MUST OUTPUT EVERY FILE IN THIS EXACT XML FORMAT:');
-            contextParts.push('<file path="src/components/ComponentName.jsx">');
+            contextParts.push(
+              'DO NOT regenerate App.jsx, index.css, or other core files unless explicitly requested.',
+            );
+            contextParts.push(
+              "ONLY create or modify the specific files needed for the user's request.",
+            );
+            contextParts.push('\nFILE OUTPUT FORMAT — every file in its own fenced block:');
+            contextParts.push(`${FENCE}tsx{path=src/components/ComponentName.tsx}`);
             contextParts.push('// Complete file content here');
-            contextParts.push('</file>');
-            contextParts.push('<file path="src/index.css">');
-            contextParts.push('/* CSS content here */');
-            contextParts.push('</file>');
-            contextParts.push('\n❌ NEVER OUTPUT: "Generated Files: index.css, App.jsx"');
-            contextParts.push('❌ NEVER LIST FILE NAMES WITHOUT CONTENT');
-            contextParts.push('✅ ALWAYS: One <file> tag per file with COMPLETE content');
-            contextParts.push('✅ ALWAYS: Include EVERY file you modified');
+            contextParts.push(FENCE);
+            contextParts.push('Never list file names as plain text outside a fence.');
+            contextParts.push('Include every file you changed, with its complete contents.');
           } else if (!hasBackendFiles) {
             // First generation mode - make it beautiful!
             contextParts.push('\n🎨 FIRST GENERATION MODE - CREATE SOMETHING BEAUTIFUL!');
-            contextParts.push('\nThis is the user\'s FIRST experience. Make it impressive:');
+            contextParts.push("\nThis is the user's FIRST experience. Make it impressive:");
             contextParts.push('1. **USE TAILWIND PROPERLY** - Use standard Tailwind color classes');
             contextParts.push('2. **NO PLACEHOLDERS** - Use real content, not lorem ipsum');
-            contextParts.push('3. **COMPLETE COMPONENTS** - Header, Hero, Features, Footer minimum');
+            contextParts.push(
+              '3. **COMPLETE COMPONENTS** - Header, Hero, Features, Footer minimum',
+            );
             contextParts.push('4. **VISUAL POLISH** - Shadows, hover states, transitions');
-            contextParts.push('5. **STANDARD CLASSES** - bg-white, text-gray-900, bg-blue-500, NOT bg-background');
-            contextParts.push('\nCreate a polished, professional application that works perfectly on first load.');
-            contextParts.push('\n⚠️ OUTPUT FORMAT:');
-            contextParts.push('Use <file path="...">content</file> tags for EVERY file');
-            contextParts.push('NEVER output "Generated Files:" as plain text');
+            contextParts.push(
+              '5. **STANDARD CLASSES** - bg-white, text-gray-900, bg-blue-500, NOT bg-background',
+            );
+            contextParts.push(
+              '\nCreate a polished, professional application that works perfectly on first load.',
+            );
+            contextParts.push('\nOUTPUT FORMAT:');
+            contextParts.push(
+              `Every file in its own path-tagged fence: ${FENCE}tsx{path=src/App.tsx}`,
+            );
+            contextParts.push('Never list file names as plain text outside a fence.');
           }
-          
+
           // Add conversation context (scraped websites, etc)
           if (context.conversationContext) {
             if (context.conversationContext.scrapedWebsites?.length > 0) {
@@ -1286,19 +1471,20 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
                 contextParts.push(`Scraped: ${new Date(site.timestamp).toLocaleString()}`);
                 if (site.content) {
                   // Include a summary of the scraped content
-                  const contentPreview = typeof site.content === 'string' 
-                    ? site.content.substring(0, 1000) 
-                    : JSON.stringify(site.content).substring(0, 1000);
+                  const contentPreview =
+                    typeof site.content === 'string'
+                      ? site.content.substring(0, 1000)
+                      : JSON.stringify(site.content).substring(0, 1000);
                   contextParts.push(`Content Preview: ${contentPreview}...`);
                 }
               });
             }
-            
+
             if (context.conversationContext.currentProject) {
               contextParts.push(`\nCurrent Project: ${context.conversationContext.currentProject}`);
             }
           }
-          
+
           if (contextParts.length > 0) {
             if (morphFastApplyEnabled) {
               contextParts.push('\nOUTPUT FORMAT (REQUIRED IN MORPH MODE):');
@@ -1306,17 +1492,19 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
               contextParts.push('<instructions>Minimal, precise instruction.</instructions>');
               contextParts.push('<update>// Smallest necessary snippet</update>');
               contextParts.push('</edit>');
-              contextParts.push('\nIf you need to create a NEW file, then and only then output a full file:');
-              contextParts.push('<file path="src/components/NewComponent.jsx">');
+              contextParts.push(
+                '\nIf you need to create a NEW file, then and only then output a full file:',
+              );
+              contextParts.push(`${FENCE}tsx{path=src/components/NewComponent.tsx}`);
               contextParts.push('// Full file content when creating new files');
-              contextParts.push('</file>');
+              contextParts.push(FENCE);
             }
             fullPrompt = `CONTEXT:\n${contextParts.join('\n')}\n\nUSER REQUEST:\n${prompt}`;
           }
         }
-        
+
         await sendProgress({ type: 'status', message: 'Planning application structure...' });
-        
+
         // Nobody is listening: stop before the model call rather than paying for tokens and
         // credits nobody will see. The `finally` settles the job.
         if (clientDisconnected) {
@@ -1328,39 +1516,12 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
         }
 
         console.log('\n[generate-ai-code-stream] Starting streaming response...\n');
-        
+
         // Track packages that need to be installed
         const packagesToInstall: string[] = [];
-        
-        // Determine which provider to use based on model
-        const isAnthropic = model.startsWith('anthropic/');
-        const isGoogle = model.startsWith('google/');
-        const isOpenAI = model.startsWith('openai/');
-        const isKimiGroq = model === 'moonshotai/kimi-k2-instruct-0905';
-        const modelProvider = isAnthropic ? anthropic : 
-                              (isOpenAI ? openai : 
-                              (isGoogle ? googleGenerativeAI : 
-                              (isKimiGroq ? groq : groq)));
-        
-        // Fix model name transformation for different providers
-        let actualModel: string;
-        if (isAnthropic) {
-          actualModel = model.replace('anthropic/', '');
-        } else if (isOpenAI) {
-          actualModel = model.replace('openai/', '');
-        } else if (isKimiGroq) {
-          // Kimi on Groq - use full model string
-          actualModel = 'moonshotai/kimi-k2-instruct-0905';
-        } else if (isGoogle) {
-          // Google uses specific model names - convert our naming to theirs  
-          actualModel = model.replace('google/', '');
-        } else {
-          actualModel = model;
-        }
 
-        console.log(`[generate-ai-code-stream] Using provider: ${isAnthropic ? 'Anthropic' : isGoogle ? 'Google' : isOpenAI ? 'OpenAI' : 'Groq'}, model: ${actualModel}`);
-        console.log(`[generate-ai-code-stream] AI Gateway enabled: ${isUsingAIGateway}`);
-        console.log(`[generate-ai-code-stream] Model string: ${model}`);
+        // DeepSeek is the only provider; the chain below supplies the client.
+        const actualModel = model;
 
         // Never exceed the workspace plan's per-job token cap.
         const outputTokenCap = Math.min(appConfig.ai.maxTokens, planCaps.maxTokensPerJob);
@@ -1371,33 +1532,27 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
         // so the output cap never applied and GPT-5 never received reasoningEffort.
         // Keeping the type means a stale option name fails tsc instead of failing quietly.
         // Stable prefix first (cacheable). Volatile user + file context last.
+        // Typed on purpose: v5 renamed maxTokens to maxOutputTokens and
+        // experimental_providerMetadata to providerOptions, and silently
+        // ignored the old names — the output cap never applied. A stale option
+        // now fails tsc instead of failing quietly.
         const streamOptions: Parameters<typeof streamText>[0] = {
-          model: modelProvider(actualModel),
+          // Replaced per attempt by the provider chain below.
+          model: undefined as never,
           messages: buildCachedMessages({
             stablePrefix,
-            volatileUser: [injectedSkills.block, volatileSuffix, fullPrompt].filter(Boolean).join('\n\n'),
-            enableAnthropicCache: isAnthropic,
+            volatileUser: [injectedSkills.block, volatileSuffix, fullPrompt]
+              .filter(Boolean)
+              .join('\n\n'),
           }),
           maxOutputTokens: outputTokenCap,
-          stopSequences: [] // Don't stop early
-          // Note: Neither Groq nor Anthropic models support tool/function calling in this context
-          // We use XML tags for package detection instead
+          stopSequences: [], // Don't stop early
         };
 
-        // Add temperature for non-reasoning models
-        if (!model.startsWith('openai/gpt-5')) {
+        // DeepSeek's thinking-mode model rejects a temperature.
+        if (!actualModel.includes('-pro')) {
           streamOptions.temperature = 0.7;
         }
-
-        // Add reasoning effort for GPT-5 models
-        if (isOpenAI) {
-          streamOptions.providerOptions = {
-            openai: {
-              reasoningEffort: 'high'
-            }
-          };
-        }
-
         let result: Awaited<ReturnType<typeof streamText>> | undefined;
         let generatedCode = '';
         let files: { path: string; content: string }[] = [];
@@ -1406,460 +1561,476 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
         let componentCount = 0;
         let providersTried: string[] = [];
         try {
-            const failover = await executeWithCompletionFailover(
-              providerChain,
-              async (entry, ctx) => {
-                servedProvider = entry.provider;
-                servedModel = entry.model;
-                const prefixed =
-                  entry.provider === 'openai'
-                    ? `openai/${entry.model}`
-                    : entry.provider === 'anthropic'
-                      ? `anthropic/${entry.model}`
-                      : entry.provider === 'google'
-                        ? `google/${entry.model}`
-                        : entry.model;
-                const client = clientForEntry(entry, providerEnv);
-                const actualModel = prefixed.includes('/') ? prefixed.split('/').slice(1).join('/') : entry.model;
-                const nextOptions = {
-                  ...streamOptions,
-                  model: client(actualModel),
-                  abortSignal: ctx.signal,
-                };
-                const capture = bindStreamErrorCapture();
-                return capture.attach(
-                  streamText({
-                    ...nextOptions,
-                    onError: capture.onError,
-                  }),
-                );
-              },
-              async (stream, entry) => {
-                result = stream;
-                servedProvider = entry.provider;
-                servedModel = entry.model;
-                generatedCode = '';
-                files = [];
-                currentFile = '';
-                currentFilePath = '';
-                let isInFile = false;
-                let isInTag = false;
-                let conversationalBuffer = '';
-                let tagBuffer = '';
-                packagesToInstall.length = 0;
-
-        // Stream the response and parse in real-time
-        for await (const textPart of stream.textStream || []) {
-          if (clientDisconnected) break;
-          const text = textPart || '';
-          generatedCode += text;
-          currentFile += text;
-          const capAbort = capTracker.addChunk(text);
-          if (capAbort) {
-            for (const file of capTracker.partialFiles) {
-              jobProgress?.addFile(file.path, file.content);
-            }
-            await jobProgress?.flush();
-            throw capAbort;
-          }
-          
-          // Combine with buffer for tag detection
-          const searchText = tagBuffer + text;
-          
-          // Log streaming chunks to console
-          process.stdout.write(text);
-          
-          // Check if we're entering or leaving a tag
-          const hasOpenTag = /<(file|package|packages|explanation|command|structure|template)\b/.test(text);
-          const hasCloseTag = /<\/(file|package|packages|explanation|command|structure|template)>/.test(text);
-          
-          if (hasOpenTag) {
-            // Send any buffered conversational text before the tag
-            if (conversationalBuffer.trim() && !isInTag) {
-              await sendProgress({ 
-                type: 'conversation', 
-                text: conversationalBuffer.trim()
-              });
-              conversationalBuffer = '';
-            }
-            isInTag = true;
-          }
-          
-          if (hasCloseTag) {
-            isInTag = false;
-          }
-          
-          // If we're not in a tag, buffer as conversational text
-          if (!isInTag && !hasOpenTag) {
-            conversationalBuffer += text;
-          }
-          
-          // Stream the raw text for live preview
-          await sendProgress({ 
-            type: 'stream', 
-            text: text,
-            raw: true 
-          });
-          
-          // Debug: Log every 100 characters streamed
-          if (generatedCode.length % 100 < text.length) {
-            console.log(`[generate-ai-code-stream] Streamed ${generatedCode.length} chars`);
-          }
-          
-          // Check for package tags in buffered text (ONLY for edits, not initial generation)
-          let lastIndex = 0;
-          if (isEdit) {
-            const packageRegex = /<package>([^<]+)<\/package>/g;
-            let packageMatch;
-            
-            while ((packageMatch = packageRegex.exec(searchText)) !== null) {
-              const packageName = packageMatch[1].trim();
-              if (packageName && !packagesToInstall.includes(packageName)) {
-                packagesToInstall.push(packageName);
-                console.log(`[generate-ai-code-stream] Package detected: ${packageName}`);
-                await sendProgress({ 
-                  type: 'package', 
-                  name: packageName,
-                  message: `Package detected: ${packageName}`
-                });
-              }
-              lastIndex = packageMatch.index + packageMatch[0].length;
-            }
-          }
-          
-          // Keep unmatched portion in buffer for next iteration
-          tagBuffer = searchText.substring(Math.max(0, lastIndex - 50)); // Keep last 50 chars
-          
-          // Check for file boundaries
-          if (text.includes('<file path="')) {
-            const pathMatch = text.match(/<file path="([^"]+)"/);
-            if (pathMatch) {
-              currentFilePath = pathMatch[1];
-              isInFile = true;
-              currentFile = text;
-            }
-          }
-          
-          // Check for file end
-          if (isInFile && currentFile.includes('</file>')) {
-            isInFile = false;
-            const closed = currentFile.match(/<file path="[^"]+">([\s\S]*?)<\/file>/);
-            if (jobProgress && currentFilePath) {
-              const content = (closed?.[1] ?? '').trim();
-              const fileAbort = capTracker.addFile(currentFilePath, content);
-              jobProgress.addFile(currentFilePath, content);
-              if (fileAbort) {
-                await jobProgress.flush();
-                throw fileAbort;
-              }
-            }
-            
-            // Send component progress update
-            if (currentFilePath.includes('components/')) {
-              componentCount++;
-              const componentName = currentFilePath.split('/').pop()?.replace('.jsx', '') || 'Component';
-              await sendProgress({ 
-                type: 'component', 
-                name: componentName,
-                path: currentFilePath,
-                index: componentCount
-              });
-            } else if (currentFilePath.includes('App.jsx')) {
-              await sendProgress({ 
-                type: 'app', 
-                message: 'Generated main App.jsx',
-                path: currentFilePath
-              });
-            }
-            
-            currentFile = '';
-            currentFilePath = '';
-          }
-        }
-        
-        console.log('\n\n[generate-ai-code-stream] Streaming complete.');
-
-        if (clientDisconnected) {
-          // Whatever the model produced so far is already on the job row via jobProgress, so
-          // the recovery panel can resume from it. The `finally` settles the job as abandoned.
-          log.warn('generation.stopped_mid_stream', {
-            jobId: generationJob?.id ?? null,
-            reason: clientDisconnectReason,
-            charsGenerated: generatedCode.length,
-          });
-          return { generatedCode, files, morphEditBlocks: 0, stop: true as const };
-        }
-        
-        // Send any remaining conversational text
-        if (conversationalBuffer.trim()) {
-          await sendProgress({ 
-            type: 'conversation', 
-            text: conversationalBuffer.trim()
-          });
-        }
-        
-        // Also parse <packages> tag for multiple packages - ONLY for edits
-        if (isEdit) {
-          const packagesRegex = /<packages>([\s\S]*?)<\/packages>/g;
-          let packagesMatch;
-          while ((packagesMatch = packagesRegex.exec(generatedCode)) !== null) {
-            const packagesContent = packagesMatch[1].trim();
-            const packagesList = packagesContent.split(/[\n,]+/)
-              .map(pkg => pkg.trim())
-              .filter(pkg => pkg.length > 0);
-            
-            for (const packageName of packagesList) {
-              if (!packagesToInstall.includes(packageName)) {
-                packagesToInstall.push(packageName);
-                console.log(`[generate-ai-code-stream] Package from <packages> tag: ${packageName}`);
-                await sendProgress({ 
-                  type: 'package', 
-                  name: packageName,
-                  message: `Package detected: ${packageName}`
-                });
-              }
-            }
-          }
-        }
-        
-        // Function to extract packages from import statements
-        function extractPackagesFromCode(content: string): string[] {
-          const packages: string[] = [];
-          // Match ES6 imports
-          const importRegex = /import\s+(?:(?:\{[^}]*\}|\*\s+as\s+\w+|\w+)(?:\s*,\s*(?:\{[^}]*\}|\*\s+as\s+\w+|\w+))*\s+from\s+)?['"]([^'"]+)['"]/g;
-          let importMatch;
-          
-          while ((importMatch = importRegex.exec(content)) !== null) {
-            const importPath = importMatch[1];
-            if (!shouldSkipPackageInstall(projectStack, importPath)) {
-              const packageName = packageNameFromImport(importPath);
-              
-              if (!packages.includes(packageName)) {
-                packages.push(packageName);
-              }
-            }
-          }
-          
-          return packages;
-        }
-        
-        // Parse files and send progress for each
-        const fileRegex = /<file path="([^"]*)">([\s\S]*?)<\/file>/g;
-        let match;
-        
-        while ((match = fileRegex.exec(generatedCode)) !== null) {
-          const filePath = match[1];
-          const content = match[2].trim();
-          const safe = sanitizeGenerationPath(filePath);
-          if (!safe.ok) continue;
-          files.push({ path: safe.path, content });
-          jobProgress?.addFile(safe.path, content);
-          
-          // Extract packages from file content - ONLY for edits
-          if (isEdit) {
-            const filePackages = extractPackagesFromCode(content);
-            for (const pkg of filePackages) {
-              if (!packagesToInstall.includes(pkg)) {
-                packagesToInstall.push(pkg);
-                console.log(`[generate-ai-code-stream] Package detected from imports: ${pkg}`);
-                await sendProgress({ 
-                  type: 'package', 
-                  name: pkg,
-                  message: `Package detected from imports: ${pkg}`
-                });
-              }
-            }
-          }
-          
-          // Send progress for each file (reusing componentCount from streaming)
-          if (filePath.includes('components/')) {
-            const componentName = filePath.split('/').pop()?.replace('.jsx', '') || 'Component';
-            await sendProgress({ 
-              type: 'component', 
-              name: componentName,
-              path: filePath,
-              index: componentCount
-            });
-          } else if (filePath.includes('App.jsx')) {
-            await sendProgress({ 
-              type: 'app', 
-              message: 'Generated main App.jsx',
-              path: filePath
-            });
-          }
-        }
-
-                const morphEditBlocks = (generatedCode.match(/<edit\s+target_file="/g) || []).length;
-                const summary = summarizeGenerationOutput(generatedCode);
-                log.info('generation.stream_complete', {
-                  jobId: generationJob?.id ?? null,
-                  provider: entry.provider,
-                  model: entry.model,
-                  chars: summary.chars,
-                  preview: summary.preview,
-                  fileOpen: summary.fileOpen,
-                  fileClose: summary.fileClose,
-                  markdownFences: summary.markdownFences,
-                });
-                return {
-                  generatedCode,
-                  files,
-                  morphEditBlocks,
-                  stop: clientDisconnected,
-                };
-              },
-              (out) => out.stop || !producedNoChanges(out.files.length, out.morphEditBlocks),
-              { circuit: getDefaultCircuit() },
-            );
-            servedProvider = failover.provider;
-            servedModel = failover.model;
-            generatedCode = failover.result.generatedCode;
-            files = failover.result.files;
-            providersTried = [...new Set(failover.attempts.map((row) => providerDisplayName(row.provider)))];
-            if (generationJob) {
-              await updateJobFields(generationJob.id, {
-                provider: failover.provider,
-                model: failover.model,
-              });
-              await recordProviderAttempts(generationJob.id, failover.attempts);
-            }
-            if (failover.failedOver) {
-              const from = failover.attempts.find((row) => !row.ok)?.provider as ProviderName | undefined;
-              if (from) {
-                await sendProgress({
-                  type: 'info',
-                  message: failoverNotice(from, failover.provider),
-                });
-              }
-            }
-        } catch (streamError: unknown) {
-            if (streamError instanceof JobCapError) throw streamError;
-            const cause = streamError instanceof ProviderRunError ? streamError.causeError ?? streamError : streamError;
-            const attempts = streamError instanceof ProviderRunError ? streamError.attempts : [];
-            providersTried = [...new Set(attempts.map((row) => providerDisplayName(row.provider)))];
-            if (generationJob && attempts.length > 0) {
-              await recordProviderAttempts(generationJob.id, attempts);
-            }
-            if (cause instanceof EmptyCompletionError) {
-              log.warn('generation.empty_chain', {
-                jobId: generationJob?.id ?? null,
-                providersTried,
-              });
-            } else {
-              console.error('[generate-ai-code-stream] Error calling streamText:', streamError);
-              throw Object.assign(
-                streamError instanceof Error
-                  ? streamError
-                  : new Error(providerFailureMessage(cause, servedProvider)),
-                { cause },
+          const failover = await executeWithCompletionFailover(
+            providerChain,
+            async (entry, ctx) => {
+              servedProvider = entry.provider;
+              servedModel = entry.model;
+              const client = clientForEntry(entry, providerEnv);
+              const nextOptions = {
+                ...streamOptions,
+                model: client(entry.model),
+                maxOutputTokens: Math.min(outputTokenCap, maxOutputTokensForEntry(entry)),
+                abortSignal: ctx.signal,
+              };
+              const capture = bindStreamErrorCapture();
+              return capture.attach(
+                streamText({
+                  ...nextOptions,
+                  onError: capture.onError,
+                }),
               );
-            }
+            },
+            async (stream, entry) => {
+              result = stream;
+              servedProvider = entry.provider;
+              servedModel = entry.model;
+              generatedCode = '';
+              files = [];
+              currentFile = '';
+              currentFilePath = '';
+              let isInFile = false;
+              let isInTag = false;
+              let conversationalBuffer = '';
+              let tagBuffer = '';
+              packagesToInstall.length = 0;
+
+              // Stream the response and parse in real-time
+              for await (const textPart of stream.textStream || []) {
+                if (clientDisconnected) break;
+                const text = textPart || '';
+                generatedCode += text;
+                currentFile += text;
+                const capAbort = capTracker.addChunk(text);
+                if (capAbort) {
+                  for (const file of capTracker.partialFiles) {
+                    jobProgress?.addFile(file.path, file.content);
+                  }
+                  await jobProgress?.flush();
+                  throw capAbort;
+                }
+
+                // Combine with buffer for tag detection
+                const searchText = tagBuffer + text;
+
+                // Log streaming chunks to console
+                process.stdout.write(text);
+
+                // Check if we're entering or leaving a tag
+                const hasOpenTag =
+                  /<(file|package|packages|explanation|command|structure|template)\b/.test(text);
+                const hasCloseTag =
+                  /<\/(file|package|packages|explanation|command|structure|template)>/.test(text);
+
+                if (hasOpenTag) {
+                  // Send any buffered conversational text before the tag
+                  if (conversationalBuffer.trim() && !isInTag) {
+                    await sendProgress({
+                      type: 'conversation',
+                      text: conversationalBuffer.trim(),
+                    });
+                    conversationalBuffer = '';
+                  }
+                  isInTag = true;
+                }
+
+                if (hasCloseTag) {
+                  isInTag = false;
+                }
+
+                // If we're not in a tag, buffer as conversational text
+                if (!isInTag && !hasOpenTag) {
+                  conversationalBuffer += text;
+                }
+
+                // Stream the raw text for live preview
+                await sendProgress({
+                  type: 'stream',
+                  text: text,
+                  raw: true,
+                });
+
+                // Debug: Log every 100 characters streamed
+                if (generatedCode.length % 100 < text.length) {
+                  console.log(`[generate-ai-code-stream] Streamed ${generatedCode.length} chars`);
+                }
+
+                // Check for package tags in buffered text (ONLY for edits, not initial generation)
+                let lastIndex = 0;
+                if (isEdit) {
+                  const packageRegex = /<package>([^<]+)<\/package>/g;
+                  let packageMatch;
+
+                  while ((packageMatch = packageRegex.exec(searchText)) !== null) {
+                    const packageName = packageMatch[1].trim();
+                    if (packageName && !packagesToInstall.includes(packageName)) {
+                      packagesToInstall.push(packageName);
+                      console.log(`[generate-ai-code-stream] Package detected: ${packageName}`);
+                      await sendProgress({
+                        type: 'package',
+                        name: packageName,
+                        message: `Package detected: ${packageName}`,
+                      });
+                    }
+                    lastIndex = packageMatch.index + packageMatch[0].length;
+                  }
+                }
+
+                // Keep unmatched portion in buffer for next iteration
+                tagBuffer = searchText.substring(Math.max(0, lastIndex - 50)); // Keep last 50 chars
+
+                // Track fenced file blocks as they stream: an opener with a
+                // {path=...} tag starts a file, and the next opener or the
+                // closing fence ends it.
+                const openMatch = text.match(FENCE_OPEN_RE);
+                if (openMatch) {
+                  currentFilePath = openMatch[1].trim().replace(/^\.?\//, '');
+                  isInFile = true;
+                  currentFile = '';
+                }
+
+                if (isInFile && currentFilePath && FENCE_CLOSE_RE.test(currentFile)) {
+                  isInFile = false;
+                  const body = currentFile.split(FENCE_CLOSE_RE)[0] ?? '';
+                  if (jobProgress) {
+                    // Drop the remainder of the opener line before the body.
+                    const content = body.replace(/^[^\n]*\n/, '').trim();
+                    const fileAbort = capTracker.addFile(currentFilePath, content);
+                    jobProgress.addFile(currentFilePath, content);
+                    if (fileAbort) {
+                      await jobProgress.flush();
+                      throw fileAbort;
+                    }
+                  }
+                  // Send component progress update
+                  if (currentFilePath.includes('components/')) {
+                    componentCount++;
+                    const componentName =
+                      currentFilePath.split('/').pop()?.replace('.jsx', '') || 'Component';
+                    await sendProgress({
+                      type: 'component',
+                      name: componentName,
+                      path: currentFilePath,
+                      index: componentCount,
+                    });
+                  } else if (currentFilePath.includes('App.jsx')) {
+                    await sendProgress({
+                      type: 'app',
+                      message: 'Generated main App.jsx',
+                      path: currentFilePath,
+                    });
+                  }
+
+                  currentFile = '';
+                  currentFilePath = '';
+                }
+              }
+
+              console.log('\n\n[generate-ai-code-stream] Streaming complete.');
+
+              if (clientDisconnected) {
+                // Whatever the model produced so far is already on the job row via jobProgress, so
+                // the recovery panel can resume from it. The `finally` settles the job as abandoned.
+                log.warn('generation.stopped_mid_stream', {
+                  jobId: generationJob?.id ?? null,
+                  reason: clientDisconnectReason,
+                  charsGenerated: generatedCode.length,
+                });
+                return { generatedCode, files, morphEditBlocks: 0, stop: true as const };
+              }
+
+              // Send any remaining conversational text
+              if (conversationalBuffer.trim()) {
+                await sendProgress({
+                  type: 'conversation',
+                  text: conversationalBuffer.trim(),
+                });
+              }
+
+              // Also parse <packages> tag for multiple packages - ONLY for edits
+              if (isEdit) {
+                const packagesRegex = /<packages>([\s\S]*?)<\/packages>/g;
+                let packagesMatch;
+                while ((packagesMatch = packagesRegex.exec(generatedCode)) !== null) {
+                  const packagesContent = packagesMatch[1].trim();
+                  const packagesList = packagesContent
+                    .split(/[\n,]+/)
+                    .map((pkg) => pkg.trim())
+                    .filter((pkg) => pkg.length > 0);
+
+                  for (const packageName of packagesList) {
+                    if (!packagesToInstall.includes(packageName)) {
+                      packagesToInstall.push(packageName);
+                      console.log(
+                        `[generate-ai-code-stream] Package from <packages> tag: ${packageName}`,
+                      );
+                      await sendProgress({
+                        type: 'package',
+                        name: packageName,
+                        message: `Package detected: ${packageName}`,
+                      });
+                    }
+                  }
+                }
+              }
+
+              // Function to extract packages from import statements
+              function extractPackagesFromCode(content: string): string[] {
+                const packages: string[] = [];
+                // Match ES6 imports
+                const importRegex =
+                  /import\s+(?:(?:\{[^}]*\}|\*\s+as\s+\w+|\w+)(?:\s*,\s*(?:\{[^}]*\}|\*\s+as\s+\w+|\w+))*\s+from\s+)?['"]([^'"]+)['"]/g;
+                let importMatch;
+
+                while ((importMatch = importRegex.exec(content)) !== null) {
+                  const importPath = importMatch[1];
+                  if (!shouldSkipPackageInstall(projectStack, importPath)) {
+                    const packageName = packageNameFromImport(importPath);
+
+                    if (!packages.includes(packageName)) {
+                      packages.push(packageName);
+                    }
+                  }
+                }
+
+                return packages;
+              }
+
+              // Parse files and send progress for each. The block parser carries
+              // llamacoder's tolerances for how models actually break the fence
+              // format — a glued opener, the path tag on the next line, a split
+              // closing brace, a stream cut before the final fence.
+              for (const [filePath, content] of Object.entries(filesFromReply(generatedCode))) {
+                const safe = sanitizeGenerationPath(filePath);
+                if (!safe.ok) continue;
+                files.push({ path: safe.path, content });
+                jobProgress?.addFile(safe.path, content);
+
+                // Extract packages from file content - ONLY for edits
+                if (isEdit) {
+                  const filePackages = extractPackagesFromCode(content);
+                  for (const pkg of filePackages) {
+                    if (!packagesToInstall.includes(pkg)) {
+                      packagesToInstall.push(pkg);
+                      console.log(
+                        `[generate-ai-code-stream] Package detected from imports: ${pkg}`,
+                      );
+                      await sendProgress({
+                        type: 'package',
+                        name: pkg,
+                        message: `Package detected from imports: ${pkg}`,
+                      });
+                    }
+                  }
+                }
+
+                // Send progress for each file (reusing componentCount from streaming)
+                if (filePath.includes('components/')) {
+                  const componentName =
+                    filePath.split('/').pop()?.replace('.jsx', '') || 'Component';
+                  await sendProgress({
+                    type: 'component',
+                    name: componentName,
+                    path: filePath,
+                    index: componentCount,
+                  });
+                } else if (filePath.includes('App.jsx')) {
+                  await sendProgress({
+                    type: 'app',
+                    message: 'Generated main App.jsx',
+                    path: filePath,
+                  });
+                }
+              }
+
+              const morphEditBlocks = (generatedCode.match(/<edit\s+target_file="/g) || []).length;
+              const summary = summarizeGenerationOutput(generatedCode);
+              log.info('generation.stream_complete', {
+                jobId: generationJob?.id ?? null,
+                provider: entry.provider,
+                model: entry.model,
+                chars: summary.chars,
+                preview: summary.preview,
+                pathFences: summary.pathFences,
+                fences: summary.fences,
+              });
+              return {
+                generatedCode,
+                files,
+                morphEditBlocks,
+                stop: clientDisconnected,
+              };
+            },
+            (out) => out.stop || !producedNoChanges(out.files.length, out.morphEditBlocks),
+            { circuit: getDefaultCircuit() },
+          );
+          servedProvider = failover.provider;
+          servedModel = failover.model;
+          generatedCode = failover.result.generatedCode;
+          files = failover.result.files;
+          providersTried = [
+            ...new Set(failover.attempts.map((row) => providerDisplayName(row.provider))),
+          ];
+          if (generationJob) {
+            await updateJobFields(generationJob.id, {
+              provider: failover.provider,
+              model: failover.model,
+            });
+            await recordProviderAttempts(generationJob.id, failover.attempts);
+          }
+          if (failover.failedOver) {
+            // One provider now, so a "failover" is a retry of the same model.
+            await sendProgress({
+              type: 'info',
+              message: 'The first attempt failed, so this was retried.',
+            });
+          }
+        } catch (streamError: unknown) {
+          if (streamError instanceof JobCapError) throw streamError;
+          const cause =
+            streamError instanceof ProviderRunError
+              ? (streamError.causeError ?? streamError)
+              : streamError;
+          const attempts = streamError instanceof ProviderRunError ? streamError.attempts : [];
+          providersTried = [...new Set(attempts.map((row) => providerDisplayName(row.provider)))];
+          if (generationJob && attempts.length > 0) {
+            await recordProviderAttempts(generationJob.id, attempts);
+          }
+          if (cause instanceof EmptyCompletionError) {
+            log.warn('generation.empty_chain', {
+              jobId: generationJob?.id ?? null,
+              providersTried,
+            });
+          } else {
+            console.error('[generate-ai-code-stream] Error calling streamText:', streamError);
+            throw Object.assign(
+              streamError instanceof Error
+                ? streamError
+                : new Error(providerFailureMessage(cause, servedProvider)),
+              { cause },
+            );
+          }
         }
 
         if (clientDisconnected) {
           return;
         }
-        
+
         // Extract explanation
         const explanationMatch = generatedCode.match(/<explanation>([\s\S]*?)<\/explanation>/);
-        const explanation = explanationMatch ? explanationMatch[1].trim() : 'Code generated successfully!';
-        
+        const explanation = explanationMatch
+          ? explanationMatch[1].trim()
+          : 'Code generated successfully!';
+
         // Validate generated code for truncation issues
         const truncationWarnings: string[] = [];
-        
+
         // Skip ellipsis checking entirely - too many false positives with spread operators, loading text, etc.
-        
+
         // Check for unclosed file tags
         const fileOpenCount = (generatedCode.match(/<file path="/g) || []).length;
         const fileCloseCount = (generatedCode.match(/<\/file>/g) || []).length;
         if (fileOpenCount !== fileCloseCount) {
-          truncationWarnings.push(`Unclosed file tags detected: ${fileOpenCount} open, ${fileCloseCount} closed`);
+          truncationWarnings.push(
+            `Unclosed file tags detected: ${fileOpenCount} open, ${fileCloseCount} closed`,
+          );
         }
-        
+
         // Check for files that seem truncated (very short or ending abruptly)
         const truncationCheckRegex = /<file path="([^"]+)">([\s\S]*?)(?:<\/file>|$)/g;
         let truncationMatch;
         while ((truncationMatch = truncationCheckRegex.exec(generatedCode)) !== null) {
           const filePath = truncationMatch[1];
           const content = truncationMatch[2];
-          
+
           // Only check for really obvious HTML truncation - file ends with opening tag
           if (content.trim().endsWith('<') || content.trim().endsWith('</')) {
             truncationWarnings.push(`File ${filePath} appears to have incomplete HTML tags`);
           }
-          
+
           // Skip "..." check - too many false positives with loading text, etc.
-          
+
           // Only check for SEVERE truncation issues
           if (filePath.match(/\.(jsx?|tsx?)$/)) {
             // Only check for severely unmatched brackets (more than 3 difference)
             const openBraces = (content.match(/{/g) || []).length;
             const closeBraces = (content.match(/}/g) || []).length;
             const braceDiff = Math.abs(openBraces - closeBraces);
-            if (braceDiff > 3) { // Only flag severe mismatches
-              truncationWarnings.push(`File ${filePath} has severely unmatched braces (${openBraces} open, ${closeBraces} closed)`);
+            if (braceDiff > 3) {
+              // Only flag severe mismatches
+              truncationWarnings.push(
+                `File ${filePath} has severely unmatched braces (${openBraces} open, ${closeBraces} closed)`,
+              );
             }
-            
+
             // Check if file is extremely short and looks incomplete
             if (content.length < 20 && content.includes('function') && !content.includes('}')) {
               truncationWarnings.push(`File ${filePath} appears severely truncated`);
             }
           }
         }
-        
+
         // Handle truncation with automatic retry (if enabled in config)
         if (truncationWarnings.length > 0 && appConfig.codeApplication.enableTruncationRecovery) {
-          console.warn('[generate-ai-code-stream] Truncation detected, attempting to fix:', truncationWarnings);
-          
+          console.warn(
+            '[generate-ai-code-stream] Truncation detected, attempting to fix:',
+            truncationWarnings,
+          );
+
           await sendProgress({
             type: 'warning',
             message: 'Detected incomplete code generation. Attempting to complete...',
-            warnings: truncationWarnings
+            warnings: truncationWarnings,
           });
-          
+
           // Try to fix truncated files automatically
           const truncatedFiles: string[] = [];
           const fileRegex = /<file path="([^"]+)">([\s\S]*?)(?:<\/file>|$)/g;
           let match;
-          
+
           while ((match = fileRegex.exec(generatedCode)) !== null) {
             const filePath = match[1];
             const content = match[2];
-            
+
             // Check if this file appears truncated - be more selective
-            const hasEllipsis = content.includes('...') && 
-                               !content.includes('...rest') && 
-                               !content.includes('...props') &&
-                               !content.includes('spread');
-                               
-            const endsAbruptly = content.trim().endsWith('...') || 
-                                 content.trim().endsWith(',') ||
-                                 content.trim().endsWith('(');
-                                 
-            const hasUnclosedTags = content.includes('</') && 
-                                    !content.match(/<\/[a-zA-Z0-9]+>/) &&
-                                    content.includes('<');
-                                    
+            const hasEllipsis =
+              content.includes('...') &&
+              !content.includes('...rest') &&
+              !content.includes('...props') &&
+              !content.includes('spread');
+
+            const endsAbruptly =
+              content.trim().endsWith('...') ||
+              content.trim().endsWith(',') ||
+              content.trim().endsWith('(');
+
+            const hasUnclosedTags =
+              content.includes('</') && !content.match(/<\/[a-zA-Z0-9]+>/) && content.includes('<');
+
             const tooShort = content.length < 50 && filePath.match(/\.(jsx?|tsx?)$/);
-            
+
             // Check for unmatched braces specifically
             const openBraceCount = (content.match(/{/g) || []).length;
             const closeBraceCount = (content.match(/}/g) || []).length;
             const hasUnmatchedBraces = Math.abs(openBraceCount - closeBraceCount) > 1;
-            
-            const isTruncated = (hasEllipsis && endsAbruptly) || 
-                               hasUnclosedTags || 
-                               (tooShort && !content.includes('export')) ||
-                               hasUnmatchedBraces;
-            
+
+            const isTruncated =
+              (hasEllipsis && endsAbruptly) ||
+              hasUnclosedTags ||
+              (tooShort && !content.includes('export')) ||
+              hasUnmatchedBraces;
+
             if (isTruncated) {
               truncatedFiles.push(filePath);
             }
           }
-          
+
           // If we have truncated files, try to regenerate them
           if (truncatedFiles.length > 0) {
-            console.log('[generate-ai-code-stream] Attempting to regenerate truncated files:', truncatedFiles);
+            console.log(
+              '[generate-ai-code-stream] Attempting to regenerate truncated files:',
+              truncatedFiles,
+            );
 
             // The recovery call is a second generation, so reuse the provider entry that
             // served the first pass. The older mapping re-derived a client from the model
@@ -1871,7 +2042,9 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
                     (entry: ProviderEntry) =>
                       entry.provider === servedProvider && entry.model === servedModel,
                   )
-                : null) ?? providerChain[0] ?? null;
+                : null) ??
+              providerChain[0] ??
+              null;
             let recoveryFailure: TruncationRecoveryOutcome | null = null;
 
             for (const filePath of truncatedFiles) {
@@ -1879,7 +2052,7 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
               if (recoveryFailure) break;
               await sendProgress({
                 type: 'info',
-                message: `Completing ${filePath}...`
+                message: `Completing ${filePath}...`,
               });
 
               try {
@@ -1899,9 +2072,10 @@ Provide the complete file content without any truncation. Include all necessary 
                     messages: [
                       {
                         role: 'system',
-                        content: 'You are completing a truncated file. Provide the complete, working file content.'
+                        content:
+                          'You are completing a truncated file. Provide the complete, working file content.',
                       },
-                      { role: 'user', content: completionPrompt }
+                      { role: 'user', content: completionPrompt },
                     ],
                     temperature: recoveryEntry.model.startsWith('gpt-5')
                       ? undefined
@@ -1938,16 +2112,19 @@ Provide the complete file content without any truncation. Include all necessary 
                 // Replace the truncated file in the generatedCode
                 const filePattern = new RegExp(
                   `<file path="${filePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}">[\\s\\S]*?(?:</file>|$)`,
-                  'g'
+                  'g',
                 );
                 generatedCode = generatedCode.replace(
                   filePattern,
-                  `<file path="${filePath}">\n${cleanContent}\n</file>`
+                  `<file path="${filePath}">\n${cleanContent}\n</file>`,
                 );
 
                 console.log(`[generate-ai-code-stream] Successfully completed ${filePath}`);
               } catch (completionError) {
-                console.error(`[generate-ai-code-stream] Failed to complete ${filePath}:`, completionError);
+                console.error(
+                  `[generate-ai-code-stream] Failed to complete ${filePath}:`,
+                  completionError,
+                );
                 recoveryFailure = truncationRecoveryOutcome(
                   completionError,
                   recoveryEntry?.provider ?? servedProvider,
@@ -1973,7 +2150,7 @@ Provide the complete file content without any truncation. Include all necessary 
               truncationWarnings.length = 0;
               await sendProgress({
                 type: 'info',
-                message: `Completed ${truncatedFiles.length} truncated file${truncatedFiles.length === 1 ? '' : 's'}.`
+                message: `Completed ${truncatedFiles.length} truncated file${truncatedFiles.length === 1 ? '' : 's'}.`,
               });
             }
           }
@@ -1991,9 +2168,10 @@ Provide the complete file content without any truncation. Include all necessary 
             usage,
             `${stablePrefix}\n${injectedSkills.block}\n${volatileSuffix}\n${fullPrompt}`,
           );
-          outputTokens = usage && typeof usage === 'object' && 'outputTokens' in usage
-            ? Number((usage as { outputTokens?: number }).outputTokens)
-            : undefined;
+          outputTokens =
+            usage && typeof usage === 'object' && 'outputTokens' in usage
+              ? Number((usage as { outputTokens?: number }).outputTokens)
+              : undefined;
           if (usageProjectId) {
             await attachGenerationInputTokens(usageProjectId, inputTokens);
           }
@@ -2015,6 +2193,17 @@ Provide the complete file content without any truncation. Include all necessary 
             })
           : null;
 
+        // Initial builds only: files that can't render on the project's stack
+        // (a Next.js tree for a Vite project) must fail here, not "succeed"
+        // and then kill the sandbox boot with a bare npm ENOENT.
+        const stackMismatchReason =
+          !isEdit && !hadNoChanges && files.length > 0
+            ? stackShapeMismatch(
+                projectStack,
+                files.map((file) => file.path),
+              )
+            : null;
+
         let streamSettle: Awaited<ReturnType<typeof settleStreamedGeneration>> | null = null;
         if (generationJob) {
           await jobProgress?.flush();
@@ -2035,6 +2224,7 @@ Provide the complete file content without any truncation. Include all necessary 
               producedFiles: files.length,
               streamedCode: generatedCode,
               noChangeReason,
+              stackMismatchReason,
               tokensIn: inputTokens,
               tokensOut: outputTokens,
               estimatedCostUsd,
@@ -2101,12 +2291,16 @@ Provide the complete file content without any truncation. Include all necessary 
             label: 'Save the generated files',
             error: persistMiss,
           });
-          trackFailure('generation.failure', new Error(streamSettle.errorCode || 'sandbox_unavailable'), {
-            action: 'generation',
-            stack: projectStack,
-            model,
-            durationMs: Date.now() - startedAt,
-          });
+          trackFailure(
+            'generation.failure',
+            new Error(streamSettle.errorCode || 'sandbox_unavailable'),
+            {
+              action: 'generation',
+              stack: projectStack,
+              model,
+              durationMs: Date.now() - startedAt,
+            },
+          );
           await sendProgress({ type: 'conversation', text: persistMiss });
           await sendProgress({ type: 'error', error: persistMiss });
           return;
@@ -2122,8 +2316,8 @@ Provide the complete file content without any truncation. Include all necessary 
         });
 
         // Send completion with packages info
-        await sendProgress({ 
-          type: 'complete', 
+        await sendProgress({
+          type: 'complete',
           generatedCode,
           explanation,
           files: files.length,
@@ -2133,7 +2327,7 @@ Provide the complete file content without any truncation. Include all necessary 
           warnings: truncationWarnings.length > 0 ? truncationWarnings : undefined,
           skillNames: injectedSkills.names,
         });
-        
+
         // Track edit in conversation history
         if (isEdit && editContext && global.conversationState) {
           const editRecord: ConversationEdit = {
@@ -2142,26 +2336,28 @@ Provide the complete file content without any truncation. Include all necessary 
             editType: editContext.editIntent.type,
             targetFiles: editContext.primaryFiles,
             confidence: editContext.editIntent.confidence,
-            outcome: 'success' // Assuming success if we got here
+            outcome: 'success', // Assuming success if we got here
           };
-          
+
           global.conversationState.context.edits.push(editRecord);
-          
+
           // Track major changes
           if (editContext.editIntent.type === 'ADD_FEATURE' || files.length > 3) {
             global.conversationState.context.projectEvolution.majorChanges.push({
               timestamp: Date.now(),
               description: editContext.editIntent.description,
-              filesAffected: editContext.primaryFiles
+              filesAffected: editContext.primaryFiles,
             });
           }
-          
+
           // Update last updated timestamp
           global.conversationState.lastUpdated = Date.now();
-          
-          console.log('[generate-ai-code-stream] Updated conversation history with edit:', editRecord);
+
+          console.log(
+            '[generate-ai-code-stream] Updated conversation history with edit:',
+            editRecord,
+          );
         }
-        
       } catch (error) {
         console.error('[generate-ai-code-stream] Stream processing error:', error);
 
@@ -2173,7 +2369,7 @@ Provide the complete file content without any truncation. Include all necessary 
         const cap = error instanceof JobCapError ? error : null;
         const cause =
           error instanceof ProviderRunError
-            ? error.causeError ?? error
+            ? (error.causeError ?? error)
             : error && typeof error === 'object' && 'cause' in error
               ? (error as { cause: unknown }).cause
               : error;
@@ -2181,15 +2377,18 @@ Provide the complete file content without any truncation. Include all necessary 
           cap?.message ??
           (isToolValidationError ? errorMessage : providerFailureMessage(cause, servedProvider));
         if (isToolValidationError) {
-          console.error('[generate-ai-code-stream] Tool call validation error - this may be due to the AI model sending incorrect parameters');
-          await sendProgress({ 
-            type: 'warning', 
-            message: 'Package installation tool encountered an issue. Packages will be detected from imports instead.'
+          console.error(
+            '[generate-ai-code-stream] Tool call validation error - this may be due to the AI model sending incorrect parameters',
+          );
+          await sendProgress({
+            type: 'warning',
+            message:
+              'Package installation tool encountered an issue. Packages will be detected from imports instead.',
           });
         } else {
-          await sendProgress({ 
-            type: 'error', 
-            error: honest 
+          await sendProgress({
+            type: 'error',
+            error: honest,
           });
         }
         if (generationJob) {
@@ -2243,13 +2442,13 @@ Provide the complete file content without any truncation. Include all necessary 
       // The IIFE is detached, so anything escaping it is an unhandled rejection.
       logError('generation.detached_work_failed', error);
     });
-    
+
     // Return the stream with proper headers for streaming support
     return new Response(stream.readable, {
       headers: {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
+        Connection: 'keep-alive',
         'Transfer-Encoding': 'chunked',
         'Content-Encoding': 'none', // Prevent compression that can break streaming
         'X-Accel-Buffering': 'no', // Disable nginx buffering
@@ -2258,7 +2457,6 @@ Provide the complete file content without any truncation. Include all necessary 
         'Access-Control-Allow-Headers': 'Content-Type, Authorization',
       },
     });
-    
   } catch (error) {
     jobHeartbeat?.stop();
     providerSlot?.release();

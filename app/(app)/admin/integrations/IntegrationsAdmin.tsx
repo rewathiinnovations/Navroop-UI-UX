@@ -300,14 +300,13 @@ export default function IntegrationsAdmin({
 
   const loadSentryProjects = async (orgSlug: string) => {
     try {
-      const data = await fetchJson<{ projects?: Array<{ id: string; slug: string; name: string }> }>(
-        '/api/integrations/sentry/select',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ orgSlug, listProjects: true }),
-        },
-      );
+      const data = await fetchJson<{
+        projects?: Array<{ id: string; slug: string; name: string }>;
+      }>('/api/integrations/sentry/select', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orgSlug, listProjects: true }),
+      });
       if (Array.isArray(data.projects)) setSentryProjects(data.projects);
     } catch (cause) {
       notify.error(cause, { fallback: 'Could not load Sentry projects', key: 'sentry-projects' });
@@ -494,10 +493,9 @@ export default function IntegrationsAdmin({
       applyPayload(data);
       setServers(null);
       setCoolifyToken('');
-      notify.success(
-        `Saved ${chosen.length} server${chosen.length === 1 ? '' : 's'}.`,
-        { key: 'coolify-save' },
-      );
+      notify.success(`Saved ${chosen.length} server${chosen.length === 1 ? '' : 's'}.`, {
+        key: 'coolify-save',
+      });
     } catch (cause) {
       notify.error(cause, { fallback: 'Could not save the servers', key: 'coolify-save' });
     } finally {

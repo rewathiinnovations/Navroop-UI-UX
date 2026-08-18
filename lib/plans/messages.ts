@@ -11,7 +11,6 @@ export const LIMIT_DENIAL_MESSAGES: Record<LimitKind, string> = {
   liveSites: "Your plan's live site limit is used up",
   previewSites: "Your plan's preview limit is used up",
   members: "Your plan's member limit is used up",
-  sandboxes: "Your plan's sandbox limit is used up",
   storage: 'Workspace storage limit is used up',
 };
 

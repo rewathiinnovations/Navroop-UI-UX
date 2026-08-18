@@ -1,11 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/auth';
-import {
-  assignDefaultWorkspacePlan,
-  createPlan,
-  listPlans,
-  updatePlan,
-} from '@/lib/plans/actions';
+import { assignDefaultWorkspacePlan, createPlan, listPlans, updatePlan } from '@/lib/plans/actions';
 
 export async function GET() {
   const { user, error, status } = await requireAdmin();
@@ -21,7 +16,8 @@ export async function POST(request: NextRequest) {
   const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
   if (typeof body.assignPlanId === 'string') {
     const assigned = await assignDefaultWorkspacePlan(body.assignPlanId);
-    if (!assigned.ok) return NextResponse.json({ error: assigned.error }, { status: assigned.status });
+    if (!assigned.ok)
+      return NextResponse.json({ error: assigned.error }, { status: assigned.status });
     return NextResponse.json(assigned.data);
   }
   const created = await createPlan({
@@ -32,7 +28,6 @@ export async function POST(request: NextRequest) {
     maxLiveSites: Number(body.maxLiveSites ?? 1),
     maxPreviewSites: Number(body.maxPreviewSites ?? 3),
     maxMembers: Number(body.maxMembers ?? 2),
-    maxConcurrentSandboxes: Number(body.maxConcurrentSandboxes ?? 1),
     checkpointRetentionDays: Number(body.checkpointRetentionDays ?? 7),
     storageBytesLimit: String(body.storageBytesLimit ?? 524288000),
     allowCustomDomain: body.allowCustomDomain === true,
@@ -42,8 +37,6 @@ export async function POST(request: NextRequest) {
     maxFilesPerJob: typeof body.maxFilesPerJob === 'number' ? body.maxFilesPerJob : undefined,
     maxOutputBytesPerJob:
       typeof body.maxOutputBytesPerJob === 'number' ? body.maxOutputBytesPerJob : undefined,
-    monthlySandboxMinutes:
-      typeof body.monthlySandboxMinutes === 'number' ? body.monthlySandboxMinutes : undefined,
   });
   if (!created.ok) return NextResponse.json({ error: created.error }, { status: created.status });
   return NextResponse.json({ plan: created.data });
@@ -64,22 +57,19 @@ export async function PATCH(request: NextRequest) {
     maxLiveSites: typeof body.maxLiveSites === 'number' ? body.maxLiveSites : undefined,
     maxPreviewSites: typeof body.maxPreviewSites === 'number' ? body.maxPreviewSites : undefined,
     maxMembers: typeof body.maxMembers === 'number' ? body.maxMembers : undefined,
-    maxConcurrentSandboxes:
-      typeof body.maxConcurrentSandboxes === 'number' ? body.maxConcurrentSandboxes : undefined,
     checkpointRetentionDays:
       typeof body.checkpointRetentionDays === 'number' ? body.checkpointRetentionDays : undefined,
     storageBytesLimit:
       typeof body.storageBytesLimit === 'string' || typeof body.storageBytesLimit === 'number'
         ? body.storageBytesLimit
         : undefined,
-    allowCustomDomain: typeof body.allowCustomDomain === 'boolean' ? body.allowCustomDomain : undefined,
+    allowCustomDomain:
+      typeof body.allowCustomDomain === 'boolean' ? body.allowCustomDomain : undefined,
     allowGithubSync: typeof body.allowGithubSync === 'boolean' ? body.allowGithubSync : undefined,
     maxTokensPerJob: typeof body.maxTokensPerJob === 'number' ? body.maxTokensPerJob : undefined,
     maxFilesPerJob: typeof body.maxFilesPerJob === 'number' ? body.maxFilesPerJob : undefined,
     maxOutputBytesPerJob:
       typeof body.maxOutputBytesPerJob === 'number' ? body.maxOutputBytesPerJob : undefined,
-    monthlySandboxMinutes:
-      typeof body.monthlySandboxMinutes === 'number' ? body.monthlySandboxMinutes : undefined,
   });
   if (!updated.ok) return NextResponse.json({ error: updated.error }, { status: updated.status });
   return NextResponse.json({ plan: updated.data });

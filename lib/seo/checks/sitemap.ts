@@ -2,7 +2,12 @@ import { finding } from '../findings';
 import type { SeoFinding, SeoScanInput } from '../types';
 
 function hasSitemap(input: SeoScanInput): boolean {
-  if (input.liveSitemap && input.liveSitemap.status >= 200 && input.liveSitemap.status < 400 && input.liveSitemap.text.trim()) {
+  if (
+    input.liveSitemap &&
+    input.liveSitemap.status >= 200 &&
+    input.liveSitemap.status < 400 &&
+    input.liveSitemap.text.trim()
+  ) {
     return true;
   }
   return input.files.some((row) => {
@@ -38,9 +43,7 @@ export function checkSitemap(input: SeoScanInput): SeoFinding[] {
   const detail =
     input.stack === 'NEXTJS'
       ? 'Add app/sitemap.ts listing every public route.'
-      : input.stack === 'ASTRO'
-        ? 'Add @astrojs/sitemap in astro.config and a robots.txt sitemap pointer.'
-        : 'Add sitemap.xml listing every known public route.';
+      : 'Add sitemap.xml listing every known public route.';
 
   return [
     finding({

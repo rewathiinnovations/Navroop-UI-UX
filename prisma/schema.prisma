@@ -28,18 +28,7 @@ enum ProjectPlanStatus {
 enum Stack {
   NEXTJS
   REACT
-  ASTRO
   STATIC_HTML
-  VUE
-  SVELTE
-}
-
-enum SandboxStatus {
-  NONE
-  BOOTING
-  READY
-  DEAD
-  FAILED
 }
 
 enum PreviewBuildStatus {
@@ -51,7 +40,6 @@ enum PreviewBuildStatus {
 
 enum PreviewMode {
   STATIC
-  LIVE_SANDBOX
 }
 
 enum JobKind {
@@ -172,14 +160,7 @@ model Project {
   deletedAt        DateTime?
   style            String?
   model            String?
-  sandboxId          String?
   previewUrl         String?
-  sandboxStatus      SandboxStatus @default(NONE)
-  sandboxStartedAt   DateTime?
-  sandboxLastUsedAt  DateTime?
-  sandboxMeteredUntil DateTime?
-  sandboxProviderConfigId String?
-  sandboxProviderConfig   SandboxProviderConfig? @relation(fields: [sandboxProviderConfigId], references: [id], onDelete: SetNull)
   lastCode         String?   @db.Text
   progressMessage  String?   @db.Text
   createdAt        DateTime  @default(now())
@@ -220,7 +201,6 @@ model Project {
 
   @@index([ownerId])
   @@index([deletedAt])
-  @@index([sandboxStatus, sandboxLastUsedAt])
   @@index([lockedById, lockExpiresAt])
   @@index([searchVector], type: Gin, map: "Project_searchVector_idx")
 }
@@ -346,7 +326,6 @@ model Workspace {
   generationPaused       Boolean   @default(false)
   pauseReason            String?
   creditAlert80Sent      Boolean   @default(false)
-  sandboxMinutesUsed     Int       @default(0)
   monthlySpendLimitUsd   Decimal?  @db.Decimal(12, 4)
   spendUsd               Decimal   @default(0) @db.Decimal(12, 4)
   spendAlert80Sent       Boolean   @default(false)
@@ -370,7 +349,6 @@ model Plan {
   maxLiveSites            Int
   maxPreviewSites         Int
   maxMembers              Int
-  maxConcurrentSandboxes  Int
   checkpointRetentionDays Int
   storageBytesLimit       BigInt
   allowCustomDomain       Boolean  @default(false)
@@ -378,7 +356,6 @@ model Plan {
   maxTokensPerJob         Int      @default(120000)
   maxFilesPerJob          Int      @default(60)
   maxOutputBytesPerJob    Int      @default(2000000)
-  monthlySandboxMinutes   Int      @default(300)
   createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt
   workspaces              Workspace[]
@@ -765,8 +742,6 @@ model Job {
   steps           Json?
   currentStep     String?
   resourceIds     Json?
-  providerConfigId String?
-  providerConfig   SandboxProviderConfig? @relation(fields: [providerConfigId], references: [id], onDelete: SetNull)
 
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
@@ -797,39 +772,6 @@ model AuditLog {
   @@index([action, createdAt])
 }
 
-model SandboxProviderConfig {
-  id             String  @id @default(cuid())
-  name           String
-  driver         String
-  isActive       Boolean @default(true)
-  priority       Int     @default(100)
-  weight         Int     @default(1)
-
-  secrets        String
-  config         Json
-
-  creditType         String
-  creditTotalUsd     Decimal?  @db.Decimal(12, 4)
-  creditRemainingUsd Decimal?  @db.Decimal(12, 4)
-  creditResetsAt     DateTime?
-
-  monthlyBudgetUsd    Decimal? @db.Decimal(12, 4)
-  monthlyMinutesLimit Int?
-  minutesUsed         Int      @default(0)
-  spendUsd            Decimal  @default(0) @db.Decimal(12, 4)
-  periodStart         DateTime @default(now())
-
-  healthStatus     String    @default("unknown")
-  lastCheckedAt    DateTime?
-  lastError        String?
-  consecutiveFails Int       @default(0)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  projects Project[]
-  jobs     Job[]
-}
 
 /// Local heartbeat / quota / DSN self-checks. Distinct from Sentry going silent.
 model ObservabilityCheck {

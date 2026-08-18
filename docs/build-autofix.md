@@ -1,6 +1,6 @@
 # Build auto-fix loop
 
-Closes the gap named in [docs/codegen-vs-open-lovable.md](./codegen-vs-open-lovable.md): until now nothing checked whether generated code actually compiles. A syntax error ended as *"applied successfully"* with a blank preview, and the user had to notice and report it themselves.
+Closes the gap named in [docs/codegen-vs-open-lovable.md](./codegen-vs-open-lovable.md): until now nothing checked whether generated code actually compiles. A syntax error ended as _"applied successfully"_ with a blank preview, and the user had to notice and report it themselves.
 
 Neither this repo nor upstream open-lovable had this. `lib/build-validator.ts` carried the intent but was orphaned — zero importers — and was Vite-only, so it would have passed every broken NEXTJS build. It has been deleted and replaced by `lib/validation/`.
 
@@ -24,16 +24,16 @@ It is the one signal that generalizes. The previous approach fetched the preview
 
 The interesting part of an auto-fix loop is not the retry; it is every condition under which it must refuse. Each of these is enforced in `lib/validation/autofix-policy.ts` and covered by tests:
 
-| Condition | Behavior | Reason |
-|---|---|---|
-| Build passed | stop | nothing to fix |
-| Check skipped (no build command, no sandbox, sandbox threw) | stop | absence of evidence is not evidence of a fault — an infrastructure blip must never trigger a code rewrite |
-| Same failure signature as the previous attempt | stop | the model is not converging; continuing only spends credits |
-| 2 model attempts already spent | stop | past this point the cause is usually invisible to the model |
-| Every error is a missing dependency | install, then re-check | cheaper and more reliable than asking a model to rewrite imports it believes are correct |
-| Anything else with a parsed error | re-prompt | |
+| Condition                                                   | Behavior               | Reason                                                                                                    |
+| ----------------------------------------------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------- |
+| Build passed                                                | stop                   | nothing to fix                                                                                            |
+| Check skipped (no build command, no sandbox, sandbox threw) | stop                   | absence of evidence is not evidence of a fault — an infrastructure blip must never trigger a code rewrite |
+| Same failure signature as the previous attempt              | stop                   | the model is not converging; continuing only spends credits                                               |
+| 2 model attempts already spent                              | stop                   | past this point the cause is usually invisible to the model                                               |
+| Every error is a missing dependency                         | install, then re-check | cheaper and more reliable than asking a model to rewrite imports it believes are correct                  |
+| Anything else with a parsed error                           | re-prompt              |                                                                                                           |
 
-The signature deliberately excludes line numbers: an edit *above* the fault shifts them without fixing anything, and that must not read as progress.
+The signature deliberately excludes line numbers: an edit _above_ the fault shifts them without fixing anything, and that must not read as progress.
 
 ## Cost — read this before enabling
 
@@ -50,13 +50,13 @@ If the wall-clock cost proves too high in practice, the cheaper option is `runTy
 
 ## Where it lives
 
-| File | Role |
-|---|---|
-| `lib/validation/build-check.ts` | runs the build, parses errors, computes the failure signature |
-| `lib/validation/autofix-policy.ts` | decides retry / install / stop — pure, no I/O |
-| `lib/validation/fix-prompt.ts` | error set → follow-up instruction, mirroring `lib/audit/fix-instruction.ts` |
-| `lib/validation/run-build-validation.ts` | orchestrates the above; the route stays a thin wrapper per `AGENTS.md` |
-| `lib/validation/settings.ts` | the admin toggle |
+| File                                     | Role                                                                        |
+| ---------------------------------------- | --------------------------------------------------------------------------- |
+| `lib/validation/build-check.ts`          | runs the build, parses errors, computes the failure signature               |
+| `lib/validation/autofix-policy.ts`       | decides retry / install / stop — pure, no I/O                               |
+| `lib/validation/fix-prompt.ts`           | error set → follow-up instruction, mirroring `lib/audit/fix-instruction.ts` |
+| `lib/validation/run-build-validation.ts` | orchestrates the above; the route stays a thin wrapper per `AGENTS.md`      |
+| `lib/validation/settings.ts`             | the admin toggle                                                            |
 
 The retry itself is **client-driven**, matching every other fix flow in the app (Quality, SEO). Generation in this codebase runs from the browser via `executeGenerationJob`; `startFollowUpGeneration` in `lib/projects/plan.ts` only writes an analytics event despite its name. The apply route returns a `buildFix` payload on the `complete` frame and `GenerationWorkspace.applyGeneratedCode` re-enters the queue with it. The server owns the policy; the client only carries the attempt counter back.
 

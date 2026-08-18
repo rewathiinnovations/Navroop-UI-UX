@@ -10,14 +10,7 @@
  * so create-sandbox is not hardcoded.
  */
 
-export const STACK_IDS = [
-  'NEXTJS',
-  'REACT',
-  'ASTRO',
-  'STATIC_HTML',
-  'VUE',
-  'SVELTE',
-] as const;
+export const STACK_IDS = ['NEXTJS', 'REACT', 'STATIC_HTML'] as const;
 
 export type StackId = (typeof STACK_IDS)[number];
 
@@ -147,37 +140,6 @@ const STACKS: Record<StackId, StackDefinition> = {
     previewOutputDir: 'dist',
     spaFallback: true,
   },
-  ASTRO: {
-    id: 'ASTRO',
-    label: 'Astro',
-    hasNodeDependencies: true,
-    devCommand: 'astro dev',
-    installCommand: 'npm install',
-    fileExtension: '.astro',
-    sandboxTemplate: GENERIC_NODE_SANDBOX,
-    configFiles: [
-      ...NODE_LOCK_FILES,
-      'astro.config.mjs',
-      'astro.config.ts',
-      'astro.config.js',
-      'tailwind.config.js',
-      'tailwind.config.mjs',
-    ],
-    frameworkPackages: ['astro'],
-    listExtensions: ['.astro', '.ts', '.js', '.css', '.json', '.md', '.mdx'],
-    entryPoint: 'src/pages/index.astro',
-    buildCommand: 'npm run build',
-    outputDir: 'dist',
-    deployType: 'static',
-    startCommand: null,
-    dockerfile: null,
-    port: null,
-    seoHint: 'SSR — best for SEO',
-    canStaticPreview: true,
-    previewBuildCommand: 'npm run build',
-    previewOutputDir: 'dist',
-    spaFallback: false,
-  },
   STATIC_HTML: {
     id: 'STATIC_HTML',
     label: 'Static HTML',
@@ -201,70 +163,6 @@ const STACKS: Record<StackId, StackDefinition> = {
     previewBuildCommand: null,
     previewOutputDir: '.',
     spaFallback: false,
-  },
-  VUE: {
-    id: 'VUE',
-    label: 'Vue 3 (Vite)',
-    hasNodeDependencies: true,
-    // TODO(nuxt): Vue 3 + Vite only — not Nuxt. Nuxt SSR is a separate follow-up.
-    // Do not implement Nuxt here (no nuxt.config, no pages/ Nuxt conventions).
-    devCommand: 'vite dev',
-    installCommand: 'npm install',
-    fileExtension: '.vue',
-    sandboxTemplate: GENERIC_NODE_SANDBOX,
-    configFiles: [
-      ...NODE_LOCK_FILES,
-      'vite.config.js',
-      'vite.config.ts',
-      'tailwind.config.js',
-      'postcss.config.js',
-    ],
-    frameworkPackages: ['vue'],
-    listExtensions: ['.vue', '.ts', '.js', '.css', '.json'],
-    entryPoint: 'src/main.js',
-    buildCommand: 'npm run build',
-    outputDir: 'dist',
-    deployType: 'static',
-    startCommand: null,
-    dockerfile: null,
-    port: null,
-    seoHint: 'SPA — weaker SEO',
-    canStaticPreview: true,
-    previewBuildCommand: 'npm run build',
-    previewOutputDir: 'dist',
-    spaFallback: true,
-  },
-  SVELTE: {
-    id: 'SVELTE',
-    label: 'SvelteKit (Vite)',
-    hasNodeDependencies: true,
-    // SvelteKit's Vite-based `vite dev` (not `svelte-kit dev`).
-    devCommand: 'vite dev',
-    installCommand: 'npm install',
-    fileExtension: '.svelte',
-    sandboxTemplate: GENERIC_NODE_SANDBOX,
-    configFiles: [
-      ...NODE_LOCK_FILES,
-      'vite.config.js',
-      'vite.config.ts',
-      'svelte.config.js',
-      'tailwind.config.js',
-      'postcss.config.js',
-    ],
-    frameworkPackages: ['svelte', '@sveltejs/kit'],
-    listExtensions: ['.svelte', '.ts', '.js', '.css', '.json'],
-    entryPoint: 'src/routes/+page.svelte',
-    buildCommand: 'npm run build',
-    outputDir: 'build',
-    deployType: 'static',
-    startCommand: null,
-    dockerfile: null,
-    port: null,
-    seoHint: 'SPA — weaker SEO',
-    canStaticPreview: true,
-    previewBuildCommand: 'npm run build',
-    previewOutputDir: 'build',
-    spaFallback: true,
   },
 };
 
@@ -327,11 +225,7 @@ export function isStackConfigFile(stack: string, filePath: string): boolean {
  * already provided by the scaffold. Never applies the React skip list to other stacks.
  */
 export function shouldSkipPackageInstall(stack: string, importPath: string): boolean {
-  if (
-    importPath.startsWith('.') ||
-    importPath.startsWith('/') ||
-    importPath.startsWith('@/')
-  ) {
+  if (importPath.startsWith('.') || importPath.startsWith('/') || importPath.startsWith('@/')) {
     return true;
   }
   const packageName = importPath.startsWith('@')
@@ -360,4 +254,39 @@ export function getStackEntryPoint(stack: string): string {
  */
 export function shouldForceSrcPrefix(stack: string): boolean {
   return getStack(stack).id === 'REACT';
+}
+
+/**
+ * Files an INITIAL build must include for the stack's dev server to render it.
+ * Scaffold-owned files (src/main.jsx, configs) are not required — only the
+ * root component/page the prompts direct the model to write.
+ */
+function initialBuildEntryCandidates(stack: string): string[] {
+  switch (getStack(stack).id) {
+    case 'NEXTJS':
+      return ['app/page.tsx', 'app/page.jsx'];
+    case 'REACT':
+      return ['src/App.jsx', 'src/App.tsx'];
+    case 'STATIC_HTML':
+      return ['index.html'];
+    default: {
+      const id: never = getStack(stack).id as never;
+      throw new Error(`Missing initial-build entry candidates for "${id}"`);
+    }
+  }
+}
+
+/**
+ * Why an initial build's file set cannot work on this stack, or null when it
+ * can. A model that ignores the stack prompt (e.g. writing Next.js app/page.tsx
+ * for a Vite project) used to settle SUCCEEDED and then kill the sandbox boot;
+ * this is the guard that turns that into an actionable failure instead.
+ */
+export function stackShapeMismatch(stack: string, filePaths: string[]): string | null {
+  const candidates = initialBuildEntryCandidates(stack);
+  const normalized = filePaths.map((path) => path.replace(/^\.?\//, ''));
+  if (normalized.some((path) => candidates.includes(path))) return null;
+  const label = getStack(stack).label;
+  const got = normalized.slice(0, 3).join(', ') || 'no files';
+  return `The generated files don't match the ${label} project layout (expected ${candidates[0]}; got ${got}). The build was not applied — try again, or switch the AI model in admin settings.`;
 }

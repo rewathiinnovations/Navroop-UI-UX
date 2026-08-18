@@ -1,9 +1,11 @@
 import { prisma } from '@/lib/db';
+import { filesFromReply } from '@/lib/generation/parse-blocks';
+import { toLastCode } from '@/lib/projects/last-code';
 import { failJob, succeedJob } from './lifecycle';
 import { getJob } from './store';
 
-export const STREAM_SANDBOX_PERSIST_MISS_MESSAGE =
-  'The generated files were not saved because the workspace never became ready.';
+export const STREAM_NO_FILES_MESSAGE =
+  'The AI finished without producing any files we could save. Try again.';
 
 export type StreamSettleInput = {
   jobId: string;
@@ -13,6 +15,8 @@ export type StreamSettleInput = {
    *  on the browser tab surviving to send its own PATCH. */
   streamedCode?: string | null;
   noChangeReason?: string | null;
+  /** Initial build produced files that can't render on the project's stack. */
+  stackMismatchReason?: string | null;
   tokensIn?: number;
   tokensOut?: number;
   estimatedCostUsd?: number | null;
@@ -34,7 +38,9 @@ export type StreamSettleResult = {
  * checkpoints were still empty — the sandbox had failed at ready, persist
  * never ran, and chat said Generation complete.
  */
-export async function settleStreamedGeneration(input: StreamSettleInput): Promise<StreamSettleResult> {
+export async function settleStreamedGeneration(
+  input: StreamSettleInput,
+): Promise<StreamSettleResult> {
   const job = await getJob(input.jobId);
   if (!job) {
     return { outcome: 'failed', errorCode: 'provider_error', errorMessage: 'Job not found' };
@@ -68,40 +74,63 @@ export async function settleStreamedGeneration(input: StreamSettleInput): Promis
     };
   }
 
+  // Files that can't render on the project's stack (Next.js output for a Vite
+  // project, say) must not be persisted as the site: the sandbox boot would
+  // run npm install into a tree with no scaffold and die, after chat already
+  // said Generation complete.
+  if (input.stackMismatchReason) {
+    await failJob(job.id, {
+      errorCode: 'stack_mismatch',
+      errorMessage: input.stackMismatchReason,
+      ...usage,
+    });
+    return {
+      outcome: 'failed',
+      errorCode: 'stack_mismatch',
+      errorMessage: input.stackMismatchReason,
+    };
+  }
+
   const project = await prisma.project.findUnique({
     where: { id: job.projectId },
-    select: { lastCode: true, sandboxStatus: true, phase: true },
+    select: { lastCode: true, phase: true },
   });
   const checkpointCount = await prisma.checkpoint.count({ where: { projectId: job.projectId } });
   let hasSite = Boolean(project?.lastCode) || checkpointCount > 0;
-  const sandboxDead = project?.sandboxStatus === 'FAILED' || project?.sandboxStatus === 'DEAD';
 
   // The stream is the source of the site — persist it here, server-side.
   // Before this, lastCode was only written by the browser's terminal PATCH,
   // so a closed tab (or a sandbox stuck mid-boot) lost a fully generated
   // site while the job read SUCCEEDED with lastCode empty.
-  const streamedHasFiles = /<file path="/.test(input.streamedCode || '');
-  if (!hasSite && streamedHasFiles) {
+  //
+  // The model replies in fenced blocks; lastCode is stored as <file> blocks,
+  // which is what getCurrentProjectFiles reads. Convert here rather than
+  // storing the raw reply, or the prose around the fences becomes part of the
+  // site and the preview has nothing it can parse.
+  const streamedFiles = filesFromReply(input.streamedCode || '');
+  if (!hasSite && Object.keys(streamedFiles).length > 0) {
     await prisma.project.update({
       where: { id: job.projectId },
       data: {
-        lastCode: input.streamedCode!,
+        lastCode: toLastCode(streamedFiles),
         ...(project?.phase !== 'COMPLETE' ? { phase: 'COMPLETE' as const } : {}),
       },
     });
     hasSite = true;
   }
 
-  if (!hasSite && sandboxDead) {
+  // A stream that produced no parseable file leaves nothing to show. Saying
+  // "complete" here is how a job used to read SUCCEEDED with lastCode empty.
+  if (!hasSite) {
     await failJob(job.id, {
-      errorCode: 'sandbox_unavailable',
-      errorMessage: STREAM_SANDBOX_PERSIST_MISS_MESSAGE,
+      errorCode: 'no_files_generated',
+      errorMessage: STREAM_NO_FILES_MESSAGE,
       ...usage,
     });
     return {
       outcome: 'failed',
-      errorCode: 'sandbox_unavailable',
-      errorMessage: STREAM_SANDBOX_PERSIST_MISS_MESSAGE,
+      errorCode: 'no_files_generated',
+      errorMessage: STREAM_NO_FILES_MESSAGE,
     };
   }
 

@@ -189,7 +189,11 @@ export default function ConfigAdmin({
     params.delete('github');
     params.delete('reason');
     const query = params.toString();
-    window.history.replaceState(null, '', `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`);
+    window.history.replaceState(
+      null,
+      '',
+      `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`,
+    );
   }, []);
   const [testing, setTesting] = useState<string | null>(null);
   const [results, setResults] = useState<Record<string, Check[]>>({});

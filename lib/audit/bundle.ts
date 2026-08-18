@@ -54,7 +54,9 @@ export function findingsFromBundle(measure: BundleMeasure): CodeFinding[] {
     );
   }
 
-  for (const image of measure.assets.filter((asset) => asset.kind === 'image' && isUnoptimizedImage(asset.path))) {
+  for (const image of measure.assets.filter(
+    (asset) => asset.kind === 'image' && isUnoptimizedImage(asset.path),
+  )) {
     findings.push(
       finding({
         id: `bundle:image:${image.path}`,
@@ -126,7 +128,9 @@ function parseAssets(raw: string): BundleAsset[] {
   try {
     const start = raw.indexOf('{');
     const end = raw.lastIndexOf('}');
-    const parsed = JSON.parse(start >= 0 && end > start ? raw.slice(start, end + 1) : raw) as { assets?: BundleAsset[] };
+    const parsed = JSON.parse(start >= 0 && end > start ? raw.slice(start, end + 1) : raw) as {
+      assets?: BundleAsset[];
+    };
     return Array.isArray(parsed.assets) ? parsed.assets : [];
   } catch {
     return [];
@@ -139,17 +143,29 @@ export async function runBundleMeasure(
   routeCount: number,
 ): Promise<{ findings: CodeFinding[]; bundleKb: number | null }> {
   if (measureShouldSkip(stack)) return { findings: [], bundleKb: null };
-  if (!sandbox) {
-    return { findings: [toolFailedFinding('bundle', new Error('No active sandbox'))], bundleKb: null };
-  }
+  // Bundle size needs somewhere to run the stack's build. Nothing runs
+  // server-side any more, so this is a clean skip rather than a finding —
+  // reporting "tool failed" on every audit would be noise, not a defect.
+  if (!sandbox) return { findings: [], bundleKb: null };
   const command = getStack(stack).buildCommand;
   if (!command) return { findings: [], bundleKb: null };
   try {
     const built = await sandbox.runCommand(command);
     const output = `${built.stdout}\n${built.stderr}`;
-    if (!built.success || /error|failed/i.test(output) && /Failed to compile|Build failed|error during build/i.test(output)) {
-      const errorLine = output.split(/\r?\n/).find((line) => /error/i.test(line)) || output.slice(0, 400);
-      const measure: BundleMeasure = { stack, ok: false, error: errorLine.trim(), assets: [], routeCount };
+    if (
+      !built.success ||
+      (/error|failed/i.test(output) &&
+        /Failed to compile|Build failed|error during build/i.test(output))
+    ) {
+      const errorLine =
+        output.split(/\r?\n/).find((line) => /error/i.test(line)) || output.slice(0, 400);
+      const measure: BundleMeasure = {
+        stack,
+        ok: false,
+        error: errorLine.trim(),
+        assets: [],
+        routeCount,
+      };
       return { findings: findingsFromBundle(measure), bundleKb: null };
     }
     if (sandbox.writeFile) {

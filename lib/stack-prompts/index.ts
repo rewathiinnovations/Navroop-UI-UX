@@ -1,12 +1,9 @@
 import { getDirection, toPromptBlock } from '@/lib/design/directions';
 import { getStack, isStackId, type StackId } from '@/lib/stacks';
 import { BASE_RULES } from './base-rules';
-import { buildAstroStablePrompt } from './astro';
 import { buildNextjsStablePrompt } from './nextjs';
 import { buildReactStablePrompt } from './react';
 import { buildStaticHtmlStablePrompt } from './static-html';
-import { buildSvelteStablePrompt } from './svelte';
-import { buildVueStablePrompt } from './vue';
 import { COMPLETION_RULES, buildVolatilePromptSuffix, type StackPromptContext } from './shared';
 import { getSeoRules } from './seo-rules';
 
@@ -20,10 +17,7 @@ type StableBuilder = () => string;
 const STACK_STABLE: Record<StackId, StableBuilder> = {
   NEXTJS: buildNextjsStablePrompt,
   REACT: buildReactStablePrompt,
-  ASTRO: buildAstroStablePrompt,
   STATIC_HTML: buildStaticHtmlStablePrompt,
-  VUE: buildVueStablePrompt,
-  SVELTE: buildSvelteStablePrompt,
 };
 
 export type StablePromptExtras = {
@@ -92,14 +86,8 @@ export function getStackInitialPackageRule(stack: string): string {
       return 'For INITIAL generation: Use ONLY React, no external packages';
     case 'NEXTJS':
       return 'For INITIAL generation: Use ONLY Next.js and React, no unexpected external packages';
-    case 'ASTRO':
-      return 'For INITIAL generation: Use ONLY Astro (and islands when needed), no unexpected external packages';
     case 'STATIC_HTML':
       return 'For INITIAL generation: Use ONLY HTML, vanilla JS, and Tailwind CDN — no npm packages';
-    case 'VUE':
-      return 'For INITIAL generation: Use ONLY Vue 3, no unexpected external packages';
-    case 'SVELTE':
-      return 'For INITIAL generation: Use ONLY Svelte/SvelteKit, no unexpected external packages';
     default: {
       const id = getStack(stack).id;
       throw new Error(`Missing initial-package rule for "${id}"`);

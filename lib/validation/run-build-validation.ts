@@ -1,6 +1,5 @@
-import { resolveSandboxRunner } from '@/lib/audit/sandbox';
 import { recordJobStepFailure } from '@/lib/jobs/step-failure';
-import { installPackages } from '@/lib/sandbox/install-packages';
+import { PREVIEW_DEPS } from '@/lib/preview/deps';
 import type { StackId } from '@/lib/stacks';
 import { checkBuild, type BuildCheckResult } from './build-check';
 import { decideAutoFix, type AutoFixDecision } from './autofix-policy';
@@ -31,13 +30,14 @@ type NotifyLevel = 'info' | 'warning';
 
 export async function runBuildValidation(input: {
   stack: StackId;
-  sandboxId?: string | null;
+  /** The generated files, keyed by repo-relative path. */
+  files: Record<string, string>;
   jobId?: string | null;
   attempt: number;
   previousSignature: string | null;
   notify: (message: string, level: NotifyLevel) => void | Promise<void>;
 }): Promise<BuildValidationOutcome> {
-  const { stack, sandboxId, jobId, attempt, previousSignature, notify } = input;
+  const { stack, files, jobId, attempt, previousSignature, notify } = input;
 
   if (!(await getBuildAutoFixEnabled())) {
     return {
@@ -49,12 +49,11 @@ export async function runBuildValidation(input: {
 
   await notify('Checking the build…', 'info');
 
-  const sandbox = resolveSandboxRunner(sandboxId);
-  const result = await checkBuild({ stack, sandbox });
+  const result = await checkBuild({ stack, files });
 
   if (result.status === 'skipped') {
-    // Deliberately quiet: STATIC_HTML has no build step, and a missing sandbox
-    // is not something the user can act on from the chat.
+    // Deliberately quiet: STATIC_HTML has nothing to compile, and an empty file
+    // set is not something the user can act on from the chat.
     return { result, decision: { action: 'none', reason: 'build-skipped' }, retry: null };
   }
 
@@ -74,51 +73,23 @@ export async function runBuildValidation(input: {
   });
 
   if (decision.action === 'install') {
+    // Nothing to install into: preview dependencies are resolved from esm.sh at
+    // runtime, so an unknown import is code the model has to change rather than
+    // a package we can add.
+    const supported = Object.keys(PREVIEW_DEPS).join(', ');
     await notify(
-      `Build failed on missing packages: ${decision.packages.join(', ')}. Installing…`,
+      `The build used packages that are not available: ${decision.packages.join(', ')}. Asking for a version that uses only the supported ones.`,
       'warning',
     );
-    try {
-      const installed = await installPackages({ packages: decision.packages });
-      // Re-check rather than assume: the install can succeed while the build
-      // still fails for a second, unrelated reason.
-      const recheck = await checkBuild({ stack, sandbox });
-      if (recheck.status === 'passed') {
-        await notify('Installed the missing packages and the build now passes.', 'info');
-        return { result: recheck, decision, retry: null };
-      }
-      if (!installed.ok) {
-        await notify(`Could not install the missing packages: ${installed.error}`, 'warning');
-      }
-      // Still broken — fall through to the model with the *new* failure.
-      const next = decideAutoFix({ result: recheck, attempt, previousSignature });
-      if (next.action === 'install') {
-        // A second round of missing packages. Installing again could ping-pong,
-        // so stop here — but say so, or this exits silently on a broken build.
-        await notify(
-          `Still missing packages after installing: ${next.packages.join(', ')}. Stopping automatic fixes.`,
-          'warning',
-        );
-        return { result: recheck, decision: next, retry: null };
-      }
-      if (next.action === 'stop') {
-        await notify(`${describeBuildFailure(recheck)} ${next.detail}`, 'warning');
-      }
-      return {
-        result: recheck,
-        decision: next,
-        retry:
-          next.action === 'reprompt'
-            ? { instruction: next.instruction, attempt: next.attempt, signature: recheck.signature }
-            : null,
-      };
-    } catch (error) {
-      await notify(
-        `Could not install the missing packages: ${error instanceof Error ? error.message : String(error)}`,
-        'warning',
-      );
-      return { result, decision, retry: null };
-    }
+    return {
+      result,
+      decision,
+      retry: {
+        instruction: `The build failed because these packages are not available in the preview: ${decision.packages.join(', ')}. Rewrite the affected files using only these packages: ${supported}. Do not add any other dependency.`,
+        attempt: attempt + 1,
+        signature: result.signature,
+      },
+    };
   }
 
   if (decision.action === 'reprompt') {
@@ -129,7 +100,11 @@ export async function runBuildValidation(input: {
     return {
       result,
       decision,
-      retry: { instruction: decision.instruction, attempt: decision.attempt, signature: result.signature },
+      retry: {
+        instruction: decision.instruction,
+        attempt: decision.attempt,
+        signature: result.signature,
+      },
     };
   }
 

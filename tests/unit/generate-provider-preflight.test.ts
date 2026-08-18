@@ -29,10 +29,11 @@ describe('generate-ai-code-stream provider and sandbox preflight', () => {
     expect(source).toMatch(/executeWithCompletionFailover\(/);
   });
 
-  it('fails the job with sandbox_unavailable instead of warning-and-continuing', () => {
+  it('does not boot anything before generating', () => {
+    // Generation writes files to the database and the browser renders them.
+    // There is no workspace to start, so no pre-flight can fail the job.
     const source = generateRouteSource();
-    expect(source).toMatch(/errorCode:\s*['"]sandbox_unavailable['"]/);
-    expect(source).not.toMatch(/console\.warn\(\s*['"]\[generate-ai-code-stream\] ensureSandbox failed/);
+    expect(source).not.toMatch(/ensureSandbox\(/);
   });
 
   it('settles a streamed BUILD through settleStreamedGeneration, not a bare succeedJob', () => {
@@ -55,9 +56,11 @@ describe('generate-ai-code-stream provider and sandbox preflight', () => {
     expect(failoverBlock).not.toMatch(/retryCount \* 2000/);
   });
 
-  it('tells the user once when the build continues on the fallback', () => {
+  it('tells the user once when the build had to be retried', () => {
+    // One provider now, so the notice is about a retry rather than a vendor
+    // switch — but the user still has to be told the first attempt failed.
     const source = generateRouteSource();
-    expect(source).toMatch(/failoverNotice\(/);
+    expect(source).toMatch(/failover\.failedOver/);
     expect(source).toMatch(/type:\s*['"]info['"]/);
   });
 

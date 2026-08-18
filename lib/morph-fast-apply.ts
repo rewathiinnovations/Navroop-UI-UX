@@ -62,9 +62,9 @@ async function morphChatCompletionsCreate(payload: any) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${morphKey}`
+      Authorization: `Bearer ${morphKey}`,
     },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
   });
   if (!res.ok) {
     const text = await res.text();
@@ -110,7 +110,11 @@ function commandFailed(result: unknown): boolean {
 }
 
 // Read a file from sandbox: prefers cache, then sandbox.files, then commands.run("cat ...")
-async function readFileFromSandbox(sandbox: any, normalizedPath: string, fullPath: string): Promise<string> {
+async function readFileFromSandbox(
+  sandbox: any,
+  normalizedPath: string,
+  fullPath: string,
+): Promise<string> {
   // Try backend cache first
   if ((global as any).sandboxState?.fileCache?.files?.[normalizedPath]?.content) {
     return (global as any).sandboxState.fileCache.files[normalizedPath].content as string;
@@ -140,7 +144,10 @@ async function readFileFromSandbox(sandbox: any, normalizedPath: string, fullPat
 
   // Try shell cat via commands.run
   if (sandbox?.commands?.run) {
-    const result = await sandbox.commands.run(`cat ${fullPath}`, { cwd: '/home/user/app', timeout: 30 });
+    const result = await sandbox.commands.run(`cat ${fullPath}`, {
+      cwd: '/home/user/app',
+      timeout: 30,
+    });
     if (result?.exitCode === 0 && typeof result?.stdout === 'string') {
       return result.stdout as string;
     }
@@ -150,7 +157,12 @@ async function readFileFromSandbox(sandbox: any, normalizedPath: string, fullPat
 }
 
 // Write a file to sandbox and update cache
-async function writeFileToSandbox(sandbox: any, normalizedPath: string, fullPath: string, content: string): Promise<void> {
+async function writeFileToSandbox(
+  sandbox: any,
+  normalizedPath: string,
+  fullPath: string,
+  content: string,
+): Promise<void> {
   // Provider pattern (writeFile)
   if (typeof sandbox?.writeFile === 'function') {
     await sandbox.writeFile(normalizedPath, content);
@@ -160,7 +172,9 @@ async function writeFileToSandbox(sandbox: any, normalizedPath: string, fullPath
   // Provider pattern (runCommand redirect)
   if (typeof sandbox?.runCommand === 'function') {
     // Ensure directory exists. A failed mkdir is not a fallback — the write cannot proceed.
-    const dir = normalizedPath.includes('/') ? normalizedPath.substring(0, normalizedPath.lastIndexOf('/')) : '';
+    const dir = normalizedPath.includes('/')
+      ? normalizedPath.substring(0, normalizedPath.lastIndexOf('/'))
+      : '';
     if (dir) {
       const mkdir = await sandbox.runCommand(`mkdir -p ${dir}`);
       if (commandFailed(mkdir)) {
@@ -180,9 +194,7 @@ async function writeFileToSandbox(sandbox: any, normalizedPath: string, fullPath
     await sandbox.files.write(fullPath, content);
   } else if (sandbox?.runCode) {
     // Use Python to write safely
-    const escaped = content
-      .replace(/\\/g, '\\\\')
-      .replace(/"""/g, '\"\"\"');
+    const escaped = content.replace(/\\/g, '\\\\').replace(/"""/g, '\"\"\"');
     await sandbox.runCode(`
 import os
 os.makedirs(os.path.dirname("${fullPath}"), exist_ok=True)
@@ -193,7 +205,10 @@ print("WROTE:${fullPath}")
   } else if (sandbox?.commands?.run) {
     // Shell redirection (fallback)
     // Note: beware of special chars; this is a last-resort path
-    const result = await sandbox.commands.run(`bash -lc 'mkdir -p "$(dirname "${fullPath}")" && cat > "${fullPath}" << \EOF\n${content}\nEOF'`, { cwd: '/home/user/app', timeout: 60 });
+    const result = await sandbox.commands.run(
+      `bash -lc 'mkdir -p "$(dirname "${fullPath}")" && cat > "${fullPath}" << \EOF\n${content}\nEOF'`,
+      { cwd: '/home/user/app', timeout: 60 },
+    );
     if (result?.exitCode !== 0) {
       throw new Error(`Failed to write file via shell: ${normalizedPath}`);
     }
@@ -205,7 +220,7 @@ print("WROTE:${fullPath}")
   if ((global as any).sandboxState?.fileCache) {
     (global as any).sandboxState.fileCache.files[normalizedPath] = {
       content,
-      lastModified: Date.now()
+      lastModified: Date.now(),
     };
   }
   if ((global as any).existingFiles) {
@@ -235,9 +250,9 @@ export async function applyMorphEditToFile(params: {
       messages: [
         {
           role: 'user',
-          content: `<instruction>${params.instructions || ''}</instruction>\n<code>${initialCode}</code>\n<update>${params.updateSnippet}</update>`
-        }
-      ]
+          content: `<instruction>${params.instructions || ''}</instruction>\n<code>${initialCode}</code>\n<update>${params.updateSnippet}</update>`,
+        },
+      ],
     });
 
     const mergedCode = (resp as any)?.choices?.[0]?.message?.content || '';
@@ -252,5 +267,3 @@ export async function applyMorphEditToFile(params: {
     return { success: false, error: (error as Error).message };
   }
 }
-
-

@@ -2,7 +2,6 @@ import { NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/auth';
 import { getTopRecurringIssues } from '@/lib/audit/actions';
 import { getSsrfPrivateRejectCounts } from '@/lib/security/reject-log';
-import { getSandboxTeardownLeaks } from '@/lib/sandbox/teardown';
 
 export async function GET() {
   const { user, error, status } = await requireAdmin();
@@ -15,6 +14,5 @@ export async function GET() {
     return NextResponse.json({ error: result.error }, { status: result.status });
   }
   const ssrfPrivateRejects = await getSsrfPrivateRejectCounts();
-  const sandboxTeardownLeaks = await getSandboxTeardownLeaks();
-  return NextResponse.json({ issues: result.data, ssrfPrivateRejects, sandboxTeardownLeaks });
+  return NextResponse.json({ issues: result.data, ssrfPrivateRejects });
 }

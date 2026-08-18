@@ -56,7 +56,9 @@ export default function DeploymentsList({ initial }: { initial: PublicDeployment
   return (
     <StudioShell variant="workspace">
       <main className="mx-auto max-w-[1100px] px-20 py-40">
-        <h1 className="text-[32px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">Deployments</h1>
+        <h1 className="text-[32px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">
+          Deployments
+        </h1>
         <p className="mt-8 text-[14px] text-[var(--studio-muted)]">
           Preview and live Coolify sites. Sandbox URLs are not listed here.
         </p>
@@ -83,9 +85,15 @@ export default function DeploymentsList({ initial }: { initial: PublicDeployment
                 </tr>
               )}
               {rows.map((row) => (
-                <tr key={row.id} className="border-b border-[var(--studio-line)] last:border-0 align-top">
+                <tr
+                  key={row.id}
+                  className="border-b border-[var(--studio-line)] last:border-0 align-top"
+                >
                   <td className="px-16 py-14">
-                    <Link href={`/project/${row.projectId}`} className="font-medium hover:underline">
+                    <Link
+                      href={`/project/${row.projectId}`}
+                      className="font-medium hover:underline"
+                    >
                       {row.projectName || row.projectId}
                     </Link>
                   </td>
@@ -93,14 +101,21 @@ export default function DeploymentsList({ initial }: { initial: PublicDeployment
                   <td className="px-16 py-14">{statusLabel(row.status)}</td>
                   <td className="px-16 py-14">
                     {row.url ? (
-                      <a href={row.url} target="_blank" rel="noreferrer" className="text-[var(--studio-accent)] hover:underline">
+                      <a
+                        href={row.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-[var(--studio-accent)] hover:underline"
+                      >
                         {row.url.replace(/^https?:\/\//, '')}
                       </a>
                     ) : (
                       <span className="text-[var(--studio-faint)]">—</span>
                     )}
                   </td>
-                  <td className="px-16 py-14 text-[var(--studio-muted)]">{row.publishedBy?.name ?? '—'}</td>
+                  <td className="px-16 py-14 text-[var(--studio-muted)]">
+                    {row.publishedBy?.name ?? '—'}
+                  </td>
                   <td className="px-16 py-14 text-[var(--studio-muted)]">
                     {row.publishedAt ? new Date(row.publishedAt).toLocaleString() : '—'}
                   </td>
@@ -127,7 +142,9 @@ export default function DeploymentsList({ initial }: { initial: PublicDeployment
                         variant="danger"
                         disabled={busy !== null}
                         onClick={() => {
-                          const typed = window.prompt(`Delete + DNS cleanup. Type the slug: ${row.slug}`);
+                          const typed = window.prompt(
+                            `Delete + DNS cleanup. Type the slug: ${row.slug}`,
+                          );
                           if (typed) void act(row.id, 'delete', typed);
                         }}
                       >

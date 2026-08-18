@@ -7,7 +7,12 @@ import StudioField from '@/components/app/studio/StudioField';
 import PageTabs from '@/components/app/studio/PageTabs';
 import { useAuth } from '@/components/app/auth/AuthProvider';
 import { notify } from '@/lib/notify';
-import { deleteApiKey, listPersonalApiKeys, setOrgApiKey, setPersonalApiKey } from '@/lib/api-keys/actions';
+import {
+  deleteApiKey,
+  listPersonalApiKeys,
+  setOrgApiKey,
+  setPersonalApiKey,
+} from '@/lib/api-keys/actions';
 
 type PersonalKey = {
   provider: string;
@@ -129,7 +134,9 @@ export default function ApiKeysPage() {
   return (
     <StudioShell variant="workspace">
       <main className="mx-auto max-w-[720px] px-20 py-40">
-        <h1 className="text-[32px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">Settings</h1>
+        <h1 className="text-[32px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">
+          Settings
+        </h1>
         <PageTabs
           items={[
             { href: '/settings/profile', label: 'Profile' },
@@ -139,7 +146,8 @@ export default function ApiKeysPage() {
           ]}
         />
         <p className="mb-24 text-[14px] leading-6 text-[var(--studio-muted)]">
-          Personal keys override team defaults for your account. Only the last four characters are stored in the UI.
+          Personal keys override team defaults for your account. Only the last four characters are
+          stored in the UI.
         </p>
         {error && (
           <p className="mb-16 text-[13px] text-[var(--studio-danger)]" role="alert">
@@ -225,7 +233,10 @@ export default function ApiKeysPage() {
                         autoComplete="off"
                         value={orgDrafts[key.provider] || ''}
                         onChange={(event) =>
-                          setOrgDrafts((current) => ({ ...current, [key.provider]: event.target.value }))
+                          setOrgDrafts((current) => ({
+                            ...current,
+                            [key.provider]: event.target.value,
+                          }))
                         }
                         placeholder="Paste a team default key"
                       />

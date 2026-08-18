@@ -92,10 +92,9 @@ export default function SkillsPanel() {
       return;
     }
     setSkills((current) => current.map((row) => (row.id === result.data.id ? result.data : row)));
-    notify.success(
-      `“${result.data.name}” ${result.data.enabled ? 'enabled' : 'disabled'}.`,
-      { key: `skill-${skill.id}` },
-    );
+    notify.success(`“${result.data.name}” ${result.data.enabled ? 'enabled' : 'disabled'}.`, {
+      key: `skill-${skill.id}`,
+    });
   };
 
   const remove = async (skill: PublicSkill) => {
@@ -143,8 +142,12 @@ export default function SkillsPanel() {
             >
               <div className="flex items-start justify-between gap-12">
                 <div className="min-w-0">
-                  <p className="truncate text-[14px] font-medium text-[var(--studio-fg)]">{skill.name}</p>
-                  <p className="mt-4 text-[13px] leading-5 text-[var(--studio-muted)]">{skill.description}</p>
+                  <p className="truncate text-[14px] font-medium text-[var(--studio-fg)]">
+                    {skill.name}
+                  </p>
+                  <p className="mt-4 text-[13px] leading-5 text-[var(--studio-muted)]">
+                    {skill.description}
+                  </p>
                   <p className="mt-6 text-[12px] text-[var(--studio-faint)]">
                     Used {skill.usageCount} time{skill.usageCount === 1 ? '' : 's'}
                   </p>
@@ -201,7 +204,10 @@ export default function SkillsPanel() {
       )}
 
       {isAdmin && draft && (
-        <form onSubmit={saveDraft} className="space-y-16 rounded-12 border border-[var(--studio-line)] p-16">
+        <form
+          onSubmit={saveDraft}
+          className="space-y-16 rounded-12 border border-[var(--studio-line)] p-16"
+        >
           <h3 className="text-[15px] font-medium text-[var(--studio-fg)]">
             {draft.id ? 'Edit skill' : 'New skill'}
           </h3>

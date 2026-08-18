@@ -1,11 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionUser } from '@/lib/auth';
 import { prisma } from '@/lib/db';
-import { ensureSandbox, SandboxBootError, touchSandbox } from '@/lib/sandbox/manager';
 import { withRequest } from '@/lib/api/with-request';
-import { errorPayload } from '@/lib/api/error-response';
 import { getPreviewStatus } from '@/lib/preview/status';
-import { buildPreviewForProject } from '@/lib/preview/production';
 import { signedPreviewUrl } from '@/lib/preview/url';
 import { issuePreviewToken } from '@/lib/preview/token';
 
@@ -16,10 +13,7 @@ async function loadProject(id: string) {
   });
 }
 
-export async function GET(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> },
-) {
+export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   return withRequest(request, () => getPreview(params));
 }
 
@@ -36,10 +30,7 @@ async function getPreview(params: Promise<{ id: string }>) {
   return NextResponse.json(status);
 }
 
-export async function POST(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> },
-) {
+export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   return withRequest(request, () => postPreview(request, params));
 }
 
@@ -68,55 +59,9 @@ async function postPreview(request: NextRequest, params: Promise<{ id: string }>
     return NextResponse.json({ token, previewUrl });
   }
 
-  if (action === 'heartbeat') {
-    await touchSandbox(id);
-    return NextResponse.json({ ok: true });
-  }
-
-  if (action === 'live') {
-    if (body.enabled === false) {
-      return NextResponse.json({ ok: true, enabled: false });
-    }
-    try {
-      const result = await ensureSandbox(id);
-      await touchSandbox(id);
-      return NextResponse.json({
-        ok: true,
-        enabled: true,
-        previewUrl: result.previewUrl,
-        status: result.status,
-      });
-    } catch (error) {
-      const boot = error instanceof SandboxBootError ? error : null;
-      return NextResponse.json(
-        errorPayload(
-          error instanceof Error ? error.message : 'Failed to start live preview',
-          boot?.code || 'SANDBOX_FAILED',
-          boot?.requestId,
-        ),
-        { status: boot?.code === 'NO_CHECKPOINT' ? 409 : 500 },
-      );
-    }
-  }
-
-  if (action === 'retry') {
-    const latest = await prisma.checkpoint.findFirst({
-      where: { projectId: id },
-      orderBy: { createdAt: 'desc' },
-      select: { id: true },
-    });
-    if (!latest) {
-      return NextResponse.json({ error: 'No saved version to preview' }, { status: 409 });
-    }
-    const result = await buildPreviewForProject(id, latest.id);
-    if ('skipped' in result && result.skipped) {
-      return NextResponse.json(
-        { error: 'A live sandbox is required to retry the preview build', skipped: true },
-        { status: 409 },
-      );
-    }
-    return NextResponse.json(result);
-  }
+  // 'heartbeat', 'live' and 'retry' are gone with the sandbox VMs. The live
+  // preview is compiled and run in the user's browser from the project's
+  // stored files, so there is nothing to keep warm, boot, or rebuild here.
 
   return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
 }

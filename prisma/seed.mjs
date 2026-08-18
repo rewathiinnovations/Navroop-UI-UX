@@ -17,7 +17,9 @@ function seedAdminCredentials() {
 async function ensureAdmin() {
   const { email, password } = seedAdminCredentials();
   if (!email || password.length < 8) {
-    console.warn('Set SEED_ADMIN_EMAIL and SEED_ADMIN_PASSWORD (or ADMIN_EMAIL / ADMIN_PASSWORD) to seed the first admin.');
+    console.warn(
+      'Set SEED_ADMIN_EMAIL and SEED_ADMIN_PASSWORD (or ADMIN_EMAIL / ADMIN_PASSWORD) to seed the first admin.',
+    );
     return;
   }
 
@@ -79,7 +81,6 @@ async function ensurePlans() {
       maxLiveSites: 1,
       maxPreviewSites: 3,
       maxMembers: 2,
-      maxConcurrentSandboxes: 1,
       checkpointRetentionDays: 7,
       storageBytesLimit: BigInt(500 * MB),
       allowCustomDomain: false,
@@ -100,7 +101,6 @@ async function ensurePlans() {
       maxLiveSites: 20,
       maxPreviewSites: -1,
       maxMembers: 15,
-      maxConcurrentSandboxes: 5,
       checkpointRetentionDays: 90,
       storageBytesLimit: BigInt(20 * GB),
       allowCustomDomain: true,

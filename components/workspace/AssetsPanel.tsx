@@ -77,12 +77,17 @@ export default function AssetsPanel({ projectId }: { projectId: string }) {
     <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-[var(--studio-bg)]">
       <div className="border-b border-[var(--studio-line)] px-16 py-12">
         <h2 className="text-[14px] font-semibold text-[var(--studio-fg)]">Assets</h2>
-        <p className="text-[12px] text-[var(--studio-faint)]">Generate, find stock, or upload. Alt text is required.</p>
+        <p className="text-[12px] text-[var(--studio-faint)]">
+          Generate, find stock, or upload. Alt text is required.
+        </p>
       </div>
 
       <div className="grid gap-12 border-b border-[var(--studio-line)] px-16 py-12 md:grid-cols-3">
         <div className="space-y-8">
-          <label className="block text-[12px] font-medium text-[var(--studio-muted)]" htmlFor="asset-generate">
+          <label
+            className="block text-[12px] font-medium text-[var(--studio-muted)]"
+            htmlFor="asset-generate"
+          >
             Generate image
           </label>
           <textarea
@@ -128,7 +133,10 @@ export default function AssetsPanel({ projectId }: { projectId: string }) {
         </div>
 
         <div className="space-y-8">
-          <label className="block text-[12px] font-medium text-[var(--studio-muted)]" htmlFor="asset-stock">
+          <label
+            className="block text-[12px] font-medium text-[var(--studio-muted)]"
+            htmlFor="asset-stock"
+          >
             Find stock photo
           </label>
           <input
@@ -156,7 +164,10 @@ export default function AssetsPanel({ projectId }: { projectId: string }) {
         </div>
 
         <div className="space-y-8">
-          <label className="block text-[12px] font-medium text-[var(--studio-muted)]" htmlFor="asset-upload-alt">
+          <label
+            className="block text-[12px] font-medium text-[var(--studio-muted)]"
+            htmlFor="asset-upload-alt"
+          >
             Upload (alt text required)
           </label>
           <input
@@ -204,7 +215,10 @@ export default function AssetsPanel({ projectId }: { projectId: string }) {
           <li className="text-[13px] text-[var(--studio-faint)]">No assets yet</li>
         )}
         {assets.map((asset) => (
-          <li key={asset.id} className="rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] p-12">
+          <li
+            key={asset.id}
+            className="rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] p-12"
+          >
             <div className="mb-10 h-72 overflow-hidden rounded-8 bg-[var(--studio-skeleton)]">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={asset.url} alt={asset.altText} className="size-full object-cover" />
@@ -231,7 +245,9 @@ export default function AssetsPanel({ projectId }: { projectId: string }) {
                     notify.error(result.error, { key: `asset-alt-${asset.id}` });
                     return;
                   }
-                  setAssets((current) => current.map((row) => (row.id === asset.id ? result.data : row)));
+                  setAssets((current) =>
+                    current.map((row) => (row.id === asset.id ? result.data : row)),
+                  );
                   notify.success('Alt text saved.', { key: `asset-alt-${asset.id}` });
                 });
               }}
@@ -244,9 +260,7 @@ export default function AssetsPanel({ projectId }: { projectId: string }) {
                   void navigator.clipboard
                     .writeText(asset.url)
                     .then(() => notify.success('Asset URL copied.', { key: 'asset-copy' }))
-                    .catch(() =>
-                      notify.warning('Could not copy the URL.', { key: 'asset-copy' }),
-                    );
+                    .catch(() => notify.warning('Could not copy the URL.', { key: 'asset-copy' }));
                 }}
                 className="inline-flex h-32 items-center gap-4 rounded-full border border-[var(--studio-line)] px-10 text-[11px] text-[var(--studio-fg)]"
               >

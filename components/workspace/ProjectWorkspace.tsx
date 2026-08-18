@@ -34,10 +34,7 @@ import LockBar from './LockBar';
 import StaleViewBanner from './StaleViewBanner';
 import { useProjectPresence } from './useProjectPresence';
 import { isJobInFlight, showsChatRecovery } from '@/lib/jobs/chat-ui';
-import {
-  offersRecoveryKeep,
-  recoveryNextStepLine,
-} from '@/lib/jobs/copy';
+import { offersRecoveryKeep, recoveryNextStepLine } from '@/lib/jobs/copy';
 import { dispatchRecoveryRetry, recoveryRetryIntent } from '@/lib/jobs/recovery-retry';
 import type { ImportMode } from '@/lib/import/mode';
 import { useGenerationJob } from './useGenerationJob';
@@ -180,7 +177,8 @@ export default function ProjectWorkspace({
     });
   };
 
-  const recoveryErrorCode = generationJob.clientStop === 'timeout' ? 'timeout' : generationJob.job?.errorCode;
+  const recoveryErrorCode =
+    generationJob.clientStop === 'timeout' ? 'timeout' : generationJob.job?.errorCode;
   const retryIntent = recoveryRetryIntent({
     kind: generationJob.job?.kind,
     errorCode: recoveryErrorCode,
@@ -216,11 +214,17 @@ export default function ProjectWorkspace({
         startBuild: async () => undefined,
         createRetryJob: async () => ({ ok: true as const }),
       }).catch((error: unknown) => {
-        onThreadMessage?.(error instanceof Error ? error.message : 'Could not start a plan.', 'system');
+        onThreadMessage?.(
+          error instanceof Error ? error.message : 'Could not start a plan.',
+          'system',
+        );
       });
       return;
     }
-    const key = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `retry-${Date.now()}`;
+    const key =
+      typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `retry-${Date.now()}`;
     void dispatchRecoveryRetry(intent, {
       startImport: async () => undefined,
       startPlan: async () => undefined,
@@ -311,7 +315,10 @@ export default function ProjectWorkspace({
         }}
       />
       {presence.peerNote ? (
-        <div className="border-b border-[var(--studio-line)] bg-[var(--studio-surface)] px-12 py-8 text-[12px] text-[var(--studio-muted)]" role="status">
+        <div
+          className="border-b border-[var(--studio-line)] bg-[var(--studio-surface)] px-12 py-8 text-[12px] text-[var(--studio-muted)]"
+          role="status"
+        >
           {presence.peerNote}
         </div>
       ) : null}
@@ -353,7 +360,10 @@ export default function ProjectWorkspace({
                   ? {
                       visible: true,
                       kind: generationJob.job?.kind,
-                      errorCode: generationJob.clientStop === 'timeout' ? 'timeout' : generationJob.job?.errorCode,
+                      errorCode:
+                        generationJob.clientStop === 'timeout'
+                          ? 'timeout'
+                          : generationJob.job?.errorCode,
                       errorMessage: generationJob.job?.errorMessage,
                       filesWritten: generationJob.job?.filesWritten ?? 0,
                       requestId: generationJob.job?.requestId,
@@ -366,11 +376,14 @@ export default function ProjectWorkspace({
                         : undefined,
                       onRetry: handleRetry,
                       offerRetry: retryIntent.action !== 'none',
-                      nextStep: retryIntent.action === 'none' ? retryIntent.nextStep : recoveryNextStepLine({
-                        kind: generationJob.job?.kind,
-                        errorCode: recoveryErrorCode,
-                        errorMessage: generationJob.job?.errorMessage,
-                      }),
+                      nextStep:
+                        retryIntent.action === 'none'
+                          ? retryIntent.nextStep
+                          : recoveryNextStepLine({
+                              kind: generationJob.job?.kind,
+                              errorCode: recoveryErrorCode,
+                              errorMessage: generationJob.job?.errorMessage,
+                            }),
                       onStartOver: handleStartOver,
                       resourceIds: generationJob.job?.resourceIds,
                     }
@@ -378,7 +391,11 @@ export default function ProjectWorkspace({
               }
             />
             <LockBar
-              lock={presence.heldByOther ? presence.lock : { locked: false, heldBy: null, expiresAt: null, reason: null }}
+              lock={
+                presence.heldByOther
+                  ? presence.lock
+                  : { locked: false, heldBy: null, expiresAt: null, reason: null }
+              }
               showRelease={presence.heldByOther && presence.isAdmin}
               onRelease={() => {
                 void presence.releaseLock();
@@ -398,57 +415,57 @@ export default function ProjectWorkspace({
         </section>
 
         <PanelErrorBoundary label="Preview">
-        <PreviewPanel
-          iframeRef={iframeRef}
-          sandboxUrl={previewUrl}
-          selectedPage={selectedPage}
-          expanded={chatCollapsed}
-          previewDevice={previewDevice.device}
-          previewRotated={previewDevice.rotated}
-          view={view}
-          onSend={handleSend}
-          sending={sending}
-          phase={phase}
-          planTrigger={plan?.trigger}
-          previewing={previewing}
-          onExitPreview={() => {
-            void exitPreview().then((result) => {
-              if (!result.ok) onThreadMessage?.(result.error, 'system');
-            });
-          }}
-          sandboxState={sandbox}
-          onRetrySandbox={() => {
-            void sandbox.boot();
-          }}
-          previewKind={livePreview.enabled ? 'live' : 'static'}
-          preparingPreview={staticPreview.preparing && !livePreview.enabled}
-          previewBuildFailed={staticPreview.status === 'FAILED'}
-          previewBuildLog={staticPreview.buildLog}
-          onRetryPreview={() => {
-            void staticPreview.retry();
-          }}
-          onStartLive={() => {
-            void livePreview.startLive();
-          }}
-          liveNotice={livePreview.notice}
-        >
-          {view === 'seo' && projectId ? (
-            <QualityPanel
-              projectId={projectId}
-              projectUpdatedAt={updatedAt}
-              onSend={handleSend}
-              sending={sending}
-            />
-          ) : view === 'assets' && projectId ? (
-            <AssetsPanel projectId={projectId} />
-          ) : view === 'brain' && projectId ? (
-            <BrainPanel projectId={projectId} />
-          ) : view === 'domains' && projectId ? (
-            <DomainsPanel projectId={projectId} />
-          ) : (
-            preview
-          )}
-        </PreviewPanel>
+          <PreviewPanel
+            iframeRef={iframeRef}
+            sandboxUrl={previewUrl}
+            selectedPage={selectedPage}
+            expanded={chatCollapsed}
+            previewDevice={previewDevice.device}
+            previewRotated={previewDevice.rotated}
+            view={view}
+            onSend={handleSend}
+            sending={sending}
+            phase={phase}
+            planTrigger={plan?.trigger}
+            previewing={previewing}
+            onExitPreview={() => {
+              void exitPreview().then((result) => {
+                if (!result.ok) onThreadMessage?.(result.error, 'system');
+              });
+            }}
+            sandboxState={sandbox}
+            onRetrySandbox={() => {
+              void sandbox.boot();
+            }}
+            previewKind={livePreview.enabled ? 'live' : 'static'}
+            preparingPreview={staticPreview.preparing && !livePreview.enabled}
+            previewBuildFailed={staticPreview.status === 'FAILED'}
+            previewBuildLog={staticPreview.buildLog}
+            onRetryPreview={() => {
+              void staticPreview.retry();
+            }}
+            onStartLive={() => {
+              void livePreview.startLive();
+            }}
+            liveNotice={livePreview.notice}
+          >
+            {view === 'seo' && projectId ? (
+              <QualityPanel
+                projectId={projectId}
+                projectUpdatedAt={updatedAt}
+                onSend={handleSend}
+                sending={sending}
+              />
+            ) : view === 'assets' && projectId ? (
+              <AssetsPanel projectId={projectId} />
+            ) : view === 'brain' && projectId ? (
+              <BrainPanel projectId={projectId} />
+            ) : view === 'domains' && projectId ? (
+              <DomainsPanel projectId={projectId} />
+            ) : (
+              preview
+            )}
+          </PreviewPanel>
         </PanelErrorBoundary>
 
         <ProductTour />
@@ -459,7 +476,11 @@ export default function ProjectWorkspace({
           checkpoints={checkpoints}
           onRestore={(id) => {
             void restore(id).then((result) => {
-              if (!result.ok && result.error !== 'cancelled' && !('locked' in result && result.locked)) {
+              if (
+                !result.ok &&
+                result.error !== 'cancelled' &&
+                !('locked' in result && result.locked)
+              ) {
                 onThreadMessage?.(result.error, 'system');
               }
             });

@@ -32,16 +32,36 @@ function assert(cond: unknown, name: string) {
 const HOUR = 60 * 60 * 1000;
 const created = new Date('2026-08-17T12:00:00.000Z');
 
-assert(nextCheckDelayMs(created, new Date(created.getTime() + 10 * 60 * 1000)) === 2 * 60 * 1000, 'backoff is 2 minutes in the first hour');
-assert(nextCheckDelayMs(created, new Date(created.getTime() + 3 * HOUR)) === 15 * 60 * 1000, 'backoff is 15 minutes in the first day');
-assert(nextCheckDelayMs(created, new Date(created.getTime() + 30 * HOUR)) === HOUR, 'backoff is hourly after the first day');
-assert(nextCheckDelayMs(created, new Date(created.getTime() + 8 * 24 * HOUR)) === 'failed', 'backoff marks failed after 7 days');
 assert(
-  shouldCheckDomain(created, new Date(created.getTime() + 30 * 1000), new Date(created.getTime() + 60 * 1000)) === false,
+  nextCheckDelayMs(created, new Date(created.getTime() + 10 * 60 * 1000)) === 2 * 60 * 1000,
+  'backoff is 2 minutes in the first hour',
+);
+assert(
+  nextCheckDelayMs(created, new Date(created.getTime() + 3 * HOUR)) === 15 * 60 * 1000,
+  'backoff is 15 minutes in the first day',
+);
+assert(
+  nextCheckDelayMs(created, new Date(created.getTime() + 30 * HOUR)) === HOUR,
+  'backoff is hourly after the first day',
+);
+assert(
+  nextCheckDelayMs(created, new Date(created.getTime() + 8 * 24 * HOUR)) === 'failed',
+  'backoff marks failed after 7 days',
+);
+assert(
+  shouldCheckDomain(
+    created,
+    new Date(created.getTime() + 30 * 1000),
+    new Date(created.getTime() + 60 * 1000),
+  ) === false,
   'does not recheck before the 2 minute window',
 );
 assert(
-  shouldCheckDomain(created, new Date(created.getTime() + 30 * 1000), new Date(created.getTime() + 3 * 60 * 1000)) === true,
+  shouldCheckDomain(
+    created,
+    new Date(created.getTime() + 30 * 1000),
+    new Date(created.getTime() + 3 * 60 * 1000),
+  ) === true,
   'rechecks after the 2 minute window',
 );
 
@@ -80,7 +100,6 @@ try {
       maxLiveSites: 10,
       maxPreviewSites: 10,
       maxMembers: 10,
-      maxConcurrentSandboxes: 5,
       checkpointRetentionDays: 7,
       storageBytesLimit: BigInt(1_000_000_000),
       allowCustomDomain: true,
@@ -172,7 +191,10 @@ try {
 
   assert(createdDomain.data.status === 'PENDING_DNS', 'create without DNS stays PENDING_DNS');
   assert(createdDomain.data.hostname === HOST, 'hostname is normalized to client.com');
-  assert(createdDomain.data.expectedTarget === SERVER_IP, 'apex expectedTarget is the Coolify server IP');
+  assert(
+    createdDomain.data.expectedTarget === SERVER_IP,
+    'apex expectedTarget is the Coolify server IP',
+  );
   assert(createdDomain.data.verifyToken.length >= 16, 'verifyToken is present');
 
   const rows = buildDnsInstructions(createdDomain.data);
@@ -202,9 +224,18 @@ try {
     },
   });
   assert(checked.status !== 'ACTIVE', 'wrong A record does not become ACTIVE');
-  assert(typeof checked.lastError === 'string' && checked.lastError.includes(FOUND_IP), 'wrong A error names the found IP');
-  assert(typeof checked.lastError === 'string' && checked.lastError.includes(SERVER_IP), 'wrong A error names the expected IP');
-  assert(typeof checked.lastError === 'string' && !/nahi|galat|mil/i.test(checked.lastError), 'wrong A error is English');
+  assert(
+    typeof checked.lastError === 'string' && checked.lastError.includes(FOUND_IP),
+    'wrong A error names the found IP',
+  );
+  assert(
+    typeof checked.lastError === 'string' && checked.lastError.includes(SERVER_IP),
+    'wrong A error names the expected IP',
+  );
+  assert(
+    typeof checked.lastError === 'string' && !/nahi|galat|mil/i.test(checked.lastError),
+    'wrong A error is English',
+  );
 } catch (error) {
   failed += 1;
   console.error('FAIL  db assertions', error);

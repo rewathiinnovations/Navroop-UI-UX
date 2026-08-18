@@ -1,19 +1,5 @@
-export type PreviewMode = 'STATIC' | 'LIVE_SANDBOX';
+export type PreviewMode = 'STATIC';
 export type PreviewBuildStatus = 'PENDING' | 'BUILDING' | 'READY' | 'FAILED';
-
-export type PreviewCommandResult = {
-  exitCode: number;
-  stdout: string;
-  stderr: string;
-};
-
-export type PreviewSandbox = {
-  runCommand: (command: string) => Promise<PreviewCommandResult>;
-  listFiles: (dir: string) => Promise<string[]>;
-  readFile: (path: string) => Promise<string | Buffer>;
-  writeFile: (path: string, content: string) => Promise<void>;
-  removeFile?: (path: string) => Promise<void>;
-};
 
 export type PreviewBuildStore = {
   createBuilding: (input: {
@@ -58,12 +44,11 @@ export type PreviewStorage = {
 
 export type BuildStaticPreviewDeps = {
   stack: string;
-  sandbox: PreviewSandbox;
+  /** The project's source files, keyed by repo-relative path. */
+  files: Record<string, string>;
   store: PreviewBuildStore;
   storage: PreviewStorage;
-  killSandbox: (projectId: string) => Promise<void>;
 };
 
 export type BuildStaticPreviewResult =
-  | { ok: true; mode: 'STATIC'; buildId: string }
-  | { ok: false; mode: 'LIVE_SANDBOX'; buildId: string; error: string };
+  { ok: true; mode: 'STATIC'; buildId: string } | { ok: false; buildId: string; error: string };

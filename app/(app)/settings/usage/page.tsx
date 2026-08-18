@@ -22,8 +22,6 @@ type UsageData = {
   workspaceTotal: number;
   unattributed?: number;
   isAdmin: boolean;
-  sandboxMinutesUsed?: number;
-  sandboxMinutesLimit?: number;
 };
 
 export default function SettingsUsagePage() {
@@ -45,12 +43,16 @@ export default function SettingsUsagePage() {
 
   const reset = data ? new Date(data.resetAt) : null;
   const storageRatio =
-    data && data.storageLimitBytes > 0 ? Math.min(data.storageBytes / data.storageLimitBytes, 1) : 0;
+    data && data.storageLimitBytes > 0
+      ? Math.min(data.storageBytes / data.storageLimitBytes, 1)
+      : 0;
 
   return (
     <StudioShell variant="workspace">
       <main className="mx-auto max-w-[720px] px-20 py-40">
-        <h1 className="text-[32px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">Settings</h1>
+        <h1 className="text-[32px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">
+          Settings
+        </h1>
         <PageTabs
           items={[
             { href: '/settings/profile', label: 'Profile' },
@@ -82,9 +84,6 @@ export default function SettingsUsagePage() {
                   ? ` · plus ${data.unattributed} from removed members or deleted history`
                   : ''}
               </p>
-              <p className="mt-8 text-[13px] text-[var(--studio-muted)]">
-                {data.sandboxMinutesUsed ?? 0} / {data.sandboxMinutesLimit ?? 0} sandbox minutes
-              </p>
             </section>
 
             <section>
@@ -114,10 +113,15 @@ export default function SettingsUsagePage() {
                   </thead>
                   <tbody>
                     {data.members.map((member) => (
-                      <tr key={member.userId} className="border-b border-[var(--studio-line)] last:border-0">
+                      <tr
+                        key={member.userId}
+                        className="border-b border-[var(--studio-line)] last:border-0"
+                      >
                         <td className="px-14 py-12">
                           <div className="font-medium text-[var(--studio-fg)]">{member.name}</div>
-                          <div className="text-[12px] text-[var(--studio-faint)]">{member.email}</div>
+                          <div className="text-[12px] text-[var(--studio-faint)]">
+                            {member.email}
+                          </div>
                         </td>
                         <td className="px-14 py-12 text-[var(--studio-muted)]">{member.credits}</td>
                       </tr>
@@ -130,7 +134,8 @@ export default function SettingsUsagePage() {
             <section>
               <h2 className="text-[18px] font-medium text-[var(--studio-fg)]">Storage</h2>
               <p className="mt-6 text-[13px] text-[var(--studio-muted)]">
-                {formatStorageBytes(data.storageBytes)} of {formatStorageBytes(data.storageLimitBytes)}
+                {formatStorageBytes(data.storageBytes)} of{' '}
+                {formatStorageBytes(data.storageLimitBytes)}
               </p>
               <div
                 className="mt-8 h-8 overflow-hidden rounded-full bg-[var(--studio-skeleton)]"
@@ -142,7 +147,9 @@ export default function SettingsUsagePage() {
               >
                 <div
                   className="h-full rounded-full bg-[var(--studio-accent)]"
-                  style={{ width: `${Math.max(storageRatio * 100, data.storageBytes > 0 ? 2 : 0)}%` }}
+                  style={{
+                    width: `${Math.max(storageRatio * 100, data.storageBytes > 0 ? 2 : 0)}%`,
+                  }}
                 />
               </div>
             </section>

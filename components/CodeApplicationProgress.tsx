@@ -30,16 +30,16 @@ export default function CodeApplicationProgress({ state }: CodeApplicationProgre
           {/* Rotating loading indicator */}
           <motion.div
             animate={{ rotate: 360 }}
-            transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+            transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
             className="w-4 h-4"
           >
             <svg className="w-full h-full" viewBox="0 0 24 24" fill="none">
-              <circle 
-                cx="12" 
-                cy="12" 
-                r="10" 
-                stroke="currentColor" 
-                strokeWidth="2" 
+              <circle
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                strokeWidth="2"
                 strokeLinecap="round"
                 strokeDasharray="31.416"
                 strokeDashoffset="10"
@@ -49,9 +49,7 @@ export default function CodeApplicationProgress({ state }: CodeApplicationProgre
           </motion.div>
 
           {/* Simple loading text */}
-          <div className="text-sm font-medium text-gray-700">
-            Applying to sandbox...
-          </div>
+          <div className="text-sm font-medium text-gray-700">Applying changes...</div>
         </div>
       </motion.div>
     </AnimatePresence>

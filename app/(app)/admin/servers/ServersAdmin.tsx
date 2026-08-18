@@ -69,9 +69,7 @@ export default function ServersAdmin({ initial }: { initial: PublicServer[] }) {
         notify.error(data.error || 'Could not update the server');
         return;
       }
-      notify.success(
-        server.isActive ? `${server.name} deactivated.` : `${server.name} activated.`,
-      );
+      notify.success(server.isActive ? `${server.name} deactivated.` : `${server.name} activated.`);
       await refresh();
     } catch (cause) {
       notify.error(cause, { fallback: 'Could not update the server' });

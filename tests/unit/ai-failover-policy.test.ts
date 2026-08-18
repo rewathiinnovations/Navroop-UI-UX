@@ -7,7 +7,11 @@ import {
   shouldFailover,
 } from '../../lib/ai/failover';
 import { EmptyCompletionError, surfaceStreamFailure } from '../../lib/ai/empty-completion';
-import { executeWithCompletionFailover, executeWithFailover, ProviderRunError } from '../../lib/ai/run';
+import {
+  executeWithCompletionFailover,
+  executeWithFailover,
+  ProviderRunError,
+} from '../../lib/ai/run';
 import type { ProviderEntry } from '../../lib/ai/providers';
 import { recoveryCauseLine } from '../../lib/jobs/copy';
 import { describeNoChanges } from '../../lib/generation/no-changes';
@@ -28,7 +32,7 @@ function unregisteredCallerError() {
 }
 
 const GEMINI_KEY_REJECTED =
-  'Gemini rejected the API key. Ask an administrator to check the Gemini key, then try again.';
+  'DeepSeek rejected the API key. Ask an administrator to check the DeepSeek key, then try again.';
 
 const FOLLOW_UP_NO_FILES =
   'No changes were made: the AI did not return any files for this request. Please try again, and describe the change in a little more detail — for example, name the page, section or component you want changed.';
@@ -57,7 +61,7 @@ describe('shouldFailover distinguishes unusable providers from bad requests', ()
   });
 
   it('switches on a zero-file completion', () => {
-    expect(shouldFailover(new EmptyCompletionError('google', 'gemini-2.5-flash'))).toBe(true);
+    expect(shouldFailover(new EmptyCompletionError('deepseek', 'deepseek-v4-flash'))).toBe(true);
   });
 
   it('does not switch on a malformed request, content-policy refusal, or context overflow', () => {
@@ -67,7 +71,9 @@ describe('shouldFailover distinguishes unusable providers from bad requests', ()
     expect(shouldFailover(httpError(400, 'context length exceeded'))).toBe(false);
     expect(shouldFailover(httpError(400, 'maximum context'))).toBe(false);
     expect(classifyProviderFailure(httpError(403, 'content filter'))).toBe('content_policy');
-    expect(classifyProviderFailure(httpError(400, 'context_length_exceeded'))).toBe('context_length');
+    expect(classifyProviderFailure(httpError(400, 'context_length_exceeded'))).toBe(
+      'context_length',
+    );
   });
 });
 
@@ -326,6 +332,8 @@ describe('a rejected provider call is a credential failure, not an empty model',
     ).rejects.toThrow(/invalid_request/);
     expect(called).toEqual(['google']);
     expect(shouldFailover(httpError(400, 'invalid_request'))).toBe(false);
-    expect(jobErrorCodeForProviderFailure(httpError(400, 'invalid_request'))).toBe('request_rejected');
+    expect(jobErrorCodeForProviderFailure(httpError(400, 'invalid_request'))).toBe(
+      'request_rejected',
+    );
   });
 });

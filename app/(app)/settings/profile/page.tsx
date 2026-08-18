@@ -101,7 +101,9 @@ export default function ProfileSettingsPage() {
   return (
     <StudioShell variant="workspace">
       <main className="mx-auto max-w-[640px] px-20 py-40">
-        <h1 className="text-[32px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">Settings</h1>
+        <h1 className="text-[32px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">
+          Settings
+        </h1>
         <PageTabs
           items={[
             { href: '/settings/profile', label: 'Profile', active: true },
@@ -194,7 +196,9 @@ export default function ProfileSettingsPage() {
           />
           <div className="space-y-8">
             <StudioField id="email" label="Email" value={user?.email || ''} disabled readOnly />
-            <p className="text-[12px] text-[var(--studio-muted)]">contact an admin to change this</p>
+            <p className="text-[12px] text-[var(--studio-muted)]">
+              contact an admin to change this
+            </p>
           </div>
 
           <StudioButton type="submit" variant="primary" disabled={savingProfile}>
@@ -235,7 +239,10 @@ export default function ProfileSettingsPage() {
             required
           />
           {passwordError && (
-            <p className="flex items-start gap-8 text-[13px] text-[var(--studio-danger)]" role="alert">
+            <p
+              className="flex items-start gap-8 text-[13px] text-[var(--studio-danger)]"
+              role="alert"
+            >
               <CircleAlert className="mt-2 size-16" aria-hidden />
               {passwordError}
             </p>

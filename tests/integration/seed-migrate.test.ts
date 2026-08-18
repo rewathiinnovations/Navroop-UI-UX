@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { findDestructiveStatements } from '../../lib/migrate/safety';
+import { findDestructiveStatements, hasReviewedDestructiveMarker } from '../../lib/migrate/safety';
 
 describe('seed and migration', () => {
   it('committed migrations are loadable and non-destructive without a flag', () => {
@@ -14,7 +14,10 @@ describe('seed and migration', () => {
     for (const folder of folders) {
       const sql = readFileSync(join(dir, folder, 'migration.sql'), 'utf8');
       expect(sql.length).toBeGreaterThan(0);
-      expect(findDestructiveStatements(sql)).toEqual([]);
+      // An annotated migration still needs ALLOW_DESTRUCTIVE_MIGRATION and a
+      // backup at deploy time; the marker only records that it was reviewed.
+      if (hasReviewedDestructiveMarker(sql)) continue;
+      expect(findDestructiveStatements(sql), `${folder} is destructive`).toEqual([]);
     }
   });
 

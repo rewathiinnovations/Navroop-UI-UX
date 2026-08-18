@@ -54,14 +54,8 @@ export function sectionComponentPath(stack: string, section: ImportSection) {
       return `components/imported/${pascal}.tsx`;
     case 'REACT':
       return `src/components/${pascal}.jsx`;
-    case 'ASTRO':
-      return `src/components/${pascal}.astro`;
     case 'STATIC_HTML':
       return `${name}.html`;
-    case 'VUE':
-      return `src/components/${pascal}.vue`;
-    case 'SVELTE':
-      return `src/lib/${pascal}.svelte`;
     default:
       return `components/${pascal}.tsx`;
   }
@@ -73,14 +67,8 @@ function compositionHint(stack: string) {
       return 'Compose in app/page.tsx (and app/layout.tsx for nav/footer if needed).';
     case 'REACT':
       return 'Compose in src/App.jsx. Nav in Header.jsx when needed.';
-    case 'ASTRO':
-      return 'Compose in src/pages/index.astro.';
     case 'STATIC_HTML':
       return 'Compose in index.html with relative links.';
-    case 'VUE':
-      return 'Compose in src/App.vue.';
-    case 'SVELTE':
-      return 'Compose in src/routes/+page.svelte and src/routes/+layout.svelte.';
     default:
       return 'Compose the stack entry file.';
   }
@@ -110,7 +98,10 @@ function assetsForSection(section: ImportSection, assets: RehostedAsset[]) {
   const [start, end] = section.approximateYRange;
   const mid = (start + end) / 2;
   return assets
-    .map((asset, index) => ({ asset, score: Math.abs(index / assets.length - mid / Math.max(end, 1)) }))
+    .map((asset, index) => ({
+      asset,
+      score: Math.abs(index / assets.length - mid / Math.max(end, 1)),
+    }))
     .sort((a, b) => a.score - b.score)
     .slice(0, 4)
     .map((entry) => entry.asset);
@@ -163,7 +154,10 @@ async function completeXml(input: {
 }
 
 function joinFilesXml(chunks: string[]) {
-  return chunks.map((chunk) => chunk.trim()).filter(Boolean).join('\n\n');
+  return chunks
+    .map((chunk) => chunk.trim())
+    .filter(Boolean)
+    .join('\n\n');
 }
 
 export async function generateImportedSections(input: {
@@ -215,7 +209,8 @@ export async function generateImportedSections(input: {
       paths.push({ path, label: section.label });
     } catch (error) {
       failedSections += 1;
-      const detail = error instanceof Error && error.message ? error.message : String(error ?? 'unknown error');
+      const detail =
+        error instanceof Error && error.message ? error.message : String(error ?? 'unknown error');
       const message = sectionGenerateFailureMessage(section.label, detail);
       warnings.push(message);
       input.onProgress?.(message);
@@ -227,7 +222,9 @@ export async function generateImportedSections(input: {
     }
   }
 
-  if (sectionGenerationSeverity({ succeeded: paths.length, failed: failedSections }) === 'fallback') {
+  if (
+    sectionGenerationSeverity({ succeeded: paths.length, failed: failedSections }) === 'fallback'
+  ) {
     throw new Error(warnings[0] || 'No sections could be generated');
   }
 
@@ -247,7 +244,8 @@ export async function generateImportedSections(input: {
     inputTokens += composition.inputTokens;
     files.push(composition.text);
   } catch (error) {
-    const detail = error instanceof Error && error.message ? error.message : String(error ?? 'unknown error');
+    const detail =
+      error instanceof Error && error.message ? error.message : String(error ?? 'unknown error');
     const message = `The imported sections were generated, but the layout could not be composed (${detail}) — open the section files and try again.`;
     warnings.push(message);
     input.onProgress?.(message);

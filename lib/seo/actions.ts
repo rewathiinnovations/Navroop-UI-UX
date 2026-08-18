@@ -12,7 +12,6 @@ import { runLighthouseSeo } from './lighthouse';
 import { runSeoChecks } from './scan';
 import type { PublicSeoAudit, SeoFinding } from './types';
 import { recordSeoScore } from '@/lib/signals/collect';
-import { ensureSandbox, SandboxBootError } from '@/lib/sandbox/manager';
 import { asCreditActionErr } from '@/lib/plans/http';
 import { checkCredits } from '@/lib/plans/limits';
 import { WORKSPACE_ROW_ID } from '@/lib/storage/usage';
@@ -49,7 +48,12 @@ async function requireActor() {
   return { user, err: null };
 }
 
-function toPublic(row: { id: string; projectId: string; findings: unknown; scannedAt: Date }): PublicSeoAudit {
+function toPublic(row: {
+  id: string;
+  projectId: string;
+  findings: unknown;
+  scannedAt: Date;
+}): PublicSeoAudit {
   return {
     id: row.id,
     projectId: row.projectId,
@@ -78,25 +82,27 @@ async function performSeoAudit(projectId: string) {
 
   const previous = await latestRow(projectId);
   const files = await captureFileSnapshot(projectId);
+  // Only a served build can be fetched. The live preview now renders in the
+  // user's browser from a srcdoc, so there is no server-visitable URL unless a
+  // static build was published — the file checks below still run either way.
   let previewUrl = project.previewUrl?.trim() || null;
   try {
     const { getProjectPreviewFields } = await import('@/lib/preview/db');
     const { signedPreviewUrl } = await import('@/lib/preview/url');
     const preview = await getProjectPreviewFields(projectId);
-    if (preview?.previewMode === 'STATIC' && preview.activePreviewBuildId) {
-      previewUrl = await signedPreviewUrl({ projectId, userId: 'seo-audit' });
-    } else {
-      const ensured = await ensureSandbox(projectId);
-      previewUrl = ensured.previewUrl;
-    }
+    previewUrl = preview?.activePreviewBuildId
+      ? await signedPreviewUrl({ projectId, userId: 'seo-audit' })
+      : null;
   } catch (error) {
-    if (!(error instanceof SandboxBootError && error.code === 'NO_CHECKPOINT')) {
-      console.warn('[seo] ensureSandbox failed, auditing without live preview', error);
-    }
+    console.warn('[seo] preview URL unavailable, auditing files only', error);
+    previewUrl = null;
   }
   const live = previewUrl ? await fetchPreviewDocument(previewUrl) : null;
   const [liveRobots, liveSitemap] = previewUrl
-    ? await Promise.all([fetchPreviewText(previewUrl, '/robots.txt'), fetchPreviewText(previewUrl, '/sitemap.xml')])
+    ? await Promise.all([
+        fetchPreviewText(previewUrl, '/robots.txt'),
+        fetchPreviewText(previewUrl, '/sitemap.xml'),
+      ])
     : [null, null];
 
   const stack = getStack(project.stack).id;
@@ -153,7 +159,8 @@ export async function runSeoAudit(projectId: string): Promise<ActionResult<{ sca
     // leave the lock held with its renew timer still pushing the expiry out, so the
     // TTL never rescues the project.
     try {
-      const { beginJobHeartbeat, createOrReuseJob, failJob, markJobRunning, succeedJob } = await import('@/lib/jobs/lifecycle');
+      const { beginJobHeartbeat, createOrReuseJob, failJob, markJobRunning, succeedJob } =
+        await import('@/lib/jobs/lifecycle');
       const auditJob = await createOrReuseJob({
         projectId,
         workspaceId: WORKSPACE_ROW_ID,
@@ -166,13 +173,24 @@ export async function runSeoAudit(projectId: string): Promise<ActionResult<{ sca
       const { updateJobFields } = await import('@/lib/jobs/store');
       await updateJobFields(auditJob.id, {
         currentStep: 'audit',
-        steps: [{ key: 'audit', label: 'Scanning the project', status: 'running', startedAt: new Date().toISOString() }],
+        steps: [
+          {
+            key: 'audit',
+            label: 'Scanning the project',
+            status: 'running',
+            startedAt: new Date().toISOString(),
+          },
+        ],
       });
       const jobBeat = beginJobHeartbeat(auditJob.id);
       const job = performSeoAudit(projectId)
         .then(async (didRun) => {
           if (didRun) await succeedJob(auditJob.id);
-          else await failJob(auditJob.id, { errorCode: 'provider_error', errorMessage: 'Audit did not run' });
+          else
+            await failJob(auditJob.id, {
+              errorCode: 'provider_error',
+              errorMessage: 'Audit did not run',
+            });
         })
         .catch(async (error) => {
           console.warn('[seo] audit failed', error);
@@ -205,10 +223,12 @@ export async function runSeoAudit(projectId: string): Promise<ActionResult<{ sca
 }
 
 /** Any signed-in member. */
-export async function getLatestSeoAudit(projectId: string): Promise<ActionResult<{
-  audit: PublicSeoAudit | null;
-  scanning: boolean;
-}>> {
+export async function getLatestSeoAudit(projectId: string): Promise<
+  ActionResult<{
+    audit: PublicSeoAudit | null;
+    scanning: boolean;
+  }>
+> {
   const { user, err } = await requireActor();
   if (!user) return err;
 
@@ -318,6 +338,9 @@ export async function fixAllSeoFindings(
 
   const promptContext = buildFixAllInstruction(open);
   await startFollowUpGeneration({ projectId, userId: user.id, promptContext });
-  await markFixed(projectId, open.map((item) => item.id));
+  await markFixed(
+    projectId,
+    open.map((item) => item.id),
+  );
   return { ok: true, data: { promptContext, findingIds: open.map((item) => item.id) } };
 }

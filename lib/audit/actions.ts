@@ -9,8 +9,6 @@ import { asFindings } from '@/lib/seo/findings';
 import { asCodeFindings, asMetrics, mergeIgnoredFindings } from './findings';
 import { buildFixAllInstruction, buildFixInstruction } from './fix-instruction';
 import { groupRecurringIssues, type RecurringIssue } from './recurring';
-import { resolveSandboxRunner } from './sandbox';
-import { ensureSandbox, SandboxBootError } from '@/lib/sandbox/manager';
 import { runCodeScan } from './scan';
 import type { PublicCodeAudit } from './types';
 import { recordCodeAuditSignals } from '@/lib/signals/collect';
@@ -80,7 +78,7 @@ export async function isCodeScanInFlight(projectId: string) {
 async function performCodeAudit(projectId: string) {
   const project = await prisma.project.findFirst({
     where: { id: projectId, deletedAt: null },
-    select: { id: true, stack: true, previewUrl: true, sandboxId: true, designDirection: true },
+    select: { id: true, stack: true, previewUrl: true, designDirection: true },
   });
   if (!project) return false;
 
@@ -94,23 +92,21 @@ async function performCodeAudit(projectId: string) {
   ]);
   const files = await captureFileSnapshot(projectId);
   const stack = getStack(project.stack).id;
+  // Nothing executes server-side any more: the live preview is compiled and
+  // run in the user's browser. Only a published static build has a URL an
+  // auditor can visit, and there is no runner for build-time checks.
   let previewUrl = project.previewUrl?.trim() || null;
-  let sandbox = resolveSandboxRunner(project.sandboxId);
+  const sandbox = null;
   try {
     const { getProjectPreviewFields } = await import('@/lib/preview/db');
     const { signedPreviewUrl } = await import('@/lib/preview/url');
     const preview = await getProjectPreviewFields(projectId);
-    if (preview?.previewMode === 'STATIC' && preview.activePreviewBuildId) {
-      previewUrl = await signedPreviewUrl({ projectId, userId: 'code-audit' });
-    } else {
-      const ensured = await ensureSandbox(projectId);
-      previewUrl = ensured.previewUrl;
-      sandbox = resolveSandboxRunner(ensured.sandboxId);
-    }
+    previewUrl = preview?.activePreviewBuildId
+      ? await signedPreviewUrl({ projectId, userId: 'code-audit' })
+      : null;
   } catch (error) {
-    if (!(error instanceof SandboxBootError && error.code === 'NO_CHECKPOINT')) {
-      console.warn('[audit] ensureSandbox failed, scanning without live sandbox', error);
-    }
+    console.warn('[audit] preview URL unavailable, scanning files only', error);
+    previewUrl = null;
   }
   const scanned = await runCodeScan({
     stack,
@@ -166,7 +162,8 @@ export async function runCodeAudit(projectId: string): Promise<ActionResult<{ sc
     // the dangerous half: it pushes lockExpiresAt out every 60s, so the 15-minute
     // TTL never fires and the project stays locked for the life of the process.
     try {
-      const { beginJobHeartbeat, createOrReuseJob, failJob, markJobRunning, succeedJob } = await import('@/lib/jobs/lifecycle');
+      const { beginJobHeartbeat, createOrReuseJob, failJob, markJobRunning, succeedJob } =
+        await import('@/lib/jobs/lifecycle');
       const auditJob = await createOrReuseJob({
         projectId,
         workspaceId: WORKSPACE_ROW_ID,
@@ -179,13 +176,24 @@ export async function runCodeAudit(projectId: string): Promise<ActionResult<{ sc
       const { updateJobFields } = await import('@/lib/jobs/store');
       await updateJobFields(auditJob.id, {
         currentStep: 'audit',
-        steps: [{ key: 'audit', label: 'Scanning the project', status: 'running', startedAt: new Date().toISOString() }],
+        steps: [
+          {
+            key: 'audit',
+            label: 'Scanning the project',
+            status: 'running',
+            startedAt: new Date().toISOString(),
+          },
+        ],
       });
       const jobBeat = beginJobHeartbeat(auditJob.id);
       const job = performCodeAudit(projectId)
         .then(async (didRun) => {
           if (didRun) await succeedJob(auditJob.id);
-          else await failJob(auditJob.id, { errorCode: 'provider_error', errorMessage: 'Audit did not run' });
+          else
+            await failJob(auditJob.id, {
+              errorCode: 'provider_error',
+              errorMessage: 'Audit did not run',
+            });
         })
         .catch(async (error) => {
           console.warn('[audit] code audit failed', error);
@@ -218,10 +226,12 @@ export async function runCodeAudit(projectId: string): Promise<ActionResult<{ sc
 }
 
 /** Any signed-in member. */
-export async function getLatestCodeAudit(projectId: string): Promise<ActionResult<{
-  audit: PublicCodeAudit | null;
-  scanning: boolean;
-}>> {
+export async function getLatestCodeAudit(projectId: string): Promise<
+  ActionResult<{
+    audit: PublicCodeAudit | null;
+    scanning: boolean;
+  }>
+> {
   const { user, err } = await requireActor();
   if (!user) return err;
 
@@ -331,7 +341,10 @@ export async function fixAllCodeFindings(
 
   const promptContext = buildFixAllInstruction(open);
   await startFollowUpGeneration({ projectId, userId: user.id, promptContext });
-  await markFixed(projectId, open.map((item) => item.id));
+  await markFixed(
+    projectId,
+    open.map((item) => item.id),
+  );
   return { ok: true, data: { promptContext, findingIds: open.map((item) => item.id) } };
 }
 

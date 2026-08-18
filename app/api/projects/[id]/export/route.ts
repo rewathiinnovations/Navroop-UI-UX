@@ -12,10 +12,7 @@ import {
 } from '@/lib/export';
 import { assertFreeSpaceForLargeOp } from '@/lib/runtime/data-dir';
 
-export async function GET(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> },
-) {
+export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   return withRequest(request, () => exportProject(request, params));
 }
 
@@ -47,7 +44,6 @@ async function exportProject(request: NextRequest, params: Promise<{ id: string 
       id: true,
       name: true,
       stack: true,
-      sandboxStatus: true,
       checkpoints: {
         where: { snapshotPruned: false },
         orderBy: { createdAt: 'desc' },
@@ -69,12 +65,22 @@ async function exportProject(request: NextRequest, params: Promise<{ id: string 
   const files = await collectExportFiles({
     projectId: project.id,
     checkpointId,
-    sandboxStatus: project.sandboxStatus,
     checkpoints: project.checkpoints,
   });
   if (files.length === 0) {
     return NextResponse.json({ error: 'No checkpoint files to export' }, { status: 409 });
   }
+
+  // Export a runnable repository, not just the generated components: the
+  // stack scaffold and Dockerfile ride along so the download builds and
+  // deploys without the user assembling a project around it.
+  const { buildRepoFiles } = await import('@/lib/deploy/repo-files');
+  const repoFiles = buildRepoFiles(
+    project.stack,
+    Object.fromEntries(files.map((file) => [file.path, file.content])),
+    { projectName: project.name },
+  );
+  const exportFiles = Object.entries(repoFiles).map(([path, content]) => ({ path, content }));
 
   const readme = buildExportReadme({ name: project.name, stack: project.stack });
   const { withRecordedJob } = await import('@/lib/jobs/wrap');
@@ -95,7 +101,7 @@ async function exportProject(request: NextRequest, params: Promise<{ id: string 
     checkpointId: checkpointId || project.checkpoints[0]?.id || null,
   });
 
-  const body = await streamExportZip(files, readme);
+  const body = await streamExportZip(exportFiles, readme);
   const filename = buildExportFilename(project.name);
   return new NextResponse(body, {
     headers: {

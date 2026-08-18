@@ -9,8 +9,8 @@ STACK (NEXT.JS — NOT a Vite/React SPA):
 - Check app/layout.tsx and the existing routes before adding files. Shared chrome (nav, footer) lives in layout.tsx.
 - Edits: 1 file for style/text; 2 files max for a new component. Never regenerate the app.
 
-OUTPUT:
-<file path="app/layout.tsx">root html/body + fonts + tokens</file>
-<file path="app/page.tsx">home</file>
-<file path="app/about/page.tsx">one page.tsx per extra route</file>`;
+FILES (at least three — never one monolith):
+- app/layout.tsx for root html/body, fonts and tokens.
+- app/page.tsx for the home route, one page.tsx per extra route.
+- components/*.tsx for each section.`;
 }

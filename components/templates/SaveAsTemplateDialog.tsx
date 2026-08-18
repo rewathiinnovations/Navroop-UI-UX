@@ -68,12 +68,20 @@ export default function SaveAsTemplateDialog({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 px-16" role="dialog" aria-modal="true" aria-labelledby="save-template-title">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 px-16"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="save-template-title"
+    >
       <form
         onSubmit={(event) => void onSubmit(event)}
         className="w-full max-w-[560px] rounded-16 border border-[var(--studio-line)] bg-[var(--studio-bg)] p-20 shadow-sm"
       >
-        <h2 id="save-template-title" className="text-[20px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">
+        <h2
+          id="save-template-title"
+          className="text-[20px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]"
+        >
           Save as template
         </h2>
         <p className="mt-6 text-[13px] text-[var(--studio-muted)]">

@@ -76,7 +76,10 @@ function InstructionTable({
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={`${row.type}-${row.name}-${row.value}`} className="border-t border-[var(--studio-line)]">
+            <tr
+              key={`${row.type}-${row.name}-${row.value}`}
+              className="border-t border-[var(--studio-line)]"
+            >
               <td className="px-10 py-8 font-medium text-[var(--studio-fg)]">{row.type}</td>
               <td className="px-10 py-8 text-[var(--studio-muted)]">{row.name}</td>
               <td className="px-10 py-8 break-all text-[var(--studio-fg)]">{row.value}</td>
@@ -132,7 +135,9 @@ export default function DomainsPanel({ projectId }: { projectId: string }) {
   }, [load]);
 
   useEffect(() => {
-    const pending = state?.domains.some((row) => row.status !== 'ACTIVE' && row.status !== 'FAILED');
+    const pending = state?.domains.some(
+      (row) => row.status !== 'ACTIVE' && row.status !== 'FAILED',
+    );
     if (!pending) return;
     const timer = window.setInterval(() => {
       void load();
@@ -160,7 +165,9 @@ export default function DomainsPanel({ projectId }: { projectId: string }) {
 
   if (loading && !state) {
     return (
-      <div className="flex h-full items-center justify-center text-[13px] text-[var(--studio-muted)]">Loading domains…</div>
+      <div className="flex h-full items-center justify-center text-[13px] text-[var(--studio-muted)]">
+        Loading domains…
+      </div>
     );
   }
 
@@ -188,11 +195,16 @@ export default function DomainsPanel({ projectId }: { projectId: string }) {
       <div className="min-h-0 flex-1 space-y-16 overflow-auto px-16 py-12">
         {error ? <p className="text-[13px] text-[var(--studio-danger)]">{error}</p> : null}
         {!state?.published ? (
-          <p className="text-[13px] text-[var(--studio-muted)]">Publish the site first, then add a custom domain.</p>
+          <p className="text-[13px] text-[var(--studio-muted)]">
+            Publish the site first, then add a custom domain.
+          </p>
         ) : null}
 
         <div className="space-y-8">
-          <label className="block text-[12px] font-medium text-[var(--studio-muted)]" htmlFor="domain-hostname">
+          <label
+            className="block text-[12px] font-medium text-[var(--studio-muted)]"
+            htmlFor="domain-hostname"
+          >
             Add domain
           </label>
           <input
@@ -215,7 +227,9 @@ export default function DomainsPanel({ projectId }: { projectId: string }) {
                 : 'border-[var(--studio-line)]',
             )}
           >
-            <p className="text-[13px] font-semibold text-[var(--studio-fg)]">Easier — recommended</p>
+            <p className="text-[13px] font-semibold text-[var(--studio-fg)]">
+              Easier — recommended
+            </p>
             <p className="mt-6 text-[12px] text-[var(--studio-muted)]">{PATH_B_COPY}</p>
           </button>
           <button
@@ -228,7 +242,9 @@ export default function DomainsPanel({ projectId }: { projectId: string }) {
                 : 'border-[var(--studio-line)]',
             )}
           >
-            <p className="text-[13px] font-semibold text-[var(--studio-fg)]">Keep DNS with the client</p>
+            <p className="text-[13px] font-semibold text-[var(--studio-fg)]">
+              Keep DNS with the client
+            </p>
             <p className="mt-6 text-[12px] text-[var(--studio-muted)]">
               We give you A / CNAME / TXT records to add at their DNS provider.
             </p>
@@ -251,11 +267,16 @@ export default function DomainsPanel({ projectId }: { projectId: string }) {
         </button>
 
         {state?.domains.map((domain) => (
-          <article key={domain.id} className="space-y-12 rounded-14 border border-[var(--studio-line)] p-14">
+          <article
+            key={domain.id}
+            className="space-y-12 rounded-14 border border-[var(--studio-line)] p-14"
+          >
             <div className="flex flex-wrap items-center justify-between gap-8">
               <div className="flex items-center gap-8">
                 <Globe className="size-16 text-[var(--studio-muted)]" />
-                <p className="text-[14px] font-semibold text-[var(--studio-fg)]">{domain.hostname}</p>
+                <p className="text-[14px] font-semibold text-[var(--studio-fg)]">
+                  {domain.hostname}
+                </p>
                 <span
                   className={cn(
                     'rounded-full px-8 py-2 text-[11px] font-medium',
@@ -280,10 +301,14 @@ export default function DomainsPanel({ projectId }: { projectId: string }) {
                     type="button"
                     className="text-[12px] text-[var(--studio-fg)]"
                     onClick={() =>
-                      void run(`primary-${domain.id}`, `${domain.hostname} is now primary.`, async () => {
-                        const result = await makeProjectDomainPrimary(projectId, domain.id);
-                        if (!result.ok) throw new Error(result.error);
-                      })
+                      void run(
+                        `primary-${domain.id}`,
+                        `${domain.hostname} is now primary.`,
+                        async () => {
+                          const result = await makeProjectDomainPrimary(projectId, domain.id);
+                          if (!result.ok) throw new Error(result.error);
+                        },
+                      )
                     }
                   >
                     Make primary
@@ -294,7 +319,11 @@ export default function DomainsPanel({ projectId }: { projectId: string }) {
                   className="inline-flex items-center gap-4 text-[12px] text-[var(--studio-danger)]"
                   onClick={() =>
                     void run(`remove-${domain.id}`, `${domain.hostname} removed.`, async () => {
-                      const result = await removeProjectDomain(projectId, domain.id, confirmById[domain.id]);
+                      const result = await removeProjectDomain(
+                        projectId,
+                        domain.id,
+                        confirmById[domain.id],
+                      );
                       if (!result.ok) throw new Error(result.error);
                     })
                   }
@@ -307,14 +336,16 @@ export default function DomainsPanel({ projectId }: { projectId: string }) {
 
             {domain.path === 'B' ? (
               <p className="text-[12px] text-[var(--studio-muted)]">
-                Path B zone is kept if you remove this domain. Type <strong>{domain.hostname}</strong> to confirm
-                remove.
+                Path B zone is kept if you remove this domain. Type{' '}
+                <strong>{domain.hostname}</strong> to confirm remove.
               </p>
             ) : null}
             {domain.path === 'B' ? (
               <input
                 value={confirmById[domain.id] ?? ''}
-                onChange={(event) => setConfirmById((current) => ({ ...current, [domain.id]: event.target.value }))}
+                onChange={(event) =>
+                  setConfirmById((current) => ({ ...current, [domain.id]: event.target.value }))
+                }
                 placeholder={domain.hostname}
                 className="h-32 w-full rounded-8 border border-[var(--studio-line)] px-10 text-[12px]"
               />
@@ -326,12 +357,20 @@ export default function DomainsPanel({ projectId }: { projectId: string }) {
                   <span
                     className={cn(
                       'flex size-18 items-center justify-center rounded-full',
-                      step.done ? 'bg-emerald-600 text-white' : 'bg-[var(--studio-surface)] text-[var(--studio-muted)]',
+                      step.done
+                        ? 'bg-emerald-600 text-white'
+                        : 'bg-[var(--studio-surface)] text-[var(--studio-muted)]',
                     )}
                   >
                     {step.done ? <Check className="size-10" /> : null}
                   </span>
-                  <span className={step.current ? 'font-medium text-[var(--studio-fg)]' : 'text-[var(--studio-muted)]'}>
+                  <span
+                    className={
+                      step.current
+                        ? 'font-medium text-[var(--studio-fg)]'
+                        : 'text-[var(--studio-muted)]'
+                    }
+                  >
                     {step.label}
                   </span>
                 </li>
@@ -339,26 +378,29 @@ export default function DomainsPanel({ projectId }: { projectId: string }) {
             </ol>
 
             {domain.lastError ? (
-              <p className="rounded-10 bg-red-50 px-10 py-8 text-[12px] text-red-800">{domain.lastError}</p>
+              <p className="rounded-10 bg-red-50 px-10 py-8 text-[12px] text-red-800">
+                {domain.lastError}
+              </p>
             ) : null}
 
-            <InstructionTable
-              rows={domain.instructions}
-              onCopied={(value) => setCopied(value)}
-            />
+            <InstructionTable rows={domain.instructions} onCopied={(value) => setCopied(value)} />
             <div className="flex flex-wrap items-center gap-8">
               <button
                 type="button"
                 className="text-[12px] text-[var(--studio-fg)]"
                 onClick={() =>
-                  void copyText(domain.instructions.map((row) => `${row.type} ${row.name} ${row.value} ${row.ttl}`).join('\n')).then(
-                    () => setCopied('all'),
-                  )
+                  void copyText(
+                    domain.instructions
+                      .map((row) => `${row.type} ${row.name} ${row.value} ${row.ttl}`)
+                      .join('\n'),
+                  ).then(() => setCopied('all'))
                 }
               >
                 Copy all
               </button>
-              {copied ? <span className="text-[11px] text-[var(--studio-muted)]">Copied</span> : null}
+              {copied ? (
+                <span className="text-[11px] text-[var(--studio-muted)]">Copied</span>
+              ) : null}
             </div>
 
             <div className="flex flex-wrap items-end gap-8">
@@ -366,7 +408,9 @@ export default function DomainsPanel({ projectId }: { projectId: string }) {
                 Email the client
                 <input
                   value={emailById[domain.id] ?? ''}
-                  onChange={(event) => setEmailById((current) => ({ ...current, [domain.id]: event.target.value }))}
+                  onChange={(event) =>
+                    setEmailById((current) => ({ ...current, [domain.id]: event.target.value }))
+                  }
                   placeholder="client@example.com"
                   className="mt-4 h-32 w-full rounded-8 border border-[var(--studio-line)] px-10 text-[12px] text-[var(--studio-fg)]"
                 />
@@ -375,10 +419,18 @@ export default function DomainsPanel({ projectId }: { projectId: string }) {
                 type="button"
                 className="h-32 rounded-full border border-[var(--studio-line)] px-12 text-[12px]"
                 onClick={() =>
-                  void run(`email-${domain.id}`, 'Instructions emailed to the client.', async () => {
-                    const result = await emailProjectDomain(projectId, domain.id, emailById[domain.id] ?? '');
-                    if (!result.ok) throw new Error(result.error);
-                  })
+                  void run(
+                    `email-${domain.id}`,
+                    'Instructions emailed to the client.',
+                    async () => {
+                      const result = await emailProjectDomain(
+                        projectId,
+                        domain.id,
+                        emailById[domain.id] ?? '',
+                      );
+                      if (!result.ok) throw new Error(result.error);
+                    },
+                  )
                 }
               >
                 Email the client

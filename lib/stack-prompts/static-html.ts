@@ -9,7 +9,8 @@ STACK (STATIC HTML — NO FRAMEWORK, NO JSX, NO BUILD TOOLS):
 - Check index.html and the existing pages before adding files. Nav markup is repeated per page — edit every page that shows it.
 - Edits: 1 file for a style/text change on one page. Never regenerate the site.
 
-OUTPUT:
-<file path="index.html"><!DOCTYPE html>… Tailwind CDN + page</file>
-<file path="about.html">additional pages as needed</file>`;
+FILES:
+- index.html is the entry: full document, Tailwind CDN in the head.
+- One .html per additional page, linked relatively.
+- styles.css / script.js only if the page needs more than utilities.`;
 }

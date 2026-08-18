@@ -20,7 +20,10 @@ type PreviewBuildRow = {
 
 type PreviewBuildDelegate = {
   create: (args: { data: Record<string, unknown> }) => Promise<PreviewBuildRow>;
-  update: (args: { where: { id: string }; data: Record<string, unknown> }) => Promise<PreviewBuildRow>;
+  update: (args: {
+    where: { id: string };
+    data: Record<string, unknown>;
+  }) => Promise<PreviewBuildRow>;
   findMany: (args: Record<string, unknown>) => Promise<PreviewBuildRow[]>;
   findUnique: (args: { where: { id: string } }) => Promise<PreviewBuildRow | null>;
   findFirst: (args: Record<string, unknown>) => Promise<PreviewBuildRow | null>;
@@ -96,11 +99,10 @@ export async function getProjectPreviewFields(projectId: string) {
       previewMode: PreviewMode;
       activePreviewBuildId: string | null;
       stack: string;
-      sandboxId: string | null;
       previewUrl: string | null;
     }>
   >`
-    SELECT "previewMode", "activePreviewBuildId", "stack"::text AS stack, "sandboxId", "previewUrl"
+    SELECT "previewMode", "activePreviewBuildId", "stack"::text AS stack, "previewUrl"
     FROM "Project"
     WHERE id = ${projectId} AND "deletedAt" IS NULL
     LIMIT 1

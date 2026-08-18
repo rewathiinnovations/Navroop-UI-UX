@@ -213,7 +213,8 @@ export default function HealthDashboard() {
                     setRollbackMessage(payload.error || 'Could not roll back');
                     return;
                   }
-                  const detail = `Rollback requested to ${payload.sha}. ${payload.note || ''}`.trim();
+                  const detail =
+                    `Rollback requested to ${payload.sha}. ${payload.note || ''}`.trim();
                   notify.settle(toastId, 'success', detail);
                   setRollbackMessage(detail);
                 } catch (cause) {

@@ -12,7 +12,12 @@ import {
   reactivateMemory,
   updateMemory,
 } from '@/lib/memory/actions';
-import { MEMORY_CATEGORIES, MEMORY_TOKEN_BUDGET, type MemoryCategory, type PublicMemory } from '@/lib/memory/types';
+import {
+  MEMORY_CATEGORIES,
+  MEMORY_TOKEN_BUDGET,
+  type MemoryCategory,
+  type PublicMemory,
+} from '@/lib/memory/types';
 import { notify } from '@/lib/notify';
 
 const CATEGORY_LABEL: Record<MemoryCategory, string> = {
@@ -211,18 +216,23 @@ function PendingStrip({
           return (
             <li key={entry.id} className="rounded-10 border border-amber-200 bg-white px-12 py-10">
               <p className="text-[11px] uppercase tracking-[0.06em] text-[var(--studio-faint)]">
-                {CATEGORY_LABEL[entry.category]} · {entry.scope === 'WORKSPACE' ? 'Workspace' : 'This project'}
+                {CATEGORY_LABEL[entry.category]} ·{' '}
+                {entry.scope === 'WORKSPACE' ? 'Workspace' : 'This project'}
               </p>
               {editing ? (
                 <textarea
                   value={draft}
-                  onChange={(event) => setDrafts((current) => ({ ...current, [entry.id]: event.target.value }))}
+                  onChange={(event) =>
+                    setDrafts((current) => ({ ...current, [entry.id]: event.target.value }))
+                  }
                   maxLength={500}
                   rows={2}
                   className="mt-6 w-full rounded-8 border border-[var(--studio-line)] px-8 py-6 text-[13px]"
                 />
               ) : (
-                <p className="mt-6 text-[13px] leading-5 text-[var(--studio-fg)]">{entry.content}</p>
+                <p className="mt-6 text-[13px] leading-5 text-[var(--studio-fg)]">
+                  {entry.content}
+                </p>
               )}
               {canEdit && (
                 <div className="mt-8 flex flex-wrap gap-8">
@@ -318,24 +328,28 @@ export default function BrainPanel({ projectId }: { projectId: string }) {
 
   const refreshBudget = async () => {
     const result = await getMemoryBudget(projectId);
-    if (result.ok) setBudget({ tokenEstimate: result.data.tokenEstimate, truncated: result.data.truncated });
+    if (result.ok)
+      setBudget({ tokenEstimate: result.data.tokenEstimate, truncated: result.data.truncated });
   };
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    void Promise.all([listBrainMemories(projectId), getMemoryBudget(projectId)]).then(([list, usage]) => {
-      if (cancelled) return;
-      setLoading(false);
-      if (!list.ok) {
-        setError(list.error);
-        return;
-      }
-      setWorkspace(list.data.workspace);
-      setProject(list.data.project);
-      setCanEditProject(isAdmin || Boolean(user?.id));
-      if (usage.ok) setBudget({ tokenEstimate: usage.data.tokenEstimate, truncated: usage.data.truncated });
-    });
+    void Promise.all([listBrainMemories(projectId), getMemoryBudget(projectId)]).then(
+      ([list, usage]) => {
+        if (cancelled) return;
+        setLoading(false);
+        if (!list.ok) {
+          setError(list.error);
+          return;
+        }
+        setWorkspace(list.data.workspace);
+        setProject(list.data.project);
+        setCanEditProject(isAdmin || Boolean(user?.id));
+        if (usage.ok)
+          setBudget({ tokenEstimate: usage.data.tokenEstimate, truncated: usage.data.truncated });
+      },
+    );
     return () => {
       cancelled = true;
     };
@@ -350,11 +364,7 @@ export default function BrainPanel({ projectId }: { projectId: string }) {
     setCanEditProject(true);
   }, [isAdmin, user?.id]);
 
-  const replaceIn = (
-    setter: typeof setWorkspace,
-    row: PublicMemory,
-    removed?: boolean,
-  ) => {
+  const replaceIn = (setter: typeof setWorkspace, row: PublicMemory, removed?: boolean) => {
     setter((current) => {
       const next = current.filter((item) => item.id !== row.id);
       if (removed || row.status === 'ARCHIVED') return next;
@@ -479,8 +489,8 @@ export default function BrainPanel({ projectId }: { projectId: string }) {
         </p>
         {budget?.truncated && (
           <p className="mt-4 text-[12px] text-amber-800" role="status">
-            Some rules are not injected — the block is truncated at the 1500-token budget. Archive unused
-            entries so later rules can take effect.
+            Some rules are not injected — the block is truncated at the 1500-token budget. Archive
+            unused entries so later rules can take effect.
           </p>
         )}
       </footer>

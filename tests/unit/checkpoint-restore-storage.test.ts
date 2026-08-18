@@ -23,6 +23,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const sdk = vi.hoisted(() => ({ send: vi.fn() }));
 const db = vi.hoisted(() => ({
   projectFindFirst: vi.fn(),
+  projectUpdate: vi.fn(),
   checkpointFindFirst: vi.fn(),
 }));
 const actor = vi.hoisted(() => ({ peek: vi.fn() }));
@@ -39,7 +40,7 @@ vi.mock('@aws-sdk/client-s3', async (importOriginal) => {
 
 vi.mock('@/lib/db', () => ({
   prisma: {
-    project: { findFirst: db.projectFindFirst },
+    project: { findFirst: db.projectFindFirst, update: db.projectUpdate },
     checkpoint: { findFirst: db.checkpointFindFirst },
   },
 }));
@@ -50,21 +51,24 @@ vi.mock('@/lib/projects/plan', () => ({ peekActor: actor.peek }));
  *  already supplies the actor, so `getSessionUser` is never reached. */
 vi.mock('@/lib/auth', () => ({ getSessionUser: async () => null }));
 
-/** Would write into a sandbox. Reaching it at all is a failure in these cases. */
-const writeSandbox = vi.hoisted(() => ({ write: vi.fn() }));
-vi.mock('@/lib/checkpoints/write-sandbox', () => ({ writeSnapshotToSandbox: writeSandbox.write }));
+/** Restoring writes the snapshot back to Project.lastCode. */
+vi.mock('@/lib/projects/lock', () => ({
+  bumpContentVersion: vi.fn(),
+  withProjectLock: async (_id: string, _actor: string, _kind: string, run: () => unknown) => run(),
+}));
 
 const { NoSuchKey, S3ServiceException } = await import('@aws-sdk/client-s3');
-const { previewCheckpoint, exitCheckpointPreview, restoreCheckpoint } = await import(
-  '@/lib/checkpoints/actions.ts'
-);
+const { previewCheckpoint, exitCheckpointPreview, restoreCheckpoint } =
+  await import('@/lib/checkpoints/actions.ts');
 const { collectExportFiles } = await import('@/lib/export/collect.ts');
 
 const PROJECT = 'proj_restore_copy';
 const CHECKPOINT = 'cp_restore_copy';
 const SNAPSHOT_KEY = `snapshots/${PROJECT}/${CHECKPOINT}.json.gz`;
 
-const FILES = [{ path: 'src/App.jsx', content: 'export default function App(){return <h1>Hi</h1>}' }];
+const FILES = [
+  { path: 'src/App.jsx', content: 'export default function App(){return <h1>Hi</h1>}' },
+];
 
 function accessDenied() {
   return new S3ServiceException({
@@ -112,7 +116,7 @@ beforeEach(() => {
   sdk.send.mockReset();
   db.projectFindFirst.mockReset();
   db.checkpointFindFirst.mockReset();
-  writeSandbox.write.mockReset();
+  db.projectUpdate.mockReset();
   actor.peek.mockReturnValue({ id: 'user_owner', role: 'MEMBER', email: 'owner@example.com' });
 
   db.projectFindFirst.mockResolvedValue({
@@ -134,7 +138,7 @@ beforeEach(() => {
     snapshotKey: SNAPSHOT_KEY,
     fileSnapshot: null,
   });
-  writeSandbox.write.mockResolvedValue(undefined);
+  db.projectUpdate.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -165,7 +169,7 @@ describe('a storage failure is not reported as a pruned checkpoint', () => {
       expect(result.error).toMatch(/try again/i);
       expect(result.error).not.toMatch(/cannot restore/i);
       // Nothing may be written from a snapshot we could not read.
-      expect(writeSandbox.write).not.toHaveBeenCalled();
+      expect(db.projectUpdate).not.toHaveBeenCalled();
     });
   }
 });
@@ -182,7 +186,7 @@ describe('a genuinely pruned checkpoint still says so', () => {
       // would fail and the distinction would be fake.
       expect(result.status).toBe(409);
       expect(result.error).toMatch(/cannot restore/i);
-      expect(writeSandbox.write).not.toHaveBeenCalled();
+      expect(db.projectUpdate).not.toHaveBeenCalled();
     });
   }
 
@@ -193,7 +197,9 @@ describe('a genuinely pruned checkpoint still says so', () => {
     const result: ActionResult = await previewCheckpoint(PROJECT, CHECKPOINT);
 
     expect(result.ok).toBe(true);
-    expect(writeSandbox.write).toHaveBeenCalledTimes(1);
+    expect(db.projectUpdate).toHaveBeenCalledTimes(1);
+    const written = db.projectUpdate.mock.calls[0]?.[0]?.data?.lastCode as string;
+    expect(written).toContain('<file path=');
   });
 });
 

@@ -1,14 +1,7 @@
 export const CREDIT_ACTIONS = ['generation', 'image', 'import', 'audit', 'evolution'] as const;
 export type CreditAction = (typeof CREDIT_ACTIONS)[number];
 
-export const LIMIT_KINDS = [
-  'projects',
-  'liveSites',
-  'previewSites',
-  'members',
-  'sandboxes',
-  'storage',
-] as const;
+export const LIMIT_KINDS = ['projects', 'liveSites', 'previewSites', 'members', 'storage'] as const;
 export type LimitKind = (typeof LIMIT_KINDS)[number];
 
 export type CreditDenialReason = 'paused' | 'workspace_exhausted' | 'member_cap';
@@ -42,7 +35,6 @@ export type PublicPlan = {
   maxLiveSites: number;
   maxPreviewSites: number;
   maxMembers: number;
-  maxConcurrentSandboxes: number;
   checkpointRetentionDays: number;
   storageBytesLimit: string;
   allowCustomDomain: boolean;
@@ -50,5 +42,4 @@ export type PublicPlan = {
   maxTokensPerJob: number;
   maxFilesPerJob: number;
   maxOutputBytesPerJob: number;
-  monthlySandboxMinutes: number;
 };

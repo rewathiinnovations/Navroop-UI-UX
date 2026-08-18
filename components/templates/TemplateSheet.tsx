@@ -34,7 +34,14 @@ export default function TemplateSheet({
       ? template.designDirection
       : 'minimal';
     const timer = window.setTimeout(() => {
-      writeDraftStorage(PENDING_PROMPT_KEY, prompt, stack, direction, DEFAULT_IMPORT_MODE, template.id);
+      writeDraftStorage(
+        PENDING_PROMPT_KEY,
+        prompt,
+        stack,
+        direction,
+        DEFAULT_IMPORT_MODE,
+        template.id,
+      );
     }, 400);
     return () => window.clearTimeout(timer);
   }, [prompt, template]);
@@ -60,7 +67,10 @@ export default function TemplateSheet({
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
         const message =
-          payload.error?.message || payload.error || payload.message || 'Could not create from this template';
+          payload.error?.message ||
+          payload.error ||
+          payload.message ||
+          'Could not create from this template';
         notify.settle(toastId, 'error', String(message));
         return;
       }
@@ -79,13 +89,28 @@ export default function TemplateSheet({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/20" role="dialog" aria-modal="true" aria-labelledby="template-sheet-title">
-      <button type="button" className="h-full flex-1 cursor-default" aria-label="Close" onClick={onClose} />
+    <div
+      className="fixed inset-0 z-50 flex justify-end bg-black/20"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="template-sheet-title"
+    >
+      <button
+        type="button"
+        className="h-full flex-1 cursor-default"
+        aria-label="Close"
+        onClick={onClose}
+      />
       <aside className="flex h-full w-full max-w-[480px] flex-col border-l border-[var(--studio-line)] bg-[var(--studio-bg)] shadow-sm">
         <div className="flex items-start justify-between gap-12 border-b border-[var(--studio-line)] px-20 py-16">
           <div>
-            <p className="text-[11px] font-medium uppercase tracking-[0.06em] text-[var(--studio-faint)]">{category}</p>
-            <h2 id="template-sheet-title" className="mt-4 text-[22px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">
+            <p className="text-[11px] font-medium uppercase tracking-[0.06em] text-[var(--studio-faint)]">
+              {category}
+            </p>
+            <h2
+              id="template-sheet-title"
+              className="mt-4 text-[22px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]"
+            >
               {template.name}
             </h2>
           </div>
@@ -120,7 +145,9 @@ export default function TemplateSheet({
             </a>
           ) : null}
           <label className="block">
-            <span className="mb-6 block text-[12px] font-medium text-[var(--studio-fg)]">Prompt</span>
+            <span className="mb-6 block text-[12px] font-medium text-[var(--studio-fg)]">
+              Prompt
+            </span>
             <textarea
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}

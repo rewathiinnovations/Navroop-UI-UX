@@ -22,7 +22,6 @@ function toPublicPlan(plan: {
   maxLiveSites: number;
   maxPreviewSites: number;
   maxMembers: number;
-  maxConcurrentSandboxes: number;
   checkpointRetentionDays: number;
   storageBytesLimit: bigint;
   allowCustomDomain: boolean;
@@ -30,7 +29,6 @@ function toPublicPlan(plan: {
   maxTokensPerJob?: number;
   maxFilesPerJob?: number;
   maxOutputBytesPerJob?: number;
-  monthlySandboxMinutes?: number;
 }): PublicPlan {
   return {
     ...plan,
@@ -38,7 +36,6 @@ function toPublicPlan(plan: {
     maxTokensPerJob: plan.maxTokensPerJob ?? 120000,
     maxFilesPerJob: plan.maxFilesPerJob ?? 60,
     maxOutputBytesPerJob: plan.maxOutputBytesPerJob ?? 2000000,
-    monthlySandboxMinutes: plan.monthlySandboxMinutes ?? 300,
   };
 }
 
@@ -57,9 +54,8 @@ async function hydratePlanCaps() {
       maxTokensPerJob: number;
       maxFilesPerJob: number;
       maxOutputBytesPerJob: number;
-      monthlySandboxMinutes: number;
     }>
-  >`SELECT id, "maxTokensPerJob", "maxFilesPerJob", "maxOutputBytesPerJob", "monthlySandboxMinutes" FROM "Plan"`;
+  >`SELECT id, "maxTokensPerJob", "maxFilesPerJob", "maxOutputBytesPerJob" FROM "Plan"`;
   return new Map(all.map((row) => [row.id, row]));
 }
 
@@ -84,7 +80,6 @@ export async function createPlan(input: {
   maxLiveSites: number;
   maxPreviewSites: number;
   maxMembers: number;
-  maxConcurrentSandboxes: number;
   checkpointRetentionDays: number;
   storageBytesLimit: string | number;
   allowCustomDomain?: boolean;
@@ -93,7 +88,6 @@ export async function createPlan(input: {
   maxTokensPerJob?: number;
   maxFilesPerJob?: number;
   maxOutputBytesPerJob?: number;
-  monthlySandboxMinutes?: number;
 }): Promise<ActionOk<PublicPlan> | ActionErr> {
   const { err } = await adminGate();
   if (err) return err;
@@ -108,7 +102,6 @@ export async function createPlan(input: {
       maxLiveSites: input.maxLiveSites,
       maxPreviewSites: input.maxPreviewSites,
       maxMembers: input.maxMembers,
-      maxConcurrentSandboxes: input.maxConcurrentSandboxes,
       checkpointRetentionDays: input.checkpointRetentionDays,
       storageBytesLimit: BigInt(input.storageBytesLimit),
       allowCustomDomain: input.allowCustomDomain === true,
@@ -123,16 +116,17 @@ export async function createPlan(input: {
       "maxTokensPerJob" = ${input.maxTokensPerJob ?? 120000},
       "maxFilesPerJob" = ${input.maxFilesPerJob ?? 60},
       "maxOutputBytesPerJob" = ${input.maxOutputBytesPerJob ?? 2000000},
-      "monthlySandboxMinutes" = ${input.monthlySandboxMinutes ?? 300}
     WHERE id = ${created.id}
   `;
-  return { ok: true, data: toPublicPlan({
-    ...created,
-    maxTokensPerJob: input.maxTokensPerJob ?? 120000,
-    maxFilesPerJob: input.maxFilesPerJob ?? 60,
-    maxOutputBytesPerJob: input.maxOutputBytesPerJob ?? 2000000,
-    monthlySandboxMinutes: input.monthlySandboxMinutes ?? 300,
-  }) };
+  return {
+    ok: true,
+    data: toPublicPlan({
+      ...created,
+      maxTokensPerJob: input.maxTokensPerJob ?? 120000,
+      maxFilesPerJob: input.maxFilesPerJob ?? 60,
+      maxOutputBytesPerJob: input.maxOutputBytesPerJob ?? 2000000,
+    }),
+  };
 }
 
 export async function updatePlan(
@@ -146,7 +140,6 @@ export async function updatePlan(
     maxLiveSites: number;
     maxPreviewSites: number;
     maxMembers: number;
-    maxConcurrentSandboxes: number;
     checkpointRetentionDays: number;
     storageBytesLimit: string | number;
     allowCustomDomain: boolean;
@@ -154,7 +147,6 @@ export async function updatePlan(
     maxTokensPerJob: number;
     maxFilesPerJob: number;
     maxOutputBytesPerJob: number;
-    monthlySandboxMinutes: number;
   }>,
 ): Promise<ActionOk<PublicPlan> | ActionErr> {
   const { user, err } = await adminGate();
@@ -185,32 +177,29 @@ export async function updatePlan(
       ...(input.maxLiveSites !== undefined ? { maxLiveSites: input.maxLiveSites } : {}),
       ...(input.maxPreviewSites !== undefined ? { maxPreviewSites: input.maxPreviewSites } : {}),
       ...(input.maxMembers !== undefined ? { maxMembers: input.maxMembers } : {}),
-      ...(input.maxConcurrentSandboxes !== undefined
-        ? { maxConcurrentSandboxes: input.maxConcurrentSandboxes }
-        : {}),
       ...(input.checkpointRetentionDays !== undefined
         ? { checkpointRetentionDays: input.checkpointRetentionDays }
         : {}),
       ...(input.storageBytesLimit !== undefined
         ? { storageBytesLimit: BigInt(input.storageBytesLimit) }
         : {}),
-      ...(input.allowCustomDomain !== undefined ? { allowCustomDomain: input.allowCustomDomain } : {}),
+      ...(input.allowCustomDomain !== undefined
+        ? { allowCustomDomain: input.allowCustomDomain }
+        : {}),
       ...(input.allowGithubSync !== undefined ? { allowGithubSync: input.allowGithubSync } : {}),
     },
   });
   if (
     input.maxTokensPerJob !== undefined ||
     input.maxFilesPerJob !== undefined ||
-    input.maxOutputBytesPerJob !== undefined ||
-    input.monthlySandboxMinutes !== undefined
+    input.maxOutputBytesPerJob !== undefined
   ) {
     await prisma.$executeRaw`
       UPDATE "Plan"
       SET
         "maxTokensPerJob" = COALESCE(${input.maxTokensPerJob ?? null}, "maxTokensPerJob"),
         "maxFilesPerJob" = COALESCE(${input.maxFilesPerJob ?? null}, "maxFilesPerJob"),
-        "maxOutputBytesPerJob" = COALESCE(${input.maxOutputBytesPerJob ?? null}, "maxOutputBytesPerJob"),
-        "monthlySandboxMinutes" = COALESCE(${input.monthlySandboxMinutes ?? null}, "monthlySandboxMinutes")
+        "maxOutputBytesPerJob" = COALESCE(${input.maxOutputBytesPerJob ?? null}, "maxOutputBytesPerJob")
       WHERE id = ${id}
     `;
   }
@@ -219,7 +208,6 @@ export async function updatePlan(
     maxTokensPerJob: input.maxTokensPerJob,
     maxFilesPerJob: input.maxFilesPerJob,
     maxOutputBytesPerJob: input.maxOutputBytesPerJob,
-    monthlySandboxMinutes: input.monthlySandboxMinutes,
   });
   await writeAudit({
     actorId: user.id,
@@ -243,7 +231,9 @@ export async function updatePlan(
   return { ok: true, data: publicPlan };
 }
 
-export async function assignDefaultWorkspacePlan(planId: string): Promise<ActionOk<{ planId: string }> | ActionErr> {
+export async function assignDefaultWorkspacePlan(
+  planId: string,
+): Promise<ActionOk<{ planId: string }> | ActionErr> {
   const { user, err } = await adminGate();
   if (err) return err;
   try {
@@ -263,20 +253,25 @@ export async function assignDefaultWorkspacePlan(planId: string): Promise<Action
     });
     return { ok: true, data: { planId } };
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : 'Could not assign plan', status: 400 };
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : 'Could not assign plan',
+      status: 400,
+    };
   }
 }
 
 export async function getWorkspaceAdminSettings(): Promise<
-  ActionOk<{
-    memberMonthlyCreditCap: number | null;
-    generationPaused: boolean;
-    pauseReason: string | null;
-    planId: string | null;
-    creditAlert80Sent: boolean;
-    monthlySpendLimitUsd: number | null;
-    spendUsd: number;
-  }> | ActionErr
+  | ActionOk<{
+      memberMonthlyCreditCap: number | null;
+      generationPaused: boolean;
+      pauseReason: string | null;
+      planId: string | null;
+      creditAlert80Sent: boolean;
+      monthlySpendLimitUsd: number | null;
+      spendUsd: number;
+    }>
+  | ActionErr
 > {
   const { err } = await adminGate();
   if (err) return err;
@@ -301,7 +296,8 @@ export async function getWorkspaceAdminSettings(): Promise<
       pauseReason: extra[0]?.pauseReason ?? null,
       planId: workspace.planId,
       creditAlert80Sent: workspace.creditAlert80Sent,
-      monthlySpendLimitUsd: extra[0]?.monthlySpendLimitUsd == null ? null : Number(extra[0].monthlySpendLimitUsd),
+      monthlySpendLimitUsd:
+        extra[0]?.monthlySpendLimitUsd == null ? null : Number(extra[0].monthlySpendLimitUsd),
       spendUsd: Number(extra[0]?.spendUsd ?? 0),
     },
   };
@@ -312,13 +308,14 @@ export async function updateWorkspaceAdminSettings(input: {
   generationPaused?: boolean;
   monthlySpendLimitUsd?: number | null;
 }): Promise<
-  ActionOk<{
-    memberMonthlyCreditCap: number | null;
-    generationPaused: boolean;
-    pauseReason: string | null;
-    monthlySpendLimitUsd: number | null;
-    spendUsd: number;
-  }> | ActionErr
+  | ActionOk<{
+      memberMonthlyCreditCap: number | null;
+      generationPaused: boolean;
+      pauseReason: string | null;
+      monthlySpendLimitUsd: number | null;
+      spendUsd: number;
+    }>
+  | ActionErr
 > {
   const { user, err } = await adminGate();
   if (err) return err;
@@ -378,7 +375,8 @@ export async function updateWorkspaceAdminSettings(input: {
       memberMonthlyCreditCap: updated.memberMonthlyCreditCap,
       generationPaused: updated.generationPaused,
       pauseReason: extra[0]?.pauseReason ?? null,
-      monthlySpendLimitUsd: extra[0]?.monthlySpendLimitUsd == null ? null : Number(extra[0].monthlySpendLimitUsd),
+      monthlySpendLimitUsd:
+        extra[0]?.monthlySpendLimitUsd == null ? null : Number(extra[0].monthlySpendLimitUsd),
       spendUsd: Number(extra[0]?.spendUsd ?? 0),
     },
   };
@@ -389,15 +387,6 @@ export async function getCreditMeter() {
   if (!user) return { ok: false as const, error: 'Sign in required', status: 401 as const };
   const workspace = await rollCreditPeriodIfNeeded();
   const plan = await getEffectivePlan();
-  const extra = await prisma.$queryRaw<
-    Array<{ sandboxMinutesUsed: number; monthlySandboxMinutes: number }>
-  >`
-    SELECT w."sandboxMinutesUsed", COALESCE(p."monthlySandboxMinutes", 300) AS "monthlySandboxMinutes"
-    FROM "Workspace" w
-    LEFT JOIN "Plan" p ON p.id = ${plan.id}
-    WHERE w.id = ${workspace.id}
-    LIMIT 1
-  `;
   return {
     ok: true as const,
     data: {
@@ -405,8 +394,6 @@ export async function getCreditMeter() {
       limit: plan.monthlyCredits,
       resetAt: addMonthIso(workspace.creditsPeriodStart),
       paused: workspace.generationPaused,
-      sandboxMinutesUsed: extra[0]?.sandboxMinutesUsed ?? 0,
-      sandboxMinutesLimit: extra[0]?.monthlySandboxMinutes ?? 300,
     },
   };
 }
@@ -437,7 +424,13 @@ export async function getUsageBreakdown() {
   const byAction: Record<string, number> = {};
   const byMember = new Map<
     string,
-    { userId: string; name: string; email: string; credits: number; actions: Record<string, number> }
+    {
+      userId: string;
+      name: string;
+      email: string;
+      credits: number;
+      actions: Record<string, number>;
+    }
   >();
   for (const row of ledgers) {
     byAction[row.action] = (byAction[row.action] ?? 0) + row.credits;
@@ -475,16 +468,6 @@ export async function getUsageBreakdown() {
       // the two numbers silently disagree.
       unattributed: Math.max(0, workspace.creditsUsed - (totals._sum.credits ?? 0)),
       isAdmin,
-      sandboxMinutesUsed: (
-        await prisma.$queryRaw<Array<{ sandboxMinutesUsed: number }>>`
-          SELECT "sandboxMinutesUsed" FROM "Workspace" WHERE id = ${workspace.id} LIMIT 1
-        `
-      )[0]?.sandboxMinutesUsed ?? 0,
-      sandboxMinutesLimit: (
-        await prisma.$queryRaw<Array<{ monthlySandboxMinutes: number }>>`
-          SELECT "monthlySandboxMinutes" FROM "Plan" WHERE id = ${plan.id} LIMIT 1
-        `
-      )[0]?.monthlySandboxMinutes ?? 300,
     },
   };
 }
