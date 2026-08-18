@@ -1,6 +1,6 @@
 /**
  * Project lock: atomic acquire, expiry reuse, renew, release, admin forceRelease.
- * Run: npx tsx tests/project-lock.test.ts
+ * Run: pnpm exec tsx tests/project-lock.test.ts
  */
 import { resolve } from 'node:path';
 import { config } from 'dotenv';

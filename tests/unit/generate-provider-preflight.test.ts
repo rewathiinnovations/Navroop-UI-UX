@@ -13,10 +13,17 @@ function generateRouteSource() {
 }
 
 describe('generate-ai-code-stream provider and sandbox preflight', () => {
-  it('builds the chain from the requested model via requireUsableProviderChain', () => {
+  it('builds the chain from the optional requested model via requireUsableProviderChain', () => {
     const source = generateRouteSource();
     expect(source).toMatch(/requireUsableProviderChain\(/);
-    expect(source).toMatch(/requestedModel:\s*model/);
+    // The requested model is explicit-only: an omitted or blank body model must
+    // reach the chain as undefined so the configured primary (AI_PRIMARY_* /
+    // Admin → Configuration) leads. Defaulting it to appConfig.ai.defaultModel
+    // used to silently demote that setting on every build.
+    expect(source).toMatch(/\{\s*requestedModel\s*\}/);
+    expect(source).not.toMatch(/requestedModel:\s*appConfig\.ai\.defaultModel/);
+    // The concrete model used for logging derives from the chain that will serve.
+    expect(source).toMatch(/requestedModel\s*\?\?\s*modelIdForEntry\(providerChain\[0\]\)/);
     expect(source).toMatch(/errorCode:\s*['"]provider_not_configured['"]/);
     expect(source).toMatch(/loadEffectiveProviderEnv\(/);
     expect(source).toMatch(/executeWithCompletionFailover\(/);

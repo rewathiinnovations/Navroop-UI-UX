@@ -1,6 +1,6 @@
 /**
  * Code-quality audit parsers + helpers (no UI, no live sandbox).
- * Run: npx tsx tests/code-audit.test.ts
+ * Run: pnpm exec tsx tests/code-audit.test.ts
  */
 import { parseTscOutput } from '../lib/audit/static/typescript';
 import { parseEslintJson, eslintConfigForStack } from '../lib/audit/static/lint';

@@ -178,7 +178,7 @@ export default function PublishPanel({
             type="button"
             disabled={!canPublish}
             onClick={() => setOpenMenu((value) => !value)}
-            className="inline-flex h-32 items-center gap-4 rounded-full bg-[var(--studio-fg)] px-14 text-[13px] font-medium text-[var(--studio-bg)] disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex h-32 items-center gap-4 rounded-full [background-image:var(--studio-cta-gradient)] px-14 text-[13px] font-medium text-white transition-[filter] duration-200 hover:brightness-[1.07] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:brightness-100"
           >
             Publish
             <ChevronDown className="size-14" />

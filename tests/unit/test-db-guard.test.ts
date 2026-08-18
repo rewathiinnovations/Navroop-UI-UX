@@ -5,7 +5,7 @@ import { assertTestEnvApplied, testPrismaClient, TEST_DB_SETUP_MISSING } from '.
 import { DB_SUITES } from '../setup/suites';
 
 /**
- * Every suite under `tests/` documents itself as `Run: npx tsx tests/<name>.test.ts`,
+ * Every suite under `tests/` documents itself as `Run: pnpm exec tsx tests/<name>.test.ts`,
  * and that command never loads `tests/setup/env.ts`. A DB suite run that way would
  * create and delete rows in the application database. `tests/setup/db.ts` refuses to
  * hand out a client until the redirect has happened; this proves it refuses, that it
@@ -14,7 +14,7 @@ import { DB_SUITES } from '../setup/suites';
 
 const repoRoot = resolve(import.meta.dirname, '..', '..');
 
-/** What a direct `npx tsx` run looks like: the app URL, never overwritten. */
+/** What a direct `pnpm exec tsx` run looks like: the app URL, never overwritten. */
 const directRun = {
   DATABASE_URL: 'postgresql://navroop@localhost:5432/navroop',
   TEST_DATABASE_URL: 'postgresql://navroop@localhost:5433/openlovable_test',
@@ -80,7 +80,7 @@ describe('test database guard', () => {
   });
 
   it('hands back no client at all on a direct run', () => {
-    // The whole point: a direct `npx tsx` run must not get as far as holding a client,
+    // The whole point: a direct `pnpm exec tsx` run must not get as far as holding a client,
     // because a client is the only thing that could open a connection.
     const saved = {
       app: process.env.DATABASE_URL,

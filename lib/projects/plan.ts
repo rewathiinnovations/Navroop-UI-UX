@@ -3,7 +3,8 @@ import { generateObject, generateText } from 'ai';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { getSessionUser, type SessionUser } from '@/lib/auth';
-import { getProviderForModel } from '@/lib/ai/provider-manager';
+import { clientForEntry } from '@/lib/ai/client-for-entry';
+import { loadEffectiveProviderEnv } from '@/lib/ai/effective-env';
 import { completeWithProviderFailover } from '@/lib/ai/plan-complete';
 import {
   jobErrorCodeForProviderFailure,
@@ -151,12 +152,17 @@ async function defaultCompletePlan(input: {
   stablePrefix?: string;
 }): Promise<{ content: PlanContent; provider: string; model: string; attempts: ProviderAttempt[] }> {
   const userPrompt = `Create a website plan (no code) for:\n\n${input.promptContext}`;
+  // Planning selects and pays with the same keys as building: the effective-env
+  // overlay (personal key -> org key -> process.env). Before this, the chain and
+  // clients here saw process.env alone, so an admin-UI-only deployment could
+  // build but never plan.
+  const providerEnv = await loadEffectiveProviderEnv(peekActor()?.id ?? null, process.env);
   const failover = await completeWithProviderFailover({
-    requestedModel: appConfig.ai.defaultModel,
+    env: providerEnv,
     run: async (entry, ctx) => {
       const modelId = modelIdForEntry(entry);
-      const { client, actualModel } = getProviderForModel(modelId);
-      const model = client(actualModel);
+      const client = clientForEntry(entry, providerEnv);
+      const model = client(entry.model);
       const enableAnthropicCache = modelId.startsWith('anthropic/');
       const cached = input.stablePrefix
         ? buildCachedMessages({

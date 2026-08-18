@@ -40,6 +40,7 @@ import { createWithFailover, isSandboxBootFailover } from '@/lib/sandbox/failove
 import { getProviderConfig, listProviderConfigs } from '@/lib/sandbox/store';
 import { accrueProviderUsage, rollAllProviderPeriods } from '@/lib/sandbox/accounting';
 import { migrateEnvSandboxProvider } from '@/lib/sandbox/migrate-env';
+import { stackScaffoldFiles } from '@/lib/sandbox/stack-setup';
 import { markSandboxAttemptBootFailed, recordSandboxAttempts } from '@/lib/sandbox/job-attempts';
 import type { ProviderCandidate } from '@/lib/sandbox/router';
 import {
@@ -231,6 +232,29 @@ async function writeFiles(provider: SandboxProvider, files: FileSnapshotEntry[])
 }
 
 /**
+ * The stack's known-good scaffold, with the snapshot's files winning on any
+ * path both provide. REACT has no shared scaffold (its setup is owned by the
+ * providers' `setupViteApp`), so a REACT restore passes through unchanged.
+ */
+export function withScaffoldUnderlay(
+  stack: string,
+  files: FileSnapshotEntry[],
+): FileSnapshotEntry[] {
+  let scaffold: Array<{ path: string; content: string }>;
+  try {
+    scaffold = stackScaffoldFiles(stack);
+  } catch {
+    return files;
+  }
+  const normalize = (path: string) => path.replace(/^\.?\//, '');
+  const restored = new Set(files.map((file) => normalize(file.path)));
+  const underlay = scaffold
+    .filter((file) => !restored.has(normalize(file.path)))
+    .map((file) => ({ path: file.path, content: file.content }));
+  return [...underlay, ...files];
+}
+
+/**
  * Files to restore into a fresh sandbox.
  *
  * Throws when the latest checkpoint's snapshot cannot be read. It must not fall through
@@ -287,10 +311,17 @@ export async function pollPreviewReady(
 
 async function providerFromConfigId(configId: string | null | undefined) {
   if (configId) {
+    // The stored row is honoured even when deactivated: probing or killing an
+    // existing VM needs that row's credential regardless of routing status.
     const row = await getProviderConfig(configId);
     if (row) return SandboxFactory.fromRow(row);
   }
+  // Fallback for rows-unknown callers: active rows only. listProviderConfigs
+  // returns every row priority-first, and picking a deactivated one here kept
+  // booting a provider the admin had explicitly turned off.
   const rows = await listProviderConfigs();
+  const active = rows.find((row) => row.isActive);
+  if (active) return SandboxFactory.fromRow(active);
   if (rows[0]) return SandboxFactory.fromRow(rows[0]);
   return SandboxFactory.create();
 }
@@ -644,7 +675,13 @@ async function bootProject(
         try {
           if (files.length > 0) {
             setStep(projectId, 'restore');
-            await writeFiles(driver, files);
+            // A snapshot from a partial first build carries only the generated
+            // app files — no package.json, no config. Restoring just those and
+            // running npm install left npm planning against container root
+            // (the deterministic "Tracker idealTree already exists" boot
+            // failure). Lay the stack scaffold under the restore: scaffold
+            // files the snapshot doesn't override, then the snapshot on top.
+            await writeFiles(driver, withScaffoldUnderlay(stack, files));
             setStep(projectId, 'install');
             await driver.installAndStartDev(stack);
           } else {

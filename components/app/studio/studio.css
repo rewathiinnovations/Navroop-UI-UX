@@ -11,6 +11,10 @@
   --studio-accent: #c92a4e;
   --studio-accent-hover: #c42a4e;
   --studio-accent-soft: rgba(201, 42, 78, 0.12);
+  /* The brand gradient (same as the admin badge and logo mark). Every primary
+     action button paints with this; hover/press use brightness so no second
+     gradient needs maintaining. Solid accent stays for states, bars, pills. */
+  --studio-cta-gradient: linear-gradient(135deg, #ff8a3d 0%, #ff5c7a 55%, #c084fc 100%);
   --studio-ring: #c92a4e;
   --studio-cta-fg: #ffffff;
   --studio-danger: #be123c;
@@ -77,7 +81,80 @@
   background: radial-gradient(circle, rgba(99, 102, 241, 0.42), transparent 70%);
 }
 
+/* Dialog entrance: opacity + transform only, so it stays on the compositor.
+   Overlays fade, panels settle in from a slight scale — enough to read as
+   "appeared", never enough to feel like an animation is playing. */
+@keyframes studio-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes studio-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.studio-pop-in {
+  animation: studio-pop-in 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.studio-fade-in {
+  animation: studio-fade-in 150ms ease-out;
+}
+
+/* A strip of light traveling along the bottom edge of a "working…" card.
+   Transform-only, honest (no fake percentage), and calm enough to sit in the
+   corner of the eye for a whole build. */
+@keyframes studio-sheen {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(400%);
+  }
+}
+
+.studio-sheen {
+  animation: studio-sheen 1.8s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .studio-sheen {
+    animation: none;
+    transform: translateX(150%);
+  }
+}
+
+/* Layered elevation for floating surfaces — one soft ambient layer plus one
+   tight contact layer, instead of a single hard drop. */
+.studio-shell {
+  --studio-shadow-pop:
+    0 24px 48px -12px rgba(24, 24, 27, 0.18),
+    0 4px 12px -4px rgba(24, 24, 27, 0.1);
+}
+
+.dark .studio-shell {
+  --studio-shadow-pop:
+    0 24px 48px -12px rgba(0, 0, 0, 0.55),
+    0 4px 12px -4px rgba(0, 0, 0, 0.4);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .studio-pop-in,
+  .studio-fade-in {
+    animation: none;
+  }
+
   .studio-glow::before,
   .studio-glow::after {
     opacity: 0.16;

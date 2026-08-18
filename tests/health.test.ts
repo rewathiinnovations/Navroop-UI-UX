@@ -1,6 +1,6 @@
 /**
  * /api/health with injected db + storage.
- * Run: npx tsx tests/health.test.ts
+ * Run: pnpm exec tsx tests/health.test.ts
  */
 import { runHealthChecks } from '../lib/health/check.ts';
 

@@ -150,7 +150,7 @@ export default function ConnectorsGitHubCard({
         ) : (
           <a
             href="/api/github/connect"
-            className="inline-flex min-h-[44px] items-center justify-center rounded-full bg-[var(--studio-accent)] px-18 text-[14px] font-medium tracking-[-0.01em] text-[var(--studio-cta-fg)] no-underline transition-colors duration-200 hover:bg-[var(--studio-accent-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--studio-bg)]"
+            className="inline-flex min-h-[44px] items-center justify-center rounded-full [background-image:var(--studio-cta-gradient)] px-18 text-[14px] font-medium tracking-[-0.01em] text-[var(--studio-cta-fg)] no-underline transition-[filter] duration-200 hover:brightness-[1.07] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--studio-bg)]"
           >
             Connect
           </a>

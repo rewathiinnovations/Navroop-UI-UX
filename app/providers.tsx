@@ -5,7 +5,6 @@ import { ThemeProvider } from 'next-themes';
 import { AuthProvider } from '@/components/app/auth/AuthProvider';
 import { GenerationProvider } from '@/components/app/generation/GenerationProvider';
 import { CommandPaletteProvider } from '@/components/layout/CommandPalette';
-import TermsGate from '@/components/legal/TermsGate';
 
 export function AppProviders({ children }: { children: React.ReactNode }) {
   return (
@@ -15,7 +14,6 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
           <GenerationProvider>
             <CommandPaletteProvider>
               {children}
-              <TermsGate />
             </CommandPaletteProvider>
           </GenerationProvider>
         </AuthProvider>

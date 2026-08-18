@@ -1,6 +1,6 @@
 /**
  * Preview device scale, rotate, persist, and mobile-finding helpers.
- * Run: npx tsx tests/preview-devices.test.ts
+ * Run: pnpm exec tsx tests/preview-devices.test.ts
  */
 import {
   PREVIEW_DEVICES,

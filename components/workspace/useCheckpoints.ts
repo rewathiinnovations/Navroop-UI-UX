@@ -87,10 +87,7 @@ export function useCheckpoints({
   const restore = useCallback(
     async (id: string) => {
       if (!projectId || busy) return { ok: false as const, error: 'Project is not ready' };
-      const confirmed = window.confirm(
-        'Restore this version? The current sandbox will change and a new checkpoint will be created.',
-      );
-      if (!confirmed) return { ok: false as const, error: 'cancelled' };
+      // Confirmation is ConfirmAction on the Restore button (VersionHistoryPanel).
       setBusy(true);
       try {
         await restoreCheckpoint(projectId, id);

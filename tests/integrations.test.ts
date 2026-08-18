@@ -1,6 +1,6 @@
 /**
  * In-app integrations: store, publish guard, Cloudflare zone pick, disconnect.
- * Run: npx tsx tests/integrations.test.ts
+ * Run: pnpm exec tsx tests/integrations.test.ts
  */
 import { resolve } from 'node:path';
 import { config } from 'dotenv';

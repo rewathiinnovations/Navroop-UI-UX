@@ -469,6 +469,11 @@ export async function getUsageBreakdown() {
       byAction,
       members: [...byMember.values()].filter((row) => isAdmin || row.userId === user.id),
       workspaceTotal: totals._sum.credits ?? workspace.creditsUsed,
+      // The meter is the Workspace counter; the breakdown is the ledger. They
+      // diverge legitimately — deleting a user cascades their ledger rows while
+      // the counter keeps billing history. Showing the difference beats letting
+      // the two numbers silently disagree.
+      unattributed: Math.max(0, workspace.creditsUsed - (totals._sum.credits ?? 0)),
       isAdmin,
       sandboxMinutesUsed: (
         await prisma.$queryRaw<Array<{ sandboxMinutesUsed: number }>>`

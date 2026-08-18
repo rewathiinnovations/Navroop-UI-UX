@@ -3,7 +3,7 @@ import { runLegacySuite } from '../setup/legacy';
 import { PURE_SUITES } from '../setup/suites';
 
 /**
- * Existing assert-style suites (npx tsx) wired into Vitest.
+ * Existing assert-style suites (pnpm exec tsx) wired into Vitest.
  * They still own their assertions; this file only loads them.
  * The list lives in `tests/setup/suites.ts` so the reachability guard can read it.
  */

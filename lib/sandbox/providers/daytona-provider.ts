@@ -65,7 +65,13 @@ type DaytonaSandbox = {
 };
 
 type DaytonaSdk = {
-  Daytona: new (opts: { apiKey: string; apiUrl?: string; target?: string }) => {
+  Daytona: new (opts: {
+    apiKey: string;
+    apiUrl?: string;
+    target?: string;
+    /** Skips the constructor's socket.io event connection (see call sites). */
+    useDeprecatedPolling?: boolean;
+  }) => {
     create: (params?: {
       language?: string;
       public?: boolean;

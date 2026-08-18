@@ -11,9 +11,19 @@ export const BASE_RULES = `QUALITY (every file):
 - States: loading, empty, error, disabled for every interactive flow.
 - Layout: mobile-first; no horizontal overflow at 375px.
 - Tokens: define colors/spacing/type once (CSS variables or one Tailwind @theme). No scattered hex or magic numbers.
-- Motion: 150–250ms opacity/transform only. Honor prefers-reduced-motion (motion-reduce:transition-none).
+- Motion: hover/press transitions 150–250ms, opacity/transform only. Honor prefers-reduced-motion (motion-reduce:transition-none).
 - Tailwind only. Standard classes (bg-white, text-gray-900). Never bg-background / text-foreground / CSS Modules / style={{}}.
 - No emojis in code, copy, or UI.
+
+DESIGN (look designed, not assembled):
+- Hero: real art direction — layered background (image, gradient wash, or oversized display type), one value line, primary CTA plus a quiet secondary. Never centered text on a flat white block.
+- Nav: sticky header; after scroll it gains a translucent background, backdrop blur, and a hairline border.
+- Rhythm: alternate section background and density (full-bleed vs contained, light vs tinted). Vary layouts — split, offset grid, stacked feature, quote band. Never two identical card grids in a row.
+- CTA hierarchy: one primary button style per view; every other action is secondary or ghost.
+- Proof: when the subject plausibly has customers, include one proof moment (testimonial, logo row, or rating) styled to the direction.
+- Footer: real multi-column footer (nav, contact, legal) in the direction's palette — never a single centered line.
+- Entrances: reveal sections once on scroll (IntersectionObserver; opacity + translate ≤16px; 300–500ms; stagger ≤80ms). Reduced motion renders everything visible with no animation.
+- Every interactive element has a visible hover state (lift, tint, or underline slide) and a focus-visible ring.
 
 IMAGES:
 - Never emit hotlinked random URLs, via.placeholder.com, unsplash.com/hotlink, or empty src. Every image must be a real URL from PROJECT ASSETS.

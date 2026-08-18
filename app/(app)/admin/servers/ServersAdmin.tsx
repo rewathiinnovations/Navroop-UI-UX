@@ -9,6 +9,7 @@ import StatusBanner from '@/components/admin/StatusBanner';
 import { useState } from 'react';
 import Link from 'next/link';
 import StudioButton from '@/components/app/studio/StudioButton';
+import ConfirmAction from '@/components/admin/ConfirmAction';
 
 export type PublicServer = {
   id: string;
@@ -41,7 +42,7 @@ export default function ServersAdmin({ initial }: { initial: PublicServer[] }) {
       const response = await fetch(`/api/admin/servers/${id}/test`, { method: 'POST' });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        setError(data.error || 'Connection fail');
+        setError(data.error || 'The connection test failed');
         return;
       }
       setMessage(`Connection ok${data.version ? ` (${data.version})` : ''}`);
@@ -50,13 +51,9 @@ export default function ServersAdmin({ initial }: { initial: PublicServer[] }) {
     }
   };
 
+  // The confirm for a server with live deployments is ConfirmAction in the row,
+  // like every other destructive admin action — not window.confirm.
   const toggle = async (server: PublicServer) => {
-    if (server.isActive && server.deploymentCount > 0) {
-      const ok = window.confirm(
-        `This server has ${server.deploymentCount} live deployments. Deactivate it? New publishes will not go here.`,
-      );
-      if (!ok) return;
-    }
     setBusy(`active:${server.id}`);
     try {
       const response = await fetch(`/api/admin/servers/${server.id}`, {
@@ -70,7 +67,7 @@ export default function ServersAdmin({ initial }: { initial: PublicServer[] }) {
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        setError(data.error || 'Update fail');
+        setError(data.error || 'Could not update the server');
         return;
       }
       await refresh();
@@ -172,14 +169,28 @@ export default function ServersAdmin({ initial }: { initial: PublicServer[] }) {
                   >
                     {busy === `test:${server.id}` ? 'Testing…' : 'Test connection'}
                   </StudioButton>
-                  <StudioButton
-                    type="button"
-                    variant={server.isActive ? 'danger' : 'ghost'}
-                    disabled={busy === `active:${server.id}`}
-                    onClick={() => void toggle(server)}
-                  >
-                    {server.isActive ? 'Deactivate' : 'Activate'}
-                  </StudioButton>
+                  {server.isActive && server.deploymentCount > 0 ? (
+                    <ConfirmAction
+                      label="Deactivate"
+                      title={`Deactivate ${server.name}?`}
+                      body={`This server hosts ${server.deploymentCount} live ${
+                        server.deploymentCount === 1 ? 'deployment' : 'deployments'
+                      }. They keep running, but new publishes will not go here.`}
+                      confirmLabel="Deactivate"
+                      busyLabel="Deactivating…"
+                      disabled={busy === `active:${server.id}`}
+                      onConfirm={() => toggle(server)}
+                    />
+                  ) : (
+                    <StudioButton
+                      type="button"
+                      variant={server.isActive ? 'danger' : 'ghost'}
+                      disabled={busy === `active:${server.id}`}
+                      onClick={() => void toggle(server)}
+                    >
+                      {server.isActive ? 'Deactivate' : 'Activate'}
+                    </StudioButton>
+                  )}
                 </div>
               </Td>
             </Tr>

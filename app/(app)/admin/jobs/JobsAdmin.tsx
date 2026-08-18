@@ -6,6 +6,7 @@ import AdminPage from '@/components/admin/AdminPage';
 import { AdminTable, Td, Th, Tr } from '@/components/admin/AdminTable';
 import ConfirmAction from '@/components/admin/ConfirmAction';
 import StatusBanner from '@/components/admin/StatusBanner';
+import { SkeletonTable } from '@/components/admin/AdminSkeleton';
 import { useEffect, useState } from 'react';
 import { jobAdminFailureLine } from '@/lib/jobs/admin-display';
 import { sandboxChoiceLines } from '@/lib/jobs/sandbox-choice';
@@ -91,7 +92,7 @@ export default function JobsAdmin() {
       width="wide"
     >
       {error && <StatusBanner tone="error">{error}</StatusBanner>}
-      {loading && !data && <p className="text-[13px] text-[var(--studio-muted)]">Loading…</p>}
+      {loading && !data && <SkeletonTable rows={4} cols={5} />}
 
       {data && (
         <>
@@ -157,7 +158,9 @@ export default function JobsAdmin() {
                     </p>
                     <ul className="mt-6 space-y-6 text-[12px] text-[var(--studio-muted)]">
                       {jobs.map((job) => {
-                        const choice = sandboxChoiceLines(job.resourceIds);
+                        const choice = sandboxChoiceLines(job.resourceIds, {
+                          omitError: job.errorMessage,
+                        });
                         return (
                           <li key={job.id} className="border-l-2 border-[var(--studio-line)] pl-10">
                             <span className="font-mono">

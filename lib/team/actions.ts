@@ -8,6 +8,8 @@ import { writeAudit } from '@/lib/audit/log';
 import {
   memberIdSchema,
   parseWithZod,
+  SELF_DEACTIVATE_ERROR,
+  SELF_ROLE_ERROR,
   updateMemberRoleSchema,
   type TeamRole,
 } from '@/lib/team/schema';
@@ -52,6 +54,15 @@ function lastAdminErr(): ActionErr {
   return { ok: false, error: LAST_ADMIN_ERROR, status: 400 };
 }
 
+/**
+ * The last-admin trigger already stops the workspace losing its final admin,
+ * but with two admins it happily let one demote or deactivate *themself* —
+ * an instant lockout with no one to blame but the UI that offered the button.
+ */
+function selfErr(error: string): ActionErr {
+  return { ok: false, error, status: 400 };
+}
+
 async function loadMember(userId: string) {
   return prisma.user.findUnique({
     where: { id: userId },
@@ -78,6 +89,8 @@ export async function updateMemberRole(userId: string, role: TeamRole) {
 
   const parsed = parseWithZod(updateMemberRoleSchema, { userId, role });
   if (!parsed.ok) return parsed;
+
+  if (parsed.data.userId === user.id) return selfErr(SELF_ROLE_ERROR);
 
   const existing = await loadMember(parsed.data.userId);
   if (!existing) return notFound();
@@ -117,6 +130,8 @@ export async function deactivateMember(userId: string) {
 
   const parsed = parseWithZod(memberIdSchema, { userId });
   if (!parsed.ok) return parsed;
+
+  if (parsed.data.userId === user.id) return selfErr(SELF_DEACTIVATE_ERROR);
 
   const existing = await loadMember(parsed.data.userId);
   if (!existing) return notFound();

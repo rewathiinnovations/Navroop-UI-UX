@@ -151,7 +151,7 @@ export default function ChatInput({
               type="submit"
               disabled={!canSend}
               aria-label="Send message"
-              className="inline-flex size-36 items-center justify-center rounded-full bg-[var(--studio-accent)] text-white hover:bg-[var(--studio-accent-hover)] disabled:cursor-not-allowed disabled:opacity-40"
+              className="inline-flex size-36 items-center justify-center rounded-full [background-image:var(--studio-cta-gradient)] text-white transition-[filter] duration-200 hover:brightness-[1.07] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:brightness-100"
             >
               {busy ? <Loader2 className="size-16 animate-spin" /> : <ArrowUp className="size-16" />}
             </button>

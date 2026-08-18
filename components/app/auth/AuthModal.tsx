@@ -48,7 +48,6 @@ export default function AuthModal({
   resetSuccess = false,
 }: AuthModalProps) {
   const router = useRouter();
-  const titleId = useId();
   const showQuickLogin = isDevQuickLoginEnabled();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -226,13 +225,11 @@ export default function AuthModal({
     <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }}>
       <DialogContent
         hideCloseButton
-        aria-labelledby={titleId}
-        className="studio-shell max-h-[min(90vh,640px)] max-w-[400px] overflow-y-auto rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] p-24 text-left shadow-[0_16px_40px_rgba(24,24,27,0.18)] sm:rounded-12"
+        className="studio-shell max-h-[min(90vh,640px)] max-w-[400px] overflow-y-auto rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] p-24 text-left shadow-[var(--studio-shadow-pop)] sm:rounded-12"
       >
         <div className="mb-16 flex items-start justify-between gap-12">
           <div>
             <DialogTitle
-              id={titleId}
               className="text-[22px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]"
             >
               {panel !== "auth"

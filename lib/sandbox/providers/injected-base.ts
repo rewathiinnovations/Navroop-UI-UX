@@ -115,6 +115,25 @@ export abstract class InjectedCapableProvider extends SandboxProvider {
     throw new Error(message);
   }
 
+  /**
+   * npm's "Tracker idealTree already exists" means another npm process was
+   * mid-flight in the same VM — on Modal the image's own startup can overlap
+   * the boot's install (npm/cli's long-standing concurrency bug). That exact
+   * signature gets one retry after the leftover lock state is cleared; every
+   * other failure (and a second idealTree) still hard-fails through
+   * assertInstallSucceeded and tears the VM down.
+   */
+  protected async runInstall(installCommand: string): Promise<CommandResult> {
+    const first = await this.runCommand(installCommand);
+    if (first.success && first.exitCode === 0) return first;
+    const text = `${first.stdout}\n${first.stderr}`;
+    if (!/Tracker ['"]idealTree['"] already exists/.test(text)) return first;
+    await this.runCommand(
+      'sh -c "for i in $(seq 1 30); do pgrep -x npm >/dev/null 2>&1 || break; sleep 1; done; rm -rf /root/.npm/_locks 2>/dev/null; true"',
+    );
+    return this.runCommand(installCommand);
+  }
+
   async setupViteApp(stack?: string): Promise<void> {
     const { getStackSetupPlan, stackScaffoldFiles } = await import('../stack-setup');
     const plan = getStackSetupPlan(stack || 'NEXTJS');
@@ -122,7 +141,7 @@ export abstract class InjectedCapableProvider extends SandboxProvider {
       await this.writeFile(file.path, file.content);
     }
     if (!plan.skipInstall && plan.installCommand) {
-      const install = await this.runCommand(plan.installCommand);
+      const install = await this.runInstall(plan.installCommand);
       await this.assertInstallSucceeded(install);
     }
     await this.runCommand(`${plan.devCommand} &`);
@@ -132,7 +151,7 @@ export abstract class InjectedCapableProvider extends SandboxProvider {
     const { getStackSetupPlan } = await import('../stack-setup');
     const plan = getStackSetupPlan(stack || 'NEXTJS');
     if (!plan.skipInstall && plan.installCommand) {
-      const install = await this.runCommand(plan.installCommand);
+      const install = await this.runInstall(plan.installCommand);
       await this.assertInstallSucceeded(install);
     }
     await this.runCommand(`${plan.devCommand} &`);

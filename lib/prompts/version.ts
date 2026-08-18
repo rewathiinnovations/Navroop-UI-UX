@@ -28,13 +28,17 @@ export function currentPromptHash() {
 }
 
 export async function getActivePromptVersion() {
+  const hash = currentPromptHash();
   const existing = await prisma.promptVersion.findFirst({
     where: { isActive: true },
     orderBy: { createdAt: 'desc' },
   });
-  if (existing) return existing;
+  // The active row is only trusted while its hash still matches the code.
+  // Before this check, editing a stack prompt left every subsequent generation
+  // stamped with the stale version, so /admin/quality could never attribute an
+  // output change to the prompt change that caused it.
+  if (existing && existing.hash === hash) return existing;
 
-  const hash = currentPromptHash();
   const already = await prisma.promptVersion.findUnique({ where: { hash } });
   if (already) {
     if (!already.isActive) {
@@ -47,15 +51,18 @@ export async function getActivePromptVersion() {
     return already;
   }
 
+  const priorVersions = await prisma.promptVersion.count();
+  const label = priorVersions === 0 ? BASELINE_PROMPT_LABEL : `v${priorVersions + 1}`;
+  await prisma.promptVersion.updateMany({ data: { isActive: false } });
   return prisma.promptVersion.create({
     data: {
       hash,
-      label: BASELINE_PROMPT_LABEL,
+      label,
       config: {
         stacks: [...STACK_IDS],
         directions: [...DESIGN_DIRECTION_IDS],
         memorySlot: { categories: [...MEMORY_CATEGORIES], tokenBudget: MEMORY_TOKEN_BUDGET },
-        seed: BASELINE_PROMPT_LABEL,
+        seed: label,
       },
       isActive: true,
     },
