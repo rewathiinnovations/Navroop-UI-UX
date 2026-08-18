@@ -102,7 +102,8 @@ function asProvider(row: unknown): PublicProviderRow | null {
     creditType,
     creditLabel: creditTypeLabel(creditType),
     creditTotalUsd: typeof record.creditTotalUsd === 'number' ? record.creditTotalUsd : null,
-    creditRemainingUsd: typeof record.creditRemainingUsd === 'number' ? record.creditRemainingUsd : null,
+    creditRemainingUsd:
+      typeof record.creditRemainingUsd === 'number' ? record.creditRemainingUsd : null,
     healthStatus: typeof record.healthStatus === 'string' ? record.healthStatus : 'unknown',
     health: healthLabel(typeof record.healthStatus === 'string' ? record.healthStatus : 'unknown'),
     lastError: typeof record.lastError === 'string' && record.lastError ? record.lastError : null,

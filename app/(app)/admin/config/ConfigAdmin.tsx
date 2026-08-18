@@ -1,9 +1,23 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import {
+  Archive,
+  Boxes,
+  Eye,
+  EyeOff,
+  HardDrive,
+  Mail,
+  Plug,
+  Sparkles,
+  SlidersHorizontal,
+  type LucideIcon,
+} from 'lucide-react';
 import AdminCard from '@/components/admin/AdminCard';
 import AdminPage from '@/components/admin/AdminPage';
+import AdminTabs, { type AdminTab } from '@/components/admin/AdminTabs';
 import StatusBanner from '@/components/admin/StatusBanner';
+import StatusPill, { type StatusTone } from '@/components/admin/StatusPill';
 import StudioButton from '@/components/app/studio/StudioButton';
 import type { DescribedSetting, SettingSource } from '@/lib/settings/resolve';
 import { cn } from '@/utils/cn';
@@ -12,6 +26,16 @@ type Group = { id: string; label: string; blurb: string };
 type Bootstrap = { name: string; help: string; present: boolean };
 type Check = { label: string; ok: boolean; depth: 'live' | 'local'; message: string };
 
+const GROUP_ICON: Record<string, LucideIcon> = {
+  connectors: Plug,
+  ai: Sparkles,
+  tooling: Boxes,
+  email: Mail,
+  storage: HardDrive,
+  backups: Archive,
+  app: SlidersHorizontal,
+};
+
 const SOURCE_LABEL: Record<SettingSource, string> = {
   db: 'Set here',
   env: 'From environment',
@@ -19,21 +43,15 @@ const SOURCE_LABEL: Record<SettingSource, string> = {
   unset: 'Not set',
 };
 
+const SOURCE_TONE: Record<SettingSource, StatusTone> = {
+  db: 'positive',
+  env: 'neutral',
+  fallback: 'neutral',
+  unset: 'faint',
+};
+
 function SourceBadge({ source }: { source: SettingSource }) {
-  return (
-    <span
-      className={cn(
-        'inline-flex shrink-0 items-center rounded-full border px-8 py-2 text-[11px]',
-        source === 'db' && 'border-[var(--studio-line-strong)] text-[var(--studio-fg)]',
-        source === 'env' && 'border-[var(--studio-line)] text-[var(--studio-muted)]',
-        source === 'fallback' && 'border-[var(--studio-line)] text-[var(--studio-muted)]',
-        source === 'unset' &&
-          'border-dashed border-[var(--studio-line)] text-[var(--studio-faint)]',
-      )}
-    >
-      {SOURCE_LABEL[source]}
-    </span>
-  );
+  return <StatusPill tone={SOURCE_TONE[source]}>{SOURCE_LABEL[source]}</StatusPill>;
 }
 
 function SettingRow({
@@ -48,6 +66,7 @@ function SettingRow({
   const id = `setting-${setting.key.replace(/\./g, '-')}`;
   const secret = setting.kind === 'secret';
   const edited = draft !== undefined;
+  const [revealed, setRevealed] = useState(false);
   // A secret is never sent to the browser, so the field starts empty and its
   // placeholder carries the mask. Typing replaces it; leaving it alone keeps
   // whatever is stored.
@@ -81,17 +100,39 @@ function SettingRow({
             ))}
           </select>
         ) : (
-          <input
-            id={id}
-            type={secret ? 'password' : setting.kind === 'number' ? 'number' : 'text'}
-            inputMode={setting.kind === 'number' ? 'numeric' : undefined}
-            autoComplete="off"
-            spellCheck={false}
-            value={value}
-            placeholder={secret ? (setting.masked ?? 'Not set') : setting.placeholder}
-            onChange={(event) => onChange(setting.key, event.target.value)}
-            className="h-40 w-full max-w-[420px] rounded-10 border border-[var(--studio-line-strong)] bg-[var(--studio-bg)] px-12 text-[14px] text-[var(--studio-fg)] placeholder:text-[var(--studio-faint)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
-          />
+          <div className="relative w-full max-w-[420px]">
+            <input
+              id={id}
+              type={
+                secret && !revealed ? 'password' : setting.kind === 'number' ? 'number' : 'text'
+              }
+              inputMode={setting.kind === 'number' ? 'numeric' : undefined}
+              autoComplete="off"
+              spellCheck={false}
+              value={value}
+              placeholder={secret ? (setting.masked ?? 'Not set') : setting.placeholder}
+              onChange={(event) => onChange(setting.key, event.target.value)}
+              className={cn(
+                'h-40 w-full rounded-10 border border-[var(--studio-line-strong)] bg-[var(--studio-bg)] px-12 text-[14px] text-[var(--studio-fg)] placeholder:text-[var(--studio-faint)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]',
+                secret && 'pr-40',
+              )}
+            />
+            {secret && (
+              <button
+                type="button"
+                onClick={() => setRevealed((prev) => !prev)}
+                aria-label={revealed ? 'Hide value' : 'Show value'}
+                aria-pressed={revealed}
+                className="absolute inset-y-0 right-0 flex w-36 items-center justify-center text-[var(--studio-faint)] transition-colors duration-150 hover:text-[var(--studio-muted)]"
+              >
+                {revealed ? (
+                  <EyeOff className="size-15" aria-hidden />
+                ) : (
+                  <Eye className="size-15" aria-hidden />
+                )}
+              </button>
+            )}
+          </div>
         )}
 
         {setting.source === 'db' && !edited && (
@@ -139,6 +180,16 @@ export default function ConfigAdmin({
     }
     return map;
   }, [settings]);
+
+  const visibleGroups = useMemo(
+    () => groups.filter((group) => (byGroup.get(group.id) ?? []).length > 0),
+    [groups, byGroup],
+  );
+
+  const configuredCount = useMemo(
+    () => settings.filter((setting) => setting.configured).length,
+    [settings],
+  );
 
   const dirtyCount = Object.keys(drafts).length;
 
@@ -202,6 +253,7 @@ export default function ConfigAdmin({
 
   return (
     <AdminPage
+      icon="config"
       title="Configuration"
       description="Everything this installation needs in order to work. Values saved here are stored encrypted in the database and take effect immediately — there is no need to edit environment files or restart the server."
       actions={
@@ -218,6 +270,10 @@ export default function ConfigAdmin({
         </StudioButton>
       }
     >
+      <p className="text-[13px] text-[var(--studio-muted)]">
+        {configuredCount} of {settings.length} settings configured.
+      </p>
+
       {error && <StatusBanner tone="error">{error}</StatusBanner>}
       {saved !== null && (
         <StatusBanner tone="success">
@@ -225,69 +281,73 @@ export default function ConfigAdmin({
         </StatusBanner>
       )}
 
-      {groups.map((group) => {
-        const rows = byGroup.get(group.id) ?? [];
-        if (rows.length === 0) return null;
-        const checks = results[group.id];
-        return (
-          <AdminCard
-            key={group.id}
-            id={group.id}
-            title={group.label}
-            description={group.blurb}
-            actions={
-              <StudioButton
-                type="button"
-                variant="ghost"
-                disabled={testing === group.id}
-                onClick={() => void runTest(group.id)}
-              >
-                {testing === group.id ? 'Testing…' : 'Test'}
-              </StudioButton>
-            }
-          >
-            {checks && (
-              <div className="mb-16 space-y-8">
-                {checks.map((check) => (
-                  <div
-                    key={check.label}
-                    className="flex items-start gap-10 rounded-10 border border-[var(--studio-line)] px-12 py-10 text-[13px]"
+      <AdminTabs
+        tabs={visibleGroups.map((group): AdminTab => {
+          const Icon = GROUP_ICON[group.id] ?? SlidersHorizontal;
+          const rows = byGroup.get(group.id) ?? [];
+          const checks = results[group.id];
+          return {
+            id: group.id,
+            label: group.label,
+            icon: <Icon className="size-13" aria-hidden />,
+            panel: (
+              <AdminCard
+                description={group.blurb}
+                actions={
+                  <StudioButton
+                    type="button"
+                    variant="ghost"
+                    disabled={testing === group.id}
+                    onClick={() => void runTest(group.id)}
                   >
-                    <span
-                      className={cn(
-                        'mt-1 inline-block size-8 shrink-0 rounded-full',
-                        check.ok ? 'bg-[var(--studio-fg)]' : 'bg-[var(--studio-danger)]',
-                      )}
-                      aria-hidden
-                    />
-                    <span className="min-w-0">
-                      <span className="font-medium text-[var(--studio-fg)]">{check.label}</span>
-                      <span className="text-[var(--studio-muted)]"> — {check.message}</span>
-                      {check.depth === 'local' && (
-                        <span className="text-[var(--studio-faint)]">
-                          {' '}
-                          (not verified against the service)
+                    {testing === group.id ? 'Testing…' : 'Test'}
+                  </StudioButton>
+                }
+              >
+                {checks && (
+                  <div className="mb-16 space-y-8">
+                    {checks.map((check) => (
+                      <div
+                        key={check.label}
+                        className="flex items-start gap-10 rounded-10 border border-[var(--studio-line)] px-12 py-10 text-[13px]"
+                      >
+                        <span
+                          className={cn(
+                            'mt-1 inline-block size-8 shrink-0 rounded-full',
+                            check.ok ? 'bg-[var(--studio-fg)]' : 'bg-[var(--studio-danger)]',
+                          )}
+                          aria-hidden
+                        />
+                        <span className="min-w-0">
+                          <span className="font-medium text-[var(--studio-fg)]">{check.label}</span>
+                          <span className="text-[var(--studio-muted)]"> — {check.message}</span>
+                          {check.depth === 'local' && (
+                            <span className="text-[var(--studio-faint)]">
+                              {' '}
+                              (not verified against the service)
+                            </span>
+                          )}
                         </span>
-                      )}
-                    </span>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-            )}
+                )}
 
-            <div>
-              {rows.map((setting) => (
-                <SettingRow
-                  key={setting.key}
-                  setting={setting}
-                  draft={drafts[setting.key]}
-                  onChange={onChange}
-                />
-              ))}
-            </div>
-          </AdminCard>
-        );
-      })}
+                <div>
+                  {rows.map((setting) => (
+                    <SettingRow
+                      key={setting.key}
+                      setting={setting}
+                      draft={drafts[setting.key]}
+                      onChange={onChange}
+                    />
+                  ))}
+                </div>
+              </AdminCard>
+            ),
+          };
+        })}
+      />
 
       <AdminCard
         title="Set on the server"

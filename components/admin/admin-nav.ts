@@ -11,10 +11,31 @@
  * on the admin home and as the nav tooltip.
  */
 
+/** Keys into the lucide set resolved by AdminIcon.tsx. Kept as strings, not
+ * component references, so this file stays importable from server code with
+ * no React in the module graph. */
+export type AdminIconName =
+  | 'home'
+  | 'health'
+  | 'team'
+  | 'plans'
+  | 'config'
+  | 'integrations'
+  | 'templates'
+  | 'workspace'
+  | 'sandbox-providers'
+  | 'servers'
+  | 'backups'
+  | 'jobs'
+  | 'usage'
+  | 'quality'
+  | 'audit';
+
 export type AdminNavItem = {
   href: string;
   label: string;
   description: string;
+  icon: AdminIconName;
 };
 
 export type AdminNavGroup = {
@@ -30,11 +51,14 @@ export const ADMIN_NAV: AdminNavGroup[] = [
         href: '/admin',
         label: 'Home',
         description: 'What needs attention right now, and where everything lives.',
+        icon: 'home',
       },
       {
         href: '/admin/health',
         label: 'Health',
-        description: 'Whether this installation is running correctly: release, storage, error tracking, and provider checks.',
+        description:
+          'Whether this installation is running correctly: release, storage, error tracking, and provider checks.',
+        icon: 'health',
       },
     ],
   },
@@ -45,11 +69,13 @@ export const ADMIN_NAV: AdminNavGroup[] = [
         href: '/admin/team',
         label: 'Team',
         description: 'Who can sign in, what role they hold, and how to invite or deactivate them.',
+        icon: 'team',
       },
       {
         href: '/admin/plans',
         label: 'Plans',
         description: 'How much each plan may generate, and which members are on it.',
+        icon: 'plans',
       },
     ],
   },
@@ -59,22 +85,29 @@ export const ADMIN_NAV: AdminNavGroup[] = [
       {
         href: '/admin/config',
         label: 'Configuration',
-        description: 'Every API key and setting this installation needs. Replaces editing environment files by hand.',
+        description:
+          'Every API key and setting this installation needs. Replaces editing environment files by hand.',
+        icon: 'config',
       },
       {
         href: '/admin/integrations',
         label: 'Integrations',
-        description: 'Connect GitHub, Cloudflare, Coolify, and Sentry so projects can be published and monitored.',
+        description:
+          'Connect GitHub, Cloudflare, Coolify, and Sentry so projects can be published and monitored.',
+        icon: 'integrations',
       },
       {
         href: '/admin/templates',
         label: 'Templates',
         description: 'The starting points members can pick when creating a project.',
+        icon: 'templates',
       },
       {
         href: '/admin/workspace',
         label: 'Workspace',
-        description: 'Spending caps for the whole workspace, and the switch that stops all generation at once.',
+        description:
+          'Spending caps for the whole workspace, and the switch that stops all generation at once.',
+        icon: 'workspace',
       },
     ],
   },
@@ -84,22 +117,27 @@ export const ADMIN_NAV: AdminNavGroup[] = [
       {
         href: '/admin/sandbox-providers',
         label: 'Sandbox providers',
-        description: 'Which service runs generated code, and the order they are tried when one is unavailable.',
+        description:
+          'Which service runs generated code, and the order they are tried when one is unavailable.',
+        icon: 'sandbox-providers',
       },
       {
         href: '/admin/servers',
         label: 'Servers',
         description: 'The machines available to host published sites.',
+        icon: 'servers',
       },
       {
         href: '/admin/backups',
         label: 'Backups',
         description: 'When the database was last backed up, and how to restore it.',
+        icon: 'backups',
       },
       {
         href: '/admin/jobs',
         label: 'Jobs',
         description: 'Generation work in progress, and anything that stalled or failed.',
+        icon: 'jobs',
       },
     ],
   },
@@ -110,16 +148,20 @@ export const ADMIN_NAV: AdminNavGroup[] = [
         href: '/admin/usage',
         label: 'Usage',
         description: 'What was generated, by whom, and what it cost.',
+        icon: 'usage',
       },
       {
         href: '/admin/quality',
         label: 'Quality',
-        description: 'How well generation is performing over time, and the problems that keep recurring.',
+        description:
+          'How well generation is performing over time, and the problems that keep recurring.',
+        icon: 'quality',
       },
       {
         href: '/admin/audit',
         label: 'Audit log',
         description: 'A record of every administrative action taken, and by whom.',
+        icon: 'audit',
       },
     ],
   },

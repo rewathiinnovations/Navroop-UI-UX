@@ -78,6 +78,7 @@ export default function WorkspaceAdmin({
 
   return (
     <AdminPage
+      icon="workspace"
       title="Workspace"
       description="Spending caps for the whole workspace, and the switch that stops all generation at once."
     >

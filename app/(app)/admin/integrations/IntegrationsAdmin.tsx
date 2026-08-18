@@ -1,10 +1,28 @@
 'use client';
 
+import { Bug, Cloud, Github, Server, X } from 'lucide-react';
+import AdminCard from '@/components/admin/AdminCard';
 import AdminPage from '@/components/admin/AdminPage';
+import StatusBanner from '@/components/admin/StatusBanner';
+import StatusPill, { type StatusTone } from '@/components/admin/StatusPill';
 import { FormEvent, useMemo, useState, type ReactNode } from 'react';
 import StudioButton from '@/components/app/studio/StudioButton';
 import StudioField from '@/components/app/studio/StudioField';
 import { resolveSentryMeta } from './sentry-meta';
+
+const KIND_ICON: Record<'GITHUB_DEPLOY' | 'CLOUDFLARE' | 'COOLIFY' | 'SENTRY', typeof Github> = {
+  GITHUB_DEPLOY: Github,
+  CLOUDFLARE: Cloud,
+  COOLIFY: Server,
+  SENTRY: Bug,
+};
+
+const STATUS_TONE: Record<string, StatusTone> = {
+  CONNECTED: 'positive',
+  PENDING: 'warning',
+  ERROR: 'danger',
+  DISCONNECTED: 'neutral',
+};
 
 type PublicIntegration = {
   kind: 'GITHUB_DEPLOY' | 'CLOUDFLARE' | 'COOLIFY' | 'SENTRY';
@@ -454,28 +472,34 @@ export default function IntegrationsAdmin({
 
   return (
     <AdminPage
+      icon="integrations"
       title="Integrations"
       description="Connect GitHub, Cloudflare, Coolify, and Sentry so projects can be published and monitored."
     >
       {alert && alert.failures.length > 0 && (
-        <div className="mb-16 rounded-12 border border-[var(--studio-danger)]/30 bg-[var(--studio-surface)] p-16">
-          <p className="text-[14px] font-medium text-[var(--studio-danger)]">
-            Integration check failed
-          </p>
+        <StatusBanner tone="error">
+          <p className="font-medium text-[var(--studio-fg)]">Integration check failed</p>
           {alert.failures.map((row) => (
-            <p key={row.kind} className="mt-4 text-[13px] text-[var(--studio-muted)]">
+            <p key={row.kind} className="mt-4 text-[var(--studio-muted)]">
               {row.kind}: {row.error}
             </p>
           ))}
-        </div>
+        </StatusBanner>
       )}
-      {error && <p className="mb-12 text-[13px] text-[var(--studio-danger)]">{error}</p>}
+      {error && <StatusBanner tone="error">{error}</StatusBanner>}
       {byKind.SENTRY?.restartRequired && (
-        <div className="mb-16 rounded-12 border border-[var(--studio-line-strong)] bg-[var(--studio-surface)] p-16">
-          <p className="text-[14px] font-medium text-[var(--studio-fg)]">
+        <StatusBanner
+          tone="warning"
+          action={
+            <StudioButton type="button" variant="ghost" onClick={() => setRestartOpen(true)}>
+              Restart application
+            </StudioButton>
+          }
+        >
+          <p className="font-medium text-[var(--studio-fg)]">
             Restart required — Sentry will start reporting after the application restarts
           </p>
-          <p className="mt-4 text-[13px] text-[var(--studio-muted)]">
+          <p className="mt-4 text-[var(--studio-muted)]">
             Active project id: {byKind.SENTRY.activeProjectId || 'none'} · Configured project id:{' '}
             {byKind.SENTRY.configuredProjectId || 'none'}
           </p>
@@ -485,12 +509,7 @@ export default function IntegrationsAdmin({
           >
             In Coolify, open the Navroop application and click Restart.
           </p>
-          <div className="mt-10">
-            <StudioButton type="button" variant="ghost" onClick={() => setRestartOpen(true)}>
-              Restart application
-            </StudioButton>
-          </div>
-        </div>
+        </StatusBanner>
       )}
 
       <div className="grid gap-16">
@@ -946,57 +965,88 @@ export default function IntegrationsAdmin({
       </div>
 
       {restartOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-20">
-          <div className="w-full max-w-[420px] rounded-16 bg-[var(--studio-surface)] p-20">
-            <p className="text-[16px] font-medium">Restart the application?</p>
-            <p className="mt-8 text-[13px] text-[var(--studio-muted)]">
-              Type <strong>restart</strong> to confirm. This interrupts the application.
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-20">
+          <button
+            type="button"
+            aria-label="Cancel"
+            className="absolute inset-0 bg-[var(--studio-fg)]/20"
+            onClick={() => setRestartOpen(false)}
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            className="relative z-10 w-full max-w-[420px] rounded-16 border border-[var(--studio-line)] bg-[var(--studio-surface)] p-24 shadow-lg"
+          >
+            <p className="text-[16px] font-medium text-[var(--studio-fg)]">
+              Restart the application?
+            </p>
+            <p className="mt-8 text-[14px] leading-6 text-[var(--studio-muted)]">
+              Type <strong className="text-[var(--studio-fg)]">restart</strong> to confirm. This
+              interrupts the application.
             </p>
             <input
-              className="mt-10 h-40 w-full rounded-10 border border-[var(--studio-line)] px-10 text-[13px]"
+              className="mt-12 h-40 w-full rounded-10 border border-[var(--studio-line-strong)] bg-[var(--studio-bg)] px-12 text-[14px] text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
               value={restartConfirm}
               onChange={(event) => setRestartConfirm(event.target.value)}
             />
-            <div className="mt-16 flex gap-8">
+            <div className="mt-20 flex justify-end gap-8">
               <StudioButton type="button" variant="ghost" onClick={() => setRestartOpen(false)}>
                 Cancel
               </StudioButton>
               <StudioButton
                 type="button"
-                disabled={busy === 'sentry-restart'}
+                variant="danger"
+                disabled={busy === 'sentry-restart' || restartConfirm !== 'restart'}
                 onClick={() => void restartApp()}
               >
-                Restart application
+                {busy === 'sentry-restart' ? 'Restarting…' : 'Restart application'}
               </StudioButton>
             </div>
           </div>
         </div>
       )}
       {disconnectKind && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-20">
-          <div className="w-full max-w-[420px] rounded-16 bg-[var(--studio-surface)] p-20">
-            <p className="text-[16px] font-medium">Disconnect {byKind[disconnectKind].name}?</p>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-20">
+          <button
+            type="button"
+            aria-label="Cancel"
+            className="absolute inset-0 bg-[var(--studio-fg)]/20"
+            onClick={() => setDisconnectKind(null)}
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            className="relative z-10 w-full max-w-[420px] rounded-16 border border-[var(--studio-line)] bg-[var(--studio-surface)] p-24 shadow-lg"
+          >
+            <p className="text-[16px] font-medium text-[var(--studio-fg)]">
+              Disconnect {byKind[disconnectKind].name}?
+            </p>
             {disconnectWarning && (
               <p className="mt-8 text-[13px] text-[var(--studio-danger)]">{disconnectWarning}</p>
             )}
-            <p className="mt-8 text-[13px] text-[var(--studio-muted)]">
-              Type <strong>{byKind[disconnectKind].name}</strong> to confirm
+            <p className="mt-8 text-[14px] leading-6 text-[var(--studio-muted)]">
+              Type{' '}
+              <strong className="text-[var(--studio-fg)]">{byKind[disconnectKind].name}</strong> to
+              confirm
             </p>
             <input
-              className="mt-10 h-40 w-full rounded-10 border border-[var(--studio-line)] px-10 text-[13px]"
+              className="mt-12 h-40 w-full rounded-10 border border-[var(--studio-line-strong)] bg-[var(--studio-bg)] px-12 text-[14px] text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
               value={disconnectConfirm}
               onChange={(event) => setDisconnectConfirm(event.target.value)}
             />
-            <div className="mt-16 flex gap-8">
+            <div className="mt-20 flex justify-end gap-8">
               <StudioButton type="button" variant="ghost" onClick={() => setDisconnectKind(null)}>
                 Cancel
               </StudioButton>
               <StudioButton
                 type="button"
-                disabled={busy === 'disconnect'}
+                variant="danger"
+                disabled={
+                  busy === 'disconnect' || disconnectConfirm !== byKind[disconnectKind].name
+                }
                 onClick={() => void disconnect()}
               >
-                Disconnect
+                {busy === 'disconnect' ? 'Disconnecting…' : 'Disconnect'}
               </StudioButton>
             </div>
           </div>
@@ -1020,41 +1070,43 @@ function Card({
   children: ReactNode;
 }) {
   if (!row) return null;
+  const Icon = KIND_ICON[row.kind];
   return (
-    <section className="rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] p-16">
-      <div className="flex flex-wrap items-start justify-between gap-12">
-        <div>
-          <div className="flex items-center gap-8">
-            <h2 className="text-[18px] font-medium text-[var(--studio-fg)]">{row.name}</h2>
-            <span className="rounded-full bg-[var(--studio-skeleton)] px-8 py-2 text-[11px] text-[var(--studio-muted)]">
-              {row.statusLabel}
-            </span>
-          </div>
-          {row.detail && (
-            <p className="mt-4 text-[13px] text-[var(--studio-muted)]">{row.detail}</p>
-          )}
+    <AdminCard
+      icon={<Icon className="size-14" aria-hidden />}
+      title={row.name}
+      description={
+        <>
+          <StatusPill tone={STATUS_TONE[row.status] ?? 'neutral'}>{row.statusLabel}</StatusPill>
+          {row.detail && <span className="mt-6 block">{row.detail}</span>}
           {row.lastError && (
-            <p className="mt-4 text-[12px] text-[var(--studio-danger)]">{row.lastError}</p>
+            <span className="mt-6 flex items-start gap-6 text-[var(--studio-danger)]">
+              <X className="mt-1 size-11 shrink-0" aria-hidden />
+              {row.lastError}
+            </span>
           )}
-        </div>
-        <div className="flex gap-8">
+        </>
+      }
+      actions={
+        <>
           <StudioButton
             type="button"
             variant="ghost"
             disabled={busy === `check:${row.kind}`}
             onClick={onCheck}
           >
-            Check connection
+            {busy === `check:${row.kind}` ? 'Checking…' : 'Check connection'}
           </StudioButton>
           {row.status !== 'DISCONNECTED' && (
             <StudioButton type="button" variant="danger" onClick={onDisconnect}>
               Disconnect
             </StudioButton>
           )}
-        </div>
-      </div>
+        </>
+      }
+    >
       {children}
-    </section>
+    </AdminCard>
   );
 }
 
