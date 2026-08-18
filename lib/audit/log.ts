@@ -32,6 +32,8 @@ export const REQUIRED_AUDIT_ACTIONS = [
   'password_reset.completed',
   'template.create',
   'template.delete',
+  'setting.update',
+  'setting.clear',
 ] as const;
 
 export type AuditAction = (typeof REQUIRED_AUDIT_ACTIONS)[number] | string;

@@ -16,7 +16,7 @@ import { assertFreeSpaceForLargeOp, withTmpDir } from '../runtime/data-dir';
 import {
   assertDistinctBuckets,
   assertProductionBackupDriver,
-  backupDriverFromEnv,
+  backupDriver,
 } from './assert';
 import { clearBackupAlert, notifyBackupAlert, notifyStaleBackupIfNeeded } from './alerts';
 import { backupObjectPrefix, deleteBackupObject, listBackupObjects, uploadBackupFile } from './client';
@@ -55,8 +55,8 @@ function runCommand(command: string, args: string[], env: NodeJS.ProcessEnv) {
 }
 
 export async function runDbBackup() {
-  assertProductionBackupDriver();
-  assertDistinctBuckets();
+  await assertProductionBackupDriver();
+  await assertDistinctBuckets();
   try {
     assertFreeSpaceForLargeOp();
   } catch (error) {
@@ -121,5 +121,5 @@ export async function runDbBackup() {
 }
 
 export function describeBackupDriver() {
-  return backupDriverFromEnv();
+  return backupDriver();
 }

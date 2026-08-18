@@ -5,6 +5,7 @@
  * A failed HTTP/network/credential scrape is not the same fact as a 200 with
  * no markdown. Callers must not collapse the two.
  */
+import { getSetting } from '@/lib/settings/resolve';
 
 export const FIRECRAWL_EMPTY_IS_NOT_FAILURE = true;
 
@@ -71,7 +72,9 @@ export async function scrapeFirecrawlText(
   url: string,
   opts?: { fetchImpl?: typeof fetch; apiKey?: string | null },
 ): Promise<FirecrawlScrapeResult> {
-  const apiKey = (opts?.apiKey !== undefined ? opts.apiKey : process.env.FIRECRAWL_API_KEY)?.trim();
+  const apiKey = (
+    opts?.apiKey !== undefined ? opts.apiKey : await getSetting('tooling.firecrawl.apiKey')
+  )?.trim();
   if (!apiKey) {
     return { ok: false, reason: 'missing_key' };
   }

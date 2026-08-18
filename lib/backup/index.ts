@@ -1,9 +1,11 @@
 export {
   assertDistinctBuckets,
+  assertDistinctBucketValues,
   assertEncryptionKey,
   assertProductionBackupDriver,
+  assertProductionBackupDriverValues,
   assertRestoreTarget,
-  backupDriverFromEnv,
+  backupDriver,
 } from './assert';
 export { retentionDecisions, type RetentionObject } from './retention';
 export { isBackupStale, isRestoreTestOverdue, RESTORE_TEST_STALE_MS, STALE_BACKUP_MS } from './stale';

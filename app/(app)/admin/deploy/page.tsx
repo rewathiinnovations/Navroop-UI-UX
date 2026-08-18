@@ -1,14 +1,10 @@
 import { redirect } from 'next/navigation';
-import { requireAdmin } from '@/lib/auth';
-import { getDeploySettings } from '@/lib/coolify/actions';
-import DeploySettings from './DeploySettings';
 
-export default async function AdminDeployPage() {
-  const { user } = await requireAdmin();
-  if (!user) redirect('/dashboard');
-
-  const result = await getDeploySettings();
-  if (!result.ok) redirect('/dashboard');
-
-  return <DeploySettings initial={result.data} />;
+/**
+ * The standalone Coolify token form was superseded by /admin/integrations, but
+ * stayed in the navigation and told visitors so in its own body copy. Sending
+ * them where the work actually happens is the whole of the fix.
+ */
+export default function AdminDeployPage() {
+  redirect('/admin/integrations');
 }

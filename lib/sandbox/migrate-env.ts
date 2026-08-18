@@ -1,24 +1,25 @@
 import { randomUUID } from 'crypto';
 import { log } from '@/lib/logger';
+import { getSetting } from '@/lib/settings/resolve';
 import { encryptProviderSecrets, insertProviderConfig, listProviderConfigs } from './store';
 
 let ran = false;
 
-/** First boot: if no provider rows and E2B_API_KEY is set, migrate it. After that the env var is ignored. */
+/** First boot: if no provider rows and an E2B key is configured, migrate it. After that the setting is ignored here. */
 export async function migrateEnvSandboxProvider() {
   if (ran) return;
   ran = true;
   try {
     const existing = await listProviderConfigs();
     if (existing.length > 0) {
-      if (process.env.E2B_API_KEY) {
+      if (await getSetting('tooling.e2b.apiKey')) {
         log.info('sandbox.env_ignored', {
           message: 'E2B_API_KEY is ignored because SandboxProviderConfig rows already exist',
         });
       }
       return;
     }
-    const apiKey = process.env.E2B_API_KEY?.trim();
+    const apiKey = await getSetting('tooling.e2b.apiKey');
     if (!apiKey) return;
     await insertProviderConfig({
       id: randomUUID(),

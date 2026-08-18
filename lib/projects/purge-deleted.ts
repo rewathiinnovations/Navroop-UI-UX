@@ -16,7 +16,7 @@ async function killProjectSandbox(projectId: string, sandboxId: string | null) {
 }
 
 export async function purgeDeletedProjects() {
-  const days = purgeDeletedDays();
+  const days = await purgeDeletedDays();
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   const projects = await prisma.project.findMany({
     where: { deletedAt: { not: null, lt: cutoff } },
