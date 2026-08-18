@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { parseMorphEdits, applyMorphEditToFile } from '@/lib/morph-fast-apply';
+import { parseMorphEdits, applyMorphEditToFile, isMorphConfigured } from '@/lib/morph-fast-apply';
 // Sandbox import not needed - using global sandbox from sandbox-manager
 import type { SandboxState } from '@/types/sandbox';
 import type { ConversationState } from '@/types/conversation';
@@ -425,7 +425,7 @@ export async function POST(request: NextRequest) {
 
     // Parse the AI response
     const parsed = parseAIResponse(response, stackDef.id);
-    const morphEnabled = Boolean(isEdit && process.env.MORPH_API_KEY);
+    const morphEnabled = Boolean(isEdit && (await isMorphConfigured()));
     const morphEdits = morphEnabled ? parseMorphEdits(response) : [];
     console.log('[apply-ai-code-stream] Morph Fast Apply mode:', morphEnabled);
     if (morphEnabled) {
@@ -729,7 +729,8 @@ export async function POST(request: NextRequest) {
                   sandbox: morphSandbox,
                   targetPath: edit.targetFile,
                   instructions: edit.instructions,
-                  updateSnippet: edit.update
+                  updateSnippet: edit.update,
+                  stack: stackDef.id
                 });
                 if (result.success && result.normalizedPath) {
                   console.log('[apply-ai-code-stream] Morph updated', result.normalizedPath);

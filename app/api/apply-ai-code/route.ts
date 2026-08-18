@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { parseMorphEdits, applyMorphEditToFile } from '@/lib/morph-fast-apply';
+import { parseMorphEdits, applyMorphEditToFile, isMorphConfigured } from '@/lib/morph-fast-apply';
+import { resolveRequestStack } from '@/lib/stack-resolve';
 import type { SandboxState } from '@/types/sandbox';
 import type { ConversationState } from '@/types/conversation';
 import { jsonError } from '@/lib/api/error-response';
@@ -145,17 +146,32 @@ export async function POST(request: NextRequest) {
   if (!auth.user) return jsonError(auth.error, 'UNAUTHORIZED', auth.status);
 
   try {
-    const { response, isEdit = false, packages = [] } = await request.json();
-    
+    const {
+      response,
+      isEdit = false,
+      packages = [],
+      stack: requestStack,
+      projectId,
+    } = await request.json();
+
     if (!response) {
       return NextResponse.json({
         error: 'response is required'
       }, { status: 400 });
     }
-    
+
+    const storedStack =
+      typeof (global as { sandboxData?: { stack?: unknown } }).sandboxData?.stack === 'string'
+        ? (global as { sandboxData?: { stack?: string } }).sandboxData?.stack
+        : undefined;
+    const activeStack = await resolveRequestStack({
+      stack: requestStack ?? storedStack,
+      projectId,
+    });
+
     // Parse the AI response
     const parsed = parseAIResponse(response);
-    const morphEnabled = Boolean(isEdit && process.env.MORPH_API_KEY);
+    const morphEnabled = Boolean(isEdit && (await isMorphConfigured()));
     const morphEdits = morphEnabled ? parseMorphEdits(response) : [];
     console.log('[apply-ai-code] Morph Fast Apply mode:', morphEnabled);
     if (morphEnabled) {
@@ -338,7 +354,8 @@ export async function POST(request: NextRequest) {
               sandbox: global.activeSandbox,
               targetPath: edit.targetFile,
               instructions: edit.instructions,
-              updateSnippet: edit.update
+              updateSnippet: edit.update,
+              stack: activeStack
             });
 
             if (result.success && result.normalizedPath) {

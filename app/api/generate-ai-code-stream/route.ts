@@ -10,6 +10,7 @@ import { executeSearchPlan, formatSearchResultsForAI, selectTargetFile } from '@
 import { FileManifest } from '@/types/file-manifest';
 import type { ConversationState, ConversationMessage, ConversationEdit } from '@/types/conversation';
 import { appConfig } from '@/config/app.config';
+import { isMorphConfigured } from '@/lib/morph-fast-apply';
 import { buildUiUxProMaxBrief } from '@/lib/ui-ux-pro-max/build-design-brief';
 import { getSessionUser } from '@/lib/auth';
 import { ensureSandbox, SandboxBootError } from '@/lib/sandbox/manager';
@@ -1022,15 +1023,17 @@ Remember: You are a SURGEON making a precise incision, not an artist repainting 
           assetManifest,
         }, { memoryBlock });
 
-        // If Morph Fast Apply is enabled (edit mode + MORPH_API_KEY), force <edit> block output
-        const morphFastApplyEnabled = Boolean(isEdit && process.env.MORPH_API_KEY);
+        // Gate on the admin setting, not MORPH_API_KEY — the applier reads the setting, so
+        // an env-only check left the feature off whenever the key was entered in /admin/config.
+        const morphFastApplyEnabled = Boolean(isEdit && (await isMorphConfigured()));
         if (morphFastApplyEnabled) {
           const morphRules = `
 
 MORPH FAST APPLY MODE (EDIT-ONLY):
 - Output edits as <edit> blocks, not full <file> blocks, for files that already exist.
+- target_file must be the file's real path in this project, exactly as listed above.
 - Format for each edit:
-  <edit target_file="src/components/Header.jsx">
+  <edit target_file="path/to/the/file">
     <instructions>Describe the minimal change, single sentence.</instructions>
     <update>Provide the SMALLEST code snippet necessary to perform the change.</update>
   </edit>
@@ -1359,34 +1362,42 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
         console.log(`[generate-ai-code-stream] AI Gateway enabled: ${isUsingAIGateway}`);
         console.log(`[generate-ai-code-stream] Model string: ${model}`);
 
+        // Never exceed the workspace plan's per-job token cap.
+        const outputTokenCap = Math.min(appConfig.ai.maxTokens, planCaps.maxTokensPerJob);
+
+        // Typed on purpose: this object used to be `any`, which let the AI SDK v4 names
+        // `maxTokens` and `experimental_providerMetadata` sit here unnoticed. Both are
+        // silently ignored by v5 (they are `maxOutputTokens` and `providerOptions` now),
+        // so the output cap never applied and GPT-5 never received reasoningEffort.
+        // Keeping the type means a stale option name fails tsc instead of failing quietly.
         // Stable prefix first (cacheable). Volatile user + file context last.
-        const streamOptions: any = {
+        const streamOptions: Parameters<typeof streamText>[0] = {
           model: modelProvider(actualModel),
           messages: buildCachedMessages({
             stablePrefix,
             volatileUser: [injectedSkills.block, volatileSuffix, fullPrompt].filter(Boolean).join('\n\n'),
             enableAnthropicCache: isAnthropic,
           }),
-          maxTokens: 8192, // Reduce to ensure completion
+          maxOutputTokens: outputTokenCap,
           stopSequences: [] // Don't stop early
           // Note: Neither Groq nor Anthropic models support tool/function calling in this context
           // We use XML tags for package detection instead
         };
-        
+
         // Add temperature for non-reasoning models
         if (!model.startsWith('openai/gpt-5')) {
           streamOptions.temperature = 0.7;
         }
-        
+
         // Add reasoning effort for GPT-5 models
         if (isOpenAI) {
-          streamOptions.experimental_providerMetadata = {
+          streamOptions.providerOptions = {
             openai: {
               reasoningEffort: 'high'
             }
           };
         }
-        
+
         let result: Awaited<ReturnType<typeof streamText>> | undefined;
         let generatedCode = '';
         let files: { path: string; content: string }[] = [];
@@ -1895,6 +1906,12 @@ Provide the complete file content without any truncation. Include all necessary 
                     temperature: recoveryEntry.model.startsWith('gpt-5')
                       ? undefined
                       : appConfig.ai.defaultTemperature,
+                    // truncationRecoveryMaxTokens existed in config but was never passed,
+                    // so recovery ran uncapped and could truncate a second time.
+                    maxOutputTokens: Math.min(
+                      appConfig.ai.truncationRecoveryMaxTokens,
+                      planCaps.maxTokensPerJob,
+                    ),
                     onError: capture.onError,
                   }),
                 );

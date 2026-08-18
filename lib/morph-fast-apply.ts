@@ -1,5 +1,6 @@
 // Using direct fetch to Morph's OpenAI-compatible API to avoid SDK type issues
 import { getSetting } from '@/lib/settings/resolve';
+import { isStackConfigFile, shouldForceSrcPrefix } from '@/lib/stacks';
 
 export interface MorphEditBlock {
   targetFile: string;
@@ -14,30 +15,42 @@ export interface MorphApplyResult {
   error?: string;
 }
 
-// Normalize project-relative paths to sandbox layout
-export function normalizeProjectPath(inputPath: string): { normalizedPath: string; fullPath: string } {
+/**
+ * Normalize project-relative paths to sandbox layout.
+ *
+ * `stack` is required on purpose. Only REACT keeps sources under `src/`; forcing that
+ * prefix on NEXTJS (the default stack) rewrote `app/page.tsx` to `src/app/page.tsx`,
+ * so the read missed and Morph edits landed in a stray file. Defer to the stack
+ * registry rather than a hardcoded React config list.
+ */
+export function normalizeProjectPath(
+  inputPath: string,
+  stack: string,
+): { normalizedPath: string; fullPath: string } {
   let normalizedPath = inputPath.trim();
   if (normalizedPath.startsWith('/')) normalizedPath = normalizedPath.slice(1);
 
-  const configFiles = new Set([
-    'tailwind.config.js',
-    'vite.config.js',
-    'package.json',
-    'package-lock.json',
-    'tsconfig.json',
-    'postcss.config.js'
-  ]);
-
-  const fileName = normalizedPath.split('/').pop() || '';
-  if (!normalizedPath.startsWith('src/') &&
-      !normalizedPath.startsWith('public/') &&
-      normalizedPath !== 'index.html' &&
-      !configFiles.has(fileName)) {
+  if (
+    shouldForceSrcPrefix(stack) &&
+    !normalizedPath.startsWith('src/') &&
+    !normalizedPath.startsWith('public/') &&
+    normalizedPath !== 'index.html' &&
+    !isStackConfigFile(stack, normalizedPath)
+  ) {
     normalizedPath = 'src/' + normalizedPath;
   }
 
   const fullPath = `/home/user/app/${normalizedPath}`;
   return { normalizedPath, fullPath };
+}
+
+/**
+ * Single source of truth for "is Morph usable". The routes used to gate on
+ * process.env.MORPH_API_KEY while the API call read the admin setting, so a key
+ * entered in /admin/config left the feature switched off and never ran.
+ */
+export async function isMorphConfigured(): Promise<boolean> {
+  return Boolean(await getSetting('tooling.morph.apiKey'));
 }
 
 async function morphChatCompletionsCreate(payload: any) {
@@ -205,13 +218,14 @@ export async function applyMorphEditToFile(params: {
   targetPath: string;
   instructions: string;
   updateSnippet: string;
+  stack: string;
 }): Promise<MorphApplyResult> {
   try {
-    if (!(await getSetting('tooling.morph.apiKey'))) {
+    if (!(await isMorphConfigured())) {
       return { success: false, error: 'No Morph API key is configured' };
     }
 
-    const { normalizedPath, fullPath } = normalizeProjectPath(params.targetPath);
+    const { normalizedPath, fullPath } = normalizeProjectPath(params.targetPath, params.stack);
 
     // Read original code (existence validation happens here)
     const initialCode = await readFileFromSandbox(params.sandbox, normalizedPath, fullPath);

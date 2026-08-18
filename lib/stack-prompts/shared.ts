@@ -14,6 +14,7 @@ export type StackPromptContext = {
 export const COMPLETION_RULES = `OUTPUT:
 - Complete files only. Never truncate, ellipsis, or ask to continue.
 - Escape apostrophes; straight quotes only.
+- Showing code as content? Put it in a template literal and escape backticks and \${ — never paste raw JSX/HTML into text.
 - XML: <file path="...">full contents</file>`;
 
 export function buildVolatilePromptSuffix(ctx?: StackPromptContext | null): string {

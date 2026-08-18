@@ -6,6 +6,8 @@ STACK (ASTRO — NOT React/Vite SPA or Next.js):
 - Interactivity via islands: client:load or client:visible only where needed.
 - Prefer src/content/ collections for blog/docs/listings.
 - No src/App.jsx, vite-only React trees, or Next.js app/page.tsx.
+- Check src/layouts/ and existing pages before adding files. Shared chrome lives in the layout.
+- Edits: 1 file for style/text; 2 files max for a new component. Never regenerate the site.
 
 OUTPUT:
 <file path="src/pages/index.astro">frontmatter + template</file>
