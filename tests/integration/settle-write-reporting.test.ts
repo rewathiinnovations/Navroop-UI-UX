@@ -221,8 +221,12 @@ describe('neither stream route discards a terminal job write', () => {
     expect(source).toContain('reportSettleFailure');
     expect(source).toContain('ensureJobSettled');
     // The scanner above would also pass on a route that simply stopped settling, so pin the
-    // terminal writes down too.
-    expect(source).toMatch(/\bsucceedJob\(/);
+    // terminal writes down too. The success write may be made directly or delegated:
+    // generate-ai-code-stream hands it to `settleStreamedGeneration`, which decides between
+    // succeedJob and failJob on whether the files actually reached a sandbox
+    // (lib/jobs/settle-generation.ts, covered by settle-streamed-generation.test.ts). Either
+    // shape settles the row; neither leaves it RUNNING.
+    expect(source).toMatch(/\bsucceedJob\(|\bsettleStreamedGeneration\(/);
     expect(source).toMatch(/\bfailJob\(/);
   });
 });

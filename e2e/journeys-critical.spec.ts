@@ -3,12 +3,12 @@ import AxeBuilder from '@axe-core/playwright';
 
 /**
  * Critical = journeys 1–4 (pre-push).
- * Journey 1 is runnable against a live :3000 (or CI `pnpm start`).
- * Journeys 2–4 are `.fixme()`: their bodies assert `page.url()` is truthy, which
- * is true of any loaded document, so they passed against a broken app. Each one
- * carries a comment describing what it has to assert instead. The signed-in half
- * of that work now has a foundation in `auth.setup.ts` +
- * `journeys-authenticated.spec.ts`.
+ * Journey 1 is runnable against a live :3000 (or CI `pnpm start`), signed out.
+ * Journeys 2 and 3 are implemented in `journeys-workflow.spec.ts` — they need a session,
+ * so they run in the `authenticated` project rather than this one.
+ * Journey 4 is still `.fixme()`: its body asserts `page.url()` is truthy, which is true of
+ * any loaded document, so it passed against a broken app. The comment on it describes what
+ * it has to assert instead.
  */
 test.describe('journey 1 — sign in', () => {
   test('auth screen is English and has no serious axe findings', async ({ page }) => {
@@ -36,29 +36,15 @@ test.describe('journey 1 — sign in', () => {
   });
 });
 
-test.describe('journey 2 — create project (scaffolded)', () => {
-  // Should: signed in, type a prompt in PromptHero on /dashboard, submit, and land
-  // on /project/{id} with that project's name in the workspace header.
-  // `page.url()` is truthy for any loaded document, so this passes against a 500
-  // page or an app with project creation deleted. Only a refused TCP connection
-  // fails it.
-  test.fixme('create-from-prompt path exists', async ({ page }) => {
-    test.info().annotations.push({ type: 'status', description: 'scaffolded' });
-    await page.goto('/');
-    expect(page.url()).toBeTruthy();
-  });
-});
-
-test.describe('journey 3 — plan / build (scaffolded)', () => {
-  // Should: signed in, open an existing project workspace and assert the chat
-  // offers both Plan and Build modes, and that switching mode changes what the
-  // send button submits.
-  test.fixme('workspace chat modes exist in the app shell', async ({ page }) => {
-    test.info().annotations.push({ type: 'status', description: 'scaffolded' });
-    await page.goto('/');
-    expect(page.url()).toBeTruthy();
-  });
-});
+/**
+ * Journeys 2 and 3 are implemented in `journeys-workflow.spec.ts`, not here.
+ *
+ * Both need a session, and this project runs signed out so journey 1 can assert the login
+ * screen. They run in the `authenticated` project instead, on the storage state written by
+ * `auth.setup.ts`. Journey 2 submits a prompt on /dashboard and asserts the row it created
+ * is the one the workspace opened; journey 3 asserts the chat's plan/build toggle moves its
+ * pressed state. Both stub every paid endpoint, so neither spends tokens or starts a VM.
+ */
 
 test.describe('journey 4 — publish (scaffolded)', () => {
   // Should: signed in with the three integrations stubbed, open the Publish sheet

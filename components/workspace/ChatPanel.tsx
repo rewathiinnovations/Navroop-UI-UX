@@ -279,6 +279,7 @@ export default function ChatPanel({
           <RecoveryPanel
             kind={recovery.kind}
             errorCode={recovery.errorCode}
+            errorMessage={recovery.errorMessage}
             filesWritten={recovery.filesWritten}
             requestId={recovery.requestId}
             busy={recovery.busy}
