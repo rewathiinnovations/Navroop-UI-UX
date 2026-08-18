@@ -82,3 +82,10 @@ bun.lockb
 
 # Local DATA_DIR default (config / cache / tmp)
 /.data/
+
+# Claude Code — commit shared config and skills; keep personal/local state out.
+# (.claude/settings.json and .claude/skills are NOT ignored)
+.claude/settings.local.json
+.claude/worktrees/
+.claude/**/.env
+.claude/**/.env.*
