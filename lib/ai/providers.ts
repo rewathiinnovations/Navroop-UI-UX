@@ -17,11 +17,18 @@ const KEY_ENV: Record<ProviderName, string> = {
   google: 'GEMINI_API_KEY',
 };
 
+/**
+ * Per-provider default for the failover chain. These bind whenever a request does
+ * not name a model, and — more importantly — on every fallback hop, so they must
+ * be codegen-capable. They used to be gpt-4o-mini / gemini-2.0-flash, which meant
+ * a rate-limited Gemini silently handed the user's build to a small cheap model
+ * with only a failoverNotice to show for it.
+ */
 const DEFAULT_MODELS: Record<ProviderName, string> = {
   groq: 'moonshotai/kimi-k2-instruct-0905',
-  openai: 'gpt-4o-mini',
-  anthropic: 'claude-sonnet-4-20250514',
-  google: 'gemini-2.0-flash',
+  openai: 'gpt-5',
+  anthropic: 'claude-sonnet-5',
+  google: 'gemini-3-pro-preview',
 };
 
 const PROVIDER_ORDER: ProviderName[] = ['google', 'openai', 'anthropic', 'groq'];

@@ -24,25 +24,30 @@ export const appConfig = {
   
   // AI Model Configuration
   ai: {
-    // Default AI model
-    defaultModel: 'google/gemini-2.5-flash',
-    
-    // Available models
+    // Default AI model. Restored to upstream's frontier default — the fork had
+    // reverted this to 2.5-flash, which was the single clearest codegen regression.
+    defaultModel: 'google/gemini-3-pro-preview',
+
+    // Available models. Flash stays as the cheap option; the frontier tiers lead.
     availableModels: [
+      'google/gemini-3-pro-preview',
+      'anthropic/claude-opus-5',
+      'anthropic/claude-sonnet-5',
       'openai/gpt-5',
-      'moonshotai/kimi-k2-instruct-0905',
-      'anthropic/claude-sonnet-4-20250514',
+      'google/gemini-2.5-pro',
       'google/gemini-2.5-flash',
-      'google/gemini-2.5-pro'
+      'moonshotai/kimi-k2-instruct-0905'
     ],
-    
+
     // Model display names
     modelDisplayNames: {
+      'google/gemini-3-pro-preview': 'Gemini 3 Pro (Preview)',
+      'anthropic/claude-opus-5': 'Claude Opus 5',
+      'anthropic/claude-sonnet-5': 'Claude Sonnet 5',
       'openai/gpt-5': 'GPT-5',
-      'moonshotai/kimi-k2-instruct-0905': 'Kimi K2 (Groq)',
-      'anthropic/claude-sonnet-4-20250514': 'Sonnet 4',
+      'google/gemini-2.5-pro': 'Gemini 2.5 Pro',
       'google/gemini-2.5-flash': 'Gemini 2.5 Flash',
-      'google/gemini-2.5-pro': 'Gemini 2.5 Pro'
+      'moonshotai/kimi-k2-instruct-0905': 'Kimi K2 (Groq)'
     } as Record<string, string>,
     
     // Model API configuration
@@ -56,11 +61,15 @@ export const appConfig = {
     // Temperature settings for non-reasoning models
     defaultTemperature: 0.7,
     
-    // Max tokens for code generation
-    maxTokens: 8000,
-    
-    // Max tokens for truncation recovery
-    truncationRecoveryMaxTokens: 4000,
+    // Max output tokens for code generation. This is passed as `maxOutputTokens`
+    // (AI SDK v5) and capped by the workspace plan's maxTokensPerJob. It was
+    // previously sent under the v4 name `maxTokens`, which v5 ignores — so this
+    // ceiling binds for the first time and must be generous enough for a
+    // multi-file first build.
+    maxTokens: 32000,
+
+    // Max output tokens for truncation recovery (rewrites one full file).
+    truncationRecoveryMaxTokens: 16000,
   },
   
   // Code Application Configuration

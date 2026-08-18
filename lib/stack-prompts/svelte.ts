@@ -6,6 +6,8 @@ STACK (SVELTE 5 + SVELTEKIT):
 - .svelte files. Filesystem routing under src/routes/ (+page.svelte, +layout.svelte).
 - +page.server.js/ts only when server data is required.
 - No React JSX or Next.js app/page.tsx.
+- Check +layout.svelte and existing routes before adding files. Shared chrome lives in the layout.
+- Edits: 1 file for style/text; 2 files max for a new component. Never regenerate the app.
 
 OUTPUT:
 <file path="src/routes/+layout.svelte">let { children } = $props(); {@render children()}</file>
