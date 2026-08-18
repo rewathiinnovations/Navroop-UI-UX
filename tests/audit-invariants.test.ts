@@ -1,6 +1,6 @@
 /**
  * Audit log + database invariants.
- * Run: npx tsx tests/audit-invariants.test.ts
+ * Run: pnpm exec tsx tests/audit-invariants.test.ts
  */
 import { resolve } from 'node:path';
 import { config } from 'dotenv';

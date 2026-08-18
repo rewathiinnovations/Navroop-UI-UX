@@ -1,6 +1,6 @@
 /**
  * Two-level Brain memory: render/cap, extract helpers, cacheable prefix.
- * Run: npx tsx tests/memory.test.ts
+ * Run: pnpm exec tsx tests/memory.test.ts
  */
 import { buildStablePromptPrefix } from '../lib/stack-prompts';
 import { estimateTokens } from '../lib/generation/token-estimate';

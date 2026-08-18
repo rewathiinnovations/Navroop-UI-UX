@@ -23,6 +23,7 @@ export default function ConfirmAction({
   disabled,
   variant = 'danger',
   busyLabel,
+  triggerClassName,
 }: {
   label: ReactNode;
   title: string;
@@ -33,6 +34,8 @@ export default function ConfirmAction({
   disabled?: boolean;
   variant?: 'danger' | 'ghost' | 'primary' | 'inverted';
   busyLabel?: string;
+  /** Styles the trigger button so dense rows can keep their compact pills. */
+  triggerClassName?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [typed, setTyped] = useState('');
@@ -76,6 +79,7 @@ export default function ConfirmAction({
         type="button"
         variant={variant}
         disabled={disabled}
+        className={triggerClassName}
         onClick={() => setOpen(true)}
       >
         {label}
@@ -87,14 +91,14 @@ export default function ConfirmAction({
             type="button"
             aria-label="Cancel"
             disabled={busy}
-            className="absolute inset-0 bg-[var(--studio-fg)]/20"
+            className="studio-fade-in absolute inset-0 bg-[var(--studio-fg)]/20"
             onClick={() => setOpen(false)}
           />
           <div
             role="dialog"
             aria-modal="true"
             aria-labelledby="confirm-action-title"
-            className="relative z-10 w-full max-w-[440px] rounded-16 border border-[var(--studio-line)] bg-[var(--studio-surface)] p-24 shadow-lg"
+            className="studio-pop-in relative z-10 w-full max-w-[440px] rounded-16 border border-[var(--studio-line)] bg-[var(--studio-surface)] p-24 shadow-[var(--studio-shadow-pop)]"
           >
             <h2
               id="confirm-action-title"

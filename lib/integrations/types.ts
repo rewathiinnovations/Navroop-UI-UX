@@ -96,12 +96,9 @@ export type GithubManifest = {
   name: string;
   url: string;
   redirect_url: string;
-  setup_url: string;
+  /** Deploy app only — the connectors app has no post-install setup page. */
+  setup_url?: string;
   public: false;
-  default_permissions: {
-    contents: 'write';
-    administration: 'write';
-    metadata: 'read';
-  };
+  default_permissions: Record<string, 'read' | 'write'>;
   default_events: [];
 };

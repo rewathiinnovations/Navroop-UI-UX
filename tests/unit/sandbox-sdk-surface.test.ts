@@ -108,6 +108,12 @@ try {
   const daytonaClient = new daytonaModule.Daytona({
     apiKey: 'surface-check-not-a-real-key',
     apiUrl: 'https://sandbox-sdk-surface.invalid',
+    // Without this, 0.205.0's constructor calls EventDispatcher.ensureConnected(),
+    // which dials the API over socket.io. Whether that connect landed inside or
+    // outside the outbound trap's window was a race, so this suite flickered on
+    // fast machines. Polling mode is the SDK's documented way to construct
+    // without a live event socket — which is exactly this suite's premise.
+    useDeprecatedPolling: true,
   });
 
   probes = {

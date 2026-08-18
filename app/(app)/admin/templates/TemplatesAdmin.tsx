@@ -8,6 +8,7 @@ import AdminPage from '@/components/admin/AdminPage';
 import { AdminEmpty } from '@/components/admin/AdminTable';
 import StatusBanner from '@/components/admin/StatusBanner';
 import { FormEvent, useState } from 'react';
+import { useUnsavedChangesWarning } from '@/hooks/useUnsavedChangesWarning';
 import { useRouter } from 'next/navigation';
 import StudioButton from '@/components/app/studio/StudioButton';
 import StudioField from '@/components/app/studio/StudioField';
@@ -16,7 +17,7 @@ import StudioTextarea from '@/components/app/studio/StudioTextarea';
 import { TEMPLATE_CATEGORIES, TEMPLATE_CATEGORY_LABELS } from '@/lib/templates/categories';
 import type { PublicTemplate } from '@/lib/templates/types';
 import { STACK_IDS, getStack } from '@/lib/stacks';
-import { DESIGN_DIRECTION_IDS } from '@/lib/design/directions';
+import { DESIGN_DIRECTIONS, DESIGN_DIRECTION_IDS } from '@/lib/design/directions';
 
 function readError(payload: Record<string, unknown>, fallback: string) {
   const error = payload.error;
@@ -35,6 +36,11 @@ export default function TemplatesAdmin({
   const [templates, setTemplates] = useState(initialTemplates);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
+  // A template prompt is often paragraphs of hand-written text; losing it to a
+  // stray tab close hurts. The form is uncontrolled, so dirtiness is tracked
+  // from the first input event and cleared when the create succeeds.
+  const [draftingTemplate, setDraftingTemplate] = useState(false);
+  useUnsavedChangesWarning(draftingTemplate);
 
   const refresh = (next: PublicTemplate) => {
     setTemplates((current) => {
@@ -93,6 +99,7 @@ export default function TemplatesAdmin({
       }
       refresh(payload.template);
       event.currentTarget.reset();
+      setDraftingTemplate(false);
     } finally {
       setBusy(null);
     }
@@ -185,7 +192,11 @@ export default function TemplatesAdmin({
         title="New template"
         description="Add a starting point members can pick when creating a project."
       >
-        <form onSubmit={(event) => void onCreate(event)} className="grid gap-12">
+        <form
+          onSubmit={(event) => void onCreate(event)}
+          onInput={() => setDraftingTemplate(true)}
+          className="grid gap-12"
+        >
           <StudioField id="template-name" name="name" label="Name" required />
           <StudioField
             id="template-description"
@@ -217,7 +228,7 @@ export default function TemplatesAdmin({
             >
               {DESIGN_DIRECTION_IDS.map((id) => (
                 <option key={id} value={id}>
-                  {id}
+                  {DESIGN_DIRECTIONS[id].label}
                 </option>
               ))}
             </StudioSelect>

@@ -20,6 +20,7 @@ type UsageData = {
     actions: Record<string, number>;
   }>;
   workspaceTotal: number;
+  unattributed?: number;
   isAdmin: boolean;
   sandboxMinutesUsed?: number;
   sandboxMinutesLimit?: number;
@@ -77,6 +78,9 @@ export default function SettingsUsagePage() {
               </p>
               <p className="mt-4 text-[12px] text-[var(--studio-faint)]">
                 Workspace total: {data.workspaceTotal} credits
+                {(data.unattributed ?? 0) > 0
+                  ? ` · plus ${data.unattributed} from removed members or deleted history`
+                  : ''}
               </p>
               <p className="mt-8 text-[13px] text-[var(--studio-muted)]">
                 {data.sandboxMinutesUsed ?? 0} / {data.sandboxMinutesLimit ?? 0} sandbox minutes

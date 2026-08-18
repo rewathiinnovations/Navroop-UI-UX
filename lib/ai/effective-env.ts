@@ -9,13 +9,15 @@ const OVERLAY_KEYS = [
   { env: 'AI_GATEWAY_API_KEY', provider: 'gateway' },
 ] as const;
 
-/** Base URLs are configured in Admin → Configuration, not only in the environment. */
+/** Non-secret AI settings configured in Admin → Configuration, not only in the environment. */
 const OVERLAY_BASE_URLS = [
   { env: 'ANTHROPIC_BASE_URL', setting: 'ai.anthropic.baseUrl' },
   { env: 'OPENAI_BASE_URL', setting: 'ai.openai.baseUrl' },
   { env: 'GEMINI_BASE_URL', setting: 'ai.google.baseUrl' },
   { env: 'GROQ_BASE_URL', setting: 'ai.groq.baseUrl' },
   { env: 'AI_PROVIDER_CONCURRENCY', setting: 'ai.concurrency' },
+  { env: 'AI_PRIMARY_PROVIDER', setting: 'ai.primaryProvider' },
+  { env: 'AI_PRIMARY_MODEL', setting: 'ai.primaryModel' },
 ] as const;
 
 /**

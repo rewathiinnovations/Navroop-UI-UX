@@ -1,7 +1,7 @@
 /**
  * Custom domains: create stays PENDING_DNS, DNS errors name found vs expected,
  * duplicates and free-plan creates are refused, backoff helper.
- * Run: npx tsx tests/custom-domains.test.ts
+ * Run: pnpm exec tsx tests/custom-domains.test.ts
  */
 import { resolve } from 'node:path';
 import { config } from 'dotenv';

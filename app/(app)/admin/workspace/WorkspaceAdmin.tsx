@@ -1,6 +1,7 @@
 'use client';
 
 import AdminPage from '@/components/admin/AdminPage';
+import ConfirmAction from '@/components/admin/ConfirmAction';
 import { FormEvent, useState } from 'react';
 import StudioButton from '@/components/app/studio/StudioButton';
 import StudioField from '@/components/app/studio/StudioField';
@@ -49,11 +50,8 @@ export default function WorkspaceAdmin({
     }
   };
 
+  // Pausing is confirmed by ConfirmAction on the button; resuming is one click.
   const togglePause = async () => {
-    if (!paused) {
-      const confirmed = window.confirm('All generation will stop immediately. Continue?');
-      if (!confirmed) return;
-    }
     setBusy(true);
     setError('');
     setMessage('');
@@ -152,14 +150,26 @@ export default function WorkspaceAdmin({
               : ''}
           </p>
         )}
-        <StudioButton
-          type="button"
-          variant={paused ? 'ghost' : 'danger'}
-          disabled={busy}
-          onClick={() => void togglePause()}
-        >
-          {paused ? 'Resume generation' : 'Pause generation'}
-        </StudioButton>
+        {paused ? (
+          <StudioButton
+            type="button"
+            variant="ghost"
+            disabled={busy}
+            onClick={() => void togglePause()}
+          >
+            Resume generation
+          </StudioButton>
+        ) : (
+          <ConfirmAction
+            label="Pause generation"
+            title="Pause all generation?"
+            body="Every credit-consuming action stops immediately for the whole workspace, including builds already queued. Members see generation as paused until an admin resumes it."
+            confirmLabel="Pause generation"
+            busyLabel="Pausing…"
+            disabled={busy}
+            onConfirm={() => togglePause()}
+          />
+        )}
       </div>
 
       {initial.creditAlert80Sent && (

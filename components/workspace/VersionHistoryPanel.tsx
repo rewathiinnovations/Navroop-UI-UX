@@ -5,6 +5,7 @@ import { Loader2, Star, X } from 'lucide-react';
 import { relativeTime } from '@/lib/projects/prompt';
 import { downloadProjectZip, formatExportBytes } from '@/lib/export/client';
 import type { Checkpoint } from './types';
+import ConfirmAction from '@/components/admin/ConfirmAction';
 
 export default function VersionHistoryPanel({
   open,
@@ -101,13 +102,16 @@ export default function VersionHistoryPanel({
                 ) : (
                   <>
                     <div className="flex flex-wrap items-center gap-8">
-                      <button
-                        type="button"
-                        onClick={() => onRestore?.(checkpoint.id)}
-                        className="inline-flex min-h-[36px] items-center rounded-full border border-[var(--studio-line-strong)] px-12 text-[12px] font-medium text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)]"
-                      >
-                        Restore
-                      </button>
+                      <ConfirmAction
+                        label="Restore"
+                        title="Restore this version?"
+                        body="The current sandbox changes to this version. A new checkpoint of the current state is created first, so nothing is lost."
+                        confirmLabel="Restore"
+                        busyLabel="Restoring…"
+                        variant="ghost"
+                        triggerClassName="min-h-[36px] rounded-full border border-[var(--studio-line-strong)] px-12 text-[12px] font-medium text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)]"
+                        onConfirm={() => onRestore?.(checkpoint.id)}
+                      />
                       {projectId ? (
                         <button
                           type="button"

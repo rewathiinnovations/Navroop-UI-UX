@@ -181,6 +181,29 @@ export const SETTINGS: readonly SettingEntry[] = [
     env: 'AI_PROVIDER_CONCURRENCY',
     fallback: '4',
   },
+  {
+    key: 'ai.primaryProvider',
+    group: 'ai',
+    label: 'Primary provider',
+    help: 'The provider tried first for plans and builds. Its key above must be set. Others stay as failover.',
+    kind: 'select',
+    env: 'AI_PRIMARY_PROVIDER',
+    options: [
+      { value: 'google', label: 'Google Gemini' },
+      { value: 'openai', label: 'OpenAI' },
+      { value: 'anthropic', label: 'Anthropic' },
+      { value: 'groq', label: 'Groq' },
+    ],
+  },
+  {
+    key: 'ai.primaryModel',
+    group: 'ai',
+    label: 'Primary model',
+    help: "Model id on the primary provider, e.g. gpt-5.6-luna or gemini-2.5-flash. Blank uses the provider's default.",
+    kind: 'text',
+    env: 'AI_PRIMARY_MODEL',
+    placeholder: 'provider default',
+  },
 
   // ------------------------------------------------------------------ tooling
   {

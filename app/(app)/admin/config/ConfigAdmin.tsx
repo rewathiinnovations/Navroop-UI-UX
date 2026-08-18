@@ -1,6 +1,7 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useUnsavedChangesWarning } from '@/hooks/useUnsavedChangesWarning';
 import {
   Archive,
   Boxes,
@@ -168,6 +169,22 @@ export default function ConfigAdmin({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<number | null>(null);
+  // Result of the one-click GitHub app creation (?github=created|error after
+  // the callback redirect). Read once; cleared from the URL so a refresh
+  // doesn't re-announce it.
+  const [githubResult, setGithubResult] = useState<{ ok: boolean; reason?: string } | null>(null);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const github = params.get('github');
+    if (!github) return;
+    setGithubResult(
+      github === 'created' ? { ok: true } : { ok: false, reason: params.get('reason') || undefined },
+    );
+    params.delete('github');
+    params.delete('reason');
+    const query = params.toString();
+    window.history.replaceState(null, '', `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`);
+  }, []);
   const [testing, setTesting] = useState<string | null>(null);
   const [results, setResults] = useState<Record<string, Check[]>>({});
 
@@ -192,6 +209,9 @@ export default function ConfigAdmin({
   );
 
   const dirtyCount = Object.keys(drafts).length;
+
+  // Hand-typed keys are the most expensive thing to lose in the whole admin.
+  useUnsavedChangesWarning(dirtyCount > 0);
 
   const onChange = (key: string, value: string) => {
     setSaved(null);
@@ -280,6 +300,13 @@ export default function ConfigAdmin({
           {saved === 0 ? 'Nothing changed.' : `Saved ${saved} setting${saved === 1 ? '' : 's'}.`}
         </StatusBanner>
       )}
+      {githubResult && (
+        <StatusBanner tone={githubResult.ok ? 'success' : 'error'}>
+          {githubResult.ok
+            ? 'GitHub app created — the client ID and secret were saved automatically. The Connect button on the Connectors page works now.'
+            : `GitHub app creation did not finish${githubResult.reason ? ` (${githubResult.reason})` : ''}. Try again, or register an OAuth app by hand and paste its credentials below.`}
+        </StatusBanner>
+      )}
 
       <AdminTabs
         tabs={visibleGroups.map((group): AdminTab => {
@@ -294,14 +321,23 @@ export default function ConfigAdmin({
               <AdminCard
                 description={group.blurb}
                 actions={
-                  <StudioButton
-                    type="button"
-                    variant="ghost"
-                    disabled={testing === group.id}
-                    onClick={() => void runTest(group.id)}
-                  >
-                    {testing === group.id ? 'Testing…' : 'Test'}
-                  </StudioButton>
+                  <>
+                    {group.id === 'connectors' && (
+                      // Full-page navigation: the route answers with a form that
+                      // auto-submits the app manifest to GitHub.
+                      <StudioButton href="/api/admin/settings/github-app/start" variant="ghost">
+                        Create GitHub app
+                      </StudioButton>
+                    )}
+                    <StudioButton
+                      type="button"
+                      variant="ghost"
+                      disabled={testing === group.id}
+                      onClick={() => void runTest(group.id)}
+                    >
+                      {testing === group.id ? 'Testing…' : 'Test'}
+                    </StudioButton>
+                  </>
                 }
               >
                 {checks && (

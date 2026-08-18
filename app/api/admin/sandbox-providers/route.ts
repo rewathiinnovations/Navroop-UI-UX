@@ -89,8 +89,25 @@ export async function POST(request: Request) {
   const creditType = String(body.creditType || 'one_time') as CreditType;
   const secrets =
     driver === 'modal'
-      ? { tokenId: String(body.tokenId || ''), tokenSecret: String(body.tokenSecret || '') }
-      : { apiKey: String(body.apiKey || ''), apiUrl: body.apiUrl ? String(body.apiUrl) : undefined };
+      ? { tokenId: String(body.tokenId || '').trim(), tokenSecret: String(body.tokenSecret || '').trim() }
+      : { apiKey: String(body.apiKey || '').trim(), apiUrl: body.apiUrl ? String(body.apiUrl) : undefined };
+  // A row saved without its credential fails every boot with the provider's
+  // confusing server-side 401 ("authorization header is missing"). Refuse it
+  // here, where the admin can still see which field is empty — six blank E2B
+  // rows had accumulated this way.
+  if (driver === 'modal') {
+    if (!('tokenId' in secrets) || !secrets.tokenId || !secrets.tokenSecret) {
+      return NextResponse.json(
+        { error: 'Modal needs both a token ID and a token secret' },
+        { status: 400 },
+      );
+    }
+  } else if (!('apiKey' in secrets) || !secrets.apiKey) {
+    return NextResponse.json(
+      { error: `${driver === 'e2b' ? 'E2B' : 'Daytona'} needs an API key` },
+      { status: 400 },
+    );
+  }
   const row = await insertProviderConfig({
     id: randomUUID(),
     name,

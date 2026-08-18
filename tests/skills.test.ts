@@ -1,6 +1,6 @@
 /**
  * Workspace Skills: matching, injection placement, validation.
- * Run: npx tsx tests/skills.test.ts
+ * Run: pnpm exec tsx tests/skills.test.ts
  */
 import { buildStablePromptPrefix } from '../lib/stack-prompts';
 import { skillInputSchema } from '../lib/skills/schema.ts';

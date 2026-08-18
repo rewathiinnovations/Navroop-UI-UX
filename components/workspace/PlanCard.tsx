@@ -82,7 +82,7 @@ export default function PlanCard({
             type="button"
             onClick={onApprove}
             disabled={approving}
-            className="inline-flex h-36 w-full items-center justify-center gap-8 rounded-10 bg-[var(--studio-accent)] px-14 text-[13px] font-medium text-[var(--studio-cta-fg)] hover:bg-[var(--studio-accent-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex h-36 w-full items-center justify-center gap-8 rounded-10 [background-image:var(--studio-cta-gradient)] px-14 text-[13px] font-medium text-[var(--studio-cta-fg)] transition-[filter] duration-200 hover:brightness-[1.07] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:brightness-100"
           >
             {approving && <Loader2 className="size-14 animate-spin" />}
             Approve &amp; Build

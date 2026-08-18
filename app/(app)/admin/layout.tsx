@@ -37,9 +37,25 @@ export default async function AdminLayout({ children }: { children: ReactNode })
       </aside>
 
       <div className="min-w-0 flex-1 px-20 py-28 lg:px-40 lg:py-36">
-        <div className="mb-24 lg:hidden">
-          <AdminNav />
-        </div>
+        {/*
+         * Below lg the rail is hidden, and rendering the full grouped nav here
+         * pushed every page's content two screens down. A closed-by-default
+         * disclosure keeps the whole nav reachable without burying the page.
+         */}
+        <details className="group mb-24 rounded-14 border border-[var(--studio-line)] bg-[var(--studio-surface)] lg:hidden">
+          <summary className="flex min-h-44 cursor-pointer list-none items-center justify-between px-14 text-[13px] font-medium text-[var(--studio-fg)] [&::-webkit-details-marker]:hidden">
+            Admin menu
+            <span
+              aria-hidden
+              className="text-[var(--studio-faint)] transition-transform duration-200 group-open:rotate-180"
+            >
+              ▾
+            </span>
+          </summary>
+          <div className="border-t border-[var(--studio-line)] p-14">
+            <AdminNav />
+          </div>
+        </details>
         {children}
       </div>
     </div>

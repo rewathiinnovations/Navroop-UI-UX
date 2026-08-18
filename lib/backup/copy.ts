@@ -5,5 +5,5 @@ export const RECOVERY_SUMMARY =
   'To recover Navroop, provision a new server and set the original ENCRYPTION_KEY from your password manager (keep the key off the server). Restore the latest dump, point object storage at the same ElasticLake bucket, then redeploy. If the encryption key is lost, reconnect every integration and API key by hand.';
 
 export function restoreCommand(objectKey: string) {
-  return `npx tsx scripts/restore-db.ts --key ${objectKey}`;
+  return `pnpm exec tsx scripts/restore-db.ts --key ${objectKey}`;
 }

@@ -3,6 +3,7 @@
 import { ArrowUpDown, ChevronDown, ChevronUp, Cpu, Plus, Table2 } from 'lucide-react';
 import Accordion from '@/components/admin/Accordion';
 import AdminCard from '@/components/admin/AdminCard';
+import ConfirmAction from '@/components/admin/ConfirmAction';
 import AdminPage from '@/components/admin/AdminPage';
 import { AdminTable, Td, Th, Tr } from '@/components/admin/AdminTable';
 import StatusBanner from '@/components/admin/StatusBanner';
@@ -142,13 +143,37 @@ export default function SandboxProvidersAdmin({
       });
       const payload = await response.json();
       if (response.status === 409 && payload.needsConfirm) {
-        if (window.confirm(payload.warning || LAST_ACTIVE_DEACTIVATE_WARNING)) {
-          await deactivate(id, true);
-        }
+        // The row didn't look like the last active provider when it rendered,
+        // but the server says it is now (another admin deactivated the rest).
+        // Surface the warning; the refreshed table renders a ConfirmAction.
+        setError(payload.warning || LAST_ACTIVE_DEACTIVATE_WARNING);
+        await load();
         return;
       }
       if (!response.ok) {
         setError(readApiError(payload, 'Could not update provider'));
+        return;
+      }
+      await load();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const remove = async (id: string) => {
+    setBusy(id);
+    setError('');
+    try {
+      const response = await fetch(`/api/admin/sandbox-providers/${id}`, { method: 'DELETE' });
+      const payload = await response.json().catch(() => ({}));
+      if (response.status === 409 && payload.needsConfirm) {
+        // The server refuses to delete the last active provider outright —
+        // deactivate (which has its own confirm) or add another provider first.
+        setError(payload.warning || LAST_ACTIVE_DEACTIVATE_WARNING);
+        return;
+      }
+      if (!response.ok) {
+        setError(readApiError(payload, 'Could not delete provider'));
         return;
       }
       await load();
@@ -324,17 +349,38 @@ export default function SandboxProvidersAdmin({
                   >
                     {row.testLabel}
                   </StudioButton>
-                  {row.isActive && (
-                    <StudioButton
-                      type="button"
-                      variant="danger"
-                      className={ACTION_CLASS}
-                      onClick={() => void deactivate(row.id)}
-                      disabled={busy === row.id}
-                    >
-                      Deactivate
-                    </StudioButton>
-                  )}
+                  {row.isActive &&
+                    (rows.filter((r) => r.isActive).length === 1 ? (
+                      <ConfirmAction
+                        label="Deactivate"
+                        title={`Deactivate ${row.name}?`}
+                        body={LAST_ACTIVE_DEACTIVATE_WARNING}
+                        confirmLabel="Deactivate"
+                        busyLabel="Deactivating…"
+                        disabled={busy === row.id}
+                        onConfirm={() => deactivate(row.id, true)}
+                      />
+                    ) : (
+                      <StudioButton
+                        type="button"
+                        variant="danger"
+                        className={ACTION_CLASS}
+                        onClick={() => void deactivate(row.id)}
+                        disabled={busy === row.id}
+                      >
+                        Deactivate
+                      </StudioButton>
+                    ))}
+                  <ConfirmAction
+                    label="Delete"
+                    title={`Delete ${row.name}?`}
+                    body="The row and its stored credential are removed permanently. Projects that used it fall back to the routing strategy on their next boot. Usage history on the row is lost — the provider dashboard stays authoritative for billing."
+                    confirmLabel="Delete"
+                    busyLabel="Deleting…"
+                    triggerClassName={ACTION_CLASS}
+                    disabled={busy === row.id}
+                    onConfirm={() => remove(row.id)}
+                  />
                   <StudioButton
                     type="button"
                     variant="ghost"

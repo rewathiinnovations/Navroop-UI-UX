@@ -1,7 +1,7 @@
 /**
  * Template library: usage increment, workspace privacy, admin gate,
  * project-count limit, and draft persistence of an edited prompt.
- * Run: npx tsx tests/templates.test.ts
+ * Run: pnpm exec tsx tests/templates.test.ts
  */
 import { resolve } from 'node:path';
 import { config } from 'dotenv';

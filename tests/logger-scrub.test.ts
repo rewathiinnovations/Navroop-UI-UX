@@ -1,6 +1,6 @@
 /**
  * Request-id helper + structured logger shape.
- * Run: npx tsx tests/logger-scrub.test.ts
+ * Run: pnpm exec tsx tests/logger-scrub.test.ts
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createRequestId, REQUEST_ID_HEADER, readRequestId } from '../lib/request-id.ts';

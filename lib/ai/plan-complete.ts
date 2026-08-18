@@ -14,8 +14,12 @@ export async function completeWithProviderFailover<T>(opts: {
   circuit?: CircuitBreaker;
   run: (entry: ProviderEntry, ctx: { signal: AbortSignal }) => Promise<T>;
 }): Promise<ProviderRunResult<T>> {
+  // No silent fallback to appConfig.ai.defaultModel here: a requestedModel is
+  // pushed to the FRONT of the chain, so defaulting it demoted the operator's
+  // configured primary (AI_PRIMARY_* / Admin → Configuration) on every call.
+  // With no explicit request the chain itself starts at the configured primary.
   const chain = requireUsableProviderChain(opts.env ?? process.env, {
-    requestedModel: opts.requestedModel ?? appConfig.ai.defaultModel,
+    requestedModel: opts.requestedModel,
   });
   return executeWithFailover(chain, opts.run, {
     circuit: opts.circuit ?? getDefaultCircuit(),

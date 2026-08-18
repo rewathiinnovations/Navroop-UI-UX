@@ -42,10 +42,7 @@ export default function AdminPage({
       <header className="mb-28 flex flex-wrap items-start justify-between gap-16">
         <div className="flex min-w-0 items-start gap-14">
           <span
-            className="mt-1 inline-flex size-40 shrink-0 items-center justify-center rounded-12 text-white shadow-[0_6px_16px_rgba(255,92,122,0.28)]"
-            style={{
-              background: 'linear-gradient(135deg, #FF8A3D 0%, #FF5C7A 55%, #C084FC 100%)',
-            }}
+            className="mt-1 inline-flex size-40 shrink-0 items-center justify-center rounded-12 text-white shadow-[0_6px_16px_rgba(255,92,122,0.28)] [background-image:var(--studio-cta-gradient)]"
           >
             <AdminIcon name={icon} className="size-19" />
           </span>

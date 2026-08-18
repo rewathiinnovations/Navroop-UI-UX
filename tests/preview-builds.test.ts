@@ -1,7 +1,7 @@
 /**
  * Static preview builds: stack capability, sandbox kill, SPA fallback,
  * signed-token access, Next.js export override, retention, idle default.
- * Run: npx tsx tests/preview-builds.test.ts
+ * Run: pnpm exec tsx tests/preview-builds.test.ts
  */
 import { getStack } from '../lib/stacks.ts';
 import { DEFAULT_IDLE_MINUTES, idleMinutesFromEnv } from '../lib/sandbox/minutes.ts';

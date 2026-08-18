@@ -54,7 +54,8 @@ export default function StatTile({
         {icon}
       </span>
       <div className="min-w-0">
-        <p className="text-[22px] font-medium leading-tight tracking-[-0.01em] text-[var(--studio-fg)]">
+        {/* tabular-nums so 111 and 999 occupy the same width and rows of tiles align. */}
+        <p className="text-[22px] font-medium leading-tight tracking-[-0.01em] text-[var(--studio-fg)] tabular-nums">
           {value}
         </p>
         <p className="mt-2 text-[12px] text-[var(--studio-muted)]">{label}</p>

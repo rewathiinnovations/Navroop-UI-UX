@@ -1,7 +1,7 @@
 /**
  * Migration safety: destructive SQL gate, production backup fail-closed,
  * refuse prisma db push / migrate reset outside development.
- * Run: npx tsx tests/pre-migrate.test.ts
+ * Run: pnpm exec tsx tests/pre-migrate.test.ts
  */
 import {
   assertSafePrismaCommand,

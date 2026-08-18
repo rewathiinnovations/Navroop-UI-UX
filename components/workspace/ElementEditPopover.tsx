@@ -128,7 +128,7 @@ export default function ElementEditPopover({
           disabled={!canSubmit}
           onClick={submit}
           className={cn(
-            'rounded-10 bg-[var(--studio-accent)] px-12 py-6 text-[12px] font-medium text-white hover:bg-[var(--studio-accent-hover)]',
+            'rounded-10 [background-image:var(--studio-cta-gradient)] px-12 py-6 text-[12px] font-medium text-white transition-[filter] duration-200 hover:brightness-[1.07]',
             'disabled:cursor-not-allowed disabled:opacity-40',
           )}
         >

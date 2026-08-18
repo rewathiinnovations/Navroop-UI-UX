@@ -51,8 +51,129 @@ function findNameArgs(extensions: string[]): string[] {
   return args;
 }
 
-export async function readSandboxFiles(): Promise<ReadSandboxFilesResult> {
+/**
+ * Builds the response from an in-memory file map. Shared by the live-sandbox
+ * read and the persisted-snapshot fallback so both return one shape.
+ */
+function resultFromContents(
+  filesContent: Record<string, string>,
+  stackId: string,
+  structure: string,
+): ReadSandboxFilesResult {
+  const stackDef = getStack(stackId);
+  const fileManifest: FileManifest = {
+    files: {},
+    routes: [],
+    componentTree: {},
+    entryPoint: '',
+    styleFiles: [],
+    timestamp: Date.now(),
+  };
+
+  for (const [relativePath, content] of Object.entries(filesContent)) {
+    const fullPath = `/${relativePath}`;
+
+    const fileInfo: FileInfo = {
+      content,
+      type: 'utility',
+      path: fullPath,
+      relativePath,
+      lastModified: Date.now(),
+    };
+
+    if (relativePath.match(/\.(jsx?|tsx?)$/)) {
+      const parseResult = parseJavaScriptFile(content, fullPath);
+      Object.assign(fileInfo, parseResult);
+
+      if (relativePath === stackDef.entryPoint || relativePath === getStackEntryPoint(stackDef.id)) {
+        fileManifest.entryPoint = fullPath;
+      }
+      if (stackDef.id === 'REACT') {
+        if (relativePath === 'src/main.jsx' || relativePath === 'src/index.jsx') {
+          fileManifest.entryPoint = fullPath;
+        }
+        if (relativePath === 'src/App.jsx' || relativePath === 'App.jsx') {
+          fileManifest.entryPoint = fileManifest.entryPoint || fullPath;
+        }
+      }
+    }
+
+    if (relativePath.endsWith('.css')) {
+      fileManifest.styleFiles.push(fullPath);
+      fileInfo.type = 'style';
+    }
+
+    fileManifest.files[fullPath] = fileInfo;
+  }
+
+  fileManifest.componentTree = buildComponentTree(fileManifest.files);
+
+  if (!fileManifest.entryPoint) {
+    const entry = getStackEntryPoint(stackDef.id);
+    if (filesContent[entry]) {
+      fileManifest.entryPoint = `/${entry}`;
+    }
+  }
+
+  fileManifest.routes = extractStackRoutes(stackDef.id, fileManifest.files);
+
+  if (global.sandboxState?.fileCache) {
+    global.sandboxState.fileCache.manifest = fileManifest;
+  }
+
+  return {
+    ok: true,
+    files: filesContent,
+    structure,
+    fileCount: Object.keys(filesContent).length,
+    manifest: fileManifest,
+  };
+}
+
+/**
+ * Fallback when no live sandbox global exists in this process: the persisted
+ * site (`captureFileSnapshot` — latest lastCode-derived tree, the same reader
+ * GitHub push and export use). The Code tab previously answered "No active
+ * sandbox" for any project whose VM was booted by another process or had been
+ * reaped, even though its finished site was sitting in the database.
+ */
+async function readPersistedProjectFiles(projectId: string): Promise<ReadSandboxFilesResult> {
+  const [{ captureFileSnapshot }, { prisma }] = await Promise.all([
+    import('@/lib/checkpoints/snapshot'),
+    import('@/lib/db'),
+  ]);
+  const project = await prisma.project.findFirst({
+    where: { id: projectId, deletedAt: null },
+    select: { stack: true },
+  });
+  if (!project) {
+    return { ok: false, status: 404, error: 'Project not found' };
+  }
+  const entries = await captureFileSnapshot(projectId);
+  if (entries.length === 0) {
+    return { ok: false, status: 404, error: 'No active sandbox' };
+  }
+  const filesContent: Record<string, string> = {};
+  for (const entry of entries) {
+    filesContent[entry.path.replace(/^\.?\//, '')] = entry.content;
+  }
+  const dirs = [
+    ...new Set(
+      Object.keys(filesContent)
+        .map((path) => path.split('/').slice(0, -1).join('/'))
+        .filter(Boolean),
+    ),
+  ].sort();
+  return resultFromContents(filesContent, getStack(project.stack).id, dirs.slice(0, 50).join('\n'));
+}
+
+export async function readSandboxFiles(options?: {
+  projectId?: string | null;
+}): Promise<ReadSandboxFilesResult> {
   if (!global.activeSandbox) {
+    if (options?.projectId) {
+      return readPersistedProjectFiles(options.projectId);
+    }
     return { ok: false, status: 404, error: 'No active sandbox' };
   }
 
@@ -124,73 +245,7 @@ export async function readSandboxFiles(): Promise<ReadSandboxFilesResult> {
       structure = dirs.slice(0, 50).join('\n');
     }
 
-    const fileManifest: FileManifest = {
-      files: {},
-      routes: [],
-      componentTree: {},
-      entryPoint: '',
-      styleFiles: [],
-      timestamp: Date.now(),
-    };
-
-    for (const [relativePath, content] of Object.entries(filesContent)) {
-      const fullPath = `/${relativePath}`;
-
-      const fileInfo: FileInfo = {
-        content,
-        type: 'utility',
-        path: fullPath,
-        relativePath,
-        lastModified: Date.now(),
-      };
-
-      if (relativePath.match(/\.(jsx?|tsx?)$/)) {
-        const parseResult = parseJavaScriptFile(content, fullPath);
-        Object.assign(fileInfo, parseResult);
-
-        if (relativePath === stackDef.entryPoint || relativePath === getStackEntryPoint(stackDef.id)) {
-          fileManifest.entryPoint = fullPath;
-        }
-        if (stackDef.id === 'REACT') {
-          if (relativePath === 'src/main.jsx' || relativePath === 'src/index.jsx') {
-            fileManifest.entryPoint = fullPath;
-          }
-          if (relativePath === 'src/App.jsx' || relativePath === 'App.jsx') {
-            fileManifest.entryPoint = fileManifest.entryPoint || fullPath;
-          }
-        }
-      }
-
-      if (relativePath.endsWith('.css')) {
-        fileManifest.styleFiles.push(fullPath);
-        fileInfo.type = 'style';
-      }
-
-      fileManifest.files[fullPath] = fileInfo;
-    }
-
-    fileManifest.componentTree = buildComponentTree(fileManifest.files);
-
-    if (!fileManifest.entryPoint) {
-      const entry = getStackEntryPoint(stackDef.id);
-      if (filesContent[entry]) {
-        fileManifest.entryPoint = `/${entry}`;
-      }
-    }
-
-    fileManifest.routes = extractStackRoutes(stackDef.id, fileManifest.files);
-
-    if (global.sandboxState?.fileCache) {
-      global.sandboxState.fileCache.manifest = fileManifest;
-    }
-
-    return {
-      ok: true,
-      files: filesContent,
-      structure,
-      fileCount: Object.keys(filesContent).length,
-      manifest: fileManifest,
-    };
+    return resultFromContents(filesContent, stackDef.id, structure);
   } catch (error) {
     console.error('[get-sandbox-files] Error:', error);
     return { ok: false, status: 500, error: (error as Error).message };

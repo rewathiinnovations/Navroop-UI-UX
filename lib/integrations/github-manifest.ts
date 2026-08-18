@@ -31,6 +31,30 @@ export function githubManifest(input: {
   };
 }
 
+/**
+ * Manifest for the *connectors* GitHub app — the one whose client id/secret
+ * fill Admin → Configuration → Connectors so members can link their own
+ * accounts. Distinct from the deploy app: least privilege (no administration),
+ * no setup page, and its callback saves settings instead of an Integration.
+ */
+export function githubConnectorsManifest(input: {
+  workspaceName: string;
+  appUrl: string;
+}): GithubManifest {
+  const base = input.appUrl.replace(/\/+$/, '');
+  return {
+    name: `Navroop Connect — ${input.workspaceName}`.slice(0, 34),
+    url: base,
+    redirect_url: `${base}/api/admin/settings/github-app/callback`,
+    public: false,
+    default_permissions: {
+      contents: 'write',
+      metadata: 'read',
+    },
+    default_events: [],
+  };
+}
+
 export function githubNewAppUrl(org: string | null | undefined, state: string) {
   const encoded = encodeURIComponent(state);
   const login = org?.trim().replace(/^@/, '');

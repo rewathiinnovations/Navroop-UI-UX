@@ -1,7 +1,7 @@
 /**
  * Publish as a Job — the pure parts: copy, naming, slug claiming, provider retry,
  * first-time rollback vs re-publish keep-live, orphan cron.
- * Run: npx tsx tests/publish-jobs.test.ts
+ * Run: pnpm exec tsx tests/publish-jobs.test.ts
  *
  * The step loop itself is NOT tested here. It used to be, against
  * `lib/publish/runner.ts` — a replica of the loop that production never imported, whose

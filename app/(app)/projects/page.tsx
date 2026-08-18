@@ -322,12 +322,25 @@ function ProjectsContent() {
 
         {!loading && !error && filtered.length === 0 && (
           <div className="rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-28 py-56 text-center">
+            {/* The heading names the active filter — a user with 18 projects who
+                clicks Starred must not be told "No projects yet". */}
             <h2 className="text-[24px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">
-              {search.trim() ? 'Nothing found' : 'No projects yet'}
+              {search.trim()
+                ? 'Nothing found'
+                : starred
+                  ? 'No starred projects'
+                  : mine === true
+                    ? "You don't own any projects yet"
+                    : mine === false
+                      ? 'Nothing has been shared with you yet'
+                      : 'No projects yet'}
             </h2>
             <p className="mx-auto mt-10 max-w-[420px] text-[15px] leading-6 text-[var(--studio-muted)]">
-              Start a blank project and it will show up here. Deleted projects:
-              It will be permanently deleted after 30 days.
+              {search.trim()
+                ? 'Try a different search, or clear it to see every project.'
+                : starred
+                  ? 'Star a project from its card menu and it will show up here.'
+                  : 'Describe what you want to build on the dashboard and the project will show up here. Deleted projects are kept for 30 days before being permanently removed.'}
             </p>
             <StudioButton className="mt-20" href="/dashboard?focus=prompt">
               Go to dashboard

@@ -8,8 +8,9 @@ import { Users } from 'lucide-react';
 import { Fragment, useState } from 'react';
 import StudioButton from '@/components/app/studio/StudioButton';
 import { deactivateMember, listTeam, reactivateMember, updateMemberRole } from '@/lib/team/actions';
-import type { TeamRole } from '@/lib/team/schema';
+import { SELF_DEACTIVATE_ERROR, SELF_ROLE_ERROR, type TeamRole } from '@/lib/team/schema';
 import { formatAdminDate } from '../format-admin-date';
+import InviteMember, { type InvitedMember } from './InviteMember';
 
 type Member = {
   id: string;
@@ -25,7 +26,13 @@ function formatMemberSince(value: string | Date) {
   return formatAdminDate(value);
 }
 
-export default function TeamTable({ initialMembers }: { initialMembers: Member[] }) {
+export default function TeamTable({
+  initialMembers,
+  selfId,
+}: {
+  initialMembers: Member[];
+  selfId: string;
+}) {
   const [members, setMembers] = useState(initialMembers);
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
   const [rowNotes, setRowNotes] = useState<Record<string, string>>({});
@@ -104,11 +111,19 @@ export default function TeamTable({ initialMembers }: { initialMembers: Member[]
     }
   };
 
+  const onInvited = (invited: InvitedMember) => {
+    setMembers((current) => [
+      ...current,
+      { ...invited, isActive: true, _count: { projects: 0 } },
+    ]);
+  };
+
   return (
     <AdminPage
       icon="team"
       title="Team"
       description="Who can sign in, what role they hold, and how to invite or deactivate them."
+      actions={<InviteMember onInvited={onInvited} />}
     >
       <AdminTable
         isEmpty={members.length === 0}
@@ -148,7 +163,8 @@ export default function TeamTable({ initialMembers }: { initialMembers: Member[]
                 <select
                   id={`role-${member.id}`}
                   value={member.role}
-                  disabled={busy === `role:${member.id}`}
+                  disabled={busy === `role:${member.id}` || member.id === selfId}
+                  title={member.id === selfId ? SELF_ROLE_ERROR : undefined}
                   onChange={(event) => onRole(member.id, event.target.value as TeamRole)}
                   className="h-36 rounded-full border border-[var(--studio-line-strong)] bg-[var(--studio-surface)] px-12 text-[13px] text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
                 >
@@ -177,7 +193,14 @@ export default function TeamTable({ initialMembers }: { initialMembers: Member[]
                       {busy === `reset:${member.id}` ? 'Sending…' : 'Send reset link'}
                     </StudioButton>
                   )}
-                  {member.isActive ? (
+                  {member.id === selfId ? (
+                    <span
+                      className="text-[12px] text-[var(--studio-faint)]"
+                      title={SELF_DEACTIVATE_ERROR}
+                    >
+                      This is you
+                    </span>
+                  ) : member.isActive ? (
                     <ConfirmAction
                       label="Deactivate"
                       title={`Deactivate ${member.name || member.email}?`}

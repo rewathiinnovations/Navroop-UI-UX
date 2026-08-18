@@ -1,6 +1,6 @@
 /**
  * Backup assertions, retention, restore guards, stale banner.
- * Run: npx tsx tests/backup.test.ts
+ * Run: pnpm exec tsx tests/backup.test.ts
  */
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';

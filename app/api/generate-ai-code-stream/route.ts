@@ -57,6 +57,7 @@ import { getDefaultProviderQueue, QUEUE_TIMEOUT_MESSAGE } from '@/lib/ai/queue';
 import {
   failoverNotice,
   getProviderApiKey,
+  modelIdForEntry,
   providerDisplayName,
   ProviderNotConfiguredError,
   requireUsableProviderChain,
@@ -64,6 +65,7 @@ import {
   type ProviderName,
 } from '@/lib/ai/providers';
 import { loadEffectiveProviderEnv } from '@/lib/ai/effective-env';
+import { clientForEntry } from '@/lib/ai/client-for-entry';
 import { bindStreamErrorCapture, EmptyCompletionError, producedNoChanges } from '@/lib/ai/empty-completion';
 import { sanitizeGenerationPath } from '@/lib/generation/parse-files';
 import {
@@ -203,28 +205,6 @@ async function recordProviderAttempts(jobId: string, attempts: ProviderAttempt[]
   });
 }
 
-function clientForEntry(
-  entry: ProviderEntry,
-  env: Record<string, string | undefined>,
-) {
-  const gateway = env.AI_GATEWAY_API_KEY?.trim();
-  const apiKey = gateway || getProviderApiKey(entry, env);
-  const gatewayUrl = gateway ? aiGatewayBaseURL : undefined;
-  if (entry.provider === 'openai') {
-    return createOpenAI({ apiKey, baseURL: gatewayUrl ?? env.OPENAI_BASE_URL });
-  }
-  if (entry.provider === 'anthropic') {
-    return createAnthropic({
-      apiKey,
-      baseURL: gatewayUrl ?? (env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com/v1'),
-    });
-  }
-  if (entry.provider === 'google') {
-    return createGoogleGenerativeAI({ apiKey, baseURL: gatewayUrl });
-  }
-  return createGroq({ apiKey, baseURL: gatewayUrl });
-}
-
 declare global {
   var sandboxState: SandboxState;
   var conversationState: ConversationState | null;
@@ -242,7 +222,15 @@ async function generateAiCodeStream(request: NextRequest) {
   let jobProgress: ReturnType<typeof createProgressBatcher> | null = null;
   let providerSlot: ReturnType<ReturnType<typeof getDefaultProviderQueue>['acquire']> | null = null;
   try {
-    const { prompt, model = appConfig.ai.defaultModel, context, isEdit = false, styleHint, projectId: requestProjectId, stack: requestStack, designDirection: requestDirection, idempotencyKey: requestIdempotencyKey } = await request.json();
+    const { prompt, model: requestedModelRaw, context, isEdit = false, styleHint, projectId: requestProjectId, stack: requestStack, designDirection: requestDirection, idempotencyKey: requestIdempotencyKey } = await request.json();
+    // Explicit only: defaulting this to appConfig.ai.defaultModel pushed that
+    // model to the front of the chain and demoted the configured primary
+    // (AI_PRIMARY_* / Admin -> Configuration). The concrete `model` used for
+    // logging and legacy provider objects is derived from the chain below.
+    const requestedModel =
+      typeof requestedModelRaw === 'string' && requestedModelRaw.trim()
+        ? requestedModelRaw.trim()
+        : undefined;
 
     const sessionUser = await getSessionUser();
     if (!sessionUser) {
@@ -294,7 +282,7 @@ async function generateAiCodeStream(request: NextRequest) {
     let providerEnv: Record<string, string | undefined> = process.env;
     try {
       providerEnv = await loadEffectiveProviderEnv(sessionUser.id, process.env);
-      providerChain = requireUsableProviderChain(providerEnv, { requestedModel: model });
+      providerChain = requireUsableProviderChain(providerEnv, { requestedModel });
     } catch (error) {
       const message =
         error instanceof ProviderNotConfiguredError
@@ -309,6 +297,8 @@ async function generateAiCodeStream(request: NextRequest) {
       await releaseGenerationLock?.();
       return jsonError(message, 'PROVIDER_NOT_CONFIGURED', 503);
     }
+
+    const model = requestedModel ?? modelIdForEntry(providerChain[0]);
     const primaryProvider = providerChain[0];
     if (generationJob?.status === 'QUEUED' && primaryProvider) {
       providerSlot = getDefaultProviderQueue().acquire(primaryProvider.provider, {

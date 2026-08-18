@@ -9,6 +9,7 @@ import {
   parseWithZod,
   updateProjectSchema,
 } from '@/lib/projects/schema';
+import { ProviderNotConfiguredError } from '@/lib/ai/providers';
 import { applyCreateProjectPlanFlow, peekActor } from '@/lib/projects/plan';
 import { buildProjectListQuery, type ListProjectsQuery } from '@/lib/projects/list-sql';
 import { createCheckpointAfterGeneration } from '@/lib/checkpoints/actions';
@@ -139,12 +140,30 @@ export async function createProject(input: {
     });
   }
 
-  const { plan } = await applyCreateProjectPlanFlow({
-    projectId: project.id,
-    userId: user.id,
-    initialPrompt: parsed.data.initialPrompt,
-    skipPlanning,
-  });
+  let plan;
+  try {
+    ({ plan } = await applyCreateProjectPlanFlow({
+      projectId: project.id,
+      userId: user.id,
+      initialPrompt: parsed.data.initialPrompt,
+      skipPlanning,
+    }));
+  } catch (error) {
+    if (error instanceof ProviderNotConfiguredError) {
+      // Nothing about this project can ever run until an admin adds a key, so
+      // failing fast at the dashboard beats navigating into a dead workspace.
+      // The row is seconds old with no dependents — remove it rather than
+      // leaving an "Untitled project" corpse for every misconfigured attempt.
+      // Before this catch, the server action 500ed and the member saw nothing.
+      await prisma.project.delete({ where: { id: project.id } }).catch(() => undefined);
+      return {
+        ok: false as const,
+        error: error.message,
+        status: 503 as const,
+      };
+    }
+    throw error;
+  }
 
   if (parsed.data.templateId) {
     await incrementUsageCount(parsed.data.templateId);
@@ -464,7 +483,14 @@ export async function persistProjectGeneration(id: string, input: GenerationPers
         ? { generationStatus: input.generationStatus }
         : {}),
       ...(input.progressMessage !== undefined ? { progressMessage: input.progressMessage } : {}),
-      ...(existing.phase === 'BUILDING' && input.generationStatus === 'ready'
+      // COMPLETE means a finished site (lastCode / checkpoint). Gating this on
+      // phase === BUILDING stranded projects: a build that ran after "Start
+      // over" (which resets to PLANNING) persisted its site and stayed in
+      // PLANNING forever, with the preview panel telling the user nothing was
+      // built. Site evidence in this persist is the gate, not the prior phase.
+      ...(existing.phase !== 'COMPLETE' &&
+      input.generationStatus === 'ready' &&
+      (input.lastCode || existing.phase === 'BUILDING')
         ? { phase: 'COMPLETE' as const }
         : {}),
     },

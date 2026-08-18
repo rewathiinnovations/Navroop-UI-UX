@@ -1,6 +1,6 @@
 /**
  * SSRF url-guard + safeFetch + untrusted HTML wrapping.
- * Run: npx tsx tests/url-guard.test.ts
+ * Run: pnpm exec tsx tests/url-guard.test.ts
  */
 let failed = 0;
 let passed = 0;

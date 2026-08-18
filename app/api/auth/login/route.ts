@@ -19,7 +19,9 @@ export async function POST(request: NextRequest) {
   try {
     await ensureAdminUser();
 
-    const { email, password } = await request.json();
+    // Malformed JSON is a client mistake, not a server failure — flow into the
+    // 400 below instead of throwing out to the 500 catch.
+    const { email, password } = await request.json().catch(() => ({}) as Record<string, unknown>);
     const trimmedEmail = String(email || '').trim().toLowerCase();
     const trimmedPassword = String(password || '');
 

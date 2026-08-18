@@ -8,11 +8,15 @@ const buttonClass = (variant: Variant, className?: string) =>
   cn(
     'inline-flex items-center justify-center gap-8 min-h-[44px] px-18 rounded-full',
     'text-[14px] font-medium tracking-[-0.01em] cursor-pointer no-underline',
-    'transition-colors duration-200 ease-out',
+    // Compositor-only feedback: colors morph, and a press dips the button just
+    // enough to feel mechanical. Reduced motion keeps color, drops movement.
+    'transition-[background-color,border-color,color,opacity,transform,filter] duration-200 ease-out',
+    'active:scale-[0.98] active:duration-75 motion-reduce:transition-none motion-reduce:active:scale-100',
+    'disabled:active:scale-100',
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--studio-bg)]',
     'disabled:opacity-50 disabled:cursor-not-allowed',
     variant === 'primary' &&
-      'bg-[var(--studio-accent)] text-[var(--studio-cta-fg)] hover:bg-[var(--studio-accent-hover)] disabled:hover:bg-[var(--studio-accent)]',
+      '[background-image:var(--studio-cta-gradient)] text-[var(--studio-cta-fg)] hover:brightness-[1.07] active:brightness-95 disabled:hover:brightness-100',
     variant === 'inverted' &&
       'bg-[var(--studio-fg)] text-[var(--studio-bg)] hover:opacity-90 disabled:hover:opacity-100',
     variant === 'ghost' &&

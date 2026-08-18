@@ -10,5 +10,7 @@ Admin UI and APIs overlap (`/admin/team`, `/admin/usage`, `/admin/quality`, `/ad
 
 - One agent or PR should own a given admin file. Do not split the same page or route across parallel edits.
 - Shared chrome (`StudioShell`, `PageTabs`, `UserMenu` admin link) is the studio owner’s file. Admin pages import it; they do not fork it.
+- Admin shell chrome is shared and single-sourced: navigation lives only in `components/admin/admin-nav.ts` (`ADMIN_NAV`; `tests/unit/admin-nav-coverage.test.ts` pins it), the section is gated once in `app/(app)/admin/layout.tsx`, and pages compose `components/admin/` (`AdminPage`, `AdminCard`, `AdminTable`, `StatTile`, `StatusPill`, `StatusBanner`, `AdminTabs`, `Accordion`, `ConfirmAction`). Never hand-roll a page frame, table, tab strip, status pill, nav copy, or `window.confirm`; destructive actions go through `ConfirmAction` (use `confirmPhrase` when hard to undo).
+- `/admin/config` renders from `lib/settings/registry.ts` — add settings there, not as page markup. Resolution is DB → env → fallback (`lib/settings/resolve.ts`, server-only); secrets echo `last4` only. Test button results are `live` vs `local` — keep that distinction in copy.
 - Team invite flow: UI in `app/admin/team/page.tsx`, API in `app/api/admin/invite/route.ts`. Change both in the same pass if the contract changes.
 - Guard admin routes with `user.role === "ADMIN"`. Do not weaken invite-only access.
