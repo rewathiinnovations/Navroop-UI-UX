@@ -361,3 +361,44 @@ export function getStackEntryPoint(stack: string): string {
 export function shouldForceSrcPrefix(stack: string): boolean {
   return getStack(stack).id === 'REACT';
 }
+
+/**
+ * Files an INITIAL build must include for the stack's dev server to render it.
+ * Scaffold-owned files (src/main.jsx, configs) are not required — only the
+ * root component/page the prompts direct the model to write.
+ */
+function initialBuildEntryCandidates(stack: string): string[] {
+  switch (getStack(stack).id) {
+    case 'NEXTJS':
+      return ['app/page.tsx', 'app/page.jsx'];
+    case 'REACT':
+      return ['src/App.jsx', 'src/App.tsx'];
+    case 'ASTRO':
+      return ['src/pages/index.astro'];
+    case 'STATIC_HTML':
+      return ['index.html'];
+    case 'VUE':
+      return ['src/App.vue'];
+    case 'SVELTE':
+      return ['src/routes/+page.svelte'];
+    default: {
+      const id: never = getStack(stack).id as never;
+      throw new Error(`Missing initial-build entry candidates for "${id}"`);
+    }
+  }
+}
+
+/**
+ * Why an initial build's file set cannot work on this stack, or null when it
+ * can. A model that ignores the stack prompt (e.g. writing Next.js app/page.tsx
+ * for a Vite project) used to settle SUCCEEDED and then kill the sandbox boot;
+ * this is the guard that turns that into an actionable failure instead.
+ */
+export function stackShapeMismatch(stack: string, filePaths: string[]): string | null {
+  const candidates = initialBuildEntryCandidates(stack);
+  const normalized = filePaths.map((path) => path.replace(/^\.?\//, ''));
+  if (normalized.some((path) => candidates.includes(path))) return null;
+  const label = getStack(stack).label;
+  const got = normalized.slice(0, 3).join(', ') || 'no files';
+  return `The generated files don't match the ${label} project layout (expected ${candidates[0]}; got ${got}). The build was not applied — try again, or switch the AI model in admin settings.`;
+}

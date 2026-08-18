@@ -44,6 +44,9 @@ export interface ConversationContext {
 
 export interface ConversationState {
   conversationId: string;
+  /** Project this history belongs to. The state is a server-global; requests
+   *  for a different project must reset it rather than inherit it. */
+  projectId?: string | null;
   startedAt: number;
   lastUpdated: number;
   context: ConversationContext;

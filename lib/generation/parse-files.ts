@@ -114,3 +114,56 @@ function parseGenerationFilesUnsafe(raw: string): ParsedGenerationFile[] {
 
   return files;
 }
+
+export type LenientParsedFile = {
+  path: string;
+  content: string;
+  /** The stream ended (or the next file began) before a closing tag. */
+  closed: boolean;
+};
+
+/**
+ * Lenient extraction of `<file path="...">` blocks from a generation stream.
+ *
+ * The strict `<file>...</file>` regex silently dropped every file when the
+ * model omitted closing tags or the stream was truncated mid-file: a live
+ * REACT build streamed three complete-looking files (fileOpen: 3,
+ * fileClose: 0) and the route settled "no files generated", threw the whole
+ * stream away, and failed over to a vendor that produced nothing. Here a new
+ * `<file path=` opener implicitly closes the previous block, and the stream
+ * end closes the last one. Content wholly wrapped in one markdown fence is
+ * unwrapped — models fence file bodies even when told not to.
+ *
+ * Paths are NOT validated here; callers keep running each path through
+ * sanitizeGenerationPath before writing anywhere.
+ */
+export function parseGeneratedFilesLenient(generatedCode: string): LenientParsedFile[] {
+  const files: LenientParsedFile[] = [];
+  const byPath = new Map<string, number>();
+  const openRegex = /<file path="([^"]*)">/g;
+  let match: RegExpExecArray | null;
+  while ((match = openRegex.exec(generatedCode)) !== null) {
+    const path = match[1];
+    const bodyStart = match.index + match[0].length;
+    const nextOpen = generatedCode.indexOf('<file path="', bodyStart);
+    const close = generatedCode.indexOf('</file>', bodyStart);
+    const closed = close !== -1 && (nextOpen === -1 || close < nextOpen);
+    const bodyEnd = closed ? close : nextOpen === -1 ? generatedCode.length : nextOpen;
+    const content = unwrapSingleFence(generatedCode.slice(bodyStart, bodyEnd).trim());
+    if (!content) continue;
+    const entry = { path, content, closed };
+    const existing = byPath.get(path);
+    if (existing === undefined) {
+      byPath.set(path, files.length);
+      files.push(entry);
+    } else {
+      files[existing] = entry;
+    }
+  }
+  return files;
+}
+
+function unwrapSingleFence(content: string): string {
+  const fenced = content.match(/^```[\w-]*\r?\n([\s\S]*?)\r?\n?```$/);
+  return fenced ? fenced[1].trimEnd() : content;
+}

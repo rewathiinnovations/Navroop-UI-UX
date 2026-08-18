@@ -86,7 +86,8 @@ export type JobErrorCode =
   | 'provider_not_configured'
   | 'provider_quota_exhausted'
   | 'request_rejected'
-  | 'import_failed';
+  | 'import_failed'
+  | 'stack_mismatch';
 
 export type PartialFile = { path: string; content: string };
 

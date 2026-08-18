@@ -52,6 +52,7 @@ const CAUSE_LINES: Record<JobErrorCode, string> = {
   queue_timeout: 'The build waited too long in the queue',
   client_disconnected: 'Your browser disconnected before the build finished',
   no_files_generated: 'The AI finished without producing any files',
+  stack_mismatch: "The AI wrote files that don't fit this project's framework, so they were not applied",
   tool_call_validation_failed: 'The AI replied in a form we could not use — try again',
   credits_exhausted: "This month's credits are used up",
   plan_failed: 'The plan for this build could not be written',

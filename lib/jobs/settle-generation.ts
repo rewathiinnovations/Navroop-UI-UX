@@ -13,6 +13,8 @@ export type StreamSettleInput = {
    *  on the browser tab surviving to send its own PATCH. */
   streamedCode?: string | null;
   noChangeReason?: string | null;
+  /** Initial build produced files that can't render on the project's stack. */
+  stackMismatchReason?: string | null;
   tokensIn?: number;
   tokensOut?: number;
   estimatedCostUsd?: number | null;
@@ -65,6 +67,23 @@ export async function settleStreamedGeneration(input: StreamSettleInput): Promis
       outcome: 'failed',
       errorCode: 'no_files_generated',
       errorMessage: input.noChangeReason,
+    };
+  }
+
+  // Files that can't render on the project's stack (Next.js output for a Vite
+  // project, say) must not be persisted as the site: the sandbox boot would
+  // run npm install into a tree with no scaffold and die, after chat already
+  // said Generation complete.
+  if (input.stackMismatchReason) {
+    await failJob(job.id, {
+      errorCode: 'stack_mismatch',
+      errorMessage: input.stackMismatchReason,
+      ...usage,
+    });
+    return {
+      outcome: 'failed',
+      errorCode: 'stack_mismatch',
+      errorMessage: input.stackMismatchReason,
     };
   }
 

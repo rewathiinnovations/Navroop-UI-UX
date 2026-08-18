@@ -46,6 +46,7 @@ const EXPECTED_CODES = [
   'provider_quota_exhausted',
   'request_rejected',
   'import_failed',
+  'stack_mismatch',
 ] as const satisfies readonly JobErrorCode[];
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));

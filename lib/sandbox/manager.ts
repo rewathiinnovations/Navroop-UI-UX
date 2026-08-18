@@ -40,7 +40,7 @@ import { createWithFailover, isSandboxBootFailover } from '@/lib/sandbox/failove
 import { getProviderConfig, listProviderConfigs } from '@/lib/sandbox/store';
 import { accrueProviderUsage, rollAllProviderPeriods } from '@/lib/sandbox/accounting';
 import { migrateEnvSandboxProvider } from '@/lib/sandbox/migrate-env';
-import { stackScaffoldFiles } from '@/lib/sandbox/stack-setup';
+import { getStackSetupPlan, stackScaffoldFiles } from '@/lib/sandbox/stack-setup';
 import { markSandboxAttemptBootFailed, recordSandboxAttempts } from '@/lib/sandbox/job-attempts';
 import type { ProviderCandidate } from '@/lib/sandbox/router';
 import {
@@ -681,9 +681,26 @@ async function bootProject(
             // (the deterministic "Tracker idealTree already exists" boot
             // failure). Lay the stack scaffold under the restore: scaffold
             // files the snapshot doesn't override, then the snapshot on top.
-            await writeFiles(driver, withScaffoldUnderlay(stack, files));
-            setStep(projectId, 'install');
-            await driver.installAndStartDev(stack);
+            const merged = withScaffoldUnderlay(stack, files);
+            const needsPackageJson =
+              getStackSetupPlan(stack).hasNodeDependencies &&
+              !merged.some((file) => file.path.replace(/^\.?\//, '') === 'package.json');
+            if (needsPackageJson) {
+              // REACT has no shared scaffold (withScaffoldUnderlay passes it
+              // through) — its known-good tree is owned by the provider's
+              // setupViteApp. Without this, a snapshot lacking package.json
+              // boots into `npm install` against an empty directory and the
+              // sandbox dies on ENOENT. Scaffold first, then overlay the
+              // snapshot; the already-running dev server hot-reloads it.
+              setStep(projectId, 'install');
+              await driver.setupViteApp(stack);
+              setStep(projectId, 'restore');
+              await writeFiles(driver, merged);
+            } else {
+              await writeFiles(driver, merged);
+              setStep(projectId, 'install');
+              await driver.installAndStartDev(stack);
+            }
           } else {
             setStep(projectId, 'install');
             await driver.setupViteApp(stack);

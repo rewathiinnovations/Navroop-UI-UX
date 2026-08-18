@@ -320,7 +320,16 @@ export function attachToProject(projectId: string | null): GenerationState {
     return getGenerationState();
   }
   if (projectId && state.projectId !== projectId) {
-    patchGenerationState({ projectId });
+    // The runtime is a module-level singleton that survives client-side
+    // navigation. Carrying the previous project's sandboxData across meant
+    // its sandboxId/previewUrl were persisted onto the NEW project's row on
+    // the next status write — which then let the server's per-project file
+    // cache guard mistake the old sandbox's files for this project's own.
+    patchGenerationState({
+      projectId,
+      sandboxData: null,
+      lastGeneratedCode: null,
+    });
   }
   return getGenerationState();
 }

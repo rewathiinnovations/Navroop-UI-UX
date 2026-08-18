@@ -168,3 +168,34 @@ describe('settleStreamedGeneration — stream files are not a finished site', ()
     ).toBe(true);
   });
 });
+
+describe('settleStreamedGeneration — stack mismatch', () => {
+  it('fails the job and does not persist code the stack cannot render', async () => {
+    const job = await startBuild();
+    // The live Ember & Oak REACT build: gpt-4o-mini wrote a lone Next.js
+    // app/page.tsx for a Vite project; it settled SUCCEEDED and the sandbox
+    // then died booting it (npm ENOENT, no package.json).
+    const streamedCode = '<file path="app/page.tsx">export default function Page() { return null; }</file>';
+
+    const settled = await settleStreamedGeneration({
+      jobId: job.id,
+      producedFiles: 1,
+      streamedCode,
+      stackMismatchReason:
+        "The generated files don't match the React (Vite) project layout (expected src/App.jsx; got app/page.tsx).",
+    });
+
+    expect(settled.outcome).toBe('failed');
+    expect(settled.errorCode).toBe('stack_mismatch');
+    const [row] = await prisma.$queryRaw<Array<{ status: string; errorCode: string | null }>>`
+      SELECT status, "errorCode" FROM "GenerationJob" WHERE id = ${job.id}
+    `;
+    expect(row?.status).toBe('FAILED');
+    expect(row?.errorCode).toBe('stack_mismatch');
+    const project = await prisma.project.findUniqueOrThrow({
+      where: { id: PROJECT },
+      select: { lastCode: true },
+    });
+    expect(project.lastCode).toBeNull();
+  });
+});

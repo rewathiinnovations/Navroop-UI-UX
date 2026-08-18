@@ -16,11 +16,12 @@ import { ensureSandbox, SandboxBootError } from '@/lib/sandbox/manager';
 import { looksLikeUrl } from '@/lib/projects/prompt';
 import { attachGenerationInputTokens, logGenerationEvent } from '@/lib/usage-costs';
 import { buildCachedMessages } from '@/lib/generation/prompt-cache';
+import { parseGeneratedFilesLenient } from '@/lib/generation/parse-files';
 import { selectFileContext } from '@/lib/generation/selective-context';
 import { resolveInputTokens } from '@/lib/generation/token-estimate';
 import { buildStablePromptPrefix, buildVolatilePromptSuffix, getStackPrompt } from '@/lib/stack-prompts';
 import { resolveRequestGenerationProfile } from '@/lib/stack-resolve';
-import { packageNameFromImport, shouldSkipPackageInstall } from '@/lib/stacks';
+import { packageNameFromImport, shouldSkipPackageInstall, stackShapeMismatch } from '@/lib/stacks';
 import { loadAssetManifest } from '@/lib/assets/load-manifest';
 import { injectMatchedSkills } from '@/lib/skills/inject';
 import { buildMemoryBlock } from '@/lib/memory/build-context';
@@ -57,6 +58,7 @@ import { getDefaultProviderQueue, QUEUE_TIMEOUT_MESSAGE } from '@/lib/ai/queue';
 import {
   failoverNotice,
   getProviderApiKey,
+  maxOutputTokensForEntry,
   modelIdForEntry,
   providerDisplayName,
   ProviderNotConfiguredError,
@@ -406,10 +408,32 @@ async function generateAiCodeStream(request: NextRequest) {
       }
     }
     
-    // Initialize conversation state if not exists
+    // Initialize conversation state if not exists.
+    //
+    // The state is a server-global. Without project scoping it carried the
+    // previous project's "RECENTLY CREATED/EDITED FILES (DO NOT RECREATE)"
+    // list — Next.js app/ files — into a fresh REACT project's first build,
+    // and the model updated that phantom tree instead of following the
+    // stack prompt. A request for a different project starts clean.
+    const conversationProjectId =
+      (typeof requestProjectId === 'string' && requestProjectId) ||
+      (typeof context?.projectId === 'string' && context.projectId) ||
+      null;
+    if (
+      global.conversationState &&
+      global.conversationState.projectId !== conversationProjectId
+    ) {
+      log.info('generation.conversation_state_reset', {
+        requestId: getRequestId(),
+        fromProjectId: global.conversationState.projectId ?? null,
+        toProjectId: conversationProjectId,
+      });
+      global.conversationState = null;
+    }
     if (!global.conversationState) {
       global.conversationState = {
         conversationId: `conv-${Date.now()}`,
+        projectId: conversationProjectId,
         startedAt: Date.now(),
         lastUpdated: Date.now(),
         context: {
@@ -1058,6 +1082,54 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
           // Use backend file cache instead of frontend-provided files
           let backendFiles = global.sandboxState?.fileCache?.files || {};
           let hasBackendFiles = Object.keys(backendFiles).length > 0;
+
+          // The backend file cache is a server-global left by whichever sandbox
+          // last synced it — it is NOT scoped to this project. A REACT initial
+          // build once inherited the previous NEXTJS project's app/ tree as
+          // "EXISTING APPLICATION" context, and the model edited that tree
+          // instead of following the REACT stack prompt. Only trust the cache
+          // when it was written by this project's own sandbox.
+          // An initial build generates from scratch by definition. The
+          // "EXISTING APPLICATION — TARGETED EDIT REQUIRED" framing below is
+          // edit-only: fed to an initial build it makes the model edit
+          // whatever tree the cache happens to hold. (A stale client once
+          // stamped the previous project's sandboxId onto a new project row,
+          // which let the cache pass the ownership check and a REACT build
+          // "edited" the old project's Next.js files.)
+          if (hasBackendFiles && !isEdit) {
+            log.info('generation.backend_cache_skipped', {
+              requestId: getRequestId(),
+              reason: 'initial_build',
+            });
+            backendFiles = {};
+            hasBackendFiles = false;
+          }
+
+          if (hasBackendFiles) {
+            const cacheSandboxId = global.sandboxState?.fileCache?.sandboxId || null;
+            const scopeProjectId =
+              (typeof requestProjectId === 'string' && requestProjectId) ||
+              (typeof context?.projectId === 'string' && context.projectId) ||
+              '';
+            if (scopeProjectId) {
+              const { prisma } = await import('@/lib/db');
+              const own = await prisma.project.findUnique({
+                where: { id: scopeProjectId },
+                select: { sandboxId: true },
+              });
+              const ownSandboxId = own?.sandboxId || null;
+              if (!ownSandboxId || cacheSandboxId !== ownSandboxId) {
+                log.info('generation.backend_cache_skipped', {
+                  requestId: getRequestId(),
+                  projectId: scopeProjectId,
+                  cacheSandboxId,
+                  ownSandboxId,
+                });
+                backendFiles = {};
+                hasBackendFiles = false;
+              }
+            }
+          }
           
           console.log('[generate-ai-code-stream] Backend file cache status:');
           console.log('[generate-ai-code-stream] - Has sandboxState:', !!global.sandboxState);
@@ -1413,6 +1485,9 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
                 const nextOptions = {
                   ...streamOptions,
                   model: client(actualModel),
+                  // The flat 8192 truncated real sites mid-file; each vendor
+                  // gets its actual output headroom.
+                  maxTokens: maxOutputTokensForEntry(entry),
                   abortSignal: ctx.signal,
                 };
                 const capture = bindStreamErrorCapture();
@@ -1632,13 +1707,12 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
           return packages;
         }
         
-        // Parse files and send progress for each
-        const fileRegex = /<file path="([^"]*)">([\s\S]*?)<\/file>/g;
-        let match;
-        
-        while ((match = fileRegex.exec(generatedCode)) !== null) {
-          const filePath = match[1];
-          const content = match[2].trim();
+        // Parse files and send progress for each. The lenient parser survives
+        // omitted </file> tags and mid-file truncation — the strict regex used
+        // to drop every file in that case and discard the whole stream.
+        for (const parsed of parseGeneratedFilesLenient(generatedCode)) {
+          const filePath = parsed.path;
+          const content = parsed.content;
           const safe = sanitizeGenerationPath(filePath);
           if (!safe.ok) continue;
           files.push({ path: safe.path, content });
@@ -1998,6 +2072,14 @@ Provide the complete file content without any truncation. Include all necessary 
             })
           : null;
 
+        // Initial builds only: files that can't render on the project's stack
+        // (a Next.js tree for a Vite project) must fail here, not "succeed"
+        // and then kill the sandbox boot with a bare npm ENOENT.
+        const stackMismatchReason =
+          !isEdit && !hadNoChanges && files.length > 0
+            ? stackShapeMismatch(projectStack, files.map((file) => file.path))
+            : null;
+
         let streamSettle: Awaited<ReturnType<typeof settleStreamedGeneration>> | null = null;
         if (generationJob) {
           await jobProgress?.flush();
@@ -2018,6 +2100,7 @@ Provide the complete file content without any truncation. Include all necessary 
               producedFiles: files.length,
               streamedCode: generatedCode,
               noChangeReason,
+              stackMismatchReason,
               tokensIn: inputTokens,
               tokensOut: outputTokens,
               estimatedCostUsd,

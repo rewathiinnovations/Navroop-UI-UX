@@ -42,6 +42,7 @@ export async function retryAbandonedJob(jobId: string, idempotencyKey?: string |
     attempt: job.attempt,
     maxAttempts: job.maxAttempts,
     filesWritten: job.filesWritten,
+    errorCode: job.errorCode,
   });
   const planContext = job.kind === 'BUILD' ? await getApprovedPlanGenerationContext(job.projectId) : '';
   const prompt = resume

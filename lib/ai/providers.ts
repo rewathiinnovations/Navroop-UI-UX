@@ -19,7 +19,9 @@ const KEY_ENV: Record<ProviderName, string> = {
 
 const DEFAULT_MODELS: Record<ProviderName, string> = {
   groq: 'moonshotai/kimi-k2-instruct-0905',
-  openai: 'gpt-4o-mini',
+  // gpt-4o-mini half-follows the stack prompts (single-file Next.js output for
+  // a Vite project); code generation needs a current flagship-tier model.
+  openai: 'gpt-5.6-luna',
   anthropic: 'claude-sonnet-4-20250514',
   google: 'gemini-2.0-flash',
 };
@@ -175,4 +177,25 @@ export function getProviderApiKey(
 export function providerConcurrency(env: Record<string, string | undefined> = process.env) {
   const raw = Number.parseInt(env.AI_PROVIDER_CONCURRENCY || '2', 10);
   return Number.isFinite(raw) && raw > 0 ? raw : 2;
+}
+
+/**
+ * Output-token budget per provider for site generation. The route used a
+ * flat 8192, which truncates a real multi-file site mid-file (three open
+ * <file> blocks, zero closed) — the completion failover then discards the
+ * whole stream as "no files". Give each vendor its real headroom; Gemini
+ * 2.0 Flash genuinely caps at 8192.
+ */
+export function maxOutputTokensForEntry(entry: Pick<ProviderEntry, 'provider'>): number {
+  switch (entry.provider) {
+    case 'google':
+      return 8192;
+    case 'groq':
+      return 16384;
+    case 'openai':
+    case 'anthropic':
+      return 32768;
+    default:
+      return 16384;
+  }
 }

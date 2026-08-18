@@ -1,6 +1,15 @@
 import type { GenerationJobRow, PartialFile } from './types';
 
-export function shouldResumePartial(job: Pick<GenerationJobRow, 'kind' | 'attempt' | 'maxAttempts' | 'filesWritten'>) {
+export function shouldResumePartial(
+  job: Pick<GenerationJobRow, 'kind' | 'attempt' | 'maxAttempts' | 'filesWritten'> & {
+    errorCode?: string | null;
+  },
+) {
+  // A stack_mismatch build's partials are the poison (wrong-framework files);
+  // telling the retry they "were already written and must not be regenerated"
+  // makes the model either refuse or keep building on the wrong layout.
+  // Those retries start clean from the plan.
+  if (job.errorCode === 'stack_mismatch') return false;
   return job.kind === 'BUILD' && job.filesWritten > 0 && job.attempt < job.maxAttempts;
 }
 
