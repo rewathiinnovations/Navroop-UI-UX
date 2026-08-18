@@ -2016,6 +2016,7 @@ Provide the complete file content without any truncation. Include all necessary 
             streamSettle = await settleStreamedGeneration({
               jobId: generationJob.id,
               producedFiles: files.length,
+              streamedCode: generatedCode,
               noChangeReason,
               tokensIn: inputTokens,
               tokensOut: outputTokens,

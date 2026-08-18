@@ -306,9 +306,31 @@ export default function PreviewPanel({
                   ) : null}
                 </div>
               ) : (
-                <p className="max-w-[280px] text-[14px] leading-6 text-[var(--studio-muted)]">
-                  Nothing built yet — review the plan and approve to get started
-                </p>
+                // Planning: nothing to render yet, but "nothing" shouldn't
+                // look dead — a breathing brand orb says the site is coming.
+                <div className="relative flex max-w-[340px] flex-col items-center">
+                  <div className="relative mb-24 size-[120px]">
+                    <span
+                      aria-hidden
+                      className="studio-orb absolute inset-0 rounded-full opacity-90 blur-2xl [background-image:var(--studio-cta-gradient)]"
+                    />
+                    <span
+                      aria-hidden
+                      className="absolute inset-[18px] rounded-full border border-white/40 bg-[var(--studio-surface)]/60 backdrop-blur-md"
+                    />
+                    <span
+                      aria-hidden
+                      className="absolute inset-[34px] rounded-full [background-image:var(--studio-cta-gradient)]"
+                    />
+                  </div>
+                  <p className="text-[17px] font-medium tracking-[-0.02em] text-[var(--studio-fg)]">
+                    Something cool is on the way
+                  </p>
+                  <p className="mt-6 text-[13px] leading-6 text-[var(--studio-muted)]">
+                    Your plan is taking shape in the chat. Approve it and this panel becomes your
+                    live site.
+                  </p>
+                </div>
               )}
             </div>
           )}

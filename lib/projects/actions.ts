@@ -91,6 +91,7 @@ export async function createProject(input: {
   name?: string;
   initialPrompt: string;
   skipPlanning?: boolean;
+  deferPlanning?: boolean;
   stack?: string;
   designDirection?: string;
   importMode?: string;
@@ -141,6 +142,22 @@ export async function createProject(input: {
   }
 
   let plan;
+  const deferPlanning = parsed.data.deferPlanning === true && !flow.isUrlImport && !skipPlanning;
+  if (deferPlanning) {
+    // The row exists; the browser can land in the workspace now. The plan
+    // generates detached — useProjectPlan polls during PLANNING and renders
+    // it the moment it lands, and a failed PLAN job surfaces through the
+    // normal chat recovery panel.
+    plan = null;
+    detachAfterGeneration(project.id, 'initial-plan', () =>
+      applyCreateProjectPlanFlow({
+        projectId: project.id,
+        userId: user.id,
+        initialPrompt: parsed.data.initialPrompt,
+        skipPlanning,
+      }),
+    );
+  } else
   try {
     ({ plan } = await applyCreateProjectPlanFlow({
       projectId: project.id,

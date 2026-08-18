@@ -275,6 +275,32 @@ export default function ChatPanel({
         {plan && plan.status !== 'SUPERSEDED' && (
           <PlanCard plan={plan} approving={approving} onApprove={onApprovePlan} />
         )}
+        {phase === 'PLANNING' && !plan && !recovery?.visible && !isGenerating && (
+          // The project row exists but the plan is still streaming in (the
+          // dashboard navigates before generation finishes). Shaped like the
+          // PlanCard it becomes, so the swap-in doesn't jump the layout.
+          <div
+            role="status"
+            aria-live="polite"
+            className="relative mb-16 overflow-hidden rounded-16 border border-[var(--studio-line)] bg-[var(--studio-surface)] p-16"
+          >
+            <p className="text-[13px] font-medium text-[var(--studio-fg)]">
+              Drafting your plan…
+            </p>
+            <p className="mt-4 text-[12px] text-[var(--studio-muted)]">
+              Pages, sections, and features are being sketched from your prompt. It lands here in
+              a few seconds — review it, then approve to start the build.
+            </p>
+            <div className="mt-12 space-y-8">
+              <span className="block h-10 w-3/4 animate-pulse rounded-8 bg-[var(--studio-skeleton)] motion-reduce:animate-none" />
+              <span className="block h-10 w-1/2 animate-pulse rounded-8 bg-[var(--studio-skeleton)] motion-reduce:animate-none" />
+              <span className="block h-10 w-2/3 animate-pulse rounded-8 bg-[var(--studio-skeleton)] motion-reduce:animate-none" />
+            </div>
+            <span aria-hidden className="absolute inset-x-0 bottom-0 h-2 overflow-hidden">
+              <span className="studio-sheen block h-full w-1/4 rounded-full bg-gradient-to-r from-transparent via-[var(--studio-accent)] to-transparent" />
+            </span>
+          </div>
+        )}
         {recovery?.visible ? (
           <RecoveryPanel
             kind={recovery.kind}

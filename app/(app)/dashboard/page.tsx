@@ -91,6 +91,8 @@ export default function DashboardPage() {
       designDirection,
       importMode,
       templateId: draft?.templateId || undefined,
+      // Land in the workspace immediately; the plan streams in behind it.
+      deferPlanning: true,
     });
     if (!created.ok) {
       if (created.status === 401) {

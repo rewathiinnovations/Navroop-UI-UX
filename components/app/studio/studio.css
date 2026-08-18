@@ -135,6 +135,31 @@
   }
 }
 
+/* The "something cool is coming" orb shown while a plan is being drafted:
+   a gradient blob breathing slowly behind a frosted ring. Opacity/transform
+   only; reduced motion renders it still. */
+@keyframes studio-orb {
+  0%,
+  100% {
+    transform: scale(1) translateY(0);
+    opacity: 0.85;
+  }
+  50% {
+    transform: scale(1.08) translateY(-4px);
+    opacity: 1;
+  }
+}
+
+.studio-orb {
+  animation: studio-orb 3.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .studio-orb {
+    animation: none;
+  }
+}
+
 /* Layered elevation for floating surfaces — one soft ambient layer plus one
    tight contact layer, instead of a single hard drop. */
 .studio-shell {
