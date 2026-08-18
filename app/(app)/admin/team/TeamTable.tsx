@@ -3,6 +3,7 @@
 import AdminPage from '@/components/admin/AdminPage';
 import { AdminTable, Td, Th, Tr } from '@/components/admin/AdminTable';
 import ConfirmAction from '@/components/admin/ConfirmAction';
+import StatusPill from '@/components/admin/StatusPill';
 import { Users } from 'lucide-react';
 import { Fragment, useState } from 'react';
 import StudioButton from '@/components/app/studio/StudioButton';
@@ -156,13 +157,9 @@ export default function TeamTable({ initialMembers }: { initialMembers: Member[]
                 </select>
               </Td>
               <Td>
-                <span className="inline-flex items-center gap-6 rounded-full border border-[var(--studio-line)] px-8 py-2 text-[11px] text-[var(--studio-muted)]">
-                  <span
-                    className={`size-6 shrink-0 rounded-full ${member.isActive ? 'bg-[var(--studio-accent)]' : 'bg-[var(--studio-faint)]'}`}
-                    aria-hidden
-                  />
+                <StatusPill tone={member.isActive ? 'positive' : 'neutral'}>
                   {member.isActive ? 'Active' : 'Inactive'}
-                </span>
+                </StatusPill>
               </Td>
               <Td muted>{formatMemberSince(member.createdAt)}</Td>
               <Td align="right" muted>

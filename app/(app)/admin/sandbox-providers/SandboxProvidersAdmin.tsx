@@ -1,6 +1,7 @@
 'use client';
 
 import { ArrowUpDown, ChevronDown, ChevronUp, Cpu, Plus, Table2 } from 'lucide-react';
+import Accordion from '@/components/admin/Accordion';
 import AdminCard from '@/components/admin/AdminCard';
 import AdminPage from '@/components/admin/AdminPage';
 import { AdminTable, Td, Th, Tr } from '@/components/admin/AdminTable';
@@ -359,7 +360,11 @@ export default function SandboxProvidersAdmin({
         </AdminTable>
       </AdminCard>
 
-      <AdminCard icon={<Plus className="size-14" aria-hidden />} title={ADD_PROVIDER_LABEL}>
+      <Accordion
+        icon={<Plus className="size-14" aria-hidden />}
+        title={ADD_PROVIDER_LABEL}
+        description="Connect another E2B, Modal, or Daytona account."
+      >
         <form onSubmit={onCreate} className="grid max-w-xl gap-12">
           <StudioField id="provider-name" name="name" label="Name" required />
           <StudioSelect
@@ -440,7 +445,7 @@ export default function SandboxProvidersAdmin({
             </StudioButton>
           </div>
         </form>
-      </AdminCard>
+      </Accordion>
 
       <AdminCard icon={<Table2 className="size-14" aria-hidden />} title="Capability matrix">
         <AdminTable

@@ -4,10 +4,10 @@ import { Bug, Cloud, Github, Server, X } from 'lucide-react';
 import AdminCard from '@/components/admin/AdminCard';
 import AdminPage from '@/components/admin/AdminPage';
 import StatusBanner from '@/components/admin/StatusBanner';
+import StatusPill, { type StatusTone } from '@/components/admin/StatusPill';
 import { FormEvent, useMemo, useState, type ReactNode } from 'react';
 import StudioButton from '@/components/app/studio/StudioButton';
 import StudioField from '@/components/app/studio/StudioField';
-import { cn } from '@/utils/cn';
 import { resolveSentryMeta } from './sentry-meta';
 
 const KIND_ICON: Record<'GITHUB_DEPLOY' | 'CLOUDFLARE' | 'COOLIFY' | 'SENTRY', typeof Github> = {
@@ -17,11 +17,11 @@ const KIND_ICON: Record<'GITHUB_DEPLOY' | 'CLOUDFLARE' | 'COOLIFY' | 'SENTRY', t
   SENTRY: Bug,
 };
 
-const STATUS_DOT: Record<string, string> = {
-  CONNECTED: 'bg-[var(--studio-accent)]',
-  PENDING: 'bg-amber-500',
-  ERROR: 'bg-[var(--studio-danger)]',
-  DISCONNECTED: 'bg-[var(--studio-faint)]',
+const STATUS_TONE: Record<string, StatusTone> = {
+  CONNECTED: 'positive',
+  PENDING: 'warning',
+  ERROR: 'danger',
+  DISCONNECTED: 'neutral',
 };
 
 type PublicIntegration = {
@@ -1077,16 +1077,7 @@ function Card({
       title={row.name}
       description={
         <>
-          <span className="inline-flex items-center gap-6 rounded-full border border-[var(--studio-line)] px-8 py-2 text-[11px]">
-            <span
-              className={cn(
-                'size-6 shrink-0 rounded-full',
-                STATUS_DOT[row.status] ?? 'bg-[var(--studio-faint)]',
-              )}
-              aria-hidden
-            />
-            {row.statusLabel}
-          </span>
+          <StatusPill tone={STATUS_TONE[row.status] ?? 'neutral'}>{row.statusLabel}</StatusPill>
           {row.detail && <span className="mt-6 block">{row.detail}</span>}
           {row.lastError && (
             <span className="mt-6 flex items-start gap-6 text-[var(--studio-danger)]">

@@ -27,11 +27,22 @@ export default function StatTile({
     <Tag
       {...(href ? { href } : {})}
       className={cn(
-        'flex items-start gap-12 rounded-14 border border-[var(--studio-line)] bg-[var(--studio-surface)] p-16',
+        'relative flex items-start gap-12 overflow-hidden rounded-14 border border-[var(--studio-line)] bg-[var(--studio-surface)] p-16',
+        'shadow-[0_8px_30px_rgba(24,24,27,0.06)] dark:shadow-[0_8px_30px_rgba(0,0,0,0.28)]',
         href &&
-          'transition-colors duration-200 hover:border-[var(--studio-line-strong)] hover:bg-[var(--studio-surface-hover)]',
+          'transition-[border-color,background-color,transform] duration-200 hover:-translate-y-1 hover:border-[var(--studio-line-strong)] hover:bg-[var(--studio-surface-hover)]',
       )}
     >
+      {tone !== 'default' && (
+        <span
+          className={cn(
+            'absolute inset-x-0 top-0 h-2',
+            tone === 'danger' && 'bg-[var(--studio-danger)]',
+            tone === 'warning' && 'bg-amber-500',
+          )}
+          aria-hidden
+        />
+      )}
       <span
         className={cn(
           'inline-flex size-34 shrink-0 items-center justify-center rounded-10',

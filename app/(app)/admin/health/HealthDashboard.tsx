@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import AdminCard from '@/components/admin/AdminCard';
 import AdminPage from '@/components/admin/AdminPage';
+import AdminTabs, { type AdminTab } from '@/components/admin/AdminTabs';
 import StatTile from '@/components/admin/StatTile';
 import StatusBanner from '@/components/admin/StatusBanner';
 import StudioButton from '@/components/app/studio/StudioButton';
@@ -94,17 +95,6 @@ type HealthPayload = {
   };
 };
 
-const JUMP_LINKS = [
-  { id: 'release', label: 'Release', icon: GitBranch },
-  { id: 'instance', label: 'Instance', icon: Server },
-  { id: 'volume', label: 'Volume', icon: HardDrive },
-  { id: 'error-tracking', label: 'Error tracking', icon: Bug },
-  { id: 'integrations', label: 'Integrations', icon: Plug },
-  { id: 'providers', label: 'AI providers', icon: Sparkles },
-  { id: 'checks', label: 'System checks', icon: ListChecks },
-  { id: 'errors', label: 'Top errors', icon: AlertTriangle },
-] as const;
-
 export default function HealthDashboard() {
   const [data, setData] = useState<HealthPayload | null>(null);
   const [error, setError] = useState('');
@@ -163,54 +153,13 @@ export default function HealthDashboard() {
       ]
     : [];
 
-  return (
-    <AdminPage
-      icon="health"
-      title="Health"
-      description="Whether this installation is running correctly: release, storage, error tracking, and provider checks."
-      width="wide"
-    >
-      <nav
-        aria-label="Jump to a health section"
-        className="flex flex-wrap gap-6 border-b border-[var(--studio-line)] pb-16"
-      >
-        {JUMP_LINKS.map(({ id, label, icon: Icon }) => (
-          <a
-            key={id}
-            href={`#${id}`}
-            className="inline-flex items-center gap-6 rounded-full border border-[var(--studio-line)] px-10 py-6 text-[12px] text-[var(--studio-muted)] transition-colors duration-150 hover:border-[var(--studio-line-strong)] hover:text-[var(--studio-fg)]"
-          >
-            <Icon className="size-12" aria-hidden />
-            {label}
-          </a>
-        ))}
-      </nav>
-
-      {error && <StatusBanner tone="error">{error}</StatusBanner>}
-
-      <div className="grid grid-cols-1 gap-12 sm:grid-cols-2 xl:grid-cols-5">
-        {(loading && !data
-          ? Array.from({ length: 10 }, (_, i) => ({ label: '…', value: '—' }))
-          : cards
-        ).map((card, index) => (
-          <StatTile
-            key={`${card.label}-${index}`}
-            icon={<AlertTriangle className="size-15" aria-hidden />}
-            value={card.value}
-            label={card.label}
-            tone={
-              card.value !== '0' && card.value !== '—' && card.value !== '…' ? 'warning' : 'default'
-            }
-          />
-        ))}
-      </div>
-
-      {data?.release && (
-        <AdminCard
-          id="release"
-          icon={<GitBranch className="size-14" aria-hidden />}
-          title="Current release"
-        >
+  const tabs: AdminTab[] = [
+    data?.release && {
+      id: 'release',
+      label: 'Release',
+      icon: <GitBranch className="size-13" aria-hidden />,
+      panel: (
+        <AdminCard>
           <p className="text-[13px] text-[var(--studio-fg)]">
             <span className="font-medium">{data.release.sha}</span>
             {data.release.deployedAt !== '1970-01-01T00:00:00.000Z' ? (
@@ -276,14 +225,14 @@ export default function HealthDashboard() {
             </p>
           ) : null}
         </AdminCard>
-      )}
-
-      {data?.self && (
-        <AdminCard
-          id="instance"
-          icon={<Server className="size-14" aria-hidden />}
-          title="This instance"
-        >
+      ),
+    },
+    data?.self && {
+      id: 'instance',
+      label: 'Instance',
+      icon: <Server className="size-13" aria-hidden />,
+      panel: (
+        <AdminCard>
           <p className="text-[13px] text-[var(--studio-fg)]">
             Coolify application{' '}
             {data.self.coolifyAppUuid ? (
@@ -303,14 +252,14 @@ export default function HealthDashboard() {
             {`${data.self.environment} · commit ${data.self.gitSha} · instance ${data.self.instanceId}`}
           </p>
         </AdminCard>
-      )}
-
-      {data?.dataDir && (
-        <AdminCard
-          id="volume"
-          icon={<HardDrive className="size-14" aria-hidden />}
-          title="Persistent volume"
-        >
+      ),
+    },
+    data?.dataDir && {
+      id: 'volume',
+      label: 'Volume',
+      icon: <HardDrive className="size-13" aria-hidden />,
+      panel: (
+        <AdminCard>
           <p
             className={
               data.dataDir.state === 'unwritable' || data.dataDir.warnLowSpace
@@ -374,14 +323,14 @@ export default function HealthDashboard() {
             it from Postgres or object storage. It is not included in the database backup.
           </p>
         </AdminCard>
-      )}
-
-      {data?.errorTracking && (
-        <AdminCard
-          id="error-tracking"
-          icon={<Bug className="size-14" aria-hidden />}
-          title="Error tracking"
-        >
+      ),
+    },
+    data?.errorTracking && {
+      id: 'error-tracking',
+      label: 'Error tracking',
+      icon: <Bug className="size-13" aria-hidden />,
+      panel: (
+        <AdminCard>
           <p
             className={
               data.errorTracking.status === 'Healthy'
@@ -507,109 +456,149 @@ export default function HealthDashboard() {
             </p>
           ) : null}
         </AdminCard>
-      )}
-
-      <AdminCard
-        id="integrations"
-        icon={<Plug className="size-14" aria-hidden />}
-        title="Integrations"
-      >
-        <ul className="space-y-8">
-          {(data?.integrations || []).map((row) => (
-            <li key={row.kind} className="text-[13px] text-[var(--studio-fg)]">
-              <span className="font-medium">{row.kind}</span>
-              {` · ${row.status}`}
-              {row.lastCheckedAt ? (
-                <span className="text-[var(--studio-muted)]">
-                  {` — checked ${formatAdminDateTime(row.lastCheckedAt)}`}
-                </span>
-              ) : null}
-              {row.lastError ? (
-                <span className="text-[var(--studio-danger)]">{` — ${row.lastError}`}</span>
-              ) : null}
-            </li>
-          ))}
-          {!loading && (data?.integrations || []).length === 0 && (
-            <li className="text-[13px] text-[var(--studio-muted)]">No integration rows found.</li>
-          )}
-        </ul>
-      </AdminCard>
-
-      <AdminCard
-        id="providers"
-        icon={<Sparkles className="size-14" aria-hidden />}
-        title="AI providers"
-      >
-        <ul className="space-y-8">
-          {(data?.providers || []).map((row) => (
-            <li key={row.id} className="text-[13px] text-[var(--studio-fg)]">
-              <span className="font-medium">{row.provider}</span>
-              {` · ${row.model}`}
-              <span
-                className={
-                  row.healthy ? 'text-[var(--studio-muted)]' : 'text-[var(--studio-danger)]'
-                }
-              >
-                {row.healthy ? ' — healthy' : ' — unhealthy'}
-              </span>
-            </li>
-          ))}
-          {!loading && (data?.providers || []).length === 0 && (
-            <li className="text-[13px] text-[var(--studio-muted)]">No providers configured.</li>
-          )}
-        </ul>
-      </AdminCard>
-
-      <AdminCard
-        id="checks"
-        icon={<ListChecks className="size-14" aria-hidden />}
-        title="System checks"
-      >
-        <ul className="space-y-8">
-          {(data?.systemChecks || []).map((row) => (
-            <li
-              key={row.name}
-              className={
-                row.stale || row.ok === false
-                  ? 'text-[13px] text-[var(--studio-danger)]'
-                  : 'text-[13px] text-[var(--studio-fg)]'
-              }
-            >
-              <span className="font-medium">{row.name}</span>
-              {row.lastRunAt ? ` — last run ${formatAdminDateTime(row.lastRunAt)}` : ' — never run'}
-              {row.ok === false ? ' — failed' : row.ok === true ? ' — ok' : ''}
-              {row.stale ? ' — stale' : ''}
-              {row.detail ? ` — ${row.detail}` : ''}
-            </li>
-          ))}
-          {!loading && (data?.systemChecks || []).length === 0 && (
-            <li className="text-[13px] text-[var(--studio-muted)]">
-              No system checks recorded yet.
-            </li>
-          )}
-        </ul>
-      </AdminCard>
-
-      <AdminCard
-        id="errors"
-        icon={<AlertTriangle className="size-14" aria-hidden />}
-        title="Top error codes"
-      >
-        {(data?.topErrorCodes || []).length === 0 ? (
-          <p className="text-[13px] text-[var(--studio-muted)]">
-            No recurring errors in the last 7 days.
-          </p>
-        ) : (
+      ),
+    },
+    {
+      id: 'integrations',
+      label: 'Integrations',
+      icon: <Plug className="size-13" aria-hidden />,
+      panel: (
+        <AdminCard>
           <ul className="space-y-8">
-            {data!.topErrorCodes.map((row) => (
-              <li key={row.code} className="text-[13px] text-[var(--studio-fg)]">
-                <span className="font-medium">{row.code}</span>
-                {` · ${row.count}`}
+            {(data?.integrations || []).map((row) => (
+              <li key={row.kind} className="text-[13px] text-[var(--studio-fg)]">
+                <span className="font-medium">{row.kind}</span>
+                {` · ${row.status}`}
+                {row.lastCheckedAt ? (
+                  <span className="text-[var(--studio-muted)]">
+                    {` — checked ${formatAdminDateTime(row.lastCheckedAt)}`}
+                  </span>
+                ) : null}
+                {row.lastError ? (
+                  <span className="text-[var(--studio-danger)]">{` — ${row.lastError}`}</span>
+                ) : null}
               </li>
             ))}
+            {!loading && (data?.integrations || []).length === 0 && (
+              <li className="text-[13px] text-[var(--studio-muted)]">No integration rows found.</li>
+            )}
           </ul>
-        )}
-      </AdminCard>
+        </AdminCard>
+      ),
+    },
+    {
+      id: 'providers',
+      label: 'AI providers',
+      icon: <Sparkles className="size-13" aria-hidden />,
+      panel: (
+        <AdminCard>
+          <ul className="space-y-8">
+            {(data?.providers || []).map((row) => (
+              <li key={row.id} className="text-[13px] text-[var(--studio-fg)]">
+                <span className="font-medium">{row.provider}</span>
+                {` · ${row.model}`}
+                <span
+                  className={
+                    row.healthy ? 'text-[var(--studio-muted)]' : 'text-[var(--studio-danger)]'
+                  }
+                >
+                  {row.healthy ? ' — healthy' : ' — unhealthy'}
+                </span>
+              </li>
+            ))}
+            {!loading && (data?.providers || []).length === 0 && (
+              <li className="text-[13px] text-[var(--studio-muted)]">No providers configured.</li>
+            )}
+          </ul>
+        </AdminCard>
+      ),
+    },
+    {
+      id: 'checks',
+      label: 'System checks',
+      icon: <ListChecks className="size-13" aria-hidden />,
+      panel: (
+        <AdminCard>
+          <ul className="space-y-8">
+            {(data?.systemChecks || []).map((row) => (
+              <li
+                key={row.name}
+                className={
+                  row.stale || row.ok === false
+                    ? 'text-[13px] text-[var(--studio-danger)]'
+                    : 'text-[13px] text-[var(--studio-fg)]'
+                }
+              >
+                <span className="font-medium">{row.name}</span>
+                {row.lastRunAt
+                  ? ` — last run ${formatAdminDateTime(row.lastRunAt)}`
+                  : ' — never run'}
+                {row.ok === false ? ' — failed' : row.ok === true ? ' — ok' : ''}
+                {row.stale ? ' — stale' : ''}
+                {row.detail ? ` — ${row.detail}` : ''}
+              </li>
+            ))}
+            {!loading && (data?.systemChecks || []).length === 0 && (
+              <li className="text-[13px] text-[var(--studio-muted)]">
+                No system checks recorded yet.
+              </li>
+            )}
+          </ul>
+        </AdminCard>
+      ),
+    },
+    {
+      id: 'errors',
+      label: 'Top errors',
+      icon: <AlertTriangle className="size-13" aria-hidden />,
+      panel: (
+        <AdminCard>
+          {(data?.topErrorCodes || []).length === 0 ? (
+            <p className="text-[13px] text-[var(--studio-muted)]">
+              No recurring errors in the last 7 days.
+            </p>
+          ) : (
+            <ul className="space-y-8">
+              {data!.topErrorCodes.map((row) => (
+                <li key={row.code} className="text-[13px] text-[var(--studio-fg)]">
+                  <span className="font-medium">{row.code}</span>
+                  {` · ${row.count}`}
+                </li>
+              ))}
+            </ul>
+          )}
+        </AdminCard>
+      ),
+    },
+  ].filter(Boolean) as AdminTab[];
+
+  return (
+    <AdminPage
+      icon="health"
+      title="Health"
+      description="Whether this installation is running correctly: release, storage, error tracking, and provider checks."
+      width="wide"
+    >
+      {error && <StatusBanner tone="error">{error}</StatusBanner>}
+
+      <div className="grid grid-cols-1 gap-12 sm:grid-cols-2 xl:grid-cols-5">
+        {(loading && !data
+          ? Array.from({ length: 10 }, (_, i) => ({ label: '…', value: '—' }))
+          : cards
+        ).map((card, index) => (
+          <StatTile
+            key={`${card.label}-${index}`}
+            icon={<AlertTriangle className="size-15" aria-hidden />}
+            value={card.value}
+            label={card.label}
+            tone={
+              card.value !== '0' && card.value !== '—' && card.value !== '…' ? 'warning' : 'default'
+            }
+          />
+        ))}
+      </div>
+
+      <AdminTabs tabs={tabs} />
     </AdminPage>
   );
 }

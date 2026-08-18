@@ -1,6 +1,8 @@
 'use client';
 
-import { ImagePlus, LayoutTemplate, Plus } from 'lucide-react';
+import { FileText, ImagePlus, LayoutTemplate, Plus } from 'lucide-react';
+import Accordion from '@/components/admin/Accordion';
+import StatusPill from '@/components/admin/StatusPill';
 import AdminCard from '@/components/admin/AdminCard';
 import AdminPage from '@/components/admin/AdminPage';
 import { AdminEmpty } from '@/components/admin/AdminTable';
@@ -178,7 +180,11 @@ export default function TemplatesAdmin({
     >
       {error && <StatusBanner tone="error">{error}</StatusBanner>}
 
-      <AdminCard icon={<Plus className="size-14" aria-hidden />} title="New template">
+      <Accordion
+        icon={<Plus className="size-14" aria-hidden />}
+        title="New template"
+        description="Add a starting point members can pick when creating a project."
+      >
         <form onSubmit={(event) => void onCreate(event)} className="grid gap-12">
           <StudioField id="template-name" name="name" label="Name" required />
           <StudioField
@@ -226,7 +232,7 @@ export default function TemplatesAdmin({
             </StudioButton>
           </div>
         </form>
-      </AdminCard>
+      </Accordion>
 
       <AdminCard icon={<LayoutTemplate className="size-14" aria-hidden />} title="All templates">
         {templates.length === 0 ? (
@@ -241,13 +247,9 @@ export default function TemplatesAdmin({
                       <p className="text-[15px] font-medium text-[var(--studio-fg)]">
                         {template.name}
                       </p>
-                      <span className="inline-flex items-center gap-6 rounded-full border border-[var(--studio-line)] px-8 py-2 text-[11px] text-[var(--studio-muted)]">
-                        <span
-                          className={`size-6 shrink-0 rounded-full ${template.isActive ? 'bg-[var(--studio-accent)]' : 'bg-[var(--studio-faint)]'}`}
-                          aria-hidden
-                        />
+                      <StatusPill tone={template.isActive ? 'positive' : 'neutral'}>
                         {template.isActive ? 'Active' : 'Inactive'}
-                      </span>
+                      </StatusPill>
                     </div>
                     <p className="mt-4 text-[12px] text-[var(--studio-faint)]">
                       {template.slug} · {template.category} · {template.stack} · used{' '}
@@ -294,18 +296,24 @@ export default function TemplatesAdmin({
                     </label>
                   </div>
                 </div>
-                <StudioTextarea
-                  id={`template-prompt-${template.id}`}
-                  label="Prompt"
-                  defaultValue={template.prompt}
-                  rows={5}
-                  className="mt-12"
-                  onBlur={(event) => {
-                    if (event.target.value !== template.prompt) {
-                      void patch(template.id, { prompt: event.target.value });
-                    }
-                  }}
-                />
+                <div className="mt-12">
+                  <Accordion
+                    icon={<FileText className="size-13" aria-hidden />}
+                    title="Edit prompt"
+                  >
+                    <StudioTextarea
+                      id={`template-prompt-${template.id}`}
+                      label="Prompt"
+                      defaultValue={template.prompt}
+                      rows={8}
+                      onBlur={(event) => {
+                        if (event.target.value !== template.prompt) {
+                          void patch(template.id, { prompt: event.target.value });
+                        }
+                      }}
+                    />
+                  </Accordion>
+                </div>
               </li>
             ))}
           </ul>

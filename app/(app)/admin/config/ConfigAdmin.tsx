@@ -15,7 +15,9 @@ import {
 } from 'lucide-react';
 import AdminCard from '@/components/admin/AdminCard';
 import AdminPage from '@/components/admin/AdminPage';
+import AdminTabs, { type AdminTab } from '@/components/admin/AdminTabs';
 import StatusBanner from '@/components/admin/StatusBanner';
+import StatusPill, { type StatusTone } from '@/components/admin/StatusPill';
 import StudioButton from '@/components/app/studio/StudioButton';
 import type { DescribedSetting, SettingSource } from '@/lib/settings/resolve';
 import { cn } from '@/utils/cn';
@@ -41,20 +43,15 @@ const SOURCE_LABEL: Record<SettingSource, string> = {
   unset: 'Not set',
 };
 
-const SOURCE_DOT: Record<SettingSource, string> = {
-  db: 'bg-[var(--studio-accent)]',
-  env: 'bg-[var(--studio-muted)]',
-  fallback: 'bg-[var(--studio-faint)]',
-  unset: 'bg-transparent ring-1 ring-inset ring-[var(--studio-faint)]',
+const SOURCE_TONE: Record<SettingSource, StatusTone> = {
+  db: 'positive',
+  env: 'neutral',
+  fallback: 'neutral',
+  unset: 'faint',
 };
 
 function SourceBadge({ source }: { source: SettingSource }) {
-  return (
-    <span className="inline-flex shrink-0 items-center gap-6 rounded-full border border-[var(--studio-line)] px-8 py-3 text-[11px] text-[var(--studio-muted)]">
-      <span className={cn('size-6 shrink-0 rounded-full', SOURCE_DOT[source])} aria-hidden />
-      {SOURCE_LABEL[source]}
-    </span>
-  );
+  return <StatusPill tone={SOURCE_TONE[source]}>{SOURCE_LABEL[source]}</StatusPill>;
 }
 
 function SettingRow({
@@ -277,25 +274,6 @@ export default function ConfigAdmin({
         {configuredCount} of {settings.length} settings configured.
       </p>
 
-      <nav
-        aria-label="Jump to a settings group"
-        className="flex flex-wrap gap-6 border-b border-[var(--studio-line)] pb-16"
-      >
-        {visibleGroups.map((group) => {
-          const Icon = GROUP_ICON[group.id] ?? SlidersHorizontal;
-          return (
-            <a
-              key={group.id}
-              href={`#${group.id}`}
-              className="inline-flex items-center gap-6 rounded-full border border-[var(--studio-line)] px-10 py-6 text-[12px] text-[var(--studio-muted)] transition-colors duration-150 hover:border-[var(--studio-line-strong)] hover:text-[var(--studio-fg)]"
-            >
-              <Icon className="size-12" aria-hidden />
-              {group.label}
-            </a>
-          );
-        })}
-      </nav>
-
       {error && <StatusBanner tone="error">{error}</StatusBanner>}
       {saved !== null && (
         <StatusBanner tone="success">
@@ -303,70 +281,73 @@ export default function ConfigAdmin({
         </StatusBanner>
       )}
 
-      {visibleGroups.map((group) => {
-        const rows = byGroup.get(group.id) ?? [];
-        const checks = results[group.id];
-        const Icon = GROUP_ICON[group.id] ?? SlidersHorizontal;
-        return (
-          <AdminCard
-            key={group.id}
-            id={group.id}
-            title={group.label}
-            description={group.blurb}
-            icon={<Icon className="size-14" aria-hidden />}
-            actions={
-              <StudioButton
-                type="button"
-                variant="ghost"
-                disabled={testing === group.id}
-                onClick={() => void runTest(group.id)}
-              >
-                {testing === group.id ? 'Testing…' : 'Test'}
-              </StudioButton>
-            }
-          >
-            {checks && (
-              <div className="mb-16 space-y-8">
-                {checks.map((check) => (
-                  <div
-                    key={check.label}
-                    className="flex items-start gap-10 rounded-10 border border-[var(--studio-line)] px-12 py-10 text-[13px]"
+      <AdminTabs
+        tabs={visibleGroups.map((group): AdminTab => {
+          const Icon = GROUP_ICON[group.id] ?? SlidersHorizontal;
+          const rows = byGroup.get(group.id) ?? [];
+          const checks = results[group.id];
+          return {
+            id: group.id,
+            label: group.label,
+            icon: <Icon className="size-13" aria-hidden />,
+            panel: (
+              <AdminCard
+                description={group.blurb}
+                actions={
+                  <StudioButton
+                    type="button"
+                    variant="ghost"
+                    disabled={testing === group.id}
+                    onClick={() => void runTest(group.id)}
                   >
-                    <span
-                      className={cn(
-                        'mt-1 inline-block size-8 shrink-0 rounded-full',
-                        check.ok ? 'bg-[var(--studio-fg)]' : 'bg-[var(--studio-danger)]',
-                      )}
-                      aria-hidden
-                    />
-                    <span className="min-w-0">
-                      <span className="font-medium text-[var(--studio-fg)]">{check.label}</span>
-                      <span className="text-[var(--studio-muted)]"> — {check.message}</span>
-                      {check.depth === 'local' && (
-                        <span className="text-[var(--studio-faint)]">
-                          {' '}
-                          (not verified against the service)
+                    {testing === group.id ? 'Testing…' : 'Test'}
+                  </StudioButton>
+                }
+              >
+                {checks && (
+                  <div className="mb-16 space-y-8">
+                    {checks.map((check) => (
+                      <div
+                        key={check.label}
+                        className="flex items-start gap-10 rounded-10 border border-[var(--studio-line)] px-12 py-10 text-[13px]"
+                      >
+                        <span
+                          className={cn(
+                            'mt-1 inline-block size-8 shrink-0 rounded-full',
+                            check.ok ? 'bg-[var(--studio-fg)]' : 'bg-[var(--studio-danger)]',
+                          )}
+                          aria-hidden
+                        />
+                        <span className="min-w-0">
+                          <span className="font-medium text-[var(--studio-fg)]">{check.label}</span>
+                          <span className="text-[var(--studio-muted)]"> — {check.message}</span>
+                          {check.depth === 'local' && (
+                            <span className="text-[var(--studio-faint)]">
+                              {' '}
+                              (not verified against the service)
+                            </span>
+                          )}
                         </span>
-                      )}
-                    </span>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-            )}
+                )}
 
-            <div>
-              {rows.map((setting) => (
-                <SettingRow
-                  key={setting.key}
-                  setting={setting}
-                  draft={drafts[setting.key]}
-                  onChange={onChange}
-                />
-              ))}
-            </div>
-          </AdminCard>
-        );
-      })}
+                <div>
+                  {rows.map((setting) => (
+                    <SettingRow
+                      key={setting.key}
+                      setting={setting}
+                      draft={drafts[setting.key]}
+                      onChange={onChange}
+                    />
+                  ))}
+                </div>
+              </AdminCard>
+            ),
+          };
+        })}
+      />
 
       <AdminCard
         title="Set on the server"

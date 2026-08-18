@@ -2,6 +2,7 @@
 
 import { Server as ServerIcon } from 'lucide-react';
 import AdminCard from '@/components/admin/AdminCard';
+import StatusPill from '@/components/admin/StatusPill';
 import AdminPage from '@/components/admin/AdminPage';
 import { AdminTable, Td, Th, Tr } from '@/components/admin/AdminTable';
 import StatusBanner from '@/components/admin/StatusBanner';
@@ -157,13 +158,9 @@ export default function ServersAdmin({ initial }: { initial: PublicServer[] }) {
                 </div>
               </Td>
               <Td>
-                <span className="inline-flex items-center gap-6 rounded-full border border-[var(--studio-line)] px-8 py-2 text-[11px] text-[var(--studio-muted)]">
-                  <span
-                    className={`size-6 shrink-0 rounded-full ${server.isActive ? 'bg-[var(--studio-accent)]' : 'bg-[var(--studio-faint)]'}`}
-                    aria-hidden
-                  />
+                <StatusPill tone={server.isActive ? 'positive' : 'neutral'}>
                   {server.isActive ? 'Active' : 'Inactive'}
-                </span>
+                </StatusPill>
               </Td>
               <Td align="right">
                 <div className="flex flex-wrap items-center justify-end gap-8">

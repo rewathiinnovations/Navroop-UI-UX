@@ -35,6 +35,7 @@ export default function AdminCard({
       id={id}
       className={cn(
         'relative overflow-hidden rounded-14 border border-[var(--studio-line)] bg-[var(--studio-surface)]',
+        'shadow-[0_8px_30px_rgba(24,24,27,0.06)] dark:shadow-[0_8px_30px_rgba(0,0,0,0.28)]',
         padded && 'p-20',
         className,
       )}

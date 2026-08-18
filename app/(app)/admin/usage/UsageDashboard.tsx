@@ -4,6 +4,7 @@ import {
   AlertOctagon,
   Brain,
   Bug,
+  ChevronDown,
   DollarSign,
   FolderOpen,
   ShieldAlert,
@@ -336,54 +337,64 @@ export default function UsageDashboard() {
               <Th>Projects</Th>
               <Th>Generations</Th>
               <Th>Estimated spend</Th>
+              <Th align="right"> </Th>
             </>
           }
         >
-          {members.map((member) => (
-            <Fragment key={member.userId}>
-              <Tr className="cursor-pointer" onClick={() => void toggleMember(member)}>
-                <Td>
-                  <div className="font-medium text-[var(--studio-fg)]">{member.name}</div>
-                  <div className="text-[12px] text-[var(--studio-muted)]">{member.email}</div>
-                </Td>
-                <Td muted>{member.projectCount}</Td>
-                <Td muted>{member.generationCount}</Td>
-                <Td muted>{formatMoney(member.estimatedCost)}</Td>
-              </Tr>
-              {expanded === member.userId && (
-                <Tr>
-                  <Td colSpan={4}>
-                    {member.projects.length === 0 ? (
-                      <p className="text-[13px] text-[var(--studio-muted)]">
-                        No projects in this range.
-                      </p>
-                    ) : loadingProjects &&
-                      member.projects.some((project) => !eventsByProject[project.id]) ? (
-                      <p className="text-[13px] text-[var(--studio-muted)]">Loading projects…</p>
-                    ) : (
-                      <div className="space-y-16">
-                        {member.projects.map((project) => (
-                          <div key={project.id}>
-                            <p className="mb-8 text-[13px] font-medium text-[var(--studio-fg)]">
-                              {project.name}
-                            </p>
-                            <ul className="space-y-4 text-[12px] text-[var(--studio-muted)]">
-                              {(eventsByProject[project.id] || []).map((event, index) => (
-                                <li key={`${project.id}-${index}`}>
-                                  {event.kind} · {formatMoney(event.cost)} ·{' '}
-                                  {formatWhen(event.createdAt)}
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
-                        ))}
-                      </div>
-                    )}
+          {members.map((member) => {
+            const isOpen = expanded === member.userId;
+            return (
+              <Fragment key={member.userId}>
+                <Tr className="cursor-pointer" onClick={() => void toggleMember(member)}>
+                  <Td>
+                    <div className="font-medium text-[var(--studio-fg)]">{member.name}</div>
+                    <div className="text-[12px] text-[var(--studio-muted)]">{member.email}</div>
+                  </Td>
+                  <Td muted>{member.projectCount}</Td>
+                  <Td muted>{member.generationCount}</Td>
+                  <Td muted>{formatMoney(member.estimatedCost)}</Td>
+                  <Td align="right">
+                    <ChevronDown
+                      className={`ml-auto size-14 text-[var(--studio-faint)] transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`}
+                      aria-hidden
+                    />
                   </Td>
                 </Tr>
-              )}
-            </Fragment>
-          ))}
+                {isOpen && (
+                  <Tr>
+                    <Td colSpan={5}>
+                      {member.projects.length === 0 ? (
+                        <p className="text-[13px] text-[var(--studio-muted)]">
+                          No projects in this range.
+                        </p>
+                      ) : loadingProjects &&
+                        member.projects.some((project) => !eventsByProject[project.id]) ? (
+                        <p className="text-[13px] text-[var(--studio-muted)]">Loading projects…</p>
+                      ) : (
+                        <div className="space-y-16">
+                          {member.projects.map((project) => (
+                            <div key={project.id}>
+                              <p className="mb-8 text-[13px] font-medium text-[var(--studio-fg)]">
+                                {project.name}
+                              </p>
+                              <ul className="space-y-4 text-[12px] text-[var(--studio-muted)]">
+                                {(eventsByProject[project.id] || []).map((event, index) => (
+                                  <li key={`${project.id}-${index}`}>
+                                    {event.kind} · {formatMoney(event.cost)} ·{' '}
+                                    {formatWhen(event.createdAt)}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </Td>
+                  </Tr>
+                )}
+              </Fragment>
+            );
+          })}
         </AdminTable>
       </AdminCard>
 
