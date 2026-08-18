@@ -791,6 +791,32 @@ async function bootProject(
       action: 'sandbox',
       durationMs: Date.now() - bootStartedAt,
     });
+    // Self-heal for generations whose sandbox died before the post-build
+    // capture: the site sits in lastCode with no checkpoint and no static
+    // preview. Now that a sandbox is genuinely READY, take the checkpoint
+    // (which also drives the preview capture) — detached and logged, never
+    // blocking the boot response.
+    void (async () => {
+      try {
+        const checkpointCount = await prisma.checkpoint.count({ where: { projectId } });
+        if (checkpointCount > 0) return;
+        const row = await prisma.project.findUnique({
+          where: { id: projectId },
+          select: { lastCode: true },
+        });
+        if (!row?.lastCode) return;
+        const { createCheckpointAfterGeneration } = await import('@/lib/checkpoints/actions');
+        await createCheckpointAfterGeneration(projectId, {
+          previousPhase: 'COMPLETE',
+          previewUrl: previewUrl || null,
+        });
+      } catch (error) {
+        log.warn('sandbox.ready_capture_failed', {
+          projectId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    })();
     return {
       sandboxId: createdInfo.sandboxId,
       previewUrl: previewUrl || '',
