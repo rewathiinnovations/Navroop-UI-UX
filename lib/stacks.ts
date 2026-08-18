@@ -10,14 +10,7 @@
  * so create-sandbox is not hardcoded.
  */
 
-export const STACK_IDS = [
-  'NEXTJS',
-  'REACT',
-  'ASTRO',
-  'STATIC_HTML',
-  'VUE',
-  'SVELTE',
-] as const;
+export const STACK_IDS = ['NEXTJS', 'REACT', 'STATIC_HTML'] as const;
 
 export type StackId = (typeof STACK_IDS)[number];
 
@@ -147,39 +140,6 @@ const STACKS: Record<StackId, StackDefinition> = {
     previewOutputDir: 'dist',
     spaFallback: true,
   },
-  ASTRO: {
-    id: 'ASTRO',
-    label: 'Astro',
-    hasNodeDependencies: true,
-    // Must bind 0.0.0.0:5173 or the sandbox preview proxy gets 403/refused —
-    // astro's defaults are localhost:4321.
-    devCommand: 'astro dev --host 0.0.0.0 --port 5173',
-    installCommand: 'npm install',
-    fileExtension: '.astro',
-    sandboxTemplate: GENERIC_NODE_SANDBOX,
-    configFiles: [
-      ...NODE_LOCK_FILES,
-      'astro.config.mjs',
-      'astro.config.ts',
-      'astro.config.js',
-      'tailwind.config.js',
-      'tailwind.config.mjs',
-    ],
-    frameworkPackages: ['astro'],
-    listExtensions: ['.astro', '.ts', '.js', '.css', '.json', '.md', '.mdx'],
-    entryPoint: 'src/pages/index.astro',
-    buildCommand: 'npm run build',
-    outputDir: 'dist',
-    deployType: 'static',
-    startCommand: null,
-    dockerfile: null,
-    port: null,
-    seoHint: 'SSR — best for SEO',
-    canStaticPreview: true,
-    previewBuildCommand: 'npm run build',
-    previewOutputDir: 'dist',
-    spaFallback: false,
-  },
   STATIC_HTML: {
     id: 'STATIC_HTML',
     label: 'Static HTML',
@@ -203,72 +163,6 @@ const STACKS: Record<StackId, StackDefinition> = {
     previewBuildCommand: null,
     previewOutputDir: '.',
     spaFallback: false,
-  },
-  VUE: {
-    id: 'VUE',
-    label: 'Vue 3 (Vite)',
-    hasNodeDependencies: true,
-    // TODO(nuxt): Vue 3 + Vite only — not Nuxt. Nuxt SSR is a separate follow-up.
-    // Do not implement Nuxt here (no nuxt.config, no pages/ Nuxt conventions).
-    // --host: bind 0.0.0.0 so the sandbox preview proxy can reach the server.
-    devCommand: 'vite dev --host',
-    installCommand: 'npm install',
-    fileExtension: '.vue',
-    sandboxTemplate: GENERIC_NODE_SANDBOX,
-    configFiles: [
-      ...NODE_LOCK_FILES,
-      'vite.config.js',
-      'vite.config.ts',
-      'tailwind.config.js',
-      'postcss.config.js',
-    ],
-    frameworkPackages: ['vue'],
-    listExtensions: ['.vue', '.ts', '.js', '.css', '.json'],
-    entryPoint: 'src/main.js',
-    buildCommand: 'npm run build',
-    outputDir: 'dist',
-    deployType: 'static',
-    startCommand: null,
-    dockerfile: null,
-    port: null,
-    seoHint: 'SPA — weaker SEO',
-    canStaticPreview: true,
-    previewBuildCommand: 'npm run build',
-    previewOutputDir: 'dist',
-    spaFallback: true,
-  },
-  SVELTE: {
-    id: 'SVELTE',
-    label: 'SvelteKit (Vite)',
-    hasNodeDependencies: true,
-    // SvelteKit's Vite-based `vite dev` (not `svelte-kit dev`).
-    // --host: bind 0.0.0.0 so the sandbox preview proxy can reach the server.
-    devCommand: 'vite dev --host',
-    installCommand: 'npm install',
-    fileExtension: '.svelte',
-    sandboxTemplate: GENERIC_NODE_SANDBOX,
-    configFiles: [
-      ...NODE_LOCK_FILES,
-      'vite.config.js',
-      'vite.config.ts',
-      'svelte.config.js',
-      'tailwind.config.js',
-      'postcss.config.js',
-    ],
-    frameworkPackages: ['svelte', '@sveltejs/kit'],
-    listExtensions: ['.svelte', '.ts', '.js', '.css', '.json'],
-    entryPoint: 'src/routes/+page.svelte',
-    buildCommand: 'npm run build',
-    outputDir: 'build',
-    deployType: 'static',
-    startCommand: null,
-    dockerfile: null,
-    port: null,
-    seoHint: 'SPA — weaker SEO',
-    canStaticPreview: true,
-    previewBuildCommand: 'npm run build',
-    previewOutputDir: 'build',
-    spaFallback: true,
   },
 };
 
@@ -331,11 +225,7 @@ export function isStackConfigFile(stack: string, filePath: string): boolean {
  * already provided by the scaffold. Never applies the React skip list to other stacks.
  */
 export function shouldSkipPackageInstall(stack: string, importPath: string): boolean {
-  if (
-    importPath.startsWith('.') ||
-    importPath.startsWith('/') ||
-    importPath.startsWith('@/')
-  ) {
+  if (importPath.startsWith('.') || importPath.startsWith('/') || importPath.startsWith('@/')) {
     return true;
   }
   const packageName = importPath.startsWith('@')
@@ -377,14 +267,8 @@ function initialBuildEntryCandidates(stack: string): string[] {
       return ['app/page.tsx', 'app/page.jsx'];
     case 'REACT':
       return ['src/App.jsx', 'src/App.tsx'];
-    case 'ASTRO':
-      return ['src/pages/index.astro'];
     case 'STATIC_HTML':
       return ['index.html'];
-    case 'VUE':
-      return ['src/App.vue'];
-    case 'SVELTE':
-      return ['src/routes/+page.svelte'];
     default: {
       const id: never = getStack(stack).id as never;
       throw new Error(`Missing initial-build entry candidates for "${id}"`);

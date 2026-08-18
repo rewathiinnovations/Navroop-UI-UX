@@ -5,22 +5,13 @@ import type { FileInfo, RouteInfo } from '@/types/file-manifest';
  * Extract routes using each stack's filesystem / router conventions.
  * Registry-driven via getStack() — no silent React Router fallback.
  */
-export function extractStackRoutes(
-  stack: string,
-  files: Record<string, FileInfo>,
-): RouteInfo[] {
+export function extractStackRoutes(stack: string, files: Record<string, FileInfo>): RouteInfo[] {
   const id = getStack(stack).id;
   switch (id) {
     case 'REACT':
       return extractReactRouterRoutes(files);
     case 'NEXTJS':
       return extractNextAppRoutes(files);
-    case 'ASTRO':
-      return extractAstroRoutes(files);
-    case 'VUE':
-      return extractVueRoutes(files);
-    case 'SVELTE':
-      return extractSvelteKitRoutes(files);
     case 'STATIC_HTML':
       return extractStaticHtmlRoutes(files);
     default: {
@@ -99,73 +90,15 @@ function extractNextAppRoutes(files: Record<string, FileInfo>): RouteInfo[] {
   return routes;
 }
 
-function extractAstroRoutes(files: Record<string, FileInfo>): RouteInfo[] {
-  const routes: RouteInfo[] = [];
-  for (const [path, file] of Object.entries(files)) {
-    const rel = normalizeRel(file);
-    const match = rel.match(/^(?:src\/)?pages\/(.+)\.(astro|md|mdx)$/);
-    if (!match) continue;
-    const withoutExt = match[1].replace(/\/index$/, '').replace(/^index$/, '');
-    const segments = withoutExt.split('/').filter(Boolean).map(dynamicToParam);
-    routes.push({
-      path: '/' + segments.join('/'),
-      component: path,
-    });
-  }
-  return routes;
-}
-
-function extractSvelteKitRoutes(files: Record<string, FileInfo>): RouteInfo[] {
-  const routes: RouteInfo[] = [];
-  for (const [path, file] of Object.entries(files)) {
-    const rel = normalizeRel(file);
-    const match = rel.match(/^src\/routes\/(?:(.*)\/)?\+page\.(svelte|ts|js)$/);
-    if (!match) continue;
-    const segments = (match[1] || '')
-      .split('/')
-      .filter(Boolean)
-      .map(dynamicToParam);
-    routes.push({
-      path: '/' + segments.join('/'),
-      component: path,
-    });
-  }
-  return routes;
-}
-
-function extractVueRoutes(files: Record<string, FileInfo>): RouteInfo[] {
-  const routes: RouteInfo[] = [];
-
-  for (const [path, file] of Object.entries(files)) {
-    const rel = normalizeRel(file);
-
-    if (file.content.includes('createRouter') || file.content.includes('vue-router')) {
-      const matches = file.content.matchAll(/path:\s*['"]([^'"]+)['"]/g);
-      for (const match of matches) {
-        routes.push({ path: match[1], component: path });
-      }
-    }
-
-    const pageMatch = rel.match(/^src\/(?:pages|views)\/(.+)\.vue$/);
-    if (pageMatch) {
-      const withoutIndex = pageMatch[1].replace(/\/index$/, '').replace(/^index$/, '');
-      const segments = withoutIndex.split('/').filter(Boolean).map(dynamicToParam);
-      routes.push({
-        path: '/' + segments.join('/'),
-        component: path,
-      });
-    }
-  }
-
-  return routes;
-}
-
 function extractStaticHtmlRoutes(files: Record<string, FileInfo>): RouteInfo[] {
   const routes: RouteInfo[] = [];
   for (const [path, file] of Object.entries(files)) {
     const rel = normalizeRel(file);
     if (!rel.endsWith('.html')) continue;
-    const withoutExt = rel.replace(/\.html$/, '').replace(/\/index$/, '').replace(/^index$/, '');
+    const withoutExt = rel
+      .replace(/\.html$/, '')
+      .replace(/\/index$/, '')
+      .replace(/^index$/, '');
     routes.push({
       path: '/' + withoutExt,
       component: path,

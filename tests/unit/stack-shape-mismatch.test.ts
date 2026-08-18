@@ -17,16 +17,13 @@ describe('stackShapeMismatch', () => {
     ['REACT', ['src/App.jsx', 'src/components/Header.jsx']],
     ['REACT', ['./src/App.tsx']],
     ['NEXTJS', ['app/page.tsx', 'app/layout.tsx']],
-    ['ASTRO', ['src/pages/index.astro']],
     ['STATIC_HTML', ['index.html', 'styles.css']],
-    ['VUE', ['src/App.vue']],
-    ['SVELTE', ['src/routes/+page.svelte']],
   ] as const)('accepts a well-formed %s build', (stack, paths) => {
     expect(stackShapeMismatch(stack, [...paths])).toBeNull();
   });
 
   it('flags an empty or off-layout file set for every stack', () => {
-    for (const stack of ['NEXTJS', 'REACT', 'ASTRO', 'STATIC_HTML', 'VUE', 'SVELTE']) {
+    for (const stack of ['NEXTJS', 'REACT', 'STATIC_HTML']) {
       expect(stackShapeMismatch(stack, ['README.md'])).toBeTruthy();
     }
   });

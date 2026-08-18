@@ -28,10 +28,7 @@ enum ProjectPlanStatus {
 enum Stack {
   NEXTJS
   REACT
-  ASTRO
   STATIC_HTML
-  VUE
-  SVELTE
 }
 
 enum SandboxStatus {

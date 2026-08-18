@@ -1,9 +1,6 @@
 import { getStack, type StackId } from '@/lib/stacks';
-import { astroScaffold } from './astro';
 import { nextjsScaffold } from './nextjs';
 import { staticHtmlScaffold } from './static-html';
-import { svelteScaffold } from './svelte';
-import { vueScaffold } from './vue';
 import type { ScaffoldFile } from './shared';
 
 export type { ScaffoldFile } from './shared';
@@ -27,12 +24,6 @@ function loadScaffold(id: Exclude<StackId, 'REACT'>, devCommand: string): Scaffo
   switch (id) {
     case 'NEXTJS':
       return nextjsScaffold(devCommand);
-    case 'ASTRO':
-      return astroScaffold(devCommand);
-    case 'VUE':
-      return vueScaffold(devCommand);
-    case 'SVELTE':
-      return svelteScaffold(devCommand);
     case 'STATIC_HTML':
       return staticHtmlScaffold();
     default: {

@@ -12,9 +12,6 @@ const STACK_SEO: Record<StackId, string> = {
   NEXTJS: `NEXT.JS metadata:
 - Use the Metadata API or generateMetadata in each app/**/page.tsx (and root layout defaults). Never a client-only document.title.
 - Add app/sitemap.ts and app/robots.ts (App Router). Do not skip these files.`,
-  ASTRO: `ASTRO metadata:
-- Set title, description, canonical, OG, and Twitter in frontmatter or a shared BaseLayout <head>.
-- Add @astrojs/sitemap in astro.config. Include robots.txt.`,
   STATIC_HTML: `STATIC HTML metadata:
 - Literal <head> on every .html page: title, description, canonical, OG, Twitter, json-ld.
 - Literal robots.txt and sitemap.xml listing every page.`,
@@ -22,16 +19,6 @@ const STACK_SEO: Record<StackId, string> = {
 - Put title/meta in the document head file (index.html and any helmet/head helper).
 - Client-only meta is unreliable for social bots and many crawlers. Do not pretend SPA meta is enough for sharing or AEO. Recommend Next.js or Astro for public marketing sites.
 - Still ship static robots.txt + sitemap.xml of known routes.
-- Add an HTML comment in the head/meta file: <!-- Client-rendered meta is unreliable for social bots; prefer Next.js or Astro for public SEO. -->`,
-  VUE: `VUE + VITE head:
-- Use the stack head manager (index.html + vue-router meta or useHead if already present).
-- Client-only meta is unreliable for social bots and many crawlers. Do not pretend SPA meta is enough for sharing or AEO. Recommend Next.js or Astro for public marketing sites.
-- Still ship static robots.txt + sitemap.xml of known routes.
-- Add an HTML comment in the head/meta file: <!-- Client-rendered meta is unreliable for social bots; prefer Next.js or Astro for public SEO. -->`,
-  SVELTE: `SVELTE / SVELTEKIT head:
-- Use <svelte:head> in +layout/+page. Still treat public SEO as weaker than Next/Astro unless pages are server-rendered.
-- Client-only meta is unreliable for social bots. Do not pretend SPA meta is enough. Recommend Next.js or Astro for public marketing sites.
-- Still ship static robots.txt + sitemap.xml of known routes (or SvelteKit sitemap endpoints).
 - Add an HTML comment in the head/meta file: <!-- Client-rendered meta is unreliable for social bots; prefer Next.js or Astro for public SEO. -->`,
 };
 
