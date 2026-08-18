@@ -48,8 +48,13 @@ describe('commandResultFromE2BExecution', () => {
     const result = commandResultFromE2BExecution({
       logs: { stdout: ['STDOUT:', '', 'Return code: 1'], stderr: [] },
     });
+    // The return code is still read from the printed text — that is this test's subject and
+    // it is unchanged. What the caller receives as `stdout` no longer carries the envelope:
+    // `STDOUT:` and `Return code: 1` are the wire format, and a caller that splits stdout
+    // into lines (the static preview's file listing) took them for filenames.
+    // `e2b-command-envelope.test.ts` owns that behaviour.
     expect(result).toEqual({
-      stdout: 'STDOUT:\n\nReturn code: 1',
+      stdout: '',
       stderr: '',
       exitCode: 1,
       success: false,
