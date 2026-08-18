@@ -4,6 +4,11 @@ never repeats.
 ---
 (newest entries on top)
 
+### [2026-08-18] — a SUCCEEDED job with filesWritten is not a site if persist never ran
+- **What happened:** Stream complete plus job `filesWritten` looked like a finished build. The job settled SUCCEEDED and phase went COMPLETE while `lastCode` and checkpoints were empty.
+- **Root cause:** Streamed `<file>` blocks are progress, not persist. Persist never ran when the sandbox was FAILED or DEAD.
+- **Rule going forward:** A SUCCEEDED job with `filesWritten` is not a site if persist never ran. `settleStreamedGeneration` fails `sandbox_unavailable`; phase uses `resumablePhaseFromEvidence` (`lastCode` / checkpoint only).
+
 ### [2026-08-18] — AI SDK `textStream` swallows provider errors unless `onError` is captured
 - **What happened:** A Gemini identity / unregistered-caller rejection arrived on `streamText().onError` while `textStream` yielded nothing. The run looked like an empty completion and chat asked the user to describe the change in more detail.
 - **Root cause:** AI SDK `textStream` drops error parts. The default `onError` only `console.error`s them. Without capturing that callback, `surfaceStreamFailure` never sees the provider error.
@@ -107,7 +112,7 @@ never repeats.
 ### [2026-08-17] — React Compiler hook rules vs verify
 - **What happened:** `eslint . --max-warnings 0` failed with 89 errors after eslint-config-next started shipping React Compiler rules (`set-state-in-effect`, `immutability`, `refs`, `purity`).
 - **Root cause:** Fetch-on-mount / sync-from-storage `setState` is everywhere. Compiler rules also lint vendored `.cursor/skills` CommonJS scripts.
-- **Rule going forward:** Keep `set-state-in-effect` off with `exhaustive-deps` / `prefer-const` (documented in `docs/release.md`). Ignore `.cursor/**`. Fix `immutability` / `refs` / `purity` in source when cheap; do not rewrite `app/generation/page.tsx` to reorder functions.
+- **Rule going forward:** Keep `set-state-in-effect` off with `exhaustive-deps` / `prefer-const` (documented in `docs/release.md`). Ignore `.cursor/**`. Fix `immutability` / `refs` / `purity` in source when cheap; do not rewrite `components/workspace/GenerationWorkspace.tsx` to reorder functions.
 
 ### [2026-08-17] — Stale `.next/types` is not source of truth
 - **What happened:** `tsc --noEmit` failed first on `.next/types/validator.ts` looking for `app/admin/page.js` after pages moved to `app/(app)/admin`.

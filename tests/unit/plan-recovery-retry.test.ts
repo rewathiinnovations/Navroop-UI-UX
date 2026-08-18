@@ -24,7 +24,7 @@ import { retryProjectPlan } from '@/lib/projects/plan-client';
 
 const PROJECT_WORKSPACE = path.join(process.cwd(), 'components/workspace/ProjectWorkspace.tsx');
 const RECOVERY_PANEL = path.join(process.cwd(), 'components/workspace/RecoveryPanel.tsx');
-const GENERATION_PAGE = path.join(process.cwd(), 'app/generation/page.tsx');
+const GENERATION_PAGE = path.join(process.cwd(), 'components/workspace/GenerationWorkspace.tsx');
 
 const PROMPT = 'a bakery site';
 

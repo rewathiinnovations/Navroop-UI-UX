@@ -40,7 +40,8 @@ import { log, logError } from '@/lib/logger';
 import { trackFailure, trackStart, trackSuccess } from '@/lib/observability/track';
 import { acquireLock, beginLockHeartbeat, releaseLock } from '@/lib/projects/lock';
 import { lockConflictJson } from '@/lib/projects/lock-http';
-import { beginJobHeartbeat, createOrReuseJob, failJob, markJobRunning, succeedJob } from '@/lib/jobs/lifecycle';
+import { beginJobHeartbeat, createOrReuseJob, failJob, markJobRunning } from '@/lib/jobs/lifecycle';
+import { settleStreamedGeneration } from '@/lib/jobs/settle-generation';
 import { createProgressBatcher } from '@/lib/jobs/progress';
 import { ensureJobSettled } from '@/lib/jobs/settle';
 import { recordJobStepFailure } from '@/lib/jobs/step-failure';
@@ -648,6 +649,11 @@ User request: "${prompt}"`;
               }
             } catch (error) {
               console.error('[generate-ai-code-stream] Error in agentic search workflow:', error);
+              await recordJobStepFailure(generationJob?.id, {
+                key: 'analyze-edit-intent',
+                label: 'Plan the edit',
+                error: error instanceof Error ? error.message : String(error),
+              });
               await sendProgress({ 
                 type: 'status', 
                 message: '⚠️ Search workflow error, falling back to keyword method...'
@@ -838,6 +844,11 @@ Remember: You are a SURGEON making a precise incision, not an artist repainting 
                       }
                     } catch (error) {
                       console.error('[generate-ai-code-stream] Error analyzing intent after fetch:', error);
+                      await recordJobStepFailure(generationJob?.id, {
+                        key: 'analyze-edit-intent',
+                        label: 'Plan the edit',
+                        error: error instanceof Error ? error.message : String(error),
+                      });
                     }
                   }
                 } else {
@@ -868,6 +879,11 @@ Remember: You are a SURGEON making a precise incision, not an artist repainting 
                   });
                   sandboxReadWarned = true;
                 }
+                await recordJobStepFailure(generationJob?.id, {
+                  key: 'read-sandbox-files',
+                  label: 'Read current files',
+                  error: error instanceof Error ? error.message : String(error),
+                });
               }
             } else {
               console.log('[generate-ai-code-stream] No active sandbox to fetch files from');
@@ -1132,6 +1148,11 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
                         }
                       } catch (error) {
                         console.error('[generate-ai-code-stream] Failed to analyze edit intent:', error);
+                        await recordJobStepFailure(generationJob?.id, {
+                          key: 'analyze-edit-intent',
+                          label: 'Plan the edit',
+                          error: error instanceof Error ? error.message : String(error),
+                        });
                       }
                     }
                   }
@@ -1161,6 +1182,11 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
               }
             } catch (error) {
               console.error('[generate-ai-code-stream] Failed to fetch sandbox files:', error);
+              await recordJobStepFailure(generationJob?.id, {
+                key: 'read-sandbox-files',
+                label: 'Read current files',
+                error: error instanceof Error ? error.message : String(error),
+              });
             }
           }
           
@@ -1965,6 +1991,7 @@ Provide the complete file content without any truncation. Include all necessary 
             })
           : null;
 
+        let streamSettle: Awaited<ReturnType<typeof settleStreamedGeneration>> | null = null;
         if (generationJob) {
           await jobProgress?.flush();
           // The tokens were spent either way, so they are recorded either way.
@@ -1976,34 +2003,33 @@ Provide the complete file content without any truncation. Include all necessary 
             provider: servedProvider,
             model: servedModel,
           });
-          // A settle that throws here must not be reported to the user as a generation
-          // failure — the files exist either way — but it must not vanish either.
+          // Streamed files are not a finished site. A sandbox that never went READY
+          // must not settle SUCCEEDED / COMPLETE with lastCode still null.
           try {
-            if (noChangeReason) {
-              await failJob(generationJob.id, {
-                errorCode: 'no_files_generated',
-                errorMessage: noChangeReason,
-                tokensIn: inputTokens,
-                tokensOut: outputTokens,
-                estimatedCostUsd,
-                provider: servedProvider,
-                model: servedModel,
-              });
-            } else {
-              await succeedJob(generationJob.id, {
-                tokensIn: inputTokens,
-                tokensOut: outputTokens,
-                estimatedCostUsd,
-                provider: servedProvider,
-                model: servedModel,
-              });
-            }
+            streamSettle = await settleStreamedGeneration({
+              jobId: generationJob.id,
+              producedFiles: files.length,
+              noChangeReason,
+              tokensIn: inputTokens,
+              tokensOut: outputTokens,
+              estimatedCostUsd,
+              provider: servedProvider,
+              model: servedModel,
+            });
           } catch (settleError) {
             await reportSettleFailure({
               jobId: generationJob.id,
               intended: noChangeReason ? 'failed' : 'succeeded',
               error: settleError,
             });
+            streamSettle = {
+              outcome: 'failed',
+              errorCode: 'settle_write_failed',
+              errorMessage:
+                settleError instanceof Error
+                  ? settleError.message
+                  : 'The generated files were not saved because we could not record the build.',
+            };
           }
         }
 
@@ -2033,6 +2059,31 @@ Provide the complete file content without any truncation. Include all necessary 
           // no-project-files branch above collapses its `warning`.
           await sendProgress({ type: 'conversation', text: noChangeReason });
           await sendProgress({ type: 'error', error: noChangeReason });
+          return;
+        }
+
+        if (streamSettle?.outcome === 'failed') {
+          const persistMiss =
+            streamSettle.errorMessage ||
+            'The generated files were not saved because the workspace never became ready.';
+          log.warn('generation.persist_miss', {
+            jobId: generationJob?.id ?? null,
+            errorCode: streamSettle.errorCode ?? null,
+            sandboxFailed: true,
+          });
+          await recordJobStepFailure(generationJob?.id, {
+            key: 'persist-generation',
+            label: 'Save the generated files',
+            error: persistMiss,
+          });
+          trackFailure('generation.failure', new Error(streamSettle.errorCode || 'sandbox_unavailable'), {
+            action: 'generation',
+            stack: projectStack,
+            model,
+            durationMs: Date.now() - startedAt,
+          });
+          await sendProgress({ type: 'conversation', text: persistMiss });
+          await sendProgress({ type: 'error', error: persistMiss });
           return;
         }
 

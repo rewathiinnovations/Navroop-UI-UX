@@ -40,7 +40,7 @@ import { createWithFailover } from '@/lib/sandbox/failover';
 import { getProviderConfig, listProviderConfigs } from '@/lib/sandbox/store';
 import { accrueProviderUsage, rollAllProviderPeriods } from '@/lib/sandbox/accounting';
 import { migrateEnvSandboxProvider } from '@/lib/sandbox/migrate-env';
-import { recordSandboxAttempts } from '@/lib/sandbox/job-attempts';
+import { markSandboxAttemptBootFailed, recordSandboxAttempts } from '@/lib/sandbox/job-attempts';
 import type { ProviderCandidate } from '@/lib/sandbox/router';
 import {
   previewNeverBecameReadyMessage,
@@ -584,6 +584,25 @@ async function bootProject(
 
   let provider: SandboxProvider | null = null;
   let selectedConfig: ProviderCandidate | null = null;
+  const attempts: Array<{
+    configId: string;
+    driver: string;
+    ok: boolean;
+    error?: string;
+    at: string;
+    selectionReason?: string;
+  }> = [];
+  const persistBootAttempts = async (ok: boolean, error?: string) => {
+    try {
+      const rows = ok ? attempts : markSandboxAttemptBootFailed(attempts, error ?? 'Sandbox boot failed');
+      await recordSandboxAttempts(project.activeJobId, rows, ok ? selectedConfig?.id ?? null : null);
+    } catch (recordError) {
+      log.error('sandbox.attempt_record_failed', {
+        projectId,
+        error: recordError instanceof Error ? recordError.message : String(recordError),
+      });
+    }
+  };
   try {
     setStep(projectId, 'create');
     await migrateEnvSandboxProvider();
@@ -604,7 +623,6 @@ async function bootProject(
         .map(toCandidate)
         .filter((row) => row.id !== selected.id),
     ];
-    const attempts: Array<{ configId: string; driver: string; ok: boolean; error?: string; at: string }> = [];
     const created = await createWithFailover({
       candidates: ordered,
       create: async (row) => {
@@ -627,8 +645,10 @@ async function bootProject(
               }),
             );
           }
+          await recordSandboxAttempts(project.activeJobId, attempts, null);
+          return;
         }
-        await recordSandboxAttempts(project.activeJobId, attempts, attempt.ok ? attempt.configId : null);
+        // create() returning a handle is not a READY boot — persist ok:true after poll.
       },
     });
     provider = created.driver;
@@ -683,6 +703,7 @@ async function bootProject(
     `;
     lastErrors.delete(projectId);
     bootSteps.delete(projectId);
+    await persistBootAttempts(true);
     trackSuccess('sandbox.cold_start.success', {
       action: 'sandbox',
       durationMs: Date.now() - bootStartedAt,
@@ -735,6 +756,7 @@ async function bootProject(
           requestId: wrapped.requestId,
         });
         lastErrors.set(projectId, { step: leaked.step, message: leaked.message, requestId });
+        await persistBootAttempts(false, bootMessage);
         throw leaked;
       }
     }
@@ -748,8 +770,10 @@ async function bootProject(
         requestId: wrapped.requestId,
       });
       lastErrors.set(projectId, { step: settled.step, message: settled.message, requestId });
+      await persistBootAttempts(false, bootMessage);
       throw settled;
     }
+    await persistBootAttempts(false, bootMessage);
     throw wrapped;
   }
 }

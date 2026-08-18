@@ -9,7 +9,7 @@ import { applyOutcome } from '@/lib/jobs/copy';
  * warning. Chat must reuse applyOutcome — one vocabulary for one fact.
  */
 
-const PAGE = readFileSync(join(process.cwd(), 'app/generation/page.tsx'), 'utf8');
+const PAGE = readFileSync(join(process.cwd(), 'components/workspace/GenerationWorkspace.tsx'), 'utf8');
 const APPLY_JSON = readFileSync(join(process.cwd(), 'app/api/apply-ai-code/route.ts'), 'utf8');
 
 describe('generation page apply copy — source', () => {

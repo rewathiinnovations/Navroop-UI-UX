@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createWithFailover } from '../../lib/sandbox/failover';
-import { toStoredSandboxChoice } from '../../lib/sandbox/job-attempts';
+import { markSandboxAttemptBootFailed, toStoredSandboxChoice } from '../../lib/sandbox/job-attempts';
 import { rankAndSelect, type ProviderCandidate } from '../../lib/sandbox/router';
 import { sandboxChoiceLines } from '../../lib/jobs/sandbox-choice';
 import { parseResourceIds } from '../../lib/jobs/types';
@@ -209,5 +209,30 @@ describe('stored sandbox choice never carries secrets', () => {
     expect(lines.some((line) => line.includes('monthly free credit'))).toBe(true);
     expect(lines.some((line) => line.includes('E2B cheap'))).toBe(true);
     expect(lines.some((line) => line.includes('modal'))).toBe(true);
+  });
+});
+
+describe('sandboxAttempts.ok is boot outcome, not provider selection', () => {
+  it('flips a create-ok attempt to ok:false when ready/teardown later fails', () => {
+    const afterCreate = toStoredSandboxChoice([
+      {
+        configId: 'modal-1',
+        driver: 'modal',
+        ok: true,
+        at: '2026-08-18T03:00:00.000Z',
+        selectionReason: 'Model — monthly free credit; not checked yet — still eligible so a first boot can run.',
+      },
+    ]).sandboxAttempts;
+    expect(afterCreate[0]?.ok).toBe(true);
+
+    const afterReadyFail = markSandboxAttemptBootFailed(
+      afterCreate,
+      'Modal created a sandbox but the preview never became ready (The operation was aborted due to timeout). The unused sandbox was asked to stop.',
+    );
+    expect(afterReadyFail[0]?.ok).toBe(false);
+    expect(afterReadyFail[0]?.error).toMatch(/preview never became ready/);
+    expect(afterReadyFail[0]?.error).toMatch(/asked to stop/);
+    expect(afterReadyFail[0]?.error).not.toMatch(/stopped so it is not billed/);
+    expect(afterReadyFail[0]?.selectionReason).toMatch(/monthly free credit/);
   });
 });

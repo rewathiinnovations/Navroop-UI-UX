@@ -140,23 +140,6 @@ export async function proxy(request: NextRequest) {
     return withRequestId(request, NextResponse.redirect(new URL(loginModalHref(next), request.url)));
   }
 
-  /**
-   * `/generation` is a legacy entry point, but app/generation/page.tsx is not
-   * dead: app/project/[id]/page.tsx imports it as the workspace component. This
-   * rule closes the route while leaving the module in place. Removing it would
-   * expose a workspace with no project id attached.
-   */
-  if (pathname === '/generation' || pathname.startsWith('/generation/')) {
-    const project = request.nextUrl.searchParams.get('project');
-    if (project) {
-      return withRequestId(request, NextResponse.redirect(new URL(`/project/${project}`, request.url)));
-    }
-    if (session) {
-      return withRequestId(request, NextResponse.redirect(new URL('/dashboard', request.url)));
-    }
-    return withRequestId(request, NextResponse.redirect(new URL(loginModalHref(pathname), request.url)));
-  }
-
   if (session && AUTH_PAGES.has(pathname)) {
     return withRequestId(request, NextResponse.redirect(new URL('/dashboard', request.url)));
   }

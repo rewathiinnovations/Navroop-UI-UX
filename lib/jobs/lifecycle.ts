@@ -508,15 +508,12 @@ export async function succeedJob(
   } else if (job.kind === 'AUDIT' || job.kind === 'PUBLISH' || job.kind === 'DOMAIN_VERIFY' || job.kind === 'EXPORT' || job.kind === 'TEMPLATE_THUMBNAIL') {
     await setProjectActiveJob(job.projectId, null);
   } else {
-    await prisma.$executeRaw`
-      UPDATE "Project"
-      SET
-        phase = 'COMPLETE'::"ProjectPhase",
-        "generationStatus" = 'ready',
-        "activeJobId" = NULL,
-        "updatedAt" = NOW()
-      WHERE id = ${job.projectId}
-    `;
+    const phase = await resolveResumablePhase(job.projectId);
+    await setProjectResumablePhase(
+      job.projectId,
+      phase,
+      phase === 'COMPLETE' ? 'ready' : 'idle',
+    );
   }
   await releaseLockQuietly(job.projectId, job.userId);
   return settled;

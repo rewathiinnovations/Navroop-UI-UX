@@ -44,6 +44,23 @@ export function toStoredSandboxChoice(attempts: CreateAttempt[]): {
   return { sandboxAttempts, sandboxSkipped };
 }
 
+/**
+ * `ok` on a stored attempt means the boot finished READY — not that the
+ * provider was selected or that `create()` returned a handle. A later
+ * ready/install failure must flip the last create-ok row.
+ */
+export function markSandboxAttemptBootFailed<T extends { ok: boolean; error?: string }>(
+  attempts: T[],
+  error: string,
+): T[] {
+  if (attempts.length === 0) return attempts;
+  const last = attempts.length - 1;
+  return attempts.map((attempt, index) => {
+    if (index !== last) return attempt;
+    return { ...attempt, ok: false, error };
+  });
+}
+
 export async function recordSandboxAttempts(
   jobId: string | null | undefined,
   attempts: CreateAttempt[],

@@ -76,15 +76,21 @@ export function approvedBuildPrompt(plan: WorkspacePlan) {
 
 export type VisualEditTool = 'select' | 'text' | 'instruct' | 'comment';
 
-/** Append new workspace tabs here so TopBar stays a single mapped row. */
-export const WORKSPACE_TABS = [
+/** Labeled Preview/Code control in the top bar. */
+export const WORKSPACE_PRIMARY_TABS = [
   { id: 'preview', label: 'Preview' },
   { id: 'code', label: 'Code' },
+] as const;
+
+/** Icon-only tools to the right of Preview/Code. Append here, not as labeled pills. */
+export const WORKSPACE_TOOL_TABS = [
   { id: 'seo', label: 'Quality' },
   { id: 'assets', label: 'Assets' },
   { id: 'brain', label: 'Brain' },
   { id: 'domains', label: 'Domains' },
 ] as const;
+
+export const WORKSPACE_TABS = [...WORKSPACE_PRIMARY_TABS, ...WORKSPACE_TOOL_TABS] as const;
 
 export type WorkspaceView = (typeof WORKSPACE_TABS)[number]['id'];
 

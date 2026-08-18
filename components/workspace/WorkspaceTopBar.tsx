@@ -6,8 +6,9 @@ import { useRouter } from 'next/navigation';
 import {
   Check,
   Code2,
+  Eye,
+  FileText,
   Github,
-  Globe,
   History,
   Loader2,
   ChevronDown,
@@ -36,19 +37,32 @@ import {
   rotateDeviceSize,
   type PreviewDeviceKey,
 } from '@/lib/preview/devices';
-import { WORKSPACE_TABS, type SaveStatus, type WorkspacePage, type WorkspaceView } from './types';
+import {
+  WORKSPACE_PRIMARY_TABS,
+  WORKSPACE_TOOL_TABS,
+  type SaveStatus,
+  type WorkspacePage,
+  type WorkspaceView,
+} from './types';
 import PresenceAvatars from './PresenceAvatars';
 import type { PresenceViewer } from './useProjectPresence';
 import { LIVE_MODE_LABEL, LIVE_MODE_TOOLTIP } from '@/lib/preview/labels';
 
-const TAB_ICONS: Partial<Record<WorkspaceView, typeof Globe>> = {
-  preview: Globe,
+const TAB_ICONS: Record<WorkspaceView, typeof Eye> = {
+  preview: Eye,
   code: Code2,
   seo: Search,
   assets: Images,
   brain: Brain,
   domains: Link2,
 };
+
+const ICON_BTN =
+  'inline-flex size-32 items-center justify-center rounded-full text-[var(--studio-muted)] transition-colors hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)] disabled:cursor-not-allowed disabled:opacity-40';
+
+function BarDivider() {
+  return <span className="mx-2 h-16 w-px shrink-0 bg-[var(--studio-line)]" aria-hidden />;
+}
 
 function NavroopMark() {
   return (
@@ -239,52 +253,55 @@ export default function WorkspaceTopBar({
     <>
     <header
       ref={headerRef}
-      className="relative z-20 flex h-52 shrink-0 items-center gap-12 border-b border-[var(--studio-line)] bg-[var(--studio-header-bg)] px-12 backdrop-blur-xl"
+      className="relative z-30 flex h-56 shrink-0 items-center gap-8 overflow-visible border-b border-[var(--studio-line)] bg-[var(--studio-header-bg)] px-10 backdrop-blur-xl"
     >
-      <div className="flex min-w-0 flex-1 items-center gap-8">
+      <div className="flex min-w-0 flex-1 items-center gap-6">
         <NavroopMark />
-        <input
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          onBlur={commit}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') event.currentTarget.blur();
-          }}
-          aria-label="Project name"
-          className={cn(
-            'min-w-0 max-w-[220px] truncate rounded-8 border border-transparent bg-transparent px-8 py-4',
-            'text-[14px] font-medium text-[var(--studio-fg)]',
-            'hover:border-[var(--studio-line)]',
-            'focus-visible:border-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]',
-          )}
-        />
-        {sourceUrl && (
+        <div className="flex min-w-0 flex-col justify-center">
+          <input
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onBlur={commit}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') event.currentTarget.blur();
+            }}
+            aria-label="Project name"
+            className={cn(
+              'min-w-0 max-w-[200px] truncate rounded-8 border border-transparent bg-transparent px-4 py-0',
+              'text-[13px] font-semibold leading-5 text-[var(--studio-fg)]',
+              'hover:border-[var(--studio-line)]',
+              'focus-visible:border-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]',
+            )}
+          />
+          {status ? (
+            <span className="hidden truncate px-4 text-[11px] leading-4 text-[var(--studio-faint)] xl:inline">
+              {saveState === 'signin' ? (
+                <Link href="/?auth=login&next=/dashboard" className="text-[var(--studio-accent)] hover:underline">
+                  {status}
+                </Link>
+              ) : (
+                status
+              )}
+            </span>
+          ) : null}
+        </div>
+        {sourceUrl ? (
           <a
             href={sourceUrl}
             target="_blank"
             rel="noreferrer"
-            className="hidden max-w-[180px] truncate text-[12px] text-[var(--studio-accent)] hover:underline lg:inline"
+            className="hidden max-w-[140px] truncate text-[11px] text-[var(--studio-accent)] hover:underline 2xl:inline"
           >
             {sourceUrl.replace(/^https?:\/\//i, "")}
           </a>
-        )}
-        {status && (
-          <span className="hidden truncate text-[12px] text-[var(--studio-faint)] lg:inline">
-            {saveState === 'signin' ? (
-              <Link href="/?auth=login&next=/dashboard" className="text-[var(--studio-accent)] hover:underline">
-                {status}
-              </Link>
-            ) : (
-              status
-            )}
-          </span>
-        )}
+        ) : null}
+        <BarDivider />
         <Hint label="Version history">
           <button
             type="button"
             onClick={onOpenHistory}
             aria-label="Version history"
-            className="inline-flex size-36 items-center justify-center rounded-10 text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)]"
+            className={ICON_BTN}
           >
             <History className="size-16" />
           </button>
@@ -294,25 +311,32 @@ export default function WorkspaceTopBar({
             type="button"
             onClick={onToggleChat}
             aria-label={chatCollapsed ? 'Show chat' : 'Collapse chat'}
-            className="inline-flex size-36 items-center justify-center rounded-10 text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)]"
+            className={ICON_BTN}
           >
             {chatCollapsed ? <PanelLeftOpen className="size-16" /> : <PanelLeftClose className="size-16" />}
           </button>
         </Hint>
       </div>
 
-      <div className="flex items-center gap-8">
-        <div className="inline-flex rounded-10 bg-[var(--studio-bg)] p-2">
-          {WORKSPACE_TABS.map((tab) => {
-            const Icon = TAB_ICONS[tab.id] ?? Globe;
+      <div className="flex shrink-0 items-center gap-6">
+        <div
+          role="tablist"
+          aria-label="Workspace view"
+          className="inline-flex h-36 items-center rounded-full border border-[var(--studio-line)] bg-[var(--studio-bg)] p-3"
+        >
+          {WORKSPACE_PRIMARY_TABS.map((tab) => {
+            const Icon = TAB_ICONS[tab.id];
+            const selected = view === tab.id;
             return (
               <button
                 key={tab.id}
                 type="button"
+                role="tab"
+                aria-selected={selected}
                 onClick={() => onViewChange(tab.id)}
                 className={cn(
-                  'inline-flex items-center gap-6 rounded-8 px-10 py-6 text-[12px] font-medium transition-colors',
-                  view === tab.id
+                  'inline-flex h-30 items-center gap-6 rounded-full px-12 text-[13px] font-medium transition-colors',
+                  selected
                     ? 'bg-[var(--studio-surface)] text-[var(--studio-fg)] shadow-sm'
                     : 'text-[var(--studio-muted)] hover:text-[var(--studio-fg)]',
                 )}
@@ -323,24 +347,50 @@ export default function WorkspaceTopBar({
             );
           })}
         </div>
-        <label className="sr-only" htmlFor="workspace-page">
-          Page
-        </label>
-        <select
-          id="workspace-page"
-          value={selectedPage}
-          onChange={(event) => onSelectPage(event.target.value)}
-          className="h-36 max-w-[160px] rounded-10 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-8 text-[12px] text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
-        >
-          {pages.map((page) => (
-            <option key={page.path} value={page.path}>
-              {page.label}
-            </option>
-          ))}
-        </select>
+        <div className="flex items-center gap-2" aria-label="Workspace tools">
+          {WORKSPACE_TOOL_TABS.map((tab) => {
+            const Icon = TAB_ICONS[tab.id];
+            const selected = view === tab.id;
+            return (
+              <Hint key={tab.id} label={tab.label}>
+                <button
+                  type="button"
+                  aria-label={tab.label}
+                  aria-pressed={selected}
+                  onClick={() => onViewChange(tab.id)}
+                  className={cn(
+                    ICON_BTN,
+                    selected && 'bg-[var(--studio-surface)] text-[var(--studio-fg)] shadow-sm',
+                  )}
+                >
+                  <Icon className="size-15" />
+                </button>
+              </Hint>
+            );
+          })}
+        </div>
+        <div className={cn('relative items-center', compactPreview && projectId ? 'hidden' : 'flex')}>
+          <FileText className="pointer-events-none absolute left-10 size-13 text-[var(--studio-muted)]" aria-hidden />
+          <label className="sr-only" htmlFor="workspace-page">
+            Page
+          </label>
+          <select
+            id="workspace-page"
+            value={selectedPage}
+            onChange={(event) => onSelectPage(event.target.value)}
+            className="h-32 max-w-[148px] appearance-none rounded-full border border-[var(--studio-line)] bg-[var(--studio-surface)] py-0 pr-28 pl-28 text-[12px] font-medium text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
+          >
+            {pages.map((page) => (
+              <option key={page.path} value={page.path}>
+                {page.label}
+              </option>
+            ))}
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-10 size-13 text-[var(--studio-muted)]" aria-hidden />
+        </div>
       </div>
 
-      <div className="flex min-w-0 flex-1 items-center justify-end gap-6">
+      <div className="flex min-w-0 flex-1 items-center justify-end gap-4">
         <PresenceAvatars viewers={presenceViewers} />
         {view === 'preview' && onToggleLiveMode ? (
           <Hint label={liveModeLocked ? liveModeReason || LIVE_MODE_TOOLTIP : LIVE_MODE_TOOLTIP}>
@@ -352,14 +402,21 @@ export default function WorkspaceTopBar({
               disabled={liveModeLocked}
               onClick={onToggleLiveMode}
               className={cn(
-                'inline-flex min-h-[32px] items-center rounded-10 px-10 text-[12px] font-medium',
+                'inline-flex h-32 items-center gap-6 rounded-full px-10 text-[12px] font-medium transition-colors',
                 liveMode
                   ? 'bg-[var(--studio-accent)] text-white'
                   : 'text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)]',
                 liveModeLocked && 'cursor-not-allowed opacity-80',
               )}
             >
-              {LIVE_MODE_LABEL}
+              <span
+                className={cn(
+                  'size-6 rounded-full',
+                  liveMode ? 'bg-white' : 'bg-[var(--studio-muted)] opacity-50',
+                )}
+                aria-hidden
+              />
+              <span className={cn(compactPreview && 'sr-only')}>{LIVE_MODE_LABEL}</span>
             </button>
           </Hint>
         ) : null}
@@ -384,22 +441,22 @@ export default function WorkspaceTopBar({
             type="button"
             onClick={onRefresh}
             aria-label="Refresh preview"
-            className="inline-flex size-36 items-center justify-center rounded-10 text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)]"
+            className={ICON_BTN}
           >
-            <RefreshCw className="size-16" />
+            <RefreshCw className="size-15" />
           </button>
         </Hint>
         <div className="relative" ref={previewRef}>
-          <div className="inline-flex overflow-hidden rounded-10">
+          <div className="inline-flex items-center">
             <Hint label="Open in new tab">
               <button
                 type="button"
                 disabled={!previewUrl}
                 onClick={() => previewUrl && openPreviewWindow(previewUrl)}
                 aria-label="Open in new tab"
-                className="inline-flex size-36 items-center justify-center text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)] disabled:cursor-not-allowed disabled:opacity-40"
+                className={ICON_BTN}
               >
-                <ExternalLink className="size-16" />
+                <ExternalLink className="size-15" />
               </button>
             </Hint>
             <button
@@ -409,7 +466,7 @@ export default function WorkspaceTopBar({
               aria-haspopup="menu"
               aria-label="Open preview options"
               onClick={() => setPreviewOpen((value) => !value)}
-              className="inline-flex size-28 items-center justify-center text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)] disabled:cursor-not-allowed disabled:opacity-40"
+              className={cn(ICON_BTN, 'size-24')}
             >
               <ChevronDown className="size-12" />
             </button>
@@ -473,7 +530,7 @@ export default function WorkspaceTopBar({
                       .finally(() => setPushing(false));
                   }}
                   aria-label="Push to GitHub"
-                  className="inline-flex size-36 items-center justify-center rounded-10 text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)] disabled:cursor-not-allowed disabled:opacity-50"
+                  className={ICON_BTN}
                 >
                   {pushing ? (
                     <Loader2 className="size-16 animate-spin" />
@@ -491,20 +548,10 @@ export default function WorkspaceTopBar({
                 aria-haspopup="dialog"
                 aria-label="Push to GitHub"
                 onClick={() => setConnectOpen((open) => !open)}
-                className="inline-flex size-36 items-center justify-center rounded-10 text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)]"
+                className={ICON_BTN}
               >
                 <Github className="size-16" />
               </button>
-            )}
-            {repoUrl && (
-              <a
-                href={repoUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="whitespace-nowrap text-[12px] font-medium text-[var(--studio-accent)] hover:underline"
-              >
-                View on GitHub
-              </a>
             )}
           </div>
           {pushError && (
@@ -537,7 +584,7 @@ export default function WorkspaceTopBar({
               aria-haspopup="menu"
               aria-label="Project actions"
               onClick={() => setMoreOpen((value) => !value)}
-              className="inline-flex size-36 items-center justify-center rounded-10 text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)]"
+              className={ICON_BTN}
             >
               <MoreHorizontal className="size-16" />
             </button>
@@ -546,6 +593,42 @@ export default function WorkspaceTopBar({
                 role="menu"
                 className="absolute top-full right-0 z-40 mt-6 w-[200px] rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] p-4 shadow-sm"
               >
+                {compactPreview ? (
+                  <>
+                    {pages.map((page) => (
+                      <button
+                        key={page.path}
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          onSelectPage(page.path);
+                          setMoreOpen(false);
+                        }}
+                        className={cn(
+                          'flex w-full rounded-8 px-10 py-8 text-left text-[12px] hover:bg-[var(--studio-surface-hover)]',
+                          selectedPage === page.path
+                            ? 'font-medium text-[var(--studio-fg)]'
+                            : 'text-[var(--studio-muted)]',
+                        )}
+                      >
+                        {page.label}
+                      </button>
+                    ))}
+                    <div className="my-4 h-px bg-[var(--studio-line)]" />
+                  </>
+                ) : null}
+                {repoUrl ? (
+                  <a
+                    href={repoUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    role="menuitem"
+                    onClick={() => setMoreOpen(false)}
+                    className="flex w-full rounded-8 px-10 py-8 text-left text-[12px] text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)]"
+                  >
+                    View on GitHub
+                  </a>
+                ) : null}
                 <button
                   type="button"
                   role="menuitem"
@@ -587,10 +670,11 @@ export default function WorkspaceTopBar({
             ) : null}
           </div>
         ) : null}
+        <BarDivider />
         <button
           type="button"
           onClick={onShare}
-          className="inline-flex h-36 items-center rounded-full border border-[var(--studio-line-strong)] px-14 text-[13px] font-medium text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)]"
+          className="inline-flex h-32 items-center rounded-full border border-[var(--studio-line-strong)] px-12 text-[13px] font-medium text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)]"
         >
           Share
         </button>

@@ -823,7 +823,7 @@ Tip: I automatically detect and install npm packages from your code imports (lik
         (window as any).pendingPackages = [];
       }
       
-      // Stream is owned by GenerationProvider so leaving /generation does not abort it
+      // Stream is owned by GenerationProvider so leaving the workspace does not abort it
       const effectiveSandboxData = overrideSandboxData || sandboxData;
       const applyResult = await startApply({
         code,
@@ -1929,8 +1929,11 @@ Tip: I automatically detect and install npm packages from your code imports (lik
             }
             // Remove the waiting message
             setChatMessages(prev => prev.filter(msg => msg.content !== 'Waiting for sandbox to be ready...'));
-          } catch {
-            addChatMessage('Sandbox creation failed. Cannot apply code.', 'system');
+          } catch (sandboxError: unknown) {
+            const sandboxMessage =
+              sandboxError instanceof Error ? sandboxError.message : 'Sandbox creation failed. Cannot apply code.';
+            addChatMessage(sandboxMessage, 'system');
+            markError(sandboxMessage);
             return;
           }
         }
@@ -3088,7 +3091,7 @@ Focus on the key sections and content, making it clean and modern.`;
   );
 }
 
-export default function Page({
+export default function GenerationWorkspace({
   githubConnected = false,
   githubRepoUrl = null,
   initialPhase = null,

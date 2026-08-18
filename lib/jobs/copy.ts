@@ -156,6 +156,9 @@ export function recoveryNextStepLine(input: {
   if (input.errorCode === 'request_rejected') {
     return 'The AI could not accept this request. Try a shorter prompt — sending the same one will be rejected again.';
   }
+  if (input.errorCode === 'sandbox_unavailable') {
+    return 'Try again starts a new billed build. The last files were not saved.';
+  }
   if (input.kind !== 'IMPORT') return '';
   if (input.errorMessage === BLOCKED_ACCESS_MESSAGE) {
     return 'This site blocked automated access. Paste the page content instead — trying the same URL will be blocked again.';

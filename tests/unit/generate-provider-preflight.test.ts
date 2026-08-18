@@ -28,6 +28,16 @@ describe('generate-ai-code-stream provider and sandbox preflight', () => {
     expect(source).not.toMatch(/console\.warn\(\s*['"]\[generate-ai-code-stream\] ensureSandbox failed/);
   });
 
+  it('settles a streamed BUILD through settleStreamedGeneration, not a bare succeedJob', () => {
+    const source = generateRouteSource();
+    expect(source).toMatch(/settleStreamedGeneration\(/);
+    const settleAt = source.indexOf('settleStreamedGeneration({');
+    expect(settleAt).toBeGreaterThan(0);
+    const settleBlock = source.slice(settleAt, settleAt + 600);
+    expect(settleBlock).toMatch(/producedFiles:\s*files\.length/);
+    expect(source).not.toMatch(/await succeedJob\(generationJob\.id/);
+  });
+
   it('does not wait on the rate-limit queue before switching providers', () => {
     const source = generateRouteSource();
     const failoverBlock = source.slice(

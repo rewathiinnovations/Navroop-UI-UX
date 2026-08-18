@@ -21,6 +21,17 @@ describe('resolveResumablePhase evidence', () => {
   it('resumes to COMPLETE when a finished site exists and a follow-up plan was discarded', () => {
     expect(resumablePhaseFromEvidence({ hasLastCode: true, hasActivePlan: false })).toBe('COMPLETE');
     expect(resumablePhaseFromEvidence({ checkpointCount: 1, hasActivePlan: false })).toBe('COMPLETE');
-    expect(resumablePhaseFromEvidence({ filesWritten: 4, hasActivePlan: false })).toBe('COMPLETE');
+  });
+
+  it('does not treat job.filesWritten as a finished site — that count is stream progress', () => {
+    expect(resumablePhaseFromEvidence({ filesWritten: 11, hasActivePlan: false })).toBe('PLANNING');
+    expect(
+      resumablePhaseFromEvidence({
+        filesWritten: 11,
+        hasLastCode: false,
+        checkpointCount: 0,
+      }),
+    ).toBe('PLANNING');
   });
 });
+

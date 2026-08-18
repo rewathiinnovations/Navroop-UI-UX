@@ -3,7 +3,7 @@ import { prisma } from '@/lib/db';
 import { getGitHubConnectionStatus } from '@/lib/github/actions';
 import { getLatestPlan } from '@/lib/projects/plan';
 import { toWorkspacePlan } from '@/components/workspace/types';
-import GenerationPage from '../../generation/page';
+import GenerationWorkspace from '@/components/workspace/GenerationWorkspace';
 
 export default async function ProjectPage({
   params,
@@ -24,7 +24,7 @@ export default async function ProjectPage({
   ]);
 
   return (
-    <GenerationPage
+    <GenerationWorkspace
       githubConnected={github.connected}
       githubRepoUrl={project?.githubRepoUrl ?? null}
       initialPhase={project?.phase ?? null}
