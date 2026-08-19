@@ -5,7 +5,6 @@ import {
   ShadowDatabaseError,
   isSchemaDriftCommand,
   prismaMigrateDiffCommand,
-  prismaValidateCommand,
   resolveShadowDatabaseUrl,
 } from '../../lib/verify/schema-drift';
 
@@ -53,14 +52,18 @@ describe('schema drift shadow URL', () => {
   it('includes --shadow-database-url on the migrate diff command', () => {
     const command = prismaMigrateDiffCommand();
     expect(command).toContain(
-      'prisma migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma --exit-code',
+      'migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma --exit-code',
     );
+    // The command is spawned from a git hook, so it must not go through pnpm.
+    expect(command).toContain('node ./node_modules/prisma/build/index.js');
+    expect(command).not.toContain('pnpm');
     expect(command).toContain('--shadow-database-url');
     expect(command).toContain('$SHADOW_DATABASE_URL');
     expect(DEFAULT_SHADOW_DATABASE_NAME).toBe('openlovable_shadow');
+    // `scripts/verify.ts` intercepts on this predicate; a sibling prisma command
+    // must not be mistaken for the drift step.
     expect(isSchemaDriftCommand(command)).toBe(true);
-    expect(isSchemaDriftCommand(prismaValidateCommand())).toBe(false);
-    expect(prismaValidateCommand()).toBe('pnpm exec prisma validate');
+    expect(isSchemaDriftCommand('node ./node_modules/prisma/build/index.js validate')).toBe(false);
   });
 
   it('derives the shadow URL from DATABASE_URL, then the built-in default', () => {
@@ -76,7 +79,8 @@ describe('schema drift shadow URL', () => {
     expect(() =>
       resolveShadowDatabaseUrl({
         DATABASE_URL: 'postgresql://openlovable:openlovable@127.0.0.1/openlovable_shadow',
-        SHADOW_DATABASE_URL: 'postgresql://openlovable:openlovable@127.0.0.1:5432/openlovable_shadow',
+        SHADOW_DATABASE_URL:
+          'postgresql://openlovable:openlovable@127.0.0.1:5432/openlovable_shadow',
       }),
     ).toThrow(/must not be DATABASE_URL/);
   });

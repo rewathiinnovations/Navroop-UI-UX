@@ -11,11 +11,7 @@ vi.mock('../../lib/verify/ensure-db', () => ({
   ensurePostgresDatabase,
 }));
 
-import {
-  DEFAULT_SHADOW_DATABASE_NAME,
-  runPrismaValidate,
-  runSchemaDriftCheck,
-} from '../../lib/verify/schema-drift';
+import { DEFAULT_SHADOW_DATABASE_NAME, runSchemaDriftCheck } from '../../lib/verify/schema-drift';
 
 const APP = 'postgresql://openlovable:openlovable@127.0.0.1:5433/openlovable';
 const TEST = 'postgresql://openlovable:openlovable@127.0.0.1:5433/openlovable_test';
@@ -133,18 +129,5 @@ describe('schema drift runners', () => {
       adminUrl: TEST,
       name: DEFAULT_SHADOW_DATABASE_NAME,
     });
-  });
-
-  it('runs prisma validate through spawnSync', () => {
-    spawnSync.mockReturnValue(spawnResult({ status: 0, stdout: 'The schema is valid' }));
-    expect(runPrismaValidate()).toEqual({ ok: true, output: 'The schema is valid' });
-    expect(spawnSync).toHaveBeenCalledWith(
-      'pnpm',
-      ['exec', 'prisma', 'validate'],
-      expect.objectContaining({ encoding: 'utf8' }),
-    );
-
-    spawnSync.mockReturnValue(spawnResult({ status: 1, stderr: 'invalid' }));
-    expect(runPrismaValidate()).toEqual({ ok: false, output: 'invalid' });
   });
 });

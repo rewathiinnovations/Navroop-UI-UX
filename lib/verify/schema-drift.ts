@@ -37,7 +37,9 @@ function swapDatabaseName(raw: string, name: string) {
 function normalizeDb(raw: string) {
   try {
     const parsed = new URL(raw);
-    const database = decodeURIComponent(parsed.pathname.replace(/^\//, '')).split('?')[0].toLowerCase();
+    const database = decodeURIComponent(parsed.pathname.replace(/^\//, ''))
+      .split('?')[0]
+      .toLowerCase();
     return {
       host: parsed.hostname.toLowerCase(),
       port: parsed.port || '5432',
@@ -91,27 +93,26 @@ function adminUrlForShadow(shadowUrl: string, env: NodeJS.ProcessEnv) {
   return swapDatabaseName(shadowUrl, 'postgres');
 }
 
-export function prismaValidateCommand() {
-  return 'pnpm exec prisma validate';
-}
-
+/**
+ * Names the vendored binary rather than `pnpm exec`: this is the string `verify`
+ * prints as `Failed. Reproduce: …`, and it runs from a `git push` hook where
+ * pnpm's dependency-status check can purge node_modules
+ * (.cursor/lessons-learned.md). `runSchemaDriftCheck` below spawns the same
+ * binary directly.
+ */
 export function prismaMigrateDiffCommand(shadowUrl = '$SHADOW_DATABASE_URL') {
-  return `pnpm exec prisma migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma --exit-code --shadow-database-url ${shadowUrl}`;
+  return `node ./node_modules/prisma/build/index.js migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma --exit-code --shadow-database-url ${shadowUrl}`;
 }
 
+/**
+ * Matches on the subcommand and its flag rather than on `prisma migrate diff`,
+ * which stopped being a substring when the command above became a path to the
+ * vendored CLI. `scripts/verify.ts` uses this to intercept the step in-process,
+ * where the shadow database is created first; a miss here would silently hand the
+ * literal `$SHADOW_DATABASE_URL` to a shell instead.
+ */
 export function isSchemaDriftCommand(command: string) {
-  return command.includes('prisma migrate diff') && command.includes('--from-migrations');
-}
-
-export function runPrismaValidate() {
-  const result = spawnSync('pnpm', ['exec', 'prisma', 'validate'], {
-    encoding: 'utf8',
-    shell: process.platform === 'win32',
-  });
-  return {
-    ok: result.status === 0,
-    output: `${result.stdout || ''}${result.stderr || ''}`,
-  };
+  return command.includes('migrate diff') && command.includes('--from-migrations');
 }
 
 export function runSchemaDriftCheck(env: NodeJS.ProcessEnv = process.env) {

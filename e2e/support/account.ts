@@ -19,6 +19,24 @@ export const E2E_ACCOUNT_NAME = 'Playwright Journey Bot';
 export const E2E_ACCOUNT_FIRST_NAME = E2E_ACCOUNT_NAME.split(/\s+/)[0];
 
 /**
+ * Second identity, for the journeys that have to prove a screen is ADMIN-only:
+ * showing that a MEMBER is refused says nothing unless an ADMIN is shown
+ * reaching the same screen. Derived from the member address rather than given
+ * its own variable, so one `E2E_USER_EMAIL` override moves both and the two can
+ * never end up naming the same row.
+ */
+export const E2E_ADMIN_ACCOUNT_NAME = 'Playwright Admin Bot';
+
+export function adminAccountFor(account: E2eAccount): E2eAccount {
+  const at = account.email.lastIndexOf('@');
+  return {
+    email: `${account.email.slice(0, at)}-admin${account.email.slice(at)}`,
+    name: E2E_ADMIN_ACCOUNT_NAME,
+    password: account.password,
+  };
+}
+
+/**
  * Only ever used against a database on this machine. A non-local target must
  * supply `E2E_USER_PASSWORD`, so this literal can never become a login on a
  * server someone else can reach.
@@ -96,7 +114,8 @@ export function resolveE2eTarget(env: NodeJS.ProcessEnv = process.env): E2eTarge
   if (!password) {
     return {
       ok: false,
-      error: 'Set E2E_USER_PASSWORD: the built-in password is only used against a database on this machine.',
+      error:
+        'Set E2E_USER_PASSWORD: the built-in password is only used against a database on this machine.',
     };
   }
   if (password.length < 8) {
@@ -110,6 +129,11 @@ export function resolveE2eTarget(env: NodeJS.ProcessEnv = process.env): E2eTarge
 
   return {
     ok: true,
-    target: { databaseUrl, database, isLocal, account: { email, name: E2E_ACCOUNT_NAME, password } },
+    target: {
+      databaseUrl,
+      database,
+      isLocal,
+      account: { email, name: E2E_ACCOUNT_NAME, password },
+    },
   };
 }

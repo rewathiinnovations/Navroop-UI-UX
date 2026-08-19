@@ -1,10 +1,27 @@
 import { prismaMigrateDiffCommand } from './schema-drift';
 
+/**
+ * Checks the output of a step that already exited 0. Returns a reason to fail it,
+ * or null to leave it green.
+ */
+export type StepAssertion = (output: string) => string | null;
+
 export type VerifyStep = {
   id: string;
   label: string;
   command: string;
   fatal: boolean;
+  /**
+   * Applied only when the command exited 0, because an exit code of 0 does not
+   * mean the step proved anything. Verified 2026-08-19:
+   * `playwright test --project=critical --grep "publish is a job"` prints
+   * `1 skipped` and exits **0**, and the summary printed `✓ Playwright critical`
+   * beside a fatal gate step that had executed no assertion. (A filter that
+   * collects nothing at all is already fatal on its own — Playwright prints
+   * `Error: No tests found` and exits 1 — so this covers the skipped case, which
+   * is the one a `.fixme()` or a `test.skip(cond)` produces.)
+   */
+  assertExecuted?: StepAssertion;
 };
 
 export type VerifyStepResult = {
@@ -15,6 +32,8 @@ export type VerifyStepResult = {
   ok: boolean;
   durationMs: number;
   output?: string;
+  /** Why the step is red despite a zero exit code (see `assertExecuted`). */
+  failureReason?: string;
 };
 
 export type VerifyRunResult = {
@@ -28,19 +47,53 @@ export type VerifyRunResult = {
 
 export type RunCommand = (command: string) => Promise<{ ok: boolean; output?: string }>;
 
+const PASSED_TESTS = /(\d+)\s+passed/;
+
+/**
+ * Playwright's reporter prints `N passed` only when tests actually ran; a project
+ * whose tests are all `.fixme()` or all `test.skip(cond)` prints only
+ * `N skipped` and exits 0. Both Playwright steps are fatal, so their tick has to
+ * mean at least one browser assertion ran.
+ */
+export function requirePassingTests(output: string): string | null {
+  const match = PASSED_TESTS.exec(output);
+  const passed = match ? Number(match[1]) : 0;
+  if (passed > 0) {
+    return null;
+  }
+  return 'exited 0 but reported no passing test — a step that runs nothing is not a pass';
+}
+
+/**
+ * Every command is a direct binary. `pnpm run` / `pnpm exec` first run a
+ * dependency-status check that can decide node_modules is stale and purge it, and
+ * this list is reached from a real `git push` through .husky/pre-push, which has
+ * a TTY to confirm the purge on (.cursor/lessons-learned.md). The hook was
+ * careful to avoid the shim and then every step it ran reintroduced it.
+ */
 export const VERIFY_STEPS: VerifyStep[] = [
-  { id: 'tsc', label: 'Typecheck', command: 'pnpm exec tsc --noEmit', fatal: true },
-  { id: 'eslint', label: 'ESLint', command: 'pnpm exec eslint . --max-warnings 0', fatal: true },
+  {
+    id: 'tsc',
+    label: 'Typecheck',
+    command: 'node ./node_modules/typescript/bin/tsc --noEmit',
+    fatal: true,
+  },
+  {
+    id: 'eslint',
+    label: 'ESLint',
+    command: 'node ./node_modules/eslint/bin/eslint.js . --max-warnings 0',
+    fatal: true,
+  },
   {
     id: 'public-routes',
     label: 'Public API allowlist',
-    command: 'pnpm exec tsx scripts/check-public-routes.ts',
+    command: 'node ./node_modules/tsx/dist/cli.mjs scripts/check-public-routes.ts',
     fatal: true,
   },
   {
     id: 'prisma-validate',
     label: 'Prisma validate',
-    command: 'pnpm exec prisma validate',
+    command: 'node ./node_modules/prisma/build/index.js validate',
     fatal: true,
   },
   {
@@ -52,20 +105,60 @@ export const VERIFY_STEPS: VerifyStep[] = [
   {
     id: 'destructive',
     label: 'Destructive migration detector',
-    command: 'pnpm exec tsx scripts/check-destructive-migrations.ts',
+    command: 'node ./node_modules/tsx/dist/cli.mjs scripts/check-destructive-migrations.ts',
     fatal: true,
   },
-  { id: 'vitest', label: 'Vitest + coverage', command: 'pnpm exec vitest run --coverage', fatal: true },
-  { id: 'next-build', label: 'Next.js build', command: 'pnpm exec next build', fatal: true },
+  {
+    id: 'vitest',
+    label: 'Vitest + coverage',
+    command: 'node ./node_modules/vitest/vitest.mjs run --coverage',
+    fatal: true,
+  },
+  {
+    id: 'next-build',
+    label: 'Next.js build',
+    command: 'node ./node_modules/next/dist/bin/next build',
+    fatal: true,
+  },
   {
     id: 'playwright-critical',
     label: 'Playwright critical',
-    command: 'pnpm exec playwright test --project=critical',
+    command: 'node ./node_modules/@playwright/test/cli.js test --project=critical',
     fatal: true,
+    assertExecuted: requirePassingTests,
   },
-  { id: 'depcheck', label: 'depcheck (report)', command: 'pnpm exec depcheck', fatal: false },
-  { id: 'knip', label: 'knip (report)', command: 'pnpm exec knip --no-exit-code', fatal: false },
   {
+    // Runs `setup` first as a declared dependency, so this is the step that
+    // proves sign-in, the dashboard and project creation still work as a real
+    // signed-in user. It is a separate step from `critical` on purpose: merged
+    // into one command, a silently empty `authenticated` project would hide
+    // behind `critical`'s passing count.
+    id: 'playwright-authenticated',
+    label: 'Playwright authenticated journeys',
+    command: 'node ./node_modules/@playwright/test/cli.js test --project=authenticated',
+    fatal: true,
+    assertExecuted: requirePassingTests,
+  },
+  {
+    id: 'depcheck',
+    label: 'depcheck (report)',
+    command: 'node ./node_modules/depcheck/bin/depcheck.js',
+    fatal: false,
+  },
+  {
+    // `--no-exit-code` was removed on 2026-08-19: with `fatal: false` on top of
+    // it, knip's findings were reported twice over and enforced never, and the
+    // summary printed a ✓ that claimed knip had found nothing. The tick now
+    // reflects what knip actually said; the step still does not block a push.
+    id: 'knip',
+    label: 'knip (report)',
+    command: 'node ./node_modules/knip/bin/knip.js',
+    fatal: false,
+  },
+  {
+    // The one remaining pnpm call: `audit` resolves the lockfile itself and has
+    // no vendored binary equivalent. It is not a script runner, so it does not
+    // trigger the dependency-status purge that `pnpm run` / `pnpm exec` do.
     id: 'audit',
     label: 'Dependency audit (high)',
     command: 'pnpm audit --audit-level=high',
@@ -76,15 +169,21 @@ export const VERIFY_STEPS: VerifyStep[] = [
 export const VERIFY_FULL_EXTRA_STEPS: VerifyStep[] = [
   {
     id: 'playwright-all',
-    label: 'Playwright all stacks',
-    command: 'pnpm exec playwright test',
+    label: 'Playwright all projects',
+    command: 'node ./node_modules/@playwright/test/cli.js test',
     fatal: true,
+    assertExecuted: requirePassingTests,
   },
 ];
 
 export function stepsForMode(mode: 'verify' | 'verify:full') {
   if (mode === 'verify:full') {
-    return [...VERIFY_STEPS.filter((step) => step.id !== 'playwright-critical'), ...VERIFY_FULL_EXTRA_STEPS];
+    // `playwright-all` runs every project, so the two per-project Playwright
+    // steps would only repeat work it already covers.
+    const withoutProjectRuns = VERIFY_STEPS.filter(
+      (step) => step.id !== 'playwright-critical' && step.id !== 'playwright-authenticated',
+    );
+    return [...withoutProjectRuns, ...VERIFY_FULL_EXTRA_STEPS];
   }
   return VERIFY_STEPS;
 }
@@ -97,7 +196,8 @@ export function formatSummary(result: VerifyRunResult) {
   const lines = result.results.map((row) => {
     const seconds = (row.durationMs / 1000).toFixed(1);
     const suffix = row.fatal ? '' : ' (report)';
-    return `${tick(row.ok)} ${row.label}${suffix}  ${seconds}s`;
+    const reason = row.failureReason ? ` — ${row.failureReason}` : '';
+    return `${tick(row.ok)} ${row.label}${suffix}  ${seconds}s${reason}`;
   });
   if (!result.ok && result.reproduce) {
     lines.push('');
@@ -119,17 +219,23 @@ export async function runVerify(options: {
     const started = now();
     const ran = await options.runCommand(step.command);
     const durationMs = Math.max(0, now() - started);
+    // A zero exit code only opens the question; `assertExecuted` decides whether
+    // the step proved anything. Skipped when the command already failed, so the
+    // real error stays the reported one.
+    const failureReason =
+      ran.ok && step.assertExecuted ? step.assertExecuted(ran.output ?? '') : null;
     const row: VerifyStepResult = {
       id: step.id,
       label: step.label,
       command: step.command,
       fatal: step.fatal,
-      ok: ran.ok,
+      ok: ran.ok && failureReason === null,
       durationMs,
       output: ran.output,
+      failureReason: failureReason ?? undefined,
     };
     results.push(row);
-    if (!ran.ok && step.fatal) {
+    if (!row.ok && step.fatal) {
       const failed: VerifyRunResult = {
         ok: false,
         mode: options.mode,

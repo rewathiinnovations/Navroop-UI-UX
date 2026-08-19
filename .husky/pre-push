@@ -2,6 +2,12 @@
 # Same rule as pre-commit: no `pnpm run` / `pnpm exec` in a hook, because pnpm's
 # dependency-status check can purge node_modules first (.cursor/lessons-learned.md).
 # `pnpm run verify` is `tsx scripts/verify.ts`, so call it directly.
+#
+# The rule only started holding all the way down on 2026-08-19: every step in
+# `lib/verify/orchestrator.ts` used to be `pnpm exec ...`, spawned with this hook's
+# TTY, so the purge this hook exists to avoid happened one process deeper. The
+# steps now name vendored binaries; `pnpm audit` is the single remaining call and
+# is not a script runner.
 set -e
 
 cd "$(git rev-parse --show-toplevel)"

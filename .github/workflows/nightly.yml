@@ -14,11 +14,13 @@ jobs:
         env:
           POSTGRES_USER: openlovable
           POSTGRES_PASSWORD: openlovable
-          POSTGRES_DB: openlovable_test
+          # The application database: `verify:full` runs every Playwright project,
+          # including the authenticated journeys, which seed an account into it.
+          POSTGRES_DB: openlovable
         ports:
           - 5433:5432
         options: >-
-          --health-cmd "pg_isready -U openlovable -d openlovable_test"
+          --health-cmd "pg_isready -U openlovable -d openlovable"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 12
@@ -47,9 +49,11 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Same two databases `verify.yml` sets up: the test/shadow pair for Vitest and
+      # the schema-drift check, then the application database that `next start` and
+      # the Playwright `setup` project need.
+      - run: pnpm run db:test
       - run: pnpm exec prisma migrate deploy
-        env:
-          DATABASE_URL: postgresql://openlovable:openlovable@127.0.0.1:5433/openlovable_test
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm run verify:full
       - name: Upload Playwright traces

@@ -1,37 +1,34 @@
-import { expect, test } from '@playwright/test';
+import { test } from '@playwright/test';
 import { STACK_IDS } from '../lib/stacks';
 
 /**
- * Journeys 1–3 × all six stacks. The Playwright project name is the stack.
+ * What is left of the per-stack journeys: one skip, named.
  *
- * All three are `.fixme()`. Not one of them takes the `page` fixture: they read
- * the project name out of `playwright.config.ts` and assert it is a non-empty
- * member of `STACK_IDS`. Across six projects that is eighteen results, and the
- * six-way `stacks` matrix in CI installs Chromium in each job to confirm the
- * config file has not been edited. `tests/unit` already pins `STACK_IDS`.
+ * This file used to hold three `.fixme()` tests, and because
+ * `playwright.config.ts` runs it under six project names it reported eighteen
+ * results. None of the three took the `page` fixture. Two asserted
+ * `expect(stack).toBeTruthy()` on a project name; the third asserted the name was
+ * a member of `STACK_IDS` — which is false for three of the six projects, because
+ * `STACK_IDS` is `NEXTJS, REACT, STATIC_HTML` and the config also declares ASTRO,
+ * VUE and SVELTE. Being `.fixme()` is the only reason that never went red.
+ *
+ * The free half of the per-stack contract — that the stack a user picks is the
+ * stack the created project loads, for every stack in the registry — is now
+ * asserted for real, once per `STACK_IDS` entry, in `journeys-workflow.spec.ts`.
+ * It lives there because it needs a signed-in session, and these projects have
+ * neither `dependencies: ['setup']` nor a storage state.
+ *
+ * What genuinely remains per stack is the part that costs money: the scaffold
+ * `buildRepoFiles` lays down and the layout `stackLayoutMismatchMessage` polices
+ * are only observable after a real generation into a real sandbox. There is no
+ * honest way to assert that here, so it is one skip that says so rather than six
+ * shallow assertions wearing six hats.
  */
-test.describe('stack journeys 1–3', () => {
-  // Should: not exist as a test. Project-name-to-stack wiring belongs in a unit
-  // test over `playwright.config.ts`, not in a browser job.
-  test.fixme('names the stack on failure', async ({}, testInfo) => {
-    const stack = testInfo.project.name;
-    expect(STACK_IDS, `unknown stack project ${stack}`).toContain(stack);
-    testInfo.annotations.push({ type: 'stack', description: stack });
-    testInfo.annotations.push({ type: 'status', description: 'scaffolded' });
-  });
-
-  // Should: signed in, create a project with this stack selected and assert the
-  // generated tree matches the stack (e.g. astro.config for ASTRO, index.html for
-  // STATIC_HTML) and that the preview renders. Needs `page` and real generation.
-  test.fixme('journey 2 create project for this stack (scaffolded)', async ({}, testInfo) => {
-    const stack = testInfo.project.name;
-    expect(stack, `stack journey failed for ${stack}`).toBeTruthy();
-  });
-
-  // Should: signed in, run a plan then a build for this stack and assert the plan
-  // steps render and the build reaches a finished job. Needs `page`.
-  test.fixme('journey 3 plan/build for this stack (scaffolded)', async ({}, testInfo) => {
-    const stack = testInfo.project.name;
-    expect(stack, `stack journey failed for ${stack}`).toBeTruthy();
+test.describe('per-stack plan and build', () => {
+  test(`a real build per stack (${STACK_IDS.join(', ')})`, async () => {
+    test.skip(
+      true,
+      'Not implemented: a per-stack build needs a paid AI provider call plus a sandbox VM per stack, which no automated run may spend. The free part of this contract — the picked stack being the stack the project loads — is asserted for every STACK_IDS entry in journeys-workflow.spec.ts.',
+    );
   });
 });

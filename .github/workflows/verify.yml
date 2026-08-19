@@ -14,11 +14,14 @@ jobs:
         env:
           POSTGRES_USER: openlovable
           POSTGRES_PASSWORD: openlovable
-          POSTGRES_DB: openlovable_test
+          # The application database. It used to be `openlovable_test` and nothing
+          # created `openlovable`, so `next start` served an application with no
+          # database, and the authenticated journey could not exist here at all.
+          POSTGRES_DB: openlovable
         ports:
           - 5433:5432
         options: >-
-          --health-cmd "pg_isready -U openlovable -d openlovable_test"
+          --health-cmd "pg_isready -U openlovable -d openlovable"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 12
@@ -46,9 +49,13 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Creates openlovable_test and openlovable_shadow next to the application
+      # database, then migrates the test one (the script refuses any other name).
+      - run: pnpm run db:test
+      # The application database, which `verify` now genuinely needs: `next start`
+      # serves it and the Playwright `setup` project seeds the E2E account into it
+      # through Prisma before the authenticated journeys sign in.
       - run: pnpm exec prisma migrate deploy
-        env:
-          DATABASE_URL: postgresql://openlovable:openlovable@127.0.0.1:5433/openlovable_test
       - run: pnpm exec playwright install --with-deps chromium
       - name: Cache Playwright browsers
         uses: actions/cache@v4
@@ -66,8 +73,13 @@ jobs:
             test-results
           if-no-files-found: ignore
 
-# The six-way `stacks` matrix (NEXTJS … SVELTE) was removed on 2026-08-18. Every
-# test in `e2e/journeys-stacks.spec.ts` is `.fixme()` and not one of them ever
-# took the `page` fixture, so the job installed Chromium six times to report
-# eighteen skips. The specs stay as the intent for a real stack journey; bring the
-# matrix back when they drive a browser.
+# The six-way `stacks` matrix (NEXTJS … SVELTE) was removed on 2026-08-18: no test
+# in `e2e/journeys-stacks.spec.ts` ever took the `page` fixture, so the job
+# installed Chromium six times to report eighteen skips. The specs stay as the
+# intent for a real stack journey; bring the matrix back when they drive a browser.
+#
+# What this job does run in a browser, since 2026-08-19: the `critical` project and
+# the `authenticated` project (`setup` seeds the E2E account into the application
+# database created above, then signs in through the real credentials form). Before
+# that, `CI` dropped both auth projects and `verify` filtered to `--project=critical`,
+# so sign-in and project creation were asserted by nothing anywhere.

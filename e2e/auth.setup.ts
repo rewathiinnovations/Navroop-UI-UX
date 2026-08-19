@@ -1,24 +1,36 @@
 import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { expect, test as setup } from '@playwright/test';
-import { AUTH_STORAGE_STATE } from './support/paths';
-import { seedE2eAccount } from './support/seed-account';
+import { expect, test as setup, type Page } from '@playwright/test';
+import type { E2eAccount } from './support/account';
+import { ADMIN_STORAGE_STATE, AUTH_STORAGE_STATE } from './support/paths';
+import { seedE2eAccount, seedE2eAdminAccount } from './support/seed-account';
 
 /**
- * Seeds the E2E account and signs it in once, through the real credentials form,
- * then writes the session to disk for the `authenticated` project. Before this
- * existed, no Playwright test in this repo had ever been authenticated.
+ * Above the 60s budget the sign-in assertion below asks for.
  *
- * The saved file is a live session. `.gitignore` covers `/e2e/.auth` — never
- * commit it.
+ * Without this the file ran on Playwright's 30s default, so that assertion could
+ * never spend more than half its stated budget: a slow first compile ended the run
+ * with `Test timeout of 30000ms exceeded` while the expect was still waiting, and
+ * because every authenticated project depends on `setup`, one cold start took the
+ * whole suite down with 15 tests never run. The number has to be larger than the
+ * longest wait inside, or the wait is decoration.
  */
-setup('sign in once and save the session', async ({ page }) => {
-  const { account, database, created } = await seedE2eAccount();
-  setup.info().annotations.push({
-    type: 'account',
-    description: `${created ? 'created' : 'refreshed'} ${account.email} in ${database}`,
-  });
+setup.describe.configure({ timeout: 180_000 });
 
+/**
+ * Seeds the E2E accounts and signs each in once, through the real credentials
+ * form, then writes the sessions to disk for the `authenticated` project. Before
+ * this existed, no Playwright test in this repo had ever been authenticated.
+ *
+ * Two accounts, not one: the invite journey is only meaningful if it shows a
+ * MEMBER refused *and* an ADMIN admitted, and promoting the shared member
+ * mid-run would decide that refusal in whichever worker looked second.
+ *
+ * The saved files are live sessions. `.gitignore` covers `/e2e/.auth` — never
+ * commit them.
+ */
+
+async function signInAndSave(page: Page, account: E2eAccount, storageState: string) {
   await page.goto('/?auth=login');
 
   const dialog = page.getByRole('dialog');
@@ -34,6 +46,26 @@ setup('sign in once and save the session', async ({ page }) => {
     { timeout: 60_000 },
   );
 
-  await mkdir(dirname(AUTH_STORAGE_STATE), { recursive: true });
-  await page.context().storageState({ path: AUTH_STORAGE_STATE });
+  await mkdir(dirname(storageState), { recursive: true });
+  await page.context().storageState({ path: storageState });
+}
+
+setup('sign in once and save the session', async ({ page }) => {
+  const { account, database, created } = await seedE2eAccount();
+  setup.info().annotations.push({
+    type: 'account',
+    description: `${created ? 'created' : 'refreshed'} ${account.email} in ${database}`,
+  });
+
+  await signInAndSave(page, account, AUTH_STORAGE_STATE);
+});
+
+setup('sign in once as an admin and save that session', async ({ page }) => {
+  const { account, database, created } = await seedE2eAdminAccount();
+  setup.info().annotations.push({
+    type: 'account',
+    description: `${created ? 'created' : 'refreshed'} admin ${account.email} in ${database}`,
+  });
+
+  await signInAndSave(page, account, ADMIN_STORAGE_STATE);
 });

@@ -1,10 +1,17 @@
+import type { PrismaClient } from '@/generated/prisma';
 import { uniqueSuffix } from './ids';
 
-export type PlanFactoryDb = {
-  plan: {
-    create: (args: { data: Record<string, unknown> }) => Promise<{ id: string; key: string }>;
-  };
-};
+/**
+ * Typed against the generated Prisma delegates on purpose. While the `data`
+ * argument was `Record<string, unknown>` this factory kept writing
+ * `maxConcurrentSandboxes` / `monthlySandboxMinutes` after
+ * `20260819010000_drop_sandbox_columns` removed those columns: nothing failed
+ * until `ensureDefaultPlan` ran against a *fresh* test database, where four
+ * suites died at bootstrap with `PrismaClientValidationError: Unknown argument`
+ * before a single assertion ran. An already-seeded database hid it, because
+ * `ensureDefaultPlan` short-circuits on the existing default plan.
+ */
+export type PlanFactoryDb = { plan: Pick<PrismaClient['plan'], 'create'> };
 
 const MB = 1024 * 1024;
 
@@ -17,18 +24,9 @@ export type DefaultPlanRow = {
   storageBytesLimit: bigint;
 };
 
-export type PlanEnsureDb = {
-  plan: {
-    findFirst: (args: { where: { isDefault: boolean } }) => Promise<DefaultPlanRow | null>;
-    upsert: (args: {
-      where: { key: string };
-      create: Record<string, unknown>;
-      update: Record<string, unknown>;
-    }) => Promise<DefaultPlanRow>;
-  };
-};
+export type PlanEnsureDb = { plan: Pick<PrismaClient['plan'], 'findFirst' | 'upsert'> };
 
-/** Idempotent Free/default plan — same keys as prisma/seed.ts. */
+/** Idempotent Free/default plan — same keys as prisma/seed.mjs. */
 export async function ensureDefaultPlan(db: PlanEnsureDb): Promise<DefaultPlanRow> {
   const existing = await db.plan.findFirst({ where: { isDefault: true } });
   if (existing) return existing;
@@ -44,7 +42,6 @@ export async function ensureDefaultPlan(db: PlanEnsureDb): Promise<DefaultPlanRo
       maxLiveSites: 1,
       maxPreviewSites: 3,
       maxMembers: 2,
-      maxConcurrentSandboxes: 1,
       checkpointRetentionDays: 7,
       storageBytesLimit: BigInt(500 * MB),
       allowCustomDomain: false,
@@ -54,7 +51,10 @@ export async function ensureDefaultPlan(db: PlanEnsureDb): Promise<DefaultPlanRo
   });
 }
 
-export async function createPlan(db: PlanFactoryDb, overrides: Record<string, unknown> = {}) {
+export async function createPlan(
+  db: PlanFactoryDb,
+  overrides: Partial<Parameters<PrismaClient['plan']['create']>[0]['data']> = {},
+) {
   const suffix = uniqueSuffix();
   return db.plan.create({
     data: {
@@ -67,7 +67,6 @@ export async function createPlan(db: PlanFactoryDb, overrides: Record<string, un
       maxLiveSites: 1,
       maxPreviewSites: 3,
       maxMembers: 5,
-      maxConcurrentSandboxes: 2,
       checkpointRetentionDays: 7,
       storageBytesLimit: BigInt(1024 * 1024 * 1024),
       allowCustomDomain: false,
@@ -75,7 +74,6 @@ export async function createPlan(db: PlanFactoryDb, overrides: Record<string, un
       maxTokensPerJob: 120000,
       maxFilesPerJob: 60,
       maxOutputBytesPerJob: 2000000,
-      monthlySandboxMinutes: 300,
       ...overrides,
     },
   });
