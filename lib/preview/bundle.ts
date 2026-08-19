@@ -1,4 +1,5 @@
 import * as esbuild from 'esbuild-wasm';
+import { isLocalPreviewSpecifier, stripPreviewScheme } from './labels';
 
 /**
  * In-browser bundler for generated apps.
@@ -161,12 +162,8 @@ export function resolveVirtual(
 }
 
 function isBareSpecifier(specifier: string) {
-  return (
-    !specifier.startsWith('.') &&
-    !specifier.startsWith('/') &&
-    !specifier.startsWith('@/') &&
-    !specifier.startsWith('vfs:')
-  );
+  // `vfs:` paths are already-resolved virtual modules, not package names.
+  return !specifier.startsWith('vfs:') && !isLocalPreviewSpecifier(specifier);
 }
 
 function loaderFor(path: string): esbuild.Loader {
@@ -207,23 +204,30 @@ function joinOutputs(outputs: esbuild.OutputFile[] | undefined, extension: strin
     .join('\n');
 }
 
+/**
+ * The message a reader sees. `vfs:` is stripped here, at the single boundary
+ * where esbuild's words become ours: it is the namespace of our own virtual
+ * filesystem plugin and names nothing in the project, and the pane put
+ * `No matching export in "vfs:lib/data.ts" for import "site"` in front of a user.
+ */
 function formatEsbuildError(error: unknown): string {
-  if (error && typeof error === 'object' && 'errors' in error) {
-    const errors = (
-      error as { errors?: Array<{ text?: string; location?: { file?: string; line?: number } }> }
-    ).errors;
-    if (Array.isArray(errors) && errors.length > 0) {
-      return errors
-        .map((entry) => {
-          const where = entry.location?.file
-            ? ` (${entry.location.file}${entry.location.line ? `:${entry.location.line}` : ''})`
-            : '';
-          return `${entry.text ?? 'Build error'}${where}`;
-        })
-        .join('\n');
+  if (error && typeof error === 'object' && 'errors' in error && Array.isArray(error.errors)) {
+    // A rejected build is a BuildFailure, whose `errors` are esbuild Messages.
+    const messages: esbuild.Message[] = error.errors;
+    if (messages.length > 0) {
+      return stripPreviewScheme(
+        messages
+          .map((entry) => {
+            const where = entry.location?.file
+              ? ` (${entry.location.file}${entry.location.line ? `:${entry.location.line}` : ''})`
+              : '';
+            return `${entry.text || 'Build error'}${where}`;
+          })
+          .join('\n'),
+      );
     }
   }
-  return error instanceof Error ? error.message : String(error);
+  return stripPreviewScheme(error instanceof Error ? error.message : String(error));
 }
 
 function stableKey(files: Record<string, string>, entry: string, aliases: Record<string, string>) {

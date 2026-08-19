@@ -1,10 +1,17 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { AlertTriangle, Loader2, RefreshCw } from 'lucide-react';
+import { AlertTriangle, Loader2, RefreshCw, Wand2 } from 'lucide-react';
 import { assemblePreview, type PreviewAssembly } from '@/lib/preview/assemble';
 import { bundlePreview } from '@/lib/preview/bundle';
 import { buildPreviewSrcdoc, PREVIEW_MESSAGE_SOURCE } from '@/lib/preview/html';
+import {
+  explainPreviewError,
+  pendingLocalModules,
+  stripPreviewScheme,
+  waitingForModulesMessage,
+  type PreviewErrorKind,
+} from '@/lib/preview/labels';
 import { summarizeStreamingFiles } from '@/lib/generation/generation-runtime';
 import type { GenerationFile } from '@/lib/generation/types';
 import { cn } from '@/lib/utils';
@@ -20,12 +27,25 @@ import { cn } from '@/lib/utils';
 
 export type PreviewState =
   | { status: 'idle' }
-  /** Not enough code to bundle yet, and a stream is still writing. Not an error. */
-  | { status: 'waiting'; reason: string }
+  /**
+   * Not enough code to bundle yet, or an import pointing at a file the running
+   * stream has not written. Not an error: `pendingError` carries the bundler
+   * failure being waited out, so it can be reported verbatim if the stream ends
+   * without that file ever arriving.
+   */
+  | { status: 'waiting'; reason: string; srcdoc?: string; pendingError?: string }
   | { status: 'bundling'; srcdoc?: string }
   | { status: 'running'; srcdoc: string }
   | { status: 'ready'; srcdoc: string }
-  | { status: 'error'; message: string; srcdoc?: string };
+  | { status: 'error'; message: string; srcdoc?: string; kind?: PreviewErrorKind };
+
+/**
+ * Which recovery a failure admits. Recompiling the same files can only fail the
+ * same way, so a `code` failure must never be offered as a retry; a `runtime`
+ * failure — a package that never loaded, a frame that never signalled ready —
+ * genuinely can pass on a second attempt.
+ */
+export type { PreviewErrorKind };
 
 /** The live generation, when the pane is mounted mid-build. */
 export type PreviewStream = {
@@ -85,9 +105,53 @@ function srcdocOf(state: PreviewState): string | undefined {
  * A failure never blanks a preview that already rendered. Before this, a bundle
  * error dropped the srcdoc, so one bad intermediate state during a stream wiped
  * a working pane and only a full rebuild brought it back.
+ *
+ * `kind` is optional because some failures are plain-English reasons rather than
+ * compiler output; the banner then assumes `code`, the reading that promises the
+ * least.
  */
-export function previewError(prev: PreviewState, message: string): PreviewState {
-  return { status: 'error', message, srcdoc: srcdocOf(prev) };
+export function previewError(
+  prev: PreviewState,
+  message: string,
+  kind?: PreviewErrorKind,
+): PreviewState {
+  return { status: 'error', message, srcdoc: srcdocOf(prev), kind };
+}
+
+/**
+ * A bundler failure mid-stream is usually a half-written build, not a broken
+ * one. Incident: with 16 of ~25 files streamed, `app/page.tsx` had completed and
+ * imported `@/components/FinalCTA`, which had not been written yet — and the
+ * pane told the user their preview was broken while the model was still typing.
+ *
+ * So while the stream runs, a failure whose every diagnostic names a
+ * project-local module becomes patience: the last good frame stays, the pane
+ * names the file it is waiting for, and the next settle window retries against
+ * the newer file set. An unresolvable package is reported immediately — no
+ * amount of further streaming can produce one — and once the stream ends an
+ * unresolved local import is a real error too.
+ */
+export function bundleFailureState(
+  prev: PreviewState,
+  message: string,
+  streaming: boolean,
+): PreviewState {
+  const pending = streaming ? pendingLocalModules(message) : null;
+  if (!pending || pending.length === 0) return previewError(prev, message, 'code');
+  return {
+    status: 'waiting',
+    reason: waitingForModulesMessage(pending),
+    srcdoc: srcdocOf(prev),
+    pendingError: message,
+  };
+}
+
+/** The failure the pane reports, with the recovery it can honestly offer. */
+export function errorBanner(
+  state: PreviewState,
+): { message: string; kind: PreviewErrorKind } | null {
+  if (state.status !== 'error') return null;
+  return { message: state.message, kind: state.kind ?? 'code' };
 }
 
 /**
@@ -128,6 +192,7 @@ export function BrowserPreview({
   settleMs = DEFAULT_SETTLE_MS,
   className,
   onStatusChange,
+  onFixError,
 }: {
   stack: string;
   /** Files already persisted for the project; the base layer. */
@@ -137,6 +202,13 @@ export function BrowserPreview({
   settleMs?: number;
   className?: string;
   onStatusChange?: (status: PreviewState['status']) => void;
+  /**
+   * Hands the failure to whoever owns the chat, so a fault the model caused can
+   * be sent straight back to it. The `kind` goes with it because the instruction
+   * differs: a runtime crash compiled fine, and telling the model to "fix the
+   * code so it compiles" sent it looking for a build error that did not exist.
+   */
+  onFixError?: (message: string, kind: PreviewErrorKind) => void;
 }) {
   const [state, setState] = useState<PreviewState>({ status: 'idle' });
   const [reloadToken, setReloadToken] = useState(0);
@@ -217,7 +289,7 @@ export function BrowserPreview({
       if (cancelled) return;
 
       if (!result.ok) {
-        setState((prev) => previewError(prev, result.error));
+        setState((prev) => bundleFailureState(prev, result.error, streamActiveRef.current));
         return;
       }
       setState({
@@ -233,17 +305,29 @@ export function BrowserPreview({
   }, [settle.active, reloadToken]);
 
   useEffect(() => {
-    // A stream that ends without ever producing a root component is a real dead
-    // end, so the patient copy stops being true the moment the build stops.
+    // A stream that ended without writing the file the pane was waiting for is a
+    // real dead end, so the patient copy stops being true the moment the build
+    // stops. `pendingError` is the bundler's own words, which the banner can
+    // humanise and the chat can repair; `reason` covers the nothing-to-bundle
+    // case, which has no compiler output behind it.
     if (streamActive) return;
     setState((prev) =>
-      prev.status === 'waiting' ? { status: 'error', message: prev.reason } : prev,
+      prev.status === 'waiting'
+        ? previewError(prev, prev.pendingError ?? prev.reason, 'code')
+        : prev,
     );
   }, [streamActive]);
 
   useEffect(() => {
     function onMessage(event: MessageEvent) {
-      const data = event.data as { source?: string; type?: string; message?: string } | null;
+      // `stack` is already on the bridge's payload (`PreviewMessage`), it was
+      // simply never read here.
+      const data = event.data as {
+        source?: string;
+        type?: string;
+        message?: string;
+        stack?: string;
+      } | null;
       if (!data || data.source !== PREVIEW_MESSAGE_SOURCE) return;
       if (data.type === 'ready') {
         clearTimeout(watchdogRef.current ?? undefined);
@@ -254,7 +338,14 @@ export function BrowserPreview({
       }
       if (data.type === 'error') {
         clearTimeout(watchdogRef.current ?? undefined);
-        setState((prev) => previewError(prev, data.message || 'The preview hit a runtime error.'));
+        // The stack rides along. A repair attempt given only "Cannot read
+        // properties of undefined (reading 'map')" has nowhere to look and came
+        // back with an edit that did not fix it; the bundle's frames still name
+        // the component function, which is what makes the fault findable.
+        const runtime = data.stack
+          ? `${data.message || 'The preview hit a runtime error.'}\n\n${data.stack}`
+          : data.message || 'The preview hit a runtime error.';
+        setState((prev) => previewError(prev, runtime, 'runtime'));
       }
     }
 
@@ -270,6 +361,7 @@ export function BrowserPreview({
           ? previewError(
               prev,
               'The preview did not finish loading. A package import may be unavailable — check the browser console inside the frame.',
+              'runtime',
             )
           : prev,
       );
@@ -282,6 +374,7 @@ export function BrowserPreview({
   const reload = useCallback(() => setReloadToken((token) => token + 1), []);
   const srcdoc = srcdocOf(state);
   const bundling = state.status === 'bundling';
+  const banner = errorBanner(state);
 
   return (
     <div className={cn('relative h-full w-full bg-white', className)}>
@@ -314,62 +407,158 @@ export function BrowserPreview({
         </div>
       ) : null}
 
-      {state.status === 'waiting' ? (
+      {state.status === 'waiting' && srcdoc ? (
+        // Waiting on a file mid-stream must stay legible without curtaining off
+        // the frame that already works, so it reads like the rebuild pill.
+        <div className="absolute bottom-12 right-12 flex max-w-[70%] items-center gap-6 rounded-full border border-[var(--studio-line)] bg-white/90 px-10 py-6 text-[12px] text-[var(--studio-muted)] shadow-sm backdrop-blur-sm">
+          <Loader2 className="size-13 shrink-0 animate-spin motion-reduce:animate-none" />
+          <span className="truncate">{state.reason}</span>
+        </div>
+      ) : null}
+
+      {state.status === 'waiting' && !srcdoc ? (
         <div className="absolute inset-0 grid place-items-center bg-white p-24">
           <div className="flex max-w-[420px] flex-col items-center gap-8 text-center">
             <Loader2 className="size-18 animate-spin text-[var(--studio-accent)] motion-reduce:animate-none" />
-            <p className="text-[13px] text-[var(--studio-muted)]">{waitingMessage(summary)}</p>
+            <p className="text-[13px] text-[var(--studio-muted)]">
+              {/* A named missing file beats generic progress copy; `reason` only
+                  says that when a bundler failure is being waited out. */}
+              {state.pendingError ? state.reason : waitingMessage(summary)}
+            </p>
           </div>
         </div>
       ) : null}
 
-      {state.status === 'error' && !srcdoc ? (
+      {banner && !srcdoc ? (
         <div className="absolute inset-0 overflow-auto bg-white/95 p-24 backdrop-blur-sm">
-          <div className="mx-auto flex max-w-[560px] flex-col gap-12">
-            <div className="flex items-center gap-8 text-[var(--studio-fg)]">
-              <AlertTriangle className="size-18 text-amber-600" />
-              <h3 className="text-[15px] font-semibold">Preview couldn’t run</h3>
-            </div>
-            <pre className="max-h-[320px] overflow-auto whitespace-pre-wrap rounded-[10px] bg-[var(--studio-subtle)] p-12 text-[12px] leading-5 text-[var(--studio-muted)]">
-              {state.message}
-            </pre>
-            <button
-              type="button"
-              onClick={reload}
-              className="inline-flex w-fit items-center gap-6 rounded-full border border-[var(--studio-line)] px-14 py-8 text-[13px] font-medium text-[var(--studio-fg)] transition-colors hover:bg-[var(--studio-subtle)]"
-            >
-              <RefreshCw className="size-14" />
-              Try again
-            </button>
+          <div className="mx-auto max-w-[560px]">
+            <PreviewErrorReport
+              message={banner.message}
+              kind={banner.kind}
+              onFix={onFixError}
+              onReload={reload}
+            />
           </div>
         </div>
       ) : null}
 
-      {state.status === 'error' && srcdoc ? (
+      {banner && srcdoc ? (
         // The last good render stays visible underneath: a broken intermediate
         // state during a stream reports itself without taking the pane away.
         <div className="absolute inset-x-0 bottom-0 max-h-[45%] overflow-auto border-t border-[var(--studio-line)] bg-white/95 p-12 backdrop-blur-sm">
-          <div className="flex items-start gap-8">
-            <AlertTriangle className="mt-2 size-16 shrink-0 text-amber-600" />
-            <div className="flex min-w-0 flex-1 flex-col gap-8">
-              <h3 className="text-[13px] font-semibold text-[var(--studio-fg)]">
-                Preview couldn’t run
-              </h3>
-              <pre className="max-h-[160px] overflow-auto whitespace-pre-wrap text-[12px] leading-5 text-[var(--studio-muted)]">
-                {state.message}
-              </pre>
-            </div>
-            <button
-              type="button"
-              onClick={reload}
-              className="inline-flex shrink-0 items-center gap-6 rounded-full border border-[var(--studio-line)] px-12 py-6 text-[12px] font-medium text-[var(--studio-fg)] transition-colors hover:bg-[var(--studio-subtle)]"
-            >
-              <RefreshCw className="size-13" />
-              Try again
-            </button>
-          </div>
+          <PreviewErrorReport
+            compact
+            message={banner.message}
+            kind={banner.kind}
+            onFix={onFixError}
+            onReload={reload}
+          />
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * Says what each button will actually do. "Try again" on a compile failure was a
+ * lie: recompiling the same files reproduces the same failure every time, which
+ * is exactly what the user hit — an error, a retry, the identical error.
+ */
+function recoveryNote(kind: PreviewErrorKind, canFix: boolean): string {
+  if (kind === 'runtime') {
+    return canFix
+      ? 'Try again reloads the frame and re-fetches its packages. Fix this sends the error to the chat instead.'
+      : 'Try again reloads the frame and re-fetches its packages.';
+  }
+  return canFix
+    ? 'Fix this sends the compiler output to the chat so the code can be repaired. Recompile re-reads the same files, so it only helps once the code has changed.'
+    : 'Recompile re-reads the same files, so it only helps once the code has changed.';
+}
+
+/**
+ * A failure a non-compiler-expert can act on: the humanised sentence first, the
+ * compiler's own words one click away, and an action that can change the
+ * outcome. Exported so both placements and the tests use one report.
+ */
+export function PreviewErrorReport({
+  message,
+  kind,
+  compact = false,
+  onFix,
+  onReload,
+}: {
+  message: string;
+  kind: PreviewErrorKind;
+  /** Rendered over a working preview, so it has to stay small. */
+  compact?: boolean;
+  onFix?: (message: string, kind: PreviewErrorKind) => void;
+  onReload: () => void;
+}) {
+  const sentences = explainPreviewError(message);
+  // Two separate guarantees: `bundlePreview` strips the `vfs:` namespace from the
+  // message itself (so the chat handoff never mentions it either), and this strips
+  // it again on the way to the screen, so no caller can put our own virtual
+  // filesystem scheme in front of a reader.
+  const compilerOutput = stripPreviewScheme(message);
+  const rawClassName = cn(
+    'overflow-auto whitespace-pre-wrap rounded-[10px] bg-[var(--studio-subtle)] p-12 text-[12px] leading-5 text-[var(--studio-muted)]',
+    compact ? 'max-h-[120px]' : 'max-h-[280px]',
+  );
+
+  return (
+    <div className="flex flex-col gap-8">
+      <div className="flex items-center gap-8 text-[var(--studio-fg)]">
+        <AlertTriangle className={cn('shrink-0 text-amber-600', compact ? 'size-16' : 'size-18')} />
+        <h3 className={cn('font-semibold', compact ? 'text-[13px]' : 'text-[15px]')}>
+          Preview couldn’t run
+        </h3>
+      </div>
+
+      {sentences.map((sentence) => (
+        <p key={sentence} className="text-[13px] leading-5 text-[var(--studio-fg)]">
+          {sentence}
+        </p>
+      ))}
+
+      {sentences.length > 0 ? (
+        // Collapsed, not dropped: whoever wants the compiler's exact words can
+        // still copy them, and everyone else no longer has to read them first.
+        <details className="text-[12px] text-[var(--studio-muted)]">
+          <summary className="w-fit cursor-pointer select-none">
+            {kind === 'runtime' ? 'Error details' : 'Compiler output'}
+          </summary>
+          <pre className={cn('mt-6', rawClassName)}>{compilerOutput}</pre>
+        </details>
+      ) : (
+        <pre className={rawClassName}>{compilerOutput}</pre>
+      )}
+
+      <div className="flex flex-wrap items-center gap-8">
+        {onFix ? (
+          <button
+            type="button"
+            data-preview-action="fix"
+            onClick={() => onFix(message, kind)}
+            className="inline-flex items-center gap-6 rounded-full [background-image:var(--studio-cta-gradient)] px-14 py-8 text-[13px] font-medium text-[var(--studio-cta-fg)] transition-[filter] hover:brightness-[1.07] motion-reduce:transition-none"
+          >
+            <Wand2 className="size-14" />
+            Fix this
+          </button>
+        ) : null}
+        <button
+          type="button"
+          data-preview-action="reload"
+          onClick={onReload}
+          className="inline-flex items-center gap-6 rounded-full border border-[var(--studio-line)] px-14 py-8 text-[13px] font-medium text-[var(--studio-fg)] transition-colors hover:bg-[var(--studio-subtle)]"
+        >
+          <RefreshCw className="size-14" />
+          {kind === 'runtime' ? 'Try again' : 'Recompile'}
+        </button>
+      </div>
+
+      <p className="text-[12px] leading-5 text-[var(--studio-muted)]">
+        {recoveryNote(kind, Boolean(onFix))}
+      </p>
     </div>
   );
 }

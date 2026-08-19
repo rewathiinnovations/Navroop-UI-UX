@@ -22,6 +22,7 @@ import { useStaticPreview } from './useStaticPreview';
 import { useLivePreviewMode } from './useLivePreviewMode';
 import { useProjectPlan } from './useProjectPlan';
 import { PREVIEW_DEVICE_EVENT } from '@/lib/preview/devices';
+import { previewRepairInstruction } from '@/lib/preview/labels';
 import { usePreviewDevice } from './usePreviewDevice';
 import type {
   ProjectPhase,
@@ -389,6 +390,8 @@ export default function ProjectWorkspace({
               approving={approving}
               onApprovePlan={handleApprove}
               queueAhead={generationJob.job?.queuePosition}
+              streamFiles={streamFiles}
+              startedAt={generationJob.job?.startedAt}
               recovery={
                 generationJob.recovery && showsChatRecovery(generationJob.job?.kind)
                   ? {
@@ -524,6 +527,14 @@ export default function ProjectWorkspace({
                   stack={projectFiles.stack}
                   files={projectFiles.files}
                   stream={isJobActive && streamFiles ? { files: streamFiles, active: true } : null}
+                  // Handing the failure back beats a recompile that can only
+                  // fail identically. The wording has to match the class: the
+                  // first attempt said "fails to compile" about a runtime crash,
+                  // so the model went looking for a build error that did not
+                  // exist and its edit did not fix anything.
+                  onFixError={(message, kind) =>
+                    handleSend(previewRepairInstruction(message, kind), { mode: 'build' })
+                  }
                 />
               )
             ) : (
