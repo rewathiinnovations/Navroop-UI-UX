@@ -26,6 +26,13 @@ export const PREVIEW_NOT_FOUND_TITLE = 'Page not found';
 export const PREVIEW_STATIC_HOST_PREFIX = 'preview-static';
 
 /**
+ * The adapted layout copy the assembler mounts when a layout renders its own
+ * `<html>`. Declared here because it is a display concern: it must never appear
+ * in anything a person reads.
+ */
+export const PREVIEW_LAYOUT_BASENAME = '__preview-layout.tsx';
+
+/**
  * `vfs:` is the namespace `lib/preview/bundle.ts` gives every generated module
  * inside its virtual filesystem, and esbuild echoes it back in diagnostics. It
  * names nothing that exists in the project, so it is stripped before any of it
@@ -34,7 +41,14 @@ export const PREVIEW_STATIC_HOST_PREFIX = 'preview-static';
  * no way of knowing what `vfs:` is.
  */
 export function stripPreviewScheme(text: string): string {
-  return text.replace(/\bvfs:/g, '');
+  return (
+    text
+      .replace(/\bvfs:/g, '')
+      // A reader told "app/__preview-layout.tsx imports SITE_NAME" goes hunting for
+      // a file that does not exist in their project. The fault is real; the
+      // filename is ours, so it is reported against the file they actually have.
+      .replace(/__preview-layout\.(tsx|jsx)/g, 'layout.$1')
+  );
 }
 
 /**

@@ -5,6 +5,8 @@
  * server-side publish bundler.
  */
 
+import { PREVIEW_LAYOUT_BASENAME } from '@/lib/preview/labels';
+
 export type PreviewAssembly =
   | { kind: 'html'; html: string }
   | {
@@ -16,8 +18,6 @@ export type PreviewAssembly =
   | { kind: 'empty'; reason: string };
 
 const ENTRY_PATH = '__preview/entry.tsx';
-/** Sits beside the real layout so its relative imports still resolve. */
-const PREVIEW_LAYOUT_BASENAME = '__preview-layout.tsx';
 
 /** Root component candidates per stack, most specific first. */
 const ROOT_CANDIDATES: Record<string, string[]> = {

@@ -46,6 +46,12 @@ const eslintConfig = defineConfig([
     // Nested Claude worktrees / skill copies. Not app source.
     '.claude/**',
     '**/.claude/**',
+    // Sibling git worktrees for other branches, already gitignored. Their whole
+    // tree is another branch's checkout: linting it reports that branch's files
+    // against this branch's config, which is how 17 errors appeared in vendored
+    // `.cjs` skill scripts nobody here had touched.
+    '.worktrees/**',
+    '**/.worktrees/**',
   ]),
 ]);
 

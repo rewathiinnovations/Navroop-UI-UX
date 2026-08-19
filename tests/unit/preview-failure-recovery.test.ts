@@ -10,7 +10,7 @@ import {
   type PreviewState,
   type SettleTarget,
 } from '@/components/workspace/BrowserPreview';
-import { explainPreviewError, pendingLocalModules } from '@/lib/preview/labels';
+import { explainPreviewError, pendingLocalModules, stripPreviewScheme } from '@/lib/preview/labels';
 import type { PreviewAssembly } from '@/lib/preview/assemble';
 
 // esbuild-wasm has no business booting for this file: nothing here reaches the
@@ -241,5 +241,39 @@ describe('a half-written build is not a broken one', () => {
     const rendered: PreviewState = { status: 'running', srcdoc: '<html>17 files</html>' };
     expect(rendered.status).toBe('running');
     expect(errorBanner(rendered)).toBeNull();
+  });
+});
+
+describe('our own file names never reach the reader', () => {
+  /**
+   * The assembler mounts an adapted copy of `app/layout.tsx` as
+   * `app/__preview-layout.tsx` when the real layout renders its own `<html>`.
+   * A live failure reported "app/__preview-layout.tsx imports SITE_NAME", sending
+   * the reader after a file that does not exist in their project.
+   */
+  const LEAKED =
+    'No matching export in "vfs:lib/site.ts" for import "SITE_NAME" (vfs:app/__preview-layout.tsx:4)';
+
+  it('reports the layout the project actually has', () => {
+    const cleaned = stripPreviewScheme(LEAKED);
+
+    expect(cleaned).not.toContain('__preview-layout');
+    expect(cleaned).toContain('app/layout.tsx');
+    expect(cleaned).not.toContain('vfs:');
+  });
+
+  it('keeps the fault itself intact', () => {
+    const cleaned = stripPreviewScheme(LEAKED);
+
+    expect(cleaned).toContain('SITE_NAME');
+    expect(cleaned).toContain('lib/site.ts');
+  });
+
+  it('does not appear in the rendered report either', () => {
+    const markup = renderToStaticMarkup(
+      createElement(PreviewErrorReport, { message: LEAKED, kind: 'code', onReload: () => {} }),
+    );
+
+    expect(markup).not.toContain('__preview-layout');
   });
 });
