@@ -4,6 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import StudioShell from '@/components/app/studio/StudioShell';
 import StudioButton from '@/components/app/studio/StudioButton';
+import ConfirmAction from '@/components/admin/ConfirmAction';
 import { notify, toMessage } from '@/lib/notify';
 import type { PublicDeployment } from '@/lib/publish/serialize';
 
@@ -17,6 +18,7 @@ function statusLabel(status: string) {
 export default function DeploymentsList({ initial }: { initial: PublicDeployment[] }) {
   const [rows, setRows] = useState(initial);
   const [busy, setBusy] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
 
   const act = async (id: string, action: 'stop' | 'redeploy' | 'delete', confirmSlug?: string) => {
     setBusy(`${action}:${id}`);
@@ -141,15 +143,20 @@ export default function DeploymentsList({ initial }: { initial: PublicDeployment
                         type="button"
                         variant="danger"
                         disabled={busy !== null}
-                        onClick={() => {
-                          const typed = window.prompt(
-                            `Delete + DNS cleanup. Type the slug: ${row.slug}`,
-                          );
-                          if (typed) void act(row.id, 'delete', typed);
-                        }}
+                        onClick={() => setDeleteTarget(row.id)}
                       >
                         Delete
                       </StudioButton>
+                      <ConfirmAction
+                        open={deleteTarget === row.id}
+                        onOpenChange={(next) => setDeleteTarget(next ? row.id : null)}
+                        title={`Delete ${row.slug}?`}
+                        body="This stops the app, removes DNS records, and archives the deploy repo. This cannot be undone."
+                        confirmLabel="Delete"
+                        busyLabel="Deleting…"
+                        confirmPhrase={row.slug}
+                        onConfirm={() => act(row.id, 'delete', row.slug)}
+                      />
                     </div>
                   </td>
                 </tr>
