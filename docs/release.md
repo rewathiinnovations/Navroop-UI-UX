@@ -6,10 +6,10 @@ Failures should be caught before users see them. Production should be revertible
 
 Never point Vitest at the development database.
 
-| | URL |
-| --- | --- |
-| App | `DATABASE_URL` — typically `…/openlovable` on host **5433** |
-| Tests | `TEST_DATABASE_URL` — typically `…/openlovable_test` on the same Postgres |
+|              | URL                                                                                            |
+| ------------ | ---------------------------------------------------------------------------------------------- |
+| App          | `DATABASE_URL` — typically `…/openlovable` on host **5433**                                    |
+| Tests        | `TEST_DATABASE_URL` — typically `…/openlovable_test` on the same Postgres                      |
 | Schema drift | `SHADOW_DATABASE_URL` — optional; default `…/openlovable_shadow` on the same host. Disposable. |
 
 Same host/port is fine. The **database name must differ**. Startup asserts `TEST_DATABASE_URL !== DATABASE_URL` and exits if not.
@@ -26,34 +26,53 @@ Add `TEST_DATABASE_URL` to `.env.local` (see `.env.example`). Do not commit it.
 
 ## Commands
 
-| Script | What |
-| --- | --- |
-| `pnpm run verify` / `npm run verify` | Pre-push gate (stop on first fatal failure) |
-| `pnpm run verify:full` | Everything, plus every Playwright project instead of just `critical` (the stack and `full` projects are all `.fixme()`, so in CI this adds no executing E2E test) |
-| `pnpm run verify:bypass -- "reason"` | Log a hook bypass, then `git push --no-verify` |
-| `pnpm db:test` | Create `openlovable_test` / `openlovable_shadow`, then migrate the test DB |
-| `pnpm db:test:migrate` | `prisma migrate deploy` on `TEST_DATABASE_URL` (guarded to `openlovable_test`) |
-| `pnpm test` | Vitest unit + integration |
-| `pnpm test:e2e:critical` | Playwright project `critical` (journeys 1–4) |
-| `pnpm smoke` | Live smoke (`SMOKE_URL`, optional `SMOKE_CLIENT_URL`) |
-| `pnpm rollback` | Coolify rollback of the **main Navroop app** only |
+| Script                               | What                                                                                                                                                                                                             |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm run verify` / `npm run verify` | Pre-push gate (stop on first fatal failure)                                                                                                                                                                      |
+| `pnpm run verify:full`               | Everything, with one `playwright test` over **every** project replacing the two per-project Playwright steps                                                                                                     |
+| `pnpm run verify:bypass -- "reason"` | Log a hook bypass, then `git push --no-verify`                                                                                                                                                                   |
+| `pnpm db:test`                       | Create `openlovable_test` / `openlovable_shadow`, then migrate the test DB                                                                                                                                       |
+| `pnpm db:test:migrate`               | `prisma migrate deploy` on `TEST_DATABASE_URL` (guarded to `openlovable_test`)                                                                                                                                   |
+| `pnpm test`                          | Vitest unit + integration                                                                                                                                                                                        |
+| `pnpm test:e2e:critical`             | Playwright project `critical` (journey 1, plus the scaffolded journey 4). The signed-in journeys live in the `authenticated` project: `node ./node_modules/@playwright/test/cli.js test --project=authenticated` |
+| `pnpm smoke`                         | Live smoke (`SMOKE_URL`, optional `SMOKE_CLIENT_URL`)                                                                                                                                                            |
+| `pnpm rollback`                      | Coolify rollback of the **main Navroop app** only                                                                                                                                                                |
 
 `verify` order (fatal unless noted):
 
 1. `tsc --noEmit` (excludes generated `.next` / `next-env.d.ts` route types; `types/next-env.d.ts` keeps `next` refs)
 2. `eslint . --max-warnings 0`
-3. `prisma validate`
-4. `prisma migrate diff --from-migrations` vs committed schema (`--shadow-database-url`, dedicated `openlovable_shadow` — never the app or test DB)
-5. Destructive-migration detector (`ALLOW_DESTRUCTIVE_MIGRATION=true` required for DROP TABLE/COLUMN / ALTER TYPE)
-6. `vitest run --coverage`
-7. `next build`
-8. `playwright test --project=critical` (CI `webServer` inherits env via `lib/verify/playwright-env.ts`; test-only `ENCRYPTION_KEY` fallback if unset)
-9. depcheck and knip — **report only**
-10. `pnpm audit --audit-level=high` — high severity blocks
+3. Public API allowlist (`scripts/check-public-routes.ts`)
+4. `prisma validate`
+5. `prisma migrate diff --from-migrations` vs committed schema (`--shadow-database-url`, dedicated `openlovable_shadow` — never the app or test DB)
+6. Destructive-migration detector (`ALLOW_DESTRUCTIVE_MIGRATION=true` required for DROP TABLE/COLUMN / ALTER TYPE)
+7. `vitest run --coverage`
+8. `next build`
+9. `playwright test --project=critical`
+10. `playwright test --project=authenticated` — the `setup` project seeds the E2E account and signs in first, so this is the step that proves a real signed-in user can reach the dashboard and create a project
+11. depcheck and knip — **report only** (non-fatal, but the tick is now truthful: knip's `--no-exit-code` was removed)
+12. `pnpm audit --audit-level=high` — high severity blocks
+
+Every step runs a vendored binary (`node ./node_modules/…`) except `pnpm audit`, which resolves the lockfile itself and has no binary equivalent. That is not cosmetic: `verify` runs from `.husky/pre-push`, and `pnpm run` / `pnpm exec` first run a dependency-status check that can purge `node_modules` mid-push on a TTY. The hook avoided the shim; until 2026-08-19 every step it ran put it straight back.
 
 High/critical findings are forced via `pnpm.overrides` in `package.json` (same-major patches; `deepmerge-ts` to `^8` without a Prisma major). Isolated copies under eslint-config-next inflate path counts; unique packages are the real list. Overrides do not apply until `pnpm install` after `:3000` is stopped. Do not drop this step.
 
 On failure the summary prints the exact command to reproduce.
+
+### A step that runs nothing is not a pass
+
+`playwright test` exits **0** for a project whose tests are all `.fixme()` or all `test.skip(cond)` — verified: `playwright test --project=critical --grep "publish is a job"` prints `1 skipped` and returns 0. (A filter that collects _nothing_ is already fatal by itself: `Error: No tests found`, exit 1.) Both Playwright steps therefore carry `assertExecuted: requirePassingTests` (`lib/verify/orchestrator.ts`): a zero exit code with no `N passed` in the reporter output turns the step red with `exited 0 but reported no passing test`, and — being fatal — stops the run. Before that, the summary printed a ✓ beside a fatal gate step that had executed no assertion at all.
+
+### The Playwright server
+
+Whether a server is booted is decided by probing the base URL, not by `CI`. `playwright.config.ts` always declares the `webServer` (`node ./node_modules/next/dist/bin/next start`, env via `lib/verify/playwright-env.ts` with a test-only `ENCRYPTION_KEY` fallback) with `reuseExistingServer: true`:
+
+- a developer with a dev server on `:3000` gets that server reused;
+- a CI runner has nothing listening, so `next start` is spawned against the `next build` from step 8.
+
+It used to be `CI && !PLAYWRIGHT_NO_SERVER` with `reuseExistingServer: false`. Playwright probes the URL before spawning and throws `http://localhost:3000 is already used`, so **any** shell that exported `CI` (agent shells do) could not finish `verify` at all: step 9 died for an environmental reason and, because the orchestrator returns on the first fatal failure, depcheck, knip and the fatal dependency audit never ran.
+
+`PLAYWRIGHT_NO_SERVER=1` (runtime) drops the `webServer` entirely, for when you want an unreachable base URL to go red rather than have a server appear under the run.
 
 ### ESLint warnings
 
@@ -71,15 +90,15 @@ Every reading was taken with unrelated test files failing, which can only unders
 
 Per-tree, as measured (statements / branches / functions) — these trees have **no** 85% floor and are nowhere near one:
 
-| Tree | Stmts | Branch | Funcs |
-| --- | --- | --- | --- |
-| `lib/verify` | 100 | 96 | 100 |
-| `lib/security` | 80.18 | 71.84 | 95 |
-| `lib/deploy` | 74.11 | 94.28 | 87.5 |
-| `lib/jobs` | 61.41 | 71.38 | 71.59 |
-| `lib/plans` | 45.98 | 73.33 | 78.37 |
-| `lib/publish` | 44.1 | 79.88 | 34.37 |
-| `lib/` (root files) | 22.62 | 83.83 | 47.94 |
+| Tree                | Stmts | Branch | Funcs |
+| ------------------- | ----- | ------ | ----- |
+| `lib/verify`        | 100   | 96     | 100   |
+| `lib/security`      | 80.18 | 71.84  | 95    |
+| `lib/deploy`        | 74.11 | 94.28  | 87.5  |
+| `lib/jobs`          | 61.41 | 71.38  | 71.59 |
+| `lib/plans`         | 45.98 | 73.33  | 78.37 |
+| `lib/publish`       | 44.1  | 79.88  | 34.37 |
+| `lib/` (root files) | 22.62 | 83.83  | 47.94 |
 
 Stricter per-module floors are enforced on the pipeline modules (`lib/verify`, `lib/publish`, `lib/generation/parse-files.ts`, `lib/secret-scan.ts`, `lib/deploy`); files matching those globs still count towards the global numbers. Untested bulk: `lib/generation/generation-runtime.ts` (excluded — huge stream parser), Coolify/import/sandbox drivers, and UI-adjacent lib.
 
@@ -91,15 +110,15 @@ A test once stamped a fixture Sentry project id over the dev server's live `.dat
 
 Three rules, because several agents may be editing the checkout while the suite runs:
 
-| What changed | Where | Verdict |
-| --- | --- | --- |
-| Modified or removed | state paths only (`.data`, `public/uploads`, `tmp/backups`, and `DATA_DIR` when it points inside the repo) | fail |
-| Added | state paths | fail |
-| Added | anywhere else, and git ignores it | fail |
-| Added | anywhere else, and git can see it | ignored |
-| Modified | anywhere else | ignored |
+| What changed        | Where                                                                                                      | Verdict |
+| ------------------- | ---------------------------------------------------------------------------------------------------------- | ------- |
+| Modified or removed | state paths only (`.data`, `public/uploads`, `tmp/backups`, and `DATA_DIR` when it points inside the repo) | fail    |
+| Added               | state paths                                                                                                | fail    |
+| Added               | anywhere else, and git ignores it                                                                          | fail    |
+| Added               | anywhere else, and git can see it                                                                          | ignored |
+| Modified            | anywhere else                                                                                              | ignored |
 
-The last two rows are what keeps it usable in a live checkout. A source edit changes a file that **already exists**, so a repo-wide content comparison would fail on somebody else's save; and a new *visible* file is somebody adding source, which `git status` already shows — the guard's first real run failed on precisely that, another agent creating `tests/integration/publish-compensate-resume.test.ts` mid-suite. Git is used only to **classify** a candidate path, never to detect the change; detection is the mtime and size comparison, because git cannot see the paths that matter. When git cannot answer (no repository, no binary) the guard says so on stderr and checks the state paths only, rather than silently narrowing.
+The last two rows are what keeps it usable in a live checkout. A source edit changes a file that **already exists**, so a repo-wide content comparison would fail on somebody else's save; and a new _visible_ file is somebody adding source, which `git status` already shows — the guard's first real run failed on precisely that, another agent creating `tests/integration/publish-compensate-resume.test.ts` mid-suite. Git is used only to **classify** a candidate path, never to detect the change; detection is the mtime and size comparison, because git cannot see the paths that matter. When git cannot answer (no repository, no binary) the guard says so on stderr and checks the state paths only, rather than silently narrowing.
 
 `globalSetup` runs in its own process, so it cannot see the temp `DATA_DIR` the worker processes get from `data-dir-guard.ts`, and does not need to — the point is to notice writes that land in the repository.
 
@@ -124,17 +143,17 @@ Husky + lint-staged:
 
 ### Hooks call binaries directly, never `pnpm exec` / `pnpm run`
 
-Both hooks `cd "$(git rev-parse --show-toplevel)"` and then run `node ./node_modules/<tool>/…`. They must never go through `pnpm exec` or `pnpm run`: pnpm runs a dependency-status check first, decides `node_modules` is stale, and tries to **purge it** before running anything. An agent shell survives that only because it has no TTY — a real `git commit` has one, so the purge would happen mid-commit and take the nested `minimatch@10` under `test-exclude/node_modules` with it (`.cursor/lessons-learned.md`). Never set `CI=true` or `confirmModulesPurge=false` to get past the abort; both arm the deletion. Each hook checks the binary exists first and exits 1 with "run pnpm install" if it does not. `.husky/.gitattributes` pins `eol=lf` so the hooks stay POSIX-runnable on a Windows checkout with `core.autocrlf=true`.
+Both hooks `cd "$(git rev-parse --show-toplevel)"` and then run `node ./node_modules/<tool>/…`, and so does every step `verify` itself runs (`lib/verify/orchestrator.ts`) — the hook rule was worthless while the twelve steps under it were all `pnpm exec`. They must never go through `pnpm exec` or `pnpm run`: pnpm runs a dependency-status check first, decides `node_modules` is stale, and tries to **purge it** before running anything. An agent shell survives that only because it has no TTY — a real `git commit` has one, so the purge would happen mid-commit and take the nested `minimatch@10` under `test-exclude/node_modules` with it (`.cursor/lessons-learned.md`). Never set `CI=true` or `confirmModulesPurge=false` to get past the abort; both arm the deletion. Each hook checks the binary exists first and exits 1 with "run pnpm install" if it does not. `.husky/.gitattributes` pins `eol=lf` so the hooks stay POSIX-runnable on Windows. The one deliberate exception is `pnpm audit`, which is not a script runner and has no vendored binary.
 
 ### Secret scan exit codes
 
 `scripts/secret-scan.ts` fails **closed**: a scan that cannot enumerate its input or cannot read a file it was asked to check never reports a pass.
 
-| Exit | Meaning |
-| --- | --- |
-| 0 | Scanned clean, or genuinely nothing staged (the message says which, and never claims "passed" with 0 files scanned) |
-| 1 | A credential pattern matched — a real finding to fix |
-| 2 | The scan could not complete (git could not list the staged files, a staged blob or file was unreadable, or an installed `gitleaks` crashed) — a broken gate, not a finding |
+| Exit | Meaning                                                                                                                                                                    |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | Scanned clean, or genuinely nothing staged (the message says which, and never claims "passed" with 0 files scanned)                                                        |
+| 1    | A credential pattern matched — a real finding to fix                                                                                                                       |
+| 2    | The scan could not complete (git could not list the staged files, a staged blob or file was unreadable, or an installed `gitleaks` crashed) — a broken gate, not a finding |
 
 Diagnostics go to stderr because that is what a git hook shows. In `--staged` mode the content comes from the **index** (`git show :path`) for any path whose worktree copy differs, so a partially staged file is scanned as it will be committed. A missing `gitleaks` (`ENOENT`) is still a skip; any other `gitleaks` failure is exit 2.
 
@@ -152,13 +171,13 @@ Bypasses are appended to the committed file `docs/verify-bypasses.log`.
 
 ## CI
 
-`.github/workflows/verify.yml` — push and pull request, one `verify` job. Postgres service for `TEST_DATABASE_URL`. Caches pnpm and Playwright browsers. Uploads traces/screenshots/videos on failure.
+`.github/workflows/verify.yml` — push and pull request, one `verify` job. Postgres service for **both** databases: the container creates `openlovable` (the application database) and `pnpm run db:test` creates `openlovable_test` / `openlovable_shadow` beside it, then `prisma migrate deploy` migrates the application one. Caches pnpm and Playwright browsers. Uploads traces/screenshots/videos on failure.
 
-The six-way `stacks` matrix (`NEXTJS` … `SVELTE`) was **deleted on 2026-08-18**: every test in `e2e/journeys-stacks.spec.ts` is `.fixme()` and none of them ever took the `page` fixture, so six jobs installed Chromium to report eighteen skips. **There is no six-stack E2E in CI any more.** The specs stay as the intent; reinstate the matrix when they drive a browser.
+The six-way `stacks` matrix (`NEXTJS` … `SVELTE`) was **deleted on 2026-08-18**: no test in `e2e/journeys-stacks.spec.ts` ever took the `page` fixture, so six jobs installed Chromium to report eighteen skips. **There is no six-stack E2E in CI any more.** The specs stay as the intent; reinstate the matrix when they drive a browser.
 
-The authenticated Playwright journey (`setup` + `authenticated` projects) is **local only**. It seeds an account into the application database, which CI does not create, so `playwright.config.ts` leaves both projects out unless `PLAYWRIGHT_AUTH_JOURNEY=1` — deliberately not set in either workflow.
+**The authenticated Playwright journey runs everywhere, as of 2026-08-19.** It was previously local-only in theory and nowhere in practice: `playwright.config.ts` dropped the `setup` and `authenticated` projects whenever `CI` was set (neither workflow set the `PLAYWRIGHT_AUTH_JOURNEY=1` that would have kept them), and locally `verify` filtered to `--project=critical`, which excludes them. So sign-in, the dashboard and project creation — the only e2e tests that exercise a signed-in user — were asserted by no automated run on any machine or workflow. The stated blocker was real (the journey seeds an account through Prisma into the application database, which CI did not create), so CI now creates it; `PLAYWRIGHT_AUTH_JOURNEY` is gone, and `playwright test --project=authenticated` is a fatal `verify` step.
 
-`.github/workflows/nightly.yml` — `verify:full` plus higher fast-check iterations (`FC_NUM_RUNS`).
+`.github/workflows/nightly.yml` — `verify:full` plus higher fast-check iterations (`FC_NUM_RUNS`). Same two databases as `verify.yml`, because `verify:full` runs every Playwright project including the authenticated ones.
 
 ### Branch protection (cannot enable via API without admin)
 
@@ -259,14 +278,15 @@ Expect: `config` / `cache` / `tmp` recreated, `observability.json` rebuilt from 
 
 ## Playwright honesty
 
-| Journey | Status |
-| --- | --- |
-| 0 Signed-in dashboard | **Real**, authenticated (`setup` + `authenticated` projects, local only) |
-| 1 Sign-in / auth axe | **Runnable** against `:3000` (unreachable server is now red unless `PLAYWRIGHT_ALLOW_NO_SERVER=1`) |
-| 2–4 Create / plan-build / publish | **`.fixme()`** — asserted `page.url()` was truthy; each carries the intent it must assert |
-| 1–3 × six stacks | **`.fixme()`**; no CI matrix any more (see CI above) |
-| 5–8 Domain / recovery / invite / template | **`.fixme()`** (`full` project) |
-| Visual baselines 5×3 | **`.fixme()`** — `toHaveScreenshot` was never called and no baseline exists |
+The gate runs **projects**, so read this per project; `node ./node_modules/@playwright/test/cli.js test --list` is the authoritative inventory and takes a second. `critical` and `authenticated` each have their own `verify` step, so either one going all-skip turns that step red (see "A step that runs nothing is not a pass"). The `verify:full` projects share the single `playwright-all` step, so one of them going all-skip is **not** caught individually — `--list` is what tells you.
+
+| Project                          | In the gate                                                  | What it proves                                                                                                                                                                                                                                     |
+| -------------------------------- | ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `setup`                          | Yes, as a dependency of `authenticated`                      | Seeds the E2E account through Prisma and signs it in through the real credentials form, then saves the session. Not a journey; a prerequisite that fails loudly                                                                                    |
+| `authenticated`                  | **Yes — fatal `verify` step 10, and in CI since 2026-08-19** | The signed-in journeys: dashboard render (journey 0), create-project-from-a-prompt (2), the plan/build toggle (3), and the workflow journeys that need a session. Paid routes are stubbed; nothing here calls a provider                           |
+| `critical`                       | **Yes — fatal `verify` step 9**                              | Signed-out sign-in screen, English copy, no serious axe findings (journey 1). An unreachable base URL is red unless `PLAYWRIGHT_ALLOW_NO_SERVER=1`, and the config now reuses or boots a server, so unreachable means something is genuinely wrong |
+| `NEXTJS` … `SVELTE` (six stacks) | `verify:full` only                                           | Per-stack create/plan-build. Skipped with a stated prerequisite: the stack projects have no `storageState`, and there is no credential-free per-stack journey. No CI matrix any more (see CI above)                                                |
+| `full`                           | `verify:full` only                                           | Signed-out surfaces reachable without a session (domains, recovery copy, invite gating, templates)                                                                                                                                                 |
 
 ## i18n
 
