@@ -1,18 +1,45 @@
 ---
-description: Exactly one Next.js/pnpm dev server; only the dedicated agent may start/restart it or replace locked Next/Prisma binaries
+description: One Next.js/pnpm dev server per working tree, each on its own port; only the dedicated agent may start/restart it or replace locked Next/Prisma binaries
 alwaysApply: true
 ---
 
-# Single development server
+# Development servers, one per working tree
 
-Always use **ONE** Next.js / pnpm development server for this repo. Never print `.env` secrets.
+**One server per checkout, never two in the same directory.** Never print `.env` secrets.
 
-**Port.** `main` runs on `http://localhost:3000`. The `ai-genration-improvements` branch runs on
-`http://localhost:3001` so branch work never serves from the same port as `main` — the branch is
-checked out in this directory, so only one of them is live at a time. When the port changes, the
-`app.url` admin setting has to follow it (DB row, overriding the `APP_URL` env pin): signed
-static-preview URLs and the GitHub App Manifest callback are built from it, and a stale value
-points them at a dead port. It is `http://localhost:3001` today.
+| Tree | Branch | Port | Supervised name |
+| ---- | ------ | ---- | --------------- |
+| `.` (primary) | `ai-genration-improvements` | 3001 | `navroop-branch-3001` |
+| `.worktrees/main` | `main` | 3000 | `navroop-main-3000` |
+
+Two branches cannot share one directory, so the second one is a `git worktree`. What that isolates:
+**code, `.next`, `generated/prisma` and `node_modules`** are per tree. What it does **not** isolate:
+Postgres, `public/uploads` object storage, and every `AppSetting` row — both servers read one
+database, so the same projects appear on both ports. Wanting data isolation too means a second
+database in that tree's own `.env.local`.
+
+**The port must come from the process, not the database.** `app.url` resolves DB row → env →
+fallback, and one DB row cannot describe two servers, so the row stays empty and each server is
+started with its own `APP_URL` / `NEXT_PUBLIC_APP_URL`. Signed static-preview URLs and the GitHub
+App Manifest callback are built from it; a shared row aims one of them at the other's port.
+
+## Setting up a second tree
+
+```sh
+git worktree add .worktrees/<branch> <branch>
+cp .env .env.local .worktrees/<branch>/          # gitignored; the worktree has none
+cd .worktrees/<branch>
+node "C:/Program Files/nodejs/node_modules/corepack/dist/corepack.js" pnpm install --frozen-lockfile --ignore-scripts
+node node_modules/prisma/build/index.js generate  # its own query engine, so no DLL lock fight
+node scripts/copy-preview-vendor.mjs              # esbuild.wasm the in-browser preview needs
+```
+
+`pnpm` is not on the agent shell's PATH here; corepack is, and it honours `packageManager`. The
+install takes about 25 seconds because pnpm hardlinks from the shared store.
+
+**Do not junction `node_modules` into a worktree.** It is the obvious shortcut and Turbopack rejects
+it outright — `Symlink [project]/node_modules is invalid, it points out of the filesystem root` — so
+the server dies on the first compile with a panic log.
 
 ## Ownership
 
