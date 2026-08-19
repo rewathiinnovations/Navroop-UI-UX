@@ -218,8 +218,13 @@ export async function createCheckpointAfterGeneration(
   }
 
   const snapshot = await captureFileSnapshot(projectId);
+  // Nothing to snapshot is a legitimate outcome, not a fault. A zero-file reply
+  // is now an answer turn ("hello" on a project with no site yet), and it ends
+  // with the same terminal ready PATCH as a build — which threw here, was caught
+  // and logged by the caller, and put an error line in the log for an entirely
+  // normal chat message. Callers already handle `null` (dedupe returns it too).
   if (snapshot.length === 0) {
-    throw new Error('Cannot create checkpoint: file snapshot is empty');
+    return null;
   }
 
   const latest = await prisma.checkpoint.findFirst({
