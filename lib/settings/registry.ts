@@ -168,6 +168,53 @@ export const SETTINGS: readonly SettingEntry[] = [
     kind: 'secret',
     env: 'UNSPLASH_ACCESS_KEY',
   },
+  {
+    key: 'tooling.unsplash.applicationId',
+    group: 'tooling',
+    label: 'Unsplash application ID',
+    help: 'Not in use. Reference only: the numeric id of the Unsplash application the access key belongs to, so an operator can tell which app to rotate. Nothing sends it anywhere.',
+    kind: 'text',
+    env: 'UNSPLASH_APPLICATION_ID',
+  },
+  {
+    key: 'tooling.unsplash.secretKey',
+    group: 'tooling',
+    label: 'Unsplash secret key',
+    help: 'Not in use. Only Unsplash OAuth on behalf of a signed-in user would need it; photo search and download authenticate with the access key alone. Stored so the credential set stays together.',
+    kind: 'secret',
+    env: 'UNSPLASH_SECRET_KEY',
+  },
+  {
+    key: 'tooling.images.workerUrl',
+    group: 'tooling',
+    label: 'Image worker URL',
+    help: 'Self-hosted Cloudflare Worker that generates every picture a build asks for. It must accept POST / with a JSON body of {"prompt","model"} and answer with image bytes. Without it, generation falls back to an OpenAI or Google key, then to stock photography.',
+    kind: 'url',
+    env: 'IMAGE_WORKER_URL',
+  },
+  {
+    key: 'tooling.images.token',
+    group: 'tooling',
+    label: 'Image worker token',
+    help: 'Bearer token the worker checks against its own API_KEY binding. Sent as an Authorization header on every image request; the endpoint is not called at all without it.',
+    kind: 'secret',
+    env: 'IMAGE_WORKER_TOKEN',
+  },
+  {
+    key: 'tooling.images.model',
+    group: 'tooling',
+    label: 'Image model',
+    help: 'Which model the worker runs. Only the models below were verified to return an image through this worker: the rest of its alias list answers "Unexpected model output format" (Phoenix, SDXL) or needs a different request shape (FLUX.2 Dev wants multipart). A full provider id also passes straight through if you extend the worker.',
+    kind: 'select',
+    env: 'IMAGE_WORKER_MODEL',
+    fallback: 'lucid-origin',
+    options: [
+      { value: 'lucid-origin', label: 'Leonardo Lucid Origin — default, ~12s' },
+      { value: 'flux-2-klein-4b', label: 'FLUX.2 Klein 4B — ~12s' },
+      { value: 'flux-2-klein-9b', label: 'FLUX.2 Klein 9B — larger' },
+      { value: 'flux-1-schnell', label: 'FLUX.1 Schnell — fastest' },
+    ],
+  },
 
   // -------------------------------------------------------------------- email
   {

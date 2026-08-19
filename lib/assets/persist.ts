@@ -1,3 +1,4 @@
+import type { ProjectAsset } from '@/generated/prisma';
 import { prisma } from '@/lib/db';
 import { assetStorageKey, fallbackAltText } from '@/lib/assets/keys';
 import { optimizeImage } from '@/lib/assets/optimize';
@@ -15,7 +16,10 @@ export type PersistAssetInput = {
   targetSize?: { width: number; height: number };
 };
 
-export async function persistOptimizedAsset(input: PersistAssetInput) {
+/** The stored `ProjectAsset` row, named so callers do not reach for `ReturnType`. */
+export type PersistedAsset = ProjectAsset;
+
+export async function persistOptimizedAsset(input: PersistAssetInput): Promise<PersistedAsset> {
   const altText = fallbackAltText(input.altText);
   const optimized = await optimizeImage(input.buffer, input.targetSize);
   const storageKey = assetStorageKey(input.projectId, optimized.ext);

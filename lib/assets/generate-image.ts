@@ -1,10 +1,15 @@
 import { getEffectiveApiKey } from '@/lib/api-keys';
 import { fallbackAltText } from '@/lib/assets/keys';
-import { persistOptimizedAsset } from '@/lib/assets/persist';
+import { persistOptimizedAsset, type PersistedAsset } from '@/lib/assets/persist';
+import { generateWithImageWorker, imageWorkerConfig } from '@/lib/assets/image-worker';
 import { logGenerationEvent } from '@/lib/usage-costs';
 
 export const NO_IMAGE_PROVIDER_ERROR =
-  'No image generation provider configured — add an OpenAI or Google key in Settings → API Keys';
+  'No image generation provider configured — add an image worker in Admin → Configuration, or an OpenAI or Google key in Settings → API Keys';
+
+/** The Worker is configured and still could not produce this image. */
+export const WORKER_FAILED_ERROR =
+  'The image worker could not produce this image, and no OpenAI or Google key is configured as a second attempt';
 
 export type GenerateAspect = '16:9' | '1:1' | '4:5' | '1200x630';
 
@@ -51,7 +56,9 @@ async function generateAltText(userId: string | null | undefined, prompt: string
         }),
       });
       if (response.ok) {
-        const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+        const data = (await response.json()) as {
+          choices?: Array<{ message?: { content?: string } }>;
+        };
         const text = data.choices?.[0]?.message?.content?.replace(/\s+/g, ' ').trim();
         if (text) return text;
       }
@@ -68,7 +75,9 @@ async function generateAltText(userId: string | null | undefined, prompt: string
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            contents: [{ parts: [{ text: `Write concise image alt text (max 12 words) for: ${prompt}` }] }],
+            contents: [
+              { parts: [{ text: `Write concise image alt text (max 12 words) for: ${prompt}` }] },
+            ],
           }),
         },
       );
@@ -141,20 +150,53 @@ async function generateWithImagen(apiKey: string, prompt: string, aspect: Genera
   return Buffer.from(encoded, 'base64');
 }
 
-export async function generateImage(input: GenerateImageInput) {
+export type GeneratedImage = PersistedAsset & {
+  /** Which provider produced it. Only the paid ones are worth metering. */
+  provider: 'worker' | 'openai' | 'imagen';
+};
+
+export async function generateImage(input: GenerateImageInput): Promise<GeneratedImage> {
   const prompt = input.prompt.trim();
   if (!prompt) throw new Error('Image prompt is required');
+
+  // The self-hosted Worker first: it is the operator's own infrastructure, so it
+  // costs nothing per image and needs no user key. OpenAI and Imagen stay behind
+  // it for deployments that have keys but no Worker.
+  const worker = await imageWorkerConfig();
+  if (worker) {
+    try {
+      const buffer = await generateWithImageWorker({
+        config: worker,
+        description: prompt,
+        aspect: input.aspectRatio,
+      });
+      return await storeGenerated(input, prompt, buffer, 'worker');
+    } catch (error) {
+      // Not fatal on its own: a key-holding deployment can still answer, and the
+      // caller falls back to a stock photo when nothing here can.
+      console.warn('[assets] image worker failed:', error instanceof Error ? error.message : error);
+    }
+  }
 
   const openai = await getEffectiveApiKey(input.userId, 'openai');
   const google = openai ? null : await getEffectiveApiKey(input.userId, 'gemini');
   if (!openai && !google) {
-    throw new Error(NO_IMAGE_PROVIDER_ERROR);
+    throw new Error(worker ? WORKER_FAILED_ERROR : NO_IMAGE_PROVIDER_ERROR);
   }
 
   const buffer = openai
     ? await generateWithOpenAI(openai, prompt, input.aspectRatio)
     : await generateWithImagen(google as string, prompt, input.aspectRatio);
 
+  return storeGenerated(input, prompt, buffer, openai ? 'openai' : 'imagen');
+}
+
+async function storeGenerated(
+  input: GenerateImageInput,
+  prompt: string,
+  buffer: Buffer,
+  provider: GeneratedImage['provider'],
+): Promise<GeneratedImage> {
   const altText = await generateAltText(input.userId, prompt);
   const asset = await persistOptimizedAsset({
     projectId: input.projectId,
@@ -174,5 +216,5 @@ export async function generateImage(input: GenerateImageInput) {
     });
   }
 
-  return asset;
+  return { ...asset, provider };
 }

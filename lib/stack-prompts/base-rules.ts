@@ -30,6 +30,6 @@ IMAGES:
 - Always set explicit width and height attributes (prevents CLS).
 - NEXTJS: use next/image. REACT and STATIC_HTML: <img loading="lazy" decoding="async">. Above-the-fold hero images use loading="eager" fetchpriority="high" instead.
 - Alt text comes from the asset's stored altText — never invent alt at generation time. Decorative images may use alt="".
-- Stock images (kind=stock) must include photographer attribution in the markup (Unsplash license), e.g. a caption "Photo by Name on Unsplash".
+- Never write a photographer or provider credit you were not given — no "Photo by …", no "via Unsplash". PROJECT ASSETS carries no attribution string, and a NEED_IMAGE photo is sourced after generation from a provider you cannot know, so add a credit caption only when an asset is listed with an explicit attribution line.
 - Every project needs og:image 1200x630 matching the design direction. If none exists in PROJECT ASSETS, request one.
 - Request a NEW image only when nothing in PROJECT ASSETS fits, as a token the pipeline replaces before files are written: NEED_IMAGE: description | 16:9 (or 1:1, 4:5, 1200x630). Do not invent URLs.`;

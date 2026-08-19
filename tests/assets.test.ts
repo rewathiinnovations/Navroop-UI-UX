@@ -20,18 +20,13 @@ function assert(cond: unknown, name: string) {
   console.error(`FAIL  ${name}`);
 }
 
-const { decideSource } = await import('../lib/assets/decide-source.ts');
-const { parseNeedImageDirectives, replaceNeedImageTokens } = await import('../lib/assets/need-image.ts');
+// `decide-source` is gone: the image worker generates every picture and stock is
+// only its fallback, so nothing routes between the two any more.
+const { parseNeedImageDirectives, replaceNeedImageTokens } =
+  await import('../lib/assets/need-image.ts');
 const { assetStorageKey, fallbackAltText } = await import('../lib/assets/keys.ts');
 const { calculateEventCost, IMAGE_GENERATION_ESTIMATE } = await import('../lib/usage-estimates.ts');
 const { formatAssetManifest } = await import('../lib/assets/manifest.ts');
-
-assert(decideSource('a photo of a chef in a kitchen') === 'stock', 'chef photo routes to stock');
-assert(decideSource('an abstract gradient hero background') === 'generated', 'abstract hero routes to generated');
-assert(decideSource('documentary street scene in Tokyo') === 'stock', 'documentary routes to stock');
-assert(decideSource('OG social share image 1200x630') === 'generated', 'OG image routes to generated');
-assert(decideSource('product shot of a ceramic mug on marble') === 'stock', 'product photo routes to stock');
-assert(decideSource('geometric pattern icon set') === 'generated', 'pattern/icon routes to generated');
 
 const parsed = parseNeedImageDirectives(`
 NEED_IMAGE: a chef in a kitchen | 16:9
@@ -53,14 +48,23 @@ assert(key.startsWith('projects/proj_1/assets/'), 'asset key uses projects/{id}/
 assert(key.endsWith('.webp'), 'asset key keeps extension');
 
 assert(fallbackAltText('  ') === 'Generated image', 'empty prompt still yields non-empty alt');
-assert(fallbackAltText('A red bicycle on a cobblestone street').length > 0, 'prompt alt is never empty');
+assert(
+  fallbackAltText('A red bicycle on a cobblestone street').length > 0,
+  'prompt alt is never empty',
+);
 
 assert(IMAGE_GENERATION_ESTIMATE === 0.04, 'IMAGE_GENERATION_ESTIMATE is 0.04');
 assert(calculateEventCost('image', false) === 0.04, 'image kind costs 0.04 without sandbox extras');
 assert(calculateEventCost('image', true) === 0.04, 'image kind ignores url-clone extras');
 
 const manifest = formatAssetManifest([
-  { url: '/uploads/a.webp', altText: 'Chef plating pasta', width: 1600, height: 900, kind: 'stock' },
+  {
+    url: '/uploads/a.webp',
+    altText: 'Chef plating pasta',
+    width: 1600,
+    height: 900,
+    kind: 'stock',
+  },
 ]);
 assert(manifest.includes('/uploads/a.webp'), 'manifest lists url');
 assert(manifest.includes('Chef plating pasta'), 'manifest lists altText');
@@ -79,7 +83,10 @@ try {
     key: 'projects/p1/assets/test.bin',
     contentType: 'application/octet-stream',
   });
-  assert(stored.url.includes('/uploads/projects/p1/assets/test.bin'), 'local upload returns relative URL');
+  assert(
+    stored.url.includes('/uploads/projects/p1/assets/test.bin'),
+    'local upload returns relative URL',
+  );
   assert(await exists('projects/p1/assets/test.bin'), 'exists is true after upload');
   await deleteObject('projects/p1/assets/test.bin');
   assert(!(await exists('projects/p1/assets/test.bin')), 'exists is false after delete');
