@@ -58,7 +58,12 @@ export async function testCoolifyApiConnection() {
         : raw && typeof raw === 'object' && typeof raw.version === 'string'
           ? raw.version
           : 'ok';
-    return { ok: true as const, status: version.status, endpoint: '/api/v1/version', version: label };
+    return {
+      ok: true as const,
+      status: version.status,
+      endpoint: '/api/v1/version',
+      version: label,
+    };
   }
 
   const servers = await client.getJson('/api/v1/servers');
@@ -167,7 +172,9 @@ async function coolifyFetch(
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 function pickUuid(value: unknown): string | null {
@@ -179,10 +186,16 @@ function pickUuid(value: unknown): string | null {
 
 async function resolveServerUuid(server: CoolifyServerAuth, serverIp: string) {
   const { data } = await coolifyFetch(server, '/api/v1/servers');
-  const list = Array.isArray(data) ? data : Array.isArray(asRecord(data).data) ? (asRecord(data).data as unknown[]) : [];
+  const list = Array.isArray(data)
+    ? data
+    : Array.isArray(asRecord(data).data)
+      ? (asRecord(data).data as unknown[])
+      : [];
   const match = list.find((item) => {
     const row = asRecord(item);
-    return row.ip === serverIp || row.ip === `${serverIp}` || String(row.ip || '').includes(serverIp);
+    return (
+      row.ip === serverIp || row.ip === `${serverIp}` || String(row.ip || '').includes(serverIp)
+    );
   });
   const uuid = match ? pickUuid(match) : null;
   if (uuid) return uuid;
@@ -198,7 +211,17 @@ async function resolveServerUuid(server: CoolifyServerAuth, serverIp: string) {
   );
 }
 
-async function setEnvVars(server: CoolifyServerAuth, appUuid: string, envVars: Record<string, string>) {
+/**
+ * POST creates, PATCH updates: Coolify rejects a POST for a key that already exists,
+ * so an update has to fall through to `/envs/update`. Exported because the preview
+ * password gate keeps its plaintext on the Coolify application (as `PREVIEW_PASSWORD`)
+ * and nowhere else — see `updatePreviewPassword`.
+ */
+export async function setApplicationEnvVars(
+  server: CoolifyServerAuth,
+  appUuid: string,
+  envVars: Record<string, string>,
+) {
   for (const [key, value] of Object.entries(envVars)) {
     await coolifyFetch(server, `/api/v1/applications/${appUuid}/envs`, {
       method: 'POST',
@@ -214,19 +237,25 @@ async function setEnvVars(server: CoolifyServerAuth, appUuid: string, envVars: R
 
 export async function listApplications(server: CoolifyServerAuth) {
   const { data } = await coolifyFetch(server, '/api/v1/applications');
-  const list = Array.isArray(data) ? data : Array.isArray(asRecord(data).data) ? (asRecord(data).data as unknown[]) : [];
-  return list.map((item) => {
-    const row = asRecord(item);
-    const uuid = pickUuid(row) || '';
-    const name = typeof row.name === 'string' ? row.name : '';
-    const created = row.created_at ?? row.createdAt;
-    return {
-      uuid,
-      name,
-      createdAt: typeof created === 'string' ? new Date(created) : new Date(0),
-      raw: row,
-    };
-  }).filter((row) => row.uuid);
+  const list = Array.isArray(data)
+    ? data
+    : Array.isArray(asRecord(data).data)
+      ? (asRecord(data).data as unknown[])
+      : [];
+  return list
+    .map((item) => {
+      const row = asRecord(item);
+      const uuid = pickUuid(row) || '';
+      const name = typeof row.name === 'string' ? row.name : '';
+      const created = row.created_at ?? row.createdAt;
+      return {
+        uuid,
+        name,
+        createdAt: typeof created === 'string' ? new Date(created) : new Date(0),
+        raw: row,
+      };
+    })
+    .filter((row) => row.uuid);
 }
 
 export async function findApplicationByName(server: CoolifyServerAuth, name: string) {
@@ -234,32 +263,53 @@ export async function findApplicationByName(server: CoolifyServerAuth, name: str
   return apps.find((app) => app.name === name) ?? null;
 }
 
+/**
+ * Every application on every active server, plus the servers that did not answer.
+ *
+ * The per-server failure used to be swallowed by a bare `catch` carrying a "skip unreachable
+ * server" note, and the only caller is the orphan cron: an unreachable server contributed no
+ * applications, so the run enumerated nothing, deleted nothing and reported a healthy "no
+ * orphans" — while the operator kept paying for whatever is still up on that box. "Nothing
+ * there" and "could not look" have to be different answers.
+ *
+ * `unreachable` names the server row and an HTTP status where there was one. Never the token:
+ * the caller persists this in an `AppSetting` row and returns it in a cron response body.
+ */
 export async function listManagedApplications() {
   const { prisma } = await import('@/lib/db');
   const { serverAuth } = await import('./servers');
   const servers = await prisma.coolifyServer.findMany({ where: { isActive: true } });
   const apps: Array<{ uuid: string; name: string; createdAt: Date }> = [];
+  const unreachable: string[] = [];
   for (const server of servers) {
     try {
       const listed = await listApplications(serverAuth(server));
-      for (const app of listed) apps.push({ uuid: app.uuid, name: app.name, createdAt: app.createdAt });
-    } catch {
-      /* skip unreachable server */
+      for (const app of listed)
+        apps.push({ uuid: app.uuid, name: app.name, createdAt: app.createdAt });
+    } catch (error) {
+      const status = error instanceof CoolifyApiError ? error.status : 0;
+      unreachable.push(
+        status > 0 ? `${server.name}: HTTP ${status}` : `${server.name}: unreachable`,
+      );
     }
   }
-  return apps;
+  return { apps, unreachable };
 }
 
 export async function createApplication(server: CoolifyServerAuth, input: CreateApplicationInput) {
   const existing = input.name ? await findApplicationByName(server, input.name) : null;
   if (existing) {
     if (input.envVars && Object.keys(input.envVars).length > 0) {
-      await setEnvVars(server, existing.uuid, input.envVars);
+      await setApplicationEnvVars(server, existing.uuid, input.envVars);
     }
     return { uuid: existing.uuid, raw: existing.raw, reused: true as const };
   }
   const serverUuid = await resolveServerUuid(server, input.serverIp);
-  const buildPack = input.dockerfile ? 'dockerfile' : input.deployType === 'static' && !input.buildCommand ? 'static' : 'nixpacks';
+  const buildPack = input.dockerfile
+    ? 'dockerfile'
+    : input.deployType === 'static' && !input.buildCommand
+      ? 'static'
+      : 'nixpacks';
   const body: Record<string, unknown> = {
     project_uuid: input.projectUuid,
     server_uuid: serverUuid,
@@ -291,24 +341,40 @@ export async function createApplication(server: CoolifyServerAuth, input: Create
   });
   const uuid = pickUuid(created.data);
   if (!uuid) {
-    throw new CoolifyApiError('Coolify application UUID was not found', created.status, created.data, '/api/v1/applications/public');
+    throw new CoolifyApiError(
+      'Coolify application UUID was not found',
+      created.status,
+      created.data,
+      '/api/v1/applications/public',
+    );
   }
   if (input.envVars && Object.keys(input.envVars).length > 0) {
-    await setEnvVars(server, uuid, input.envVars);
+    await setApplicationEnvVars(server, uuid, input.envVars);
   }
   return { uuid, raw: created.data };
 }
 
 export async function triggerDeploy(server: CoolifyServerAuth, appUuid: string) {
-  const { data } = await coolifyFetch(server, `/api/v1/deploy?uuid=${encodeURIComponent(appUuid)}&force=true`);
+  const { data } = await coolifyFetch(
+    server,
+    `/api/v1/deploy?uuid=${encodeURIComponent(appUuid)}&force=true`,
+  );
   const row = asRecord(Array.isArray(data) ? data[0] : data);
   const deployments = Array.isArray(row.deployments) ? row.deployments : [];
   const first = asRecord(deployments[0] ?? row);
-  const deploymentUuid = typeof first.deployment_uuid === 'string' ? first.deployment_uuid : typeof first.uuid === 'string' ? first.uuid : null;
+  const deploymentUuid =
+    typeof first.deployment_uuid === 'string'
+      ? first.deployment_uuid
+      : typeof first.uuid === 'string'
+        ? first.uuid
+        : null;
   return { raw: data, deploymentUuid };
 }
 
-export async function getDeploymentStatus(server: CoolifyServerAuth, appUuid: string): Promise<{
+export async function getDeploymentStatus(
+  server: CoolifyServerAuth,
+  appUuid: string,
+): Promise<{
   health: DeploymentHealth;
   status: string;
   raw: unknown;
@@ -318,20 +384,18 @@ export async function getDeploymentStatus(server: CoolifyServerAuth, appUuid: st
   const status = String(row.status ?? row.fqdn ?? '');
   const lower = status.toLowerCase();
   let health: DeploymentHealth = 'building';
-  if (lower.includes('unhealthy') || lower.includes('exited') || lower.includes('failed') || lower.includes('error') || lower.includes('dead')) {
+  if (
+    lower.includes('unhealthy') ||
+    lower.includes('exited') ||
+    lower.includes('failed') ||
+    lower.includes('error') ||
+    lower.includes('dead')
+  ) {
     health = 'failed';
   } else if (lower.includes('healthy') || lower === 'running') {
     health = 'healthy';
   }
   return { health, status, raw: data };
-}
-
-export async function setDomain(server: CoolifyServerAuth, appUuid: string, domain: string) {
-  const fqdn = domain.startsWith('http') ? domain : `https://${domain}`;
-  await coolifyFetch(server, `/api/v1/applications/${appUuid}`, {
-    method: 'PATCH',
-    body: JSON.stringify({ domains: fqdn, fqdn }),
-  });
 }
 
 export async function getApplication(server: CoolifyServerAuth, appUuid: string) {
@@ -360,7 +424,11 @@ export async function listApplicationHosts(server: CoolifyServerAuth, appUuid: s
   return parseFqdnList(app.fqdn ?? app.domains).map(hostFromFqdn);
 }
 
-export async function addApplicationDomain(server: CoolifyServerAuth, appUuid: string, hostname: string) {
+export async function addApplicationDomain(
+  server: CoolifyServerAuth,
+  appUuid: string,
+  hostname: string,
+) {
   const app = await getApplication(server, appUuid);
   const current = parseFqdnList(app.fqdn ?? app.domains);
   const host = hostname.replace(/^https?:\/\//i, '').toLowerCase();
@@ -374,10 +442,16 @@ export async function addApplicationDomain(server: CoolifyServerAuth, appUuid: s
   });
 }
 
-export async function removeApplicationDomain(server: CoolifyServerAuth, appUuid: string, hostname: string) {
+export async function removeApplicationDomain(
+  server: CoolifyServerAuth,
+  appUuid: string,
+  hostname: string,
+) {
   const app = await getApplication(server, appUuid);
   const host = hostname.replace(/^https?:\/\//i, '').toLowerCase();
-  const next = parseFqdnList(app.fqdn ?? app.domains).filter((entry) => hostFromFqdn(entry) !== host);
+  const next = parseFqdnList(app.fqdn ?? app.domains).filter(
+    (entry) => hostFromFqdn(entry) !== host,
+  );
   const fqdn = next.join(',');
   await coolifyFetch(server, `/api/v1/applications/${appUuid}`, {
     method: 'PATCH',
@@ -417,10 +491,16 @@ export function applicationListsHostname(app: Record<string, unknown>, hostname:
 export function applicationSslReady(app: Record<string, unknown>, hostname: string) {
   if (!applicationListsHostname(app, hostname)) return false;
   const raw = JSON.stringify(app).toLowerCase();
-  if (raw.includes('ssl_certificate') || raw.includes('letsencrypt') || raw.includes('certificate_id')) {
+  if (
+    raw.includes('ssl_certificate') ||
+    raw.includes('letsencrypt') ||
+    raw.includes('certificate_id')
+  ) {
     return true;
   }
-  return String(app.fqdn ?? '').toLowerCase().includes(`https://${hostname.toLowerCase()}`);
+  return String(app.fqdn ?? '')
+    .toLowerCase()
+    .includes(`https://${hostname.toLowerCase()}`);
 }
 
 export async function setBasicAuth(
@@ -459,12 +539,17 @@ export async function testServerConnection(server: CoolifyServerAuth) {
   try {
     const { status, data } = await coolifyFetch(server, '/api/v1/version');
     const row = asRecord(data);
-    const version = typeof data === 'string' ? data : typeof row.version === 'string' ? row.version : 'ok';
+    const version =
+      typeof data === 'string' ? data : typeof row.version === 'string' ? row.version : 'ok';
     return { ok: true as const, status, version };
   } catch (error) {
     if (error instanceof CoolifyApiError) {
       return { ok: false as const, status: error.status, error: error.message, body: error.body };
     }
-    return { ok: false as const, status: 0, error: error instanceof Error ? error.message : 'Connection failed' };
+    return {
+      ok: false as const,
+      status: 0,
+      error: error instanceof Error ? error.message : 'Connection failed',
+    };
   }
 }
