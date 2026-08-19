@@ -2,7 +2,12 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { PENDING_PROMPT_KEY, readDraftStorage, writeDraftStorage } from '@/hooks/useDraftStorage';
+import {
+  clearDraftStorage,
+  readDraftStorage,
+  templateDraftKey,
+  writeDraftStorage,
+} from '@/hooks/useDraftStorage';
 import { isDesignDirectionId } from '@/lib/design/directions';
 import { DEFAULT_IMPORT_MODE } from '@/lib/import/mode';
 import { isStackId } from '@/lib/stacks';
@@ -23,8 +28,8 @@ export default function TemplateSheet({
 
   useEffect(() => {
     if (!template) return;
-    const stored = readDraftStorage(PENDING_PROMPT_KEY);
-    setPrompt(stored?.templateId === template.id && stored.text ? stored.text : template.prompt);
+    const stored = readDraftStorage(templateDraftKey(template.id));
+    setPrompt(stored?.text || template.prompt);
   }, [template]);
 
   useEffect(() => {
@@ -35,7 +40,7 @@ export default function TemplateSheet({
       : 'minimal';
     const timer = window.setTimeout(() => {
       writeDraftStorage(
-        PENDING_PROMPT_KEY,
+        templateDraftKey(template.id),
         prompt,
         stack,
         direction,
@@ -79,6 +84,9 @@ export default function TemplateSheet({
         notify.settle(toastId, 'error', 'Could not create from this template');
         return;
       }
+      // The draft became a project, so it is spent: reopening this template has to show the
+      // template's own brief again, not the copy that was already used once.
+      clearDraftStorage(templateDraftKey(template.id));
       notify.settle(toastId, 'success', 'Project created — opening it now.');
       router.push(`/project/${id}`);
     } catch (cause) {

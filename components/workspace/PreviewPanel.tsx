@@ -25,10 +25,8 @@ import type {
   VisualEditTool,
   WorkspaceView,
 } from './types';
-import type { ProjectSandboxState, WorkspaceBootStep } from './useProjectSandbox';
 import { previewPaneKind } from '@/lib/preview/after-generation';
 import {
-  LIVE_MODE_LABEL,
   LIVE_SANDBOX_LABEL,
   PREPARING_PREVIEW,
   PREVIEW_BUILD_FAILED,
@@ -36,28 +34,6 @@ import {
   PREVIEW_NOT_READY_NOTICE,
   STATIC_PREVIEW_LABEL,
 } from '@/lib/preview/labels';
-
-const BOOT_STEPS: { id: WorkspaceBootStep; label: string }[] = [
-  { id: 'restore', label: 'Files restore' },
-  { id: 'install', label: 'Packages install' },
-  { id: 'dev', label: 'Server start' },
-];
-
-function stepIndex(step: WorkspaceBootStep | null) {
-  if (step === 'restore' || step === 'checkpoint' || step === 'probe' || step === 'create')
-    return 0;
-  if (step === 'install') return 1;
-  if (step === 'dev' || step === 'ready') return 2;
-  return 0;
-}
-
-function stepLabel(step: WorkspaceBootStep | null) {
-  if (step === 'restore' || step === 'checkpoint') return 'Files restore';
-  if (step === 'install') return 'Packages install';
-  if (step === 'dev' || step === 'ready') return 'Server start';
-  if (step === 'create' || step === 'probe') return 'Sandbox create';
-  return step || 'Boot';
-}
 
 function popoverMode(tool: VisualEditTool | null, hasEditableText: boolean): InstructionMode {
   if (tool === 'instruct' || tool === 'comment') return 'instruction';
@@ -84,15 +60,11 @@ export default function PreviewPanel({
   planTrigger,
   previewing = false,
   onExitPreview,
-  sandboxState,
-  onRetrySandbox,
   previewKind = 'static',
   preparingPreview = false,
   previewBuildFailed = false,
   previewBuildLog = null,
   onRetryPreview,
-  onStartLive,
-  liveNotice = null,
 }: {
   children: ReactNode;
   iframeRef?: RefObject<HTMLIFrameElement | null>;
@@ -110,15 +82,11 @@ export default function PreviewPanel({
   planTrigger?: PlanTrigger | null;
   previewing?: boolean;
   onExitPreview?: () => void;
-  sandboxState?: ProjectSandboxState | null;
-  onRetrySandbox?: () => void;
   previewKind?: 'static' | 'live';
   preparingPreview?: boolean;
   previewBuildFailed?: boolean;
   previewBuildLog?: string | null;
   onRetryPreview?: () => void;
-  onStartLive?: () => void;
-  liveNotice?: string | null;
 }) {
   const [tool, setTool] = useState<VisualEditTool | null>(null);
   const device = previewDevice;
@@ -197,12 +165,7 @@ export default function PreviewPanel({
     previewBuildFailed,
   });
   const showEmptyPlan = pane === 'planning';
-  const showTools =
-    view === 'preview' &&
-    Boolean(sandboxUrl) &&
-    !showEmptyPlan &&
-    sandboxState?.status !== 'BOOTING' &&
-    sandboxState?.status !== 'FAILED';
+  const showTools = view === 'preview' && Boolean(sandboxUrl) && !showEmptyPlan;
   const mode = popoverMode(tool, Boolean(selection?.payload.hasEditableText));
   const source = tool === 'comment' ? 'comment' : 'visual-edit';
 
@@ -214,14 +177,16 @@ export default function PreviewPanel({
         expanded && 'flex-[1.4]',
       )}
     >
-      {liveNotice ? (
-        <div
-          className="border-b border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-8 text-[12px] text-[var(--studio-muted)]"
-          role="status"
-        >
-          {liveNotice}
-        </div>
-      ) : null}
+      {/*
+       * A "Live mode" banner used to sit here, set by clicking one of three
+       * "Turn on Live mode" buttons that could no longer do anything: live mode
+       * was a sandbox VM, and `20260819010000_drop_sandbox_columns` deleted that
+       * subsystem, so it is gone until someone re-architects it rather than
+       * temporarily unavailable. A control whose only effect is to announce that
+       * it cannot work is the same lying affordance as the 400 it replaced, so
+       * both the buttons and the banner are gone. Do not re-add them without a
+       * server that can actually serve a live preview.
+       */}
       {previewing && (
         <div className="flex items-center justify-between gap-12 border-b border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-8">
           <p className="text-[13px] font-medium text-[var(--studio-fg)]">
@@ -285,7 +250,7 @@ export default function PreviewPanel({
             view === 'domains' ||
             !showEmptyPlan ? (
               pane === 'empty' ? (
-                <EmptyPreview onStartLive={onStartLive} />
+                <EmptyPreview />
               ) : (
                 <>
                   {children}
@@ -297,11 +262,7 @@ export default function PreviewPanel({
                     </div>
                   ) : null}
                   {view === 'preview' && previewBuildFailed ? (
-                    <PreviewBuildFailed
-                      log={previewBuildLog}
-                      onRetry={onRetryPreview}
-                      onStartLive={onStartLive}
-                    />
+                    <PreviewBuildFailed log={previewBuildLog} onRetry={onRetryPreview} />
                   ) : null}
                 </>
               )
@@ -313,18 +274,9 @@ export default function PreviewPanel({
                   // built yet" here told users their finished build was lost.
                   <div className="max-w-[320px]">
                     <p className="text-[14px] leading-6 text-[var(--studio-muted)]">
-                      The site is built, but no preview snapshot has been captured yet. View it in
-                      Live mode, or send a change in chat to rebuild and capture a preview.
+                      The site is built, but no preview snapshot has been captured yet. Send a
+                      change in chat to rebuild and capture one.
                     </p>
-                    {onStartLive ? (
-                      <button
-                        type="button"
-                        onClick={onStartLive}
-                        className="mt-14 inline-flex min-h-[38px] items-center rounded-full border border-[var(--studio-line-strong)] px-14 text-[13px] font-medium text-[var(--studio-fg)] transition-colors duration-200 hover:bg-[var(--studio-surface-hover)]"
-                      >
-                        Turn on Live mode
-                      </button>
-                    ) : null}
                   </div>
                 ) : (
                   // Planning: nothing to render yet, but "nothing" shouldn't
@@ -384,102 +336,17 @@ export default function PreviewPanel({
   );
 }
 
-function SandboxColdStart({
-  state,
-  onRetry,
-}: {
-  state: ProjectSandboxState;
-  onRetry?: () => void;
-}) {
-  const failed = state.status === 'FAILED';
-  const active = stepIndex(state.bootStep);
-  return (
-    <div className="flex h-full w-full items-center justify-center bg-[var(--studio-bg)] px-24">
-      <div className="flex w-full max-w-[360px] flex-col items-center text-center">
-        {!failed ? (
-          <div className="mb-16 size-36 animate-spin rounded-full border-2 border-[var(--studio-line-strong)] border-t-[var(--studio-accent)]" />
-        ) : null}
-        <p className="text-[16px] font-medium text-[var(--studio-fg)]">
-          {failed ? 'Sandbox failed to start' : 'Restarting the project...'}
-        </p>
-        <p className="mt-6 text-[13px] leading-6 text-[var(--studio-muted)]">
-          {failed ? `${stepLabel(state.failedStep)} failed.` : 'This can take 30–60 seconds'}
-        </p>
-        {!failed ? (
-          <ol className="mt-20 w-full space-y-8 text-left">
-            {BOOT_STEPS.map((item, index) => (
-              <li
-                key={item.id}
-                className={cn(
-                  'flex items-center gap-10 text-[13px]',
-                  index < active && 'text-[var(--studio-muted)]',
-                  index === active && 'font-medium text-[var(--studio-fg)]',
-                  index > active && 'text-[var(--studio-faint)]',
-                )}
-              >
-                <span
-                  className={cn(
-                    'flex size-20 items-center justify-center rounded-full border text-[11px]',
-                    index < active && 'border-[var(--studio-accent)] text-[var(--studio-accent)]',
-                    index === active && 'border-[var(--studio-accent)] text-[var(--studio-accent)]',
-                    index > active && 'border-[var(--studio-line-strong)]',
-                  )}
-                >
-                  {index < active ? '✓' : index + 1}
-                </span>
-                {item.label}
-              </li>
-            ))}
-          </ol>
-        ) : (
-          <div className="mt-16 flex flex-col items-center gap-8">
-            {state.requestId ? (
-              <p className="text-[11px] text-[var(--studio-faint)]">
-                Request {state.requestId.slice(0, 8)}
-              </p>
-            ) : null}
-            <button
-              type="button"
-              onClick={onRetry}
-              className="inline-flex min-h-[36px] items-center rounded-full [background-image:var(--studio-cta-gradient)] px-16 text-[13px] font-medium text-white transition-[filter] duration-200 hover:brightness-[1.07]"
-            >
-              Try again
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function EmptyPreview({ onStartLive }: { onStartLive?: () => void }) {
+function EmptyPreview() {
   return (
     <div className="flex h-full w-full items-center justify-center px-24 text-center">
       <div className="max-w-[320px]">
         <p className="text-[14px] leading-6 text-[var(--studio-muted)]">{PREVIEW_EMPTY}</p>
-        {onStartLive ? (
-          <button
-            type="button"
-            onClick={onStartLive}
-            className="mt-16 inline-flex min-h-[36px] items-center rounded-full [background-image:var(--studio-cta-gradient)] px-16 text-[13px] font-medium text-white transition-[filter] duration-200 hover:brightness-[1.07]"
-          >
-            {LIVE_MODE_LABEL}
-          </button>
-        ) : null}
       </div>
     </div>
   );
 }
 
-function PreviewBuildFailed({
-  log,
-  onRetry,
-  onStartLive,
-}: {
-  log?: string | null;
-  onRetry?: () => void;
-  onStartLive?: () => void;
-}) {
+function PreviewBuildFailed({ log, onRetry }: { log?: string | null; onRetry?: () => void }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="absolute inset-x-16 bottom-16 z-20 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] p-16 shadow-sm">
@@ -495,15 +362,8 @@ function PreviewBuildFailed({
         >
           Retry
         </button>
-        {onStartLive ? (
-          <button
-            type="button"
-            onClick={onStartLive}
-            className="inline-flex min-h-[32px] items-center rounded-full border border-[var(--studio-line-strong)] px-12 text-[12px] font-medium text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)]"
-          >
-            {LIVE_MODE_LABEL}
-          </button>
-        ) : null}
+        {/* No "Live mode" fallback here: it was a sandbox VM and that subsystem
+            is gone, so Retry (a fresh snapshot build) is the only real action. */}
         {log ? (
           <button
             type="button"

@@ -15,7 +15,6 @@ export default function ChatInput({
   disabled,
   phase,
   jobStatus,
-  sandboxLocked = false,
   projectLocked = false,
   recoveryActive = false,
 }: {
@@ -25,7 +24,6 @@ export default function ChatInput({
   disabled?: boolean;
   phase?: ProjectPhase | null;
   jobStatus?: string | null;
-  sandboxLocked?: boolean;
   projectLocked?: boolean;
   recoveryActive?: boolean;
 }) {
@@ -50,13 +48,9 @@ export default function ChatInput({
     phase,
     jobStatus,
     recoveryActive,
-    sandboxLocked,
     projectLocked,
   });
   const canSend = Boolean(value.trim()) && !busy;
-  const lockHint = sandboxLocked
-    ? 'Restarting the project... This can take 30–60 seconds'
-    : null;
 
   const submit = () => {
     const trimmed = value.trim();
@@ -78,7 +72,10 @@ export default function ChatInput({
   };
 
   const form = (
-    <form onSubmit={onFormSubmit} className="border-t border-[var(--studio-line)] bg-[var(--studio-surface)] p-12">
+    <form
+      onSubmit={onFormSubmit}
+      className="border-t border-[var(--studio-line)] bg-[var(--studio-surface)] p-12"
+    >
       <div className="rounded-16 border border-[var(--studio-line-strong)] bg-[var(--studio-bg)] focus-within:ring-2 focus-within:ring-[var(--studio-ring)]">
         <label htmlFor="navroop-chat-input" className="sr-only">
           Ask Navroop
@@ -153,7 +150,11 @@ export default function ChatInput({
               aria-label="Send message"
               className="inline-flex size-36 items-center justify-center rounded-full [background-image:var(--studio-cta-gradient)] text-white transition-[filter] duration-200 hover:brightness-[1.07] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:brightness-100"
             >
-              {busy ? <Loader2 className="size-16 animate-spin" /> : <ArrowUp className="size-16" />}
+              {busy ? (
+                <Loader2 className="size-16 animate-spin" />
+              ) : (
+                <ArrowUp className="size-16" />
+              )}
             </button>
           </div>
         </div>
@@ -161,12 +162,5 @@ export default function ChatInput({
     </form>
   );
 
-  if (lockHint) {
-    return (
-      <Hint label={lockHint} className="block w-full">
-        {form}
-      </Hint>
-    );
-  }
   return form;
 }

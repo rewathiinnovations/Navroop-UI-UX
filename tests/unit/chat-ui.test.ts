@@ -3,7 +3,6 @@ import {
   chatPlaceholder,
   isChatBuilding,
   isChatLocked,
-  isSandboxChatLocked,
   showsChatRecovery,
 } from '../../lib/jobs/chat-ui';
 import type { JobKind } from '../../lib/jobs/types';
@@ -43,27 +42,19 @@ describe('isChatBuilding follows the latest job, not Project.phase', () => {
   });
 });
 
-describe('a failed sandbox boot does not permanently disable chat', () => {
-  it('locks chat only while the sandbox is BOOTING', () => {
-    expect(isSandboxChatLocked('BOOTING')).toBe(true);
-    expect(isChatLocked({ sandboxLocked: isSandboxChatLocked('BOOTING') })).toBe(true);
-  });
-
-  it('leaves the input usable after FAILED, DEAD, NONE, or READY', () => {
-    for (const status of ['FAILED', 'DEAD', 'NONE', 'READY'] as const) {
-      expect(isSandboxChatLocked(status)).toBe(false);
-      expect(isChatLocked({ sandboxLocked: isSandboxChatLocked(status), sending: false })).toBe(false);
-    }
-  });
-});
-
 describe('chat recovery panel visibility', () => {
   it('shows the panel for plan, build, follow-up, and import only', () => {
     expect(JOB_KINDS.filter(showsChatRecovery)).toEqual(['PLAN', 'BUILD', 'FOLLOWUP', 'IMPORT']);
   });
 
   it('hides the panel for publish, audit, domain, export, and thumbnail jobs', () => {
-    for (const kind of ['PUBLISH', 'AUDIT', 'DOMAIN_VERIFY', 'EXPORT', 'TEMPLATE_THUMBNAIL'] as const) {
+    for (const kind of [
+      'PUBLISH',
+      'AUDIT',
+      'DOMAIN_VERIFY',
+      'EXPORT',
+      'TEMPLATE_THUMBNAIL',
+    ] as const) {
       expect(showsChatRecovery(kind), `${kind} must not open the chat recovery panel`).toBe(false);
     }
   });
@@ -73,8 +64,12 @@ describe('chat recovery panel visibility', () => {
       expect(showsChatRecovery(kind)).toBe(false);
       expect(isChatBuilding({ phase: 'BUILDING', jobStatus: 'FAILED' })).toBe(false);
       expect(isChatLocked({ sending: true, phase: 'BUILDING', jobStatus: 'FAILED' })).toBe(false);
-      expect(isChatLocked({ sending: true, phase: 'BUILDING', jobStatus: 'ABANDONED' })).toBe(false);
-      expect(isChatLocked({ sending: true, phase: 'BUILDING', jobStatus: 'CANCELLED' })).toBe(false);
+      expect(isChatLocked({ sending: true, phase: 'BUILDING', jobStatus: 'ABANDONED' })).toBe(
+        false,
+      );
+      expect(isChatLocked({ sending: true, phase: 'BUILDING', jobStatus: 'CANCELLED' })).toBe(
+        false,
+      );
     }
   });
 });

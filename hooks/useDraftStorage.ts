@@ -1,23 +1,37 @@
-"use client";
+'use client';
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   DEFAULT_DESIGN_DIRECTION,
   isDesignDirectionId,
   type DesignDirectionId,
-} from "@/lib/design/directions";
-import { DEFAULT_IMPORT_MODE, resolveImportMode, type ImportMode } from "@/lib/import/mode";
-import { isStackId, type StackId } from "@/lib/stacks";
+} from '@/lib/design/directions';
+import { DEFAULT_IMPORT_MODE, resolveImportMode, type ImportMode } from '@/lib/import/mode';
+import { isStackId, type StackId } from '@/lib/stacks';
 import {
   parseDraftRecord,
   serializeDraftRecord,
   type TemplateDraftRecord,
-} from "@/lib/templates/draft";
+} from '@/lib/templates/draft';
 
-export const PENDING_PROMPT_KEY = "navroop_pending_prompt";
+/**
+ * The dashboard / landing hero draft, and nothing else.
+ *
+ * It is one key shared by every hero on every tab, so anything else that autosaved into it
+ * destroyed what the reader was writing: the template sheet used to, and merely opening a
+ * template card replaced the dashboard brief with that template's canned prompt (and left
+ * its `templateId` behind for the next submission to inherit). Other prompt boxes get their
+ * own key — `templateDraftKey`, or `navroop_draft_${projectId}` in the workspace composer.
+ */
+export const PENDING_PROMPT_KEY = 'navroop_pending_prompt';
+
+/** Per-template draft for the template sheet. Never `PENDING_PROMPT_KEY`: see above. */
+export function templateDraftKey(templateId: string) {
+  return `navroop_template_draft_${templateId}`;
+}
 
 /** Hero / pending-prompt UI default. Matches Project.stack @default(NEXTJS). */
-export const DRAFT_DEFAULT_STACK: StackId = "NEXTJS";
+export const DRAFT_DEFAULT_STACK: StackId = 'NEXTJS';
 
 export type DraftRecord = TemplateDraftRecord;
 
@@ -30,7 +44,7 @@ function resolveDraftDirection(value: unknown): DesignDirectionId {
 }
 
 export function readDraftStorage(key: string): DraftRecord | null {
-  if (typeof window === "undefined") return null;
+  if (typeof window === 'undefined') return null;
   try {
     const raw = window.localStorage.getItem(key);
     if (!raw) return null;
@@ -48,7 +62,7 @@ export function writeDraftStorage(
   importMode: ImportMode = DEFAULT_IMPORT_MODE,
   templateId: string | null = null,
 ) {
-  if (typeof window === "undefined") return;
+  if (typeof window === 'undefined') return;
   const record: DraftRecord = {
     text,
     stack: resolveDraftStack(stack),
@@ -61,7 +75,7 @@ export function writeDraftStorage(
 }
 
 export function clearDraftStorage(key: string) {
-  if (typeof window === "undefined") return;
+  if (typeof window === 'undefined') return;
   window.localStorage.removeItem(key);
 }
 
@@ -77,7 +91,7 @@ export function draftHydrationApplies(editedForKey: string | null, key: string) 
 }
 
 export function useDraftStorage(key: string, debounceMs = 500) {
-  const [value, setValueState] = useState("");
+  const [value, setValueState] = useState('');
   const [stack, setStackState] = useState<StackId>(DRAFT_DEFAULT_STACK);
   const [designDirection, setDesignDirectionState] =
     useState<DesignDirectionId>(DEFAULT_DESIGN_DIRECTION);
@@ -147,7 +161,7 @@ export function useDraftStorage(key: string, debounceMs = 500) {
     // stored copy is only ever an older snapshot of the same box.
     if (draftHydrationApplies(editedForKeyRef.current, key)) {
       const stored = readDraftStorage(key);
-      setValueState(stored?.text ?? "");
+      setValueState(stored?.text ?? '');
       setStackState(stored?.stack ?? DRAFT_DEFAULT_STACK);
       setDesignDirectionState(stored?.designDirection ?? DEFAULT_DESIGN_DIRECTION);
       setImportModeState(stored?.importMode ?? DEFAULT_IMPORT_MODE);
@@ -180,7 +194,7 @@ export function useDraftStorage(key: string, debounceMs = 500) {
 
   const clear = useCallback(() => {
     clearDraftStorage(key);
-    setValue("");
+    setValue('');
     setStack(DRAFT_DEFAULT_STACK);
     setDesignDirection(DEFAULT_DESIGN_DIRECTION);
     setImportMode(DEFAULT_IMPORT_MODE);

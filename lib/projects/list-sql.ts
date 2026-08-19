@@ -34,7 +34,12 @@ export function buildProjectListQuery(query: ListProjectsQuery) {
   const filters: string[] = ['p."deletedAt" IS NULL'];
   if (query.mine === true) filters.push(`p."ownerId" = ${bind(query.userId)}`);
   if (query.mine === false) filters.push(`p."ownerId" <> ${bind(query.userId)}`);
-  if (query.search) filters.push(`p.name ILIKE ${bind(`%${query.search}%`)}`);
+  if (query.search) {
+    // One bind, used twice: same term against the name and the original prompt, matching the
+    // Prisma path in `listProjects`.
+    const term = bind(`%${query.search}%`);
+    filters.push(`(p.name ILIKE ${term} OR p."initialPrompt" ILIKE ${term})`);
+  }
   if (query.starred) {
     filters.push(
       `EXISTS (SELECT 1 FROM "ProjectStar" s WHERE s."projectId" = p.id AND s."userId" = ${bind(query.userId)})`,

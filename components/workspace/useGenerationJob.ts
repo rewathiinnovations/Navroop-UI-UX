@@ -2,8 +2,29 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { isChatRecoveryStatus, isJobSettled } from '@/lib/jobs/chat-ui';
-import { nextPollIntervalMs, shouldStopClientPoll } from '@/lib/jobs/poll';
+import { CLIENT_POLL_CEILING_MS, nextPollIntervalMs, shouldStopClientPoll } from '@/lib/jobs/poll';
 import type { PublicGenerationJob } from '@/lib/jobs/types';
+
+/**
+ * The clock the poll ceiling and the backoff run on: the later of "when this
+ * watch began" and "when the job being watched started".
+ *
+ * It used to be one `startedAtRef` set on the first poll of the mount and never
+ * cleared, so it measured the age of the *workspace*, not of the build. A tab
+ * left open for 25 minutes — ordinary in a builder — then hit
+ * CLIENT_POLL_CEILING_MS on the first poll of its next message and opened the
+ * recovery panel on a build one second old. Taking the later of the two values
+ * also keeps a retry honest: the retried row's own createdAt can be hours old,
+ * and reading that alone would time the build out before it ran.
+ */
+export function watchStartedAtMs(
+  job: Pick<PublicGenerationJob, 'startedAt' | 'createdAt'> | null | undefined,
+  watchStartedMs: number,
+): number {
+  const stamp = job?.startedAt ?? job?.createdAt ?? null;
+  const jobMs = stamp ? new Date(stamp).getTime() : Number.NaN;
+  return Number.isNaN(jobMs) ? watchStartedMs : Math.max(watchStartedMs, jobMs);
+}
 
 export function useGenerationJob({
   projectId,
@@ -41,7 +62,9 @@ export function useGenerationJob({
 
   useEffect(() => {
     if (!shouldPoll) return;
-    if (!startedAtRef.current) startedAtRef.current = Date.now();
+    // A watch, not the mount: the cleanup below clears this again so the next
+    // build is timed from its own beginning. `act` may have stamped it already.
+    startedAtRef.current ??= Date.now();
     let timer: number | null = null;
     let cancelled = false;
 
@@ -55,24 +78,40 @@ export function useGenerationJob({
         setClientStop(null);
         return;
       }
-      const stop = shouldStopClientPoll({
-        startedAtMs: startedAtRef.current ?? Date.now(),
-        heartbeatAt: next?.heartbeatAt ?? null,
-      });
+      const startedAtMs = watchStartedAtMs(next, startedAtRef.current ?? Date.now());
+      // A QUEUED build has no heartbeat at all — the first one is written when it starts
+      // — so handing it to the watchdog called every queued build stale on the very first
+      // poll and opened the recovery panel on work that had not begun. Waiting for a
+      // provider slot is legitimate (up to the queue's own ten-minute timeout, which
+      // settles the job), so only the poll ceiling applies while it waits.
+      const stop =
+        next?.status === 'QUEUED'
+          ? Date.now() - startedAtMs >= CLIENT_POLL_CEILING_MS
+            ? ('timeout' as const)
+            : null
+          : shouldStopClientPoll({
+              startedAtMs,
+              heartbeatAt: next?.heartbeatAt ?? null,
+            });
       if (stop) {
         setClientStop(stop);
         return;
       }
-      const elapsed = Date.now() - (startedAtRef.current ?? Date.now());
-      timer = window.setTimeout(() => {
-        void tick();
-      }, nextPollIntervalMs(elapsed));
+      timer = window.setTimeout(
+        () => {
+          void tick();
+        },
+        nextPollIntervalMs(Date.now() - startedAtMs),
+      );
     };
 
     void tick();
     return () => {
       cancelled = true;
       if (timer) window.clearTimeout(timer);
+      // Stop measuring: the next watch is a different build. Leaving this set is
+      // what turned a long-open workspace into an instant "timeout".
+      startedAtRef.current = null;
     };
   }, [refresh, shouldPoll]);
 
@@ -107,12 +146,18 @@ export function useGenerationJob({
   const act = useCallback(
     async (action: 'keep' | 'retry' | 'start-over', body?: Record<string, unknown>) => {
       if (!projectId) return { ok: false as const, error: 'Project is not ready' };
+      // Name the job this panel is showing. The routes used to resolve their own target
+      // from the project's newest job, so a click against a panel drawn seconds earlier hit
+      // whatever had started since — "start over" cancelled a running publish. When the
+      // watchdog opened the panel there may be no job object to name; the server then falls
+      // back to the newest chat job only, so a publish still cannot be hit from here.
+      const jobId = job?.id ?? null;
       setBusy(action === 'start-over' ? 'start-over' : action);
       try {
         const response = await fetch(`/api/projects/${projectId}/job/${action}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body ?? {}),
+          body: JSON.stringify({ ...(jobId ? { jobId } : {}), ...(body ?? {}) }),
         });
         const data = (await response.json().catch(() => ({}))) as {
           prompt?: string;
@@ -124,6 +169,9 @@ export function useGenerationJob({
             typeof data.error === 'string'
               ? data.error
               : data.error?.message || 'Could not recover the build';
+          // The likely rejection is a stale target, so the job this panel holds is not the
+          // one to retry. Re-read before returning or the buttons stay pointed at it.
+          await refresh();
           return { ok: false as const, error: message };
         }
         setClientStop(null);
@@ -134,7 +182,7 @@ export function useGenerationJob({
         setBusy(null);
       }
     },
-    [projectId, refresh],
+    [job?.id, projectId, refresh],
   );
 
   return {

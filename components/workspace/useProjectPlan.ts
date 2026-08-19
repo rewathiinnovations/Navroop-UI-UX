@@ -153,21 +153,30 @@ export function useProjectPlan({
         error?: string;
       } | null;
       if (!response.ok) {
-        setApproving(false);
         return { ok: false as const, error: data?.error || 'Could not approve the plan' };
       }
       const next =
         toWorkspacePlan(data?.plan) ?? (plan ? { ...plan, status: 'APPROVED' as const } : null);
       setPlan(next);
       setPhase('BUILDING');
+      // This plan's key has been spent. A follow-up request mints a new
+      // PENDING plan on the same mount, and replaying this key would make the
+      // approve route answer with the previous plan instead of approving the
+      // new one.
+      approveKeyRef.current = null;
       return {
         ok: true as const,
         plan: next,
         promptContext: next ? approvedBuildPrompt(next) : '',
       };
     } catch {
-      setApproving(false);
       return { ok: false as const, error: 'Could not approve the plan' };
+    } finally {
+      // Clear on every exit, success included: the success path used to leave
+      // this stuck true, and because the component stays mounted through the
+      // build, the next plan's "Approve & Build" rendered disabled forever and
+      // the guard on entry short-circuited every click until a reload.
+      setApproving(false);
     }
   }, [approving, plan, projectId]);
 

@@ -14,7 +14,11 @@ import { applyCreateProjectPlanFlow, peekActor } from '@/lib/projects/plan';
 import { buildProjectListQuery, type ListProjectsQuery } from '@/lib/projects/list-sql';
 import { createCheckpointAfterGeneration } from '@/lib/checkpoints/actions';
 import { extractMemoriesAfterGeneration } from '@/lib/memory/extract';
-import { countVisualEditsFromSource, maybeSettleFollowups, recordVisualEditRate } from '@/lib/signals/collect';
+import {
+  countVisualEditsFromSource,
+  maybeSettleFollowups,
+  recordVisualEditRate,
+} from '@/lib/signals/collect';
 import { decideUrlImportFlow } from '@/lib/import/pipeline';
 import { upsertImportSource } from '@/lib/import/persist';
 import { asCreditActionErr } from '@/lib/plans/http';
@@ -158,29 +162,29 @@ export async function createProject(input: {
       }),
     );
   } else
-  try {
-    ({ plan } = await applyCreateProjectPlanFlow({
-      projectId: project.id,
-      userId: user.id,
-      initialPrompt: parsed.data.initialPrompt,
-      skipPlanning,
-    }));
-  } catch (error) {
-    if (error instanceof ProviderNotConfiguredError) {
-      // Nothing about this project can ever run until an admin adds a key, so
-      // failing fast at the dashboard beats navigating into a dead workspace.
-      // The row is seconds old with no dependents — remove it rather than
-      // leaving an "Untitled project" corpse for every misconfigured attempt.
-      // Before this catch, the server action 500ed and the member saw nothing.
-      await prisma.project.delete({ where: { id: project.id } }).catch(() => undefined);
-      return {
-        ok: false as const,
-        error: error.message,
-        status: 503 as const,
-      };
+    try {
+      ({ plan } = await applyCreateProjectPlanFlow({
+        projectId: project.id,
+        userId: user.id,
+        initialPrompt: parsed.data.initialPrompt,
+        skipPlanning,
+      }));
+    } catch (error) {
+      if (error instanceof ProviderNotConfiguredError) {
+        // Nothing about this project can ever run until an admin adds a key, so
+        // failing fast at the dashboard beats navigating into a dead workspace.
+        // The row is seconds old with no dependents — remove it rather than
+        // leaving an "Untitled project" corpse for every misconfigured attempt.
+        // Before this catch, the server action 500ed and the member saw nothing.
+        await prisma.project.delete({ where: { id: project.id } }).catch(() => undefined);
+        return {
+          ok: false as const,
+          error: error.message,
+          status: 503 as const,
+        };
+      }
+      throw error;
     }
-    throw error;
-  }
 
   if (parsed.data.templateId) {
     await incrementUsageCount(parsed.data.templateId);
@@ -231,7 +235,17 @@ export async function listProjects(query: {
         ...(query.mine === true ? { ownerId: user.id } : {}),
         ...(query.mine === false ? { ownerId: { not: user.id } } : {}),
         ...(query.starred ? { stars: { some: { userId: user.id } } } : {}),
-        ...(search ? { name: { contains: search, mode: 'insensitive' as const } } : {}),
+        // Name *and* prompt, because `/projects` now searches through this one path. Its
+        // search box used to call `/api/search` instead, which matched the prompt body but
+        // returned rows with no thumbnail, no owner and no honouring of mine/starred.
+        ...(search
+          ? {
+              OR: [
+                { name: { contains: search, mode: 'insensitive' as const } },
+                { initialPrompt: { contains: search, mode: 'insensitive' as const } },
+              ],
+            }
+          : {}),
       },
       orderBy: sort === 'name' ? { name: 'asc' } : { [sort]: 'desc' },
       select: {
@@ -322,7 +336,12 @@ async function listProjectsFromSql(query: ListProjectsQuery) {
     return mapped.map((project) => {
       const urls = byProject.get(project.id);
       const publishBadge = urls?.liveUrl ? 'live' : urls?.previewUrl ? 'preview' : 'draft';
-      return { ...project, liveUrl: urls?.liveUrl ?? null, previewUrl: urls?.previewUrl ?? null, publishBadge };
+      return {
+        ...project,
+        liveUrl: urls?.liveUrl ?? null,
+        previewUrl: urls?.previewUrl ?? null,
+        publishBadge,
+      };
     });
   } catch {
     return mapped;
@@ -483,9 +502,16 @@ export async function persistProjectGeneration(id: string, input: GenerationPers
 
   const existing = await prisma.project.findFirst({
     where: { id, deletedAt: null },
-    select: { id: true, phase: true },
+    select: { id: true, phase: true, ownerId: true },
   });
   if (!existing) return notFound();
+  // Unlike its siblings this one used to resolve an actor and never use it, so any
+  // signed-in member could PATCH another member's project and replace `lastCode` —
+  // the source of truth the preview renders from — force phase COMPLETE, repoint
+  // `previewUrl`, and kick off a billable preview build on someone else's project.
+  // The `peekActor()` branch is unaffected: the stored actor is the user the
+  // generation was started for, so it is the owner on that path too.
+  if (!canMutate(user, existing.ownerId)) return forbidden();
 
   const project = await prisma.project.update({
     where: { id },

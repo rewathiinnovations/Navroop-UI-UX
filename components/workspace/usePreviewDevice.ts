@@ -10,17 +10,29 @@ import {
   type StoredPreviewDevice,
 } from '@/lib/preview/devices';
 
-function readStored(): StoredPreviewDevice {
-  if (typeof window === 'undefined') return { key: 'desktop', rotated: false };
-  try {
-    return parseStoredPreviewDevice(window.localStorage.getItem(PREVIEW_DEVICE_STORAGE_KEY));
-  } catch {
-    return { key: 'desktop', rotated: false };
-  }
-}
+const DEFAULT_DEVICE: StoredPreviewDevice = { key: 'desktop', rotated: false };
 
 export function usePreviewDevice() {
-  const [state, setState] = useState<StoredPreviewDevice>(readStored);
+  const [state, setState] = useState<StoredPreviewDevice>(DEFAULT_DEVICE);
+
+  // Read the saved device after mount only, so the server-rendered (always
+  // desktop) markup matches the client's first render. The device reaches the
+  // DOM through PreviewPanel's inline frame width/height, the toolbar's
+  // selected-button classes and the top bar's size label, so reading storage
+  // in the useState initializer made React throw away the server HTML and
+  // re-render the whole workspace — the same hydration mismatch 5ef2454 fixed
+  // for the sidebar. A phone user sees one desktop frame before this lands.
+  useEffect(() => {
+    let stored = DEFAULT_DEVICE;
+    try {
+      stored = parseStoredPreviewDevice(window.localStorage.getItem(PREVIEW_DEVICE_STORAGE_KEY));
+    } catch {
+      /* private mode / disabled storage — stay on desktop */
+    }
+    if (stored.key !== DEFAULT_DEVICE.key || stored.rotated !== DEFAULT_DEVICE.rotated) {
+      setState(stored);
+    }
+  }, []);
 
   const persist = useCallback((next: StoredPreviewDevice) => {
     const normalized: StoredPreviewDevice = {
