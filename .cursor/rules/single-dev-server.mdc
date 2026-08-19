@@ -1,17 +1,24 @@
 ---
-description: One Next.js/pnpm dev server on localhost:3000; only the dedicated agent may start/restart it or replace locked Next/Prisma binaries
+description: Exactly one Next.js/pnpm dev server; only the dedicated agent may start/restart it or replace locked Next/Prisma binaries
 alwaysApply: true
 ---
 
 # Single development server
 
-Always use **ONE** Next.js / pnpm development server for this repo at `http://localhost:3000`. Never print `.env` secrets.
+Always use **ONE** Next.js / pnpm development server for this repo. Never print `.env` secrets.
+
+**Port.** `main` runs on `http://localhost:3000`. The `ai-genration-improvements` branch runs on
+`http://localhost:3001` so branch work never serves from the same port as `main` — the branch is
+checked out in this directory, so only one of them is live at a time. When the port changes, the
+`app.url` admin setting has to follow it (DB row, overriding the `APP_URL` env pin): signed
+static-preview URLs and the GitHub App Manifest callback are built from it, and a stale value
+points them at a dead port. It is `http://localhost:3001` today.
 
 ## Ownership
 
 One dedicated **dev server** agent owns start and restart. That agent is the **only** process allowed to:
 
-- Start/restart `pnpm dev` / `next dev`, kill the listener on port 3000, or restart the server in place
+- Start/restart `pnpm dev` / `next dev`, kill the listener on the branch's port, or restart the server in place
 - Run `npx prisma generate` / `prisma generate` (the query engine DLL is locked by Next on Windows)
 - Run any other command that replaces locked binaries Next is using — e.g. `pnpm add next`, overwriting `node_modules/next`, replacing `generated/prisma/query_engine-windows.dll.node`
 - Use side-generate-and-copy workarounds for EPERM on the query engine
@@ -19,8 +26,8 @@ One dedicated **dev server** agent owns start and restart. That agent is the **o
 All other agents **MUST NOT**:
 
 - Run `pnpm dev`, `next dev`, or any equivalent start command
-- Kill, taskkill, or otherwise stop the process on port 3000
-- Spawn a second server on 3001, 3002, or any other port
+- Kill, taskkill, or otherwise stop the dev server process on its port
+- Spawn a second server on another port; one branch, one server, one port
 - Run `prisma generate` / `npx prisma generate`
 - Work around EPERM by generating to `prisma-tmp` (or similar) and copying over the live client
 - Bump `lib/db.ts` Prisma singleton keys as a generate workaround
