@@ -36,9 +36,19 @@ function mapRow(row: Record<string, unknown>): CustomDomainRow {
     status: row.status as CustomDomainStatus,
     verifyToken: String(row.verifyToken),
     expectedTarget: String(row.expectedTarget),
-    lastCheckedAt: row.lastCheckedAt instanceof Date ? row.lastCheckedAt : row.lastCheckedAt ? new Date(String(row.lastCheckedAt)) : null,
+    lastCheckedAt:
+      row.lastCheckedAt instanceof Date
+        ? row.lastCheckedAt
+        : row.lastCheckedAt
+          ? new Date(String(row.lastCheckedAt))
+          : null,
     lastError: row.lastError == null ? null : String(row.lastError),
-    sslIssuedAt: row.sslIssuedAt instanceof Date ? row.sslIssuedAt : row.sslIssuedAt ? new Date(String(row.sslIssuedAt)) : null,
+    sslIssuedAt:
+      row.sslIssuedAt instanceof Date
+        ? row.sslIssuedAt
+        : row.sslIssuedAt
+          ? new Date(String(row.sslIssuedAt))
+          : null,
     isPrimary: Boolean(row.isPrimary),
     path: (row.path as CustomDomainPath) || 'A',
     cloudflareZoneId: row.cloudflareZoneId == null ? null : String(row.cloudflareZoneId),
@@ -88,6 +98,8 @@ export async function insertCustomDomain(input: {
   return row;
 }
 
+/** Unscoped — for cron and internal store round-trips only. Anything reached from a
+ *  request must use `findCustomDomainForProject`. */
 export async function findCustomDomain(id: string): Promise<CustomDomainRow | null> {
   const rows = await prisma.$queryRaw<Array<Record<string, unknown>>>`
     SELECT * FROM "CustomDomain" WHERE "id" = ${id} LIMIT 1
@@ -95,14 +107,40 @@ export async function findCustomDomain(id: string): Promise<CustomDomainRow | nu
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
-export async function findCustomDomainByHostname(hostname: string): Promise<CustomDomainRow | null> {
+/**
+ * Project-scoped lookup for every user-triggered domain mutation.
+ *
+ * `CustomDomain` carries no `projectId` of its own — it hangs off `Deployment` — so the
+ * scoping predicate has to be the same join `listCustomDomainsForProject` uses. Callers
+ * authorise the session against the project id from the URL, so a lookup by domain id
+ * alone let any project owner delete, re-point, re-verify or email the DNS instructions
+ * (verify token included) of a domain belonging to another member's project.
+ */
+export async function findCustomDomainForProject(
+  projectId: string,
+  id: string,
+): Promise<CustomDomainRow | null> {
+  const rows = await prisma.$queryRaw<Array<Record<string, unknown>>>`
+    SELECT d.* FROM "CustomDomain" d
+    INNER JOIN "Deployment" p ON p."id" = d."deploymentId"
+    WHERE d."id" = ${id} AND p."projectId" = ${projectId}
+    LIMIT 1
+  `;
+  return rows[0] ? mapRow(rows[0]) : null;
+}
+
+export async function findCustomDomainByHostname(
+  hostname: string,
+): Promise<CustomDomainRow | null> {
   const rows = await prisma.$queryRaw<Array<Record<string, unknown>>>`
     SELECT * FROM "CustomDomain" WHERE "hostname" = ${hostname} LIMIT 1
   `;
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
-export async function listCustomDomainsForDeployment(deploymentId: string): Promise<CustomDomainRow[]> {
+export async function listCustomDomainsForDeployment(
+  deploymentId: string,
+): Promise<CustomDomainRow[]> {
   const rows = await prisma.$queryRaw<Array<Record<string, unknown>>>`
     SELECT * FROM "CustomDomain" WHERE "deploymentId" = ${deploymentId} ORDER BY "createdAt" ASC
   `;
@@ -147,10 +185,12 @@ export async function updateCustomDomain(
   if (!current) throw new Error('Custom domain not found');
   const status = data.status ?? current.status;
   const lastError = data.lastError === undefined ? current.lastError : data.lastError;
-  const lastCheckedAt = data.lastCheckedAt === undefined ? current.lastCheckedAt : data.lastCheckedAt;
+  const lastCheckedAt =
+    data.lastCheckedAt === undefined ? current.lastCheckedAt : data.lastCheckedAt;
   const sslIssuedAt = data.sslIssuedAt === undefined ? current.sslIssuedAt : data.sslIssuedAt;
   const isPrimary = data.isPrimary === undefined ? current.isPrimary : data.isPrimary;
-  const cloudflareZoneId = data.cloudflareZoneId === undefined ? current.cloudflareZoneId : data.cloudflareZoneId;
+  const cloudflareZoneId =
+    data.cloudflareZoneId === undefined ? current.cloudflareZoneId : data.cloudflareZoneId;
   const nameservers = data.nameservers === undefined ? current.nameservers : data.nameservers;
   await prisma.$executeRaw`
     UPDATE "CustomDomain" SET
@@ -193,7 +233,9 @@ export async function deleteCustomDomainRow(id: string) {
   await prisma.$executeRaw`DELETE FROM "CustomDomain" WHERE "id" = ${id}`;
 }
 
-export async function findPrimaryForDeployment(deploymentId: string): Promise<CustomDomainRow | null> {
+export async function findPrimaryForDeployment(
+  deploymentId: string,
+): Promise<CustomDomainRow | null> {
   const rows = await prisma.$queryRaw<Array<Record<string, unknown>>>`
     SELECT * FROM "CustomDomain"
     WHERE "deploymentId" = ${deploymentId} AND "isPrimary" = true AND "status" = 'ACTIVE'

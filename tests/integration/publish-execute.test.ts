@@ -30,7 +30,8 @@ const WS = 'ws_publish_execute';
 const SLUG_PREFIX = 'pubx';
 
 /** One project per case: `one_active_job_per_project` is unique and every case runs a job. */
-type CaseKey = 'happy' | 'kill' | 'appfail' | 'resume' | 'settled' | 'unhealthy' | 'preview' | 'relive';
+type CaseKey =
+  'happy' | 'kill' | 'appfail' | 'resume' | 'settled' | 'unhealthy' | 'preview' | 'relive';
 
 const projectId = (key: CaseKey) => `proj_${SLUG_PREFIX}_${key}`;
 const serverId = (key: CaseKey) => `srv_${SLUG_PREFIX}_${key}`;
@@ -57,7 +58,10 @@ async function cleanup() {
   await prisma.deployment
     .deleteMany({
       where: {
-        OR: [{ projectId: { startsWith: `proj_${SLUG_PREFIX}_` } }, { slug: { startsWith: SLUG_PREFIX } }],
+        OR: [
+          { projectId: { startsWith: `proj_${SLUG_PREFIX}_` } },
+          { slug: { startsWith: SLUG_PREFIX } },
+        ],
       },
     })
     .catch(() => undefined);
@@ -134,7 +138,9 @@ async function seedCase(input: {
 
 /** The same rows `startPublishJob` writes before it hands the job to the runner. */
 async function queuePublishJob(seeded: SeededCase, kind: 'LIVE' | 'PREVIEW') {
-  const deployment = await prisma.deployment.findUniqueOrThrow({ where: { id: seeded.deploymentId } });
+  const deployment = await prisma.deployment.findUniqueOrThrow({
+    where: { id: seeded.deploymentId },
+  });
   const job = await insertJobRaw({
     projectId: seeded.projectId,
     workspaceId: WS,
@@ -174,6 +180,7 @@ type PublishSpy = {
     dnsLabel: string | null;
     dnsIp: string | null;
     domainHost: string | null;
+    redirectsFor: string | null;
     deployedUuid: string | null;
   };
 };
@@ -204,7 +211,8 @@ function publishSpy(
     pushFiles: 0,
     createApp: 0,
     upsertDns: 0,
-    setAppDomain: 0,
+    addAppDomain: 0,
+    applyRedirects: 0,
     startDeploy: 0,
     deployHealth: 0,
   };
@@ -216,6 +224,7 @@ function publishSpy(
     dnsLabel: null,
     dnsIp: null,
     domainHost: null,
+    redirectsFor: null,
     deployedUuid: null,
   };
   const record = (name: keyof PublishDeps) => {
@@ -260,10 +269,14 @@ function publishSpy(
       if (options.onDns) await options.onDns();
       return options.dnsRecordId ?? 'dns-record-1';
     },
-    async setAppDomain(_auth, appUuid, host) {
-      record('setAppDomain');
+    async addAppDomain(_auth, appUuid, host) {
+      record('addAppDomain');
       seen.domainHost = host;
       seen.deployedUuid = appUuid;
+    },
+    async applyRedirects(deploymentId) {
+      record('applyRedirects');
+      seen.redirectsFor = deploymentId;
     },
     async startDeploy(_auth, appUuid) {
       record('startDeploy');
@@ -339,7 +352,8 @@ describe('runPublishJob — the shipped ten-step loop', () => {
       'pushFiles',
       'createApp',
       'upsertDns',
-      'setAppDomain',
+      'addAppDomain',
+      'applyRedirects',
       'startDeploy',
       'deployHealth',
     ]);
@@ -352,15 +366,21 @@ describe('runPublishJob — the shipped ten-step loop', () => {
     expect(job?.status).toBe('SUCCEEDED');
     expect(job?.currentStep).toBe('live');
     expect(job?.lastStep).toBe('live');
-    expect((job?.steps ?? []).map((step) => step.key)).toEqual(PUBLISH_STEPS.map((step) => step.key));
-    expect((job?.steps ?? []).map((step) => step.status)).toEqual(PUBLISH_STEPS.map(() => 'succeeded'));
+    expect((job?.steps ?? []).map((step) => step.key)).toEqual(
+      PUBLISH_STEPS.map((step) => step.key),
+    );
+    expect((job?.steps ?? []).map((step) => step.status)).toEqual(
+      PUBLISH_STEPS.map(() => 'succeeded'),
+    );
     expect(job?.resourceIds).toMatchObject({
       githubRepo: `deploy-org/${expectedSlug('happy')}`,
       coolifyAppUuid: 'coolify-app-1',
       dnsRecordId: 'dns-record-1',
     });
 
-    const deployment = await prisma.deployment.findUniqueOrThrow({ where: { id: seeded.deploymentId } });
+    const deployment = await prisma.deployment.findUniqueOrThrow({
+      where: { id: seeded.deploymentId },
+    });
     expect(deployment.slug).toBe(expectedSlug('happy'));
     expect(deployment.status).toBe('LIVE');
     expect(deployment.url).toBe(`https://${expectedSlug('happy')}.${ROOT}`);
@@ -382,7 +402,9 @@ describe('runPublishJob — the shipped ten-step loop', () => {
     expect(spy.seen.domainHost).toBe(`${expectedSlug('happy')}.${ROOT}`);
     expect(spy.seen.createApp?.name).toBe(coolifyAppName(expectedSlug('happy'), 'LIVE'));
     expect(spy.seen.createApp?.domain).toBe(`${expectedSlug('happy')}.${ROOT}`);
-    expect(spy.seen.createApp?.repoUrl).toBe(`https://github.com/deploy-org/${expectedSlug('happy')}`);
+    expect(spy.seen.createApp?.repoUrl).toBe(
+      `https://github.com/deploy-org/${expectedSlug('happy')}`,
+    );
     expect(spy.seen.createApp?.projectUuid).toBe('project-uuid-happy');
     expect(spy.seen.deployedUuid).toBe('coolify-app-1');
 
@@ -405,7 +427,7 @@ describe('runPublishJob — the shipped ten-step loop', () => {
 
     expect(spy.counts.createApp).toBe(1);
     expect(spy.counts.upsertDns).toBe(1);
-    expect(spy.counts.setAppDomain).toBe(0);
+    expect(spy.counts.addAppDomain).toBe(0);
     expect(spy.counts.startDeploy).toBe(0);
 
     // This is exactly what the reopened tab reads.
@@ -449,9 +471,15 @@ describe('runPublishJob — the shipped ten-step loop', () => {
     expect(job?.resourceIds?.coolifyAppUuid).toBeNull();
     // The step before it did persist, so this is a per-step write, not "nothing was saved".
     expect(job?.resourceIds?.githubRepo).toBe(`deploy-org/${expectedSlug('appfail')}`);
-    expect(stepStatuses(job?.steps)).toMatchObject({ github: 'succeeded', app: 'failed', dns: 'pending' });
+    expect(stepStatuses(job?.steps)).toMatchObject({
+      github: 'succeeded',
+      app: 'failed',
+      dns: 'pending',
+    });
 
-    const deployment = await prisma.deployment.findUniqueOrThrow({ where: { id: seeded.deploymentId } });
+    const deployment = await prisma.deployment.findUniqueOrThrow({
+      where: { id: seeded.deploymentId },
+    });
     expect(deployment.status).toBe('FAILED');
     expect(deployment.lastError).toBe('coolify refused the application');
   });
@@ -483,7 +511,7 @@ describe('runPublishJob — the shipped ten-step loop', () => {
     // The loop really reached the end on this pass, so the zeroes below are skips rather
     // than a run that never started.
     expect(second.counts.upsertDns).toBe(1);
-    expect(second.counts.setAppDomain).toBe(1);
+    expect(second.counts.addAppDomain).toBe(1);
     expect(second.counts.deployHealth).toBe(1);
     expect(second.counts.ensureRepo).toBe(0);
     expect(second.counts.pushFiles).toBe(0);
@@ -502,7 +530,9 @@ describe('runPublishJob — the shipped ten-step loop', () => {
       coolifyAppUuid: 'coolify-app-1',
       dnsRecordId: 'dns-record-1',
     });
-    const deployment = await prisma.deployment.findUniqueOrThrow({ where: { id: seeded.deploymentId } });
+    const deployment = await prisma.deployment.findUniqueOrThrow({
+      where: { id: seeded.deploymentId },
+    });
     expect(deployment.status).toBe('LIVE');
     expect(deployment.slug).toBe(expectedSlug('resume'));
 
@@ -527,7 +557,9 @@ describe('runPublishJob — the shipped ten-step loop', () => {
     await runPublishJob(jobId, replay.deps);
     expect(replay.calls).toEqual([]);
 
-    const deployment = await prisma.deployment.findUniqueOrThrow({ where: { id: seeded.deploymentId } });
+    const deployment = await prisma.deployment.findUniqueOrThrow({
+      where: { id: seeded.deploymentId },
+    });
     expect(deployment.coolifyAppUuid).toBe('coolify-app-1');
     expect(deployment.status).toBe('LIVE');
   });
@@ -542,11 +574,17 @@ describe('runPublishJob — the shipped ten-step loop', () => {
     const job = await getJob(jobId);
     expect(job?.status).toBe('FAILED');
     expect(job?.errorCode).toBe('provider_error');
-    expect(stepStatuses(job?.steps)).toMatchObject({ deploy: 'succeeded', poll: 'failed', live: 'pending' });
+    expect(stepStatuses(job?.steps)).toMatchObject({
+      deploy: 'succeeded',
+      poll: 'failed',
+      live: 'pending',
+    });
 
     // `persistProgress` only ever writes QUEUED/BUILDING/LIVE, so without the explicit
     // settle this row would claim BUILDING forever.
-    const deployment = await prisma.deployment.findUniqueOrThrow({ where: { id: seeded.deploymentId } });
+    const deployment = await prisma.deployment.findUniqueOrThrow({
+      where: { id: seeded.deploymentId },
+    });
     expect(deployment.status).toBe('FAILED');
     expect(deployment.lastError).toBe('Coolify build fail: exited');
     expect(deployment.publishedAt).toBeNull();
@@ -560,7 +598,9 @@ describe('runPublishJob — the shipped ten-step loop', () => {
     const seeded = await seedCase({ key: 'preview', kind: 'PREVIEW' });
     const jobId = await queuePublishJob(seeded, 'PREVIEW');
 
-    const spy = publishSpy(seeded.server, { files: { 'app/page.tsx': 'export default () => null;' } });
+    const spy = publishSpy(seeded.server, {
+      files: { 'app/page.tsx': 'export default () => null;' },
+    });
     await runPublishJob(jobId, spy.deps);
 
     const slug = expectedSlug('preview');
@@ -574,7 +614,9 @@ describe('runPublishJob — the shipped ten-step loop', () => {
     expect(spy.seen.pushedPaths).toContain('middleware.ts');
     expect(spy.seen.pushedPaths).toContain('app/page.tsx');
 
-    const deployment = await prisma.deployment.findUniqueOrThrow({ where: { id: seeded.deploymentId } });
+    const deployment = await prisma.deployment.findUniqueOrThrow({
+      where: { id: seeded.deploymentId },
+    });
     expect(deployment.url).toBe(`https://preview-${slug}.${ROOT}`);
     const project = await prisma.project.findUniqueOrThrow({ where: { id: seeded.projectId } });
     expect(project.status).toBe('preview');
@@ -594,7 +636,10 @@ describe('runPublishJob — the shipped ten-step loop', () => {
     });
     const jobId = await queuePublishJob(seeded, 'LIVE');
 
-    const spy = publishSpy(seeded.server, { appUuid: 'coolify-app-second', dnsRecordId: 'dns-record-second' });
+    const spy = publishSpy(seeded.server, {
+      appUuid: 'coolify-app-second',
+      dnsRecordId: 'dns-record-second',
+    });
     await runPublishJob(jobId, spy.deps);
 
     // A LIVE slug never changes once assigned, so nothing re-claims it and no new server
@@ -608,7 +653,9 @@ describe('runPublishJob — the shipped ten-step loop', () => {
     expect(spy.seen.pushedTo).toBe('deploy-org/pubx-relive');
     expect(spy.seen.deployedUuid).toBe('coolify-app-existing');
 
-    const deployment = await prisma.deployment.findUniqueOrThrow({ where: { id: seeded.deploymentId } });
+    const deployment = await prisma.deployment.findUniqueOrThrow({
+      where: { id: seeded.deploymentId },
+    });
     expect(deployment.slug).toBe(slug);
     expect(deployment.status).toBe('LIVE');
     expect(deployment.coolifyAppUuid).toBe('coolify-app-existing');

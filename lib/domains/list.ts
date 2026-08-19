@@ -2,10 +2,12 @@ import { prisma } from '@/lib/db';
 import { peekRootDomain } from '@/lib/integrations/store';
 import { checkCustomDomainAllowed } from '@/lib/plans/limits';
 import { CUSTOM_DOMAIN_LOCKED_MESSAGE, type PublicCustomDomain } from './types';
-import { publishedHostFor, toPublicCustomDomain } from './instructions';
+import { publishedHostFor, toPublicCustomDomain, withoutVerifyToken } from './instructions';
 import { listCustomDomainsForProject } from './store';
 
-export async function getProjectDomainState(projectId: string) {
+/** `canMutate` is required, not optional: the listing is readable workspace-wide, so the
+ *  caller has to state whether this viewer may hold the domains' verify tokens. */
+export async function getProjectDomainState(projectId: string, viewer: { canMutate: boolean }) {
   const project = await prisma.project.findFirst({
     where: { id: projectId, deletedAt: null },
     select: { id: true },
@@ -18,11 +20,18 @@ export async function getProjectDomainState(projectId: string) {
   });
   const workspaceId = deployment?.workspaceId ?? 'default';
   const allowed = await checkCustomDomainAllowed(workspaceId);
-  const zone = deployment ? await peekRootDomain(deployment.workspaceId) : await peekRootDomain(workspaceId);
+  const zone = deployment
+    ? await peekRootDomain(deployment.workspaceId)
+    : await peekRootDomain(workspaceId);
   const rows = await listCustomDomainsForProject(projectId);
-  const publishedHost = deployment && zone
-    ? publishedHostFor({ slug: deployment.slug, kind: deployment.kind, zone })
-    : '';
+  const publishedHost =
+    deployment && zone
+      ? publishedHostFor({ slug: deployment.slug, kind: deployment.kind, zone })
+      : '';
+  const domains: PublicCustomDomain[] = rows.map((row) => {
+    const domain = toPublicCustomDomain(row, publishedHost);
+    return viewer.canMutate ? domain : withoutVerifyToken(domain);
+  });
 
   return {
     ok: true as const,
@@ -32,7 +41,7 @@ export async function getProjectDomainState(projectId: string) {
       published: Boolean(deployment),
       ourZone: zone,
       publishedHost,
-      domains: rows.map((row) => toPublicCustomDomain(row, publishedHost)) as PublicCustomDomain[],
+      domains,
     },
   };
 }

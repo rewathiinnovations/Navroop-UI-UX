@@ -12,7 +12,7 @@ import { buildDnsInstructions } from './instructions';
 import {
   clearPrimaryForDeployment,
   deleteCustomDomainRow,
-  findCustomDomain,
+  findCustomDomainForProject,
   updateCustomDomain,
 } from './store';
 import type { CustomDomainPath, PublicCustomDomain } from './types';
@@ -26,32 +26,40 @@ function canMutate(user: { id: string; role: string }, ownerId: string) {
 
 async function loadProject(projectId: string, mutate: boolean) {
   const user = await getSessionUser();
-  if (!user) return { ok: false as const, error: 'Sign in required' as const, status: 401 as const };
+  if (!user)
+    return { ok: false as const, error: 'Sign in required' as const, status: 401 as const };
   const project = await prisma.project.findFirst({
     where: { id: projectId, deletedAt: null },
     select: { id: true, ownerId: true },
   });
-  if (!project) return { ok: false as const, error: 'Project not found' as const, status: 404 as const };
+  if (!project)
+    return { ok: false as const, error: 'Project not found' as const, status: 404 as const };
   if (mutate && !canMutate(user, project.ownerId)) {
     return { ok: false as const, error: 'Forbidden' as const, status: 403 as const };
   }
   return { ok: true as const, user, project };
 }
 
-async function asPublic(id: string): Promise<PublicCustomDomain | null> {
-  const row = await findCustomDomain(id);
+async function asPublic(projectId: string, id: string): Promise<PublicCustomDomain | null> {
+  const row = await findCustomDomainForProject(projectId, id);
   if (!row) return null;
   const deployment = await prisma.deployment.findUnique({ where: { id: row.deploymentId } });
   const zone = deployment ? await peekRootDomain(deployment.workspaceId) : null;
   const publishedHost =
-    deployment && zone ? publishedHostFor({ slug: deployment.slug, kind: deployment.kind, zone }) : '';
+    deployment && zone
+      ? publishedHostFor({ slug: deployment.slug, kind: deployment.kind, zone })
+      : '';
   return toPublicCustomDomain(row, publishedHost);
 }
 
 export async function listProjectDomains(projectId: string) {
   const loaded = await loadProject(projectId, false);
   if (!loaded.ok) return { ok: false as const, error: loaded.error, status: loaded.status };
-  return getProjectDomainState(projectId);
+  // Reads stay workspace-wide (see lib/auth/route-policy.ts); only the verify token is
+  // held back from a viewer who could not mutate the domain anyway.
+  return getProjectDomainState(projectId, {
+    canMutate: canMutate(loaded.user, loaded.project.ownerId),
+  });
 }
 
 export async function addProjectDomain(
@@ -60,7 +68,11 @@ export async function addProjectDomain(
 ): Promise<DomainActionResult<PublicCustomDomain>> {
   const loaded = await loadProject(projectId, true);
   if (!loaded.ok) return { ok: false, error: loaded.error, status: loaded.status };
-  const created = await createCustomDomain({ projectId, hostname: input.hostname, path: input.path });
+  const created = await createCustomDomain({
+    projectId,
+    hostname: input.hostname,
+    path: input.path,
+  });
   if (created.ok) {
     await writeAudit({
       actorId: loaded.user.id,
@@ -77,7 +89,7 @@ export async function addProjectDomain(
 export async function checkProjectDomain(projectId: string, domainId: string) {
   const loaded = await loadProject(projectId, true);
   if (!loaded.ok) return { ok: false as const, error: loaded.error, status: loaded.status };
-  const row = await findCustomDomain(domainId);
+  const row = await findCustomDomainForProject(projectId, domainId);
   if (!row) return { ok: false as const, error: 'Domain not found', status: 404 as const };
   const { withRecordedJob } = await import('@/lib/jobs/wrap');
   await withRecordedJob(
@@ -91,7 +103,7 @@ export async function checkProjectDomain(projectId: string, domainId: string) {
       await checkDomain(domainId);
     },
   );
-  const data = await asPublic(domainId);
+  const data = await asPublic(projectId, domainId);
   if (!data) return { ok: false as const, error: 'Domain not found', status: 404 as const };
   return { ok: true as const, data };
 }
@@ -99,7 +111,7 @@ export async function checkProjectDomain(projectId: string, domainId: string) {
 export async function makeProjectDomainPrimary(projectId: string, domainId: string) {
   const loaded = await loadProject(projectId, true);
   if (!loaded.ok) return { ok: false as const, error: loaded.error, status: loaded.status };
-  const row = await findCustomDomain(domainId);
+  const row = await findCustomDomainForProject(projectId, domainId);
   if (!row) return { ok: false as const, error: 'Domain not found', status: 404 as const };
   if (row.status !== 'ACTIVE') {
     return { ok: false as const, error: 'Only a live domain can be primary', status: 400 as const };
@@ -111,7 +123,7 @@ export async function makeProjectDomainPrimary(projectId: string, domainId: stri
   } catch (error) {
     console.warn('[domains] primary redirect failed', domainId, error);
   }
-  const data = await asPublic(domainId);
+  const data = await asPublic(projectId, domainId);
   if (!data) return { ok: false as const, error: 'Domain not found', status: 404 as const };
   return { ok: true as const, data };
 }
@@ -123,10 +135,12 @@ export async function removeProjectDomain(
 ) {
   const loaded = await loadProject(projectId, true);
   if (!loaded.ok) return { ok: false as const, error: loaded.error, status: loaded.status };
-  const row = await findCustomDomain(domainId);
+  const row = await findCustomDomainForProject(projectId, domainId);
   if (!row) return { ok: false as const, error: 'Domain not found', status: 404 as const };
   if (row.path === 'B') {
-    const typed = String(confirmHostname || '').trim().toLowerCase();
+    const typed = String(confirmHostname || '')
+      .trim()
+      .toLowerCase();
     if (typed !== row.hostname) {
       return {
         ok: false as const,
@@ -162,14 +176,10 @@ export async function removeProjectDomain(
   return { ok: true as const, data: { id: domainId } };
 }
 
-export async function emailProjectDomain(
-  projectId: string,
-  domainId: string,
-  to: string,
-) {
+export async function emailProjectDomain(projectId: string, domainId: string, to: string) {
   const loaded = await loadProject(projectId, true);
   if (!loaded.ok) return { ok: false as const, error: loaded.error, status: loaded.status };
-  const row = await findCustomDomain(domainId);
+  const row = await findCustomDomainForProject(projectId, domainId);
   if (!row) return { ok: false as const, error: 'Domain not found', status: 404 as const };
   const address = String(to || '').trim();
   if (!address.includes('@')) {

@@ -53,7 +53,8 @@ function refusingDeps(server: PublishServer): PublishDeps {
     pushFiles: unused as PublishDeps['pushFiles'],
     createApp: unused as PublishDeps['createApp'],
     upsertDns: unused as PublishDeps['upsertDns'],
-    setAppDomain: unused as PublishDeps['setAppDomain'],
+    addAppDomain: unused as PublishDeps['addAppDomain'],
+    applyRedirects: unused as PublishDeps['applyRedirects'],
     startDeploy: unused as PublishDeps['startDeploy'],
     deployHealth: unused as PublishDeps['deployHealth'],
   };

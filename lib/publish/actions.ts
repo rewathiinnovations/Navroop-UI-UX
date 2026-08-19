@@ -17,7 +17,7 @@ import { getMissingIntegrations, peekRootDomain } from '@/lib/integrations/store
 import { publishBlockedMessage } from '@/lib/integrations/messages';
 import { resolveUniqueSlug, urlForSlug } from './slug';
 import { log } from '@/lib/logger';
-import { acquireLock, runWithHeldLock } from '@/lib/projects/lock';
+import { holdProjectLock } from '@/lib/projects/lock';
 import { lockConflictAction } from '@/lib/projects/lock-http';
 import { writeAudit } from '@/lib/audit/log';
 
@@ -33,7 +33,8 @@ async function loadMutableProject(projectId: string) {
     select: { id: true, name: true, ownerId: true, lastCode: true },
   });
   if (!project) return { error: 'Project not found' as const, status: 404 as const };
-  if (!canMutate(user, project.ownerId)) return { error: 'Forbidden' as const, status: 403 as const };
+  if (!canMutate(user, project.ownerId))
+    return { error: 'Forbidden' as const, status: 403 as const };
   return { user, project };
 }
 
@@ -85,10 +86,20 @@ export async function getPublishState(projectId: string) {
       setupMessage,
       job: publishJob ? toPublicJob(publishJob) : null,
       previewUrl: root
-        ? urlForSlug(previewSlug.startsWith('pending-') ? previewSlug.replace(/^pending-/, 'site') : previewSlug, 'PREVIEW', root)
+        ? urlForSlug(
+            previewSlug.startsWith('pending-')
+              ? previewSlug.replace(/^pending-/, 'site')
+              : previewSlug,
+            'PREVIEW',
+            root,
+          )
         : '',
       liveUrl: root
-        ? urlForSlug(liveSlug.startsWith('pending-') ? liveSlug.replace(/^pending-/, 'site') : liveSlug, 'LIVE', root)
+        ? urlForSlug(
+            liveSlug.startsWith('pending-') ? liveSlug.replace(/^pending-/, 'site') : liveSlug,
+            'LIVE',
+            root,
+          )
         : '',
       deployments: deployments.map((row) =>
         serializeDeployment(row, root ?? '', { canonicalHost: primaries.get(row.id) ?? null }),
@@ -97,7 +108,12 @@ export async function getPublishState(projectId: string) {
   };
 }
 
-export async function startPublish(projectId: string, kind: DeploymentKind, password?: string | null) {
+/**
+ * No password parameter: preview protection is set through `setPreviewPasswordAction`,
+ * which stores the hash and pushes the plaintext to Coolify. A password accepted here was
+ * silently dropped by `startPublishJob`, so the build shipped an unprotected preview.
+ */
+export async function startPublish(projectId: string, kind: DeploymentKind) {
   const loaded = await loadMutableProject(projectId);
   if ('error' in loaded) return { ok: false as const, error: loaded.error, status: loaded.status };
   const filesState = await projectHasPublishableFiles(projectId);
@@ -111,7 +127,12 @@ export async function startPublish(projectId: string, kind: DeploymentKind, pass
   const missing = await getMissingIntegrations(DEFAULT_WORKSPACE_ID);
   const setupMessage = publishBlockedMessage(missing, loaded.user.role === 'ADMIN');
   if (setupMessage) {
-    return { ok: false as const, error: setupMessage, status: 409 as const, missingIntegrations: missing };
+    return {
+      ok: false as const,
+      error: setupMessage,
+      status: 409 as const,
+      missingIntegrations: missing,
+    };
   }
 
   try {
@@ -131,29 +152,42 @@ export async function startPublish(projectId: string, kind: DeploymentKind, pass
     throw error;
   }
 
-  const lock = await acquireLock(projectId, loaded.user.id, 'publish');
-  if (!lock.ok) return lockConflictAction(lock);
+  const hold = await holdProjectLock(projectId, loaded.user.id, 'publish');
+  if (!hold.ok) return lockConflictAction(hold);
 
-  const run = () =>
-    runWithHeldLock(projectId, loaded.user.id, async () => {
+  // Exactly one of the two branches below runs `run`, so the `finally` is the single
+  // place the lock goes back — and it is a no-op when this request re-entered a hold that
+  // a generation of the same user is still using (security review NAV-03).
+  const run = async () => {
+    try {
       const started = await startPublishJob({
         projectId,
         kind,
         userId: loaded.user.id,
-        password: password ?? null,
       });
       await runPublishJob(started.jobId);
-    });
+    } finally {
+      await hold.release();
+    }
+  };
 
   try {
     after(() =>
       run().catch((error) => {
-        log.warn('publish.background_failed', { projectId, kind, error: error instanceof Error ? error.message : String(error) });
+        log.warn('publish.background_failed', {
+          projectId,
+          kind,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }),
     );
   } catch {
     void run().catch((error) => {
-      log.warn('publish.background_failed', { projectId, kind, error: error instanceof Error ? error.message : String(error) });
+      log.warn('publish.background_failed', {
+        projectId,
+        kind,
+        error: error instanceof Error ? error.message : String(error),
+      });
     });
   }
 
@@ -204,7 +238,9 @@ export async function listWorkspaceDeployments() {
   return {
     ok: true as const,
     data: {
-      deployments: rows.map((row) => serializeDeployment(row, root, { canonicalHost: primaries.get(row.id) ?? null })),
+      deployments: rows.map((row) =>
+        serializeDeployment(row, root, { canonicalHost: primaries.get(row.id) ?? null }),
+      ),
     },
   };
 }
@@ -217,7 +253,8 @@ export async function stopDeploymentAction(id: string) {
     include: { project: { select: { ownerId: true } } },
   });
   if (!row) return { ok: false as const, error: 'Deployment not found', status: 404 as const };
-  if (!canMutate(user, row.project.ownerId)) return { ok: false as const, error: 'Forbidden', status: 403 as const };
+  if (!canMutate(user, row.project.ownerId))
+    return { ok: false as const, error: 'Forbidden', status: 403 as const };
   const updated = await stopDeployment(id);
   await writeAudit({
     actorId: user.id,
@@ -229,7 +266,10 @@ export async function stopDeploymentAction(id: string) {
   });
   const root = (await peekRootDomain(DEFAULT_WORKSPACE_ID)) ?? '';
   const primaries = await mapPrimaryHosts([updated.id]);
-  return { ok: true as const, data: serializeDeployment(updated, root, { canonicalHost: primaries.get(updated.id) ?? null }) };
+  return {
+    ok: true as const,
+    data: serializeDeployment(updated, root, { canonicalHost: primaries.get(updated.id) ?? null }),
+  };
 }
 
 export async function redeployAction(id: string) {
@@ -239,8 +279,10 @@ export async function redeployAction(id: string) {
     where: { id },
     include: { project: { select: { ownerId: true, deletedAt: true } } },
   });
-  if (!row || row.project.deletedAt) return { ok: false as const, error: 'Deployment not found', status: 404 as const };
-  if (!canMutate(user, row.project.ownerId)) return { ok: false as const, error: 'Forbidden', status: 403 as const };
+  if (!row || row.project.deletedAt)
+    return { ok: false as const, error: 'Deployment not found', status: 404 as const };
+  if (!canMutate(user, row.project.ownerId))
+    return { ok: false as const, error: 'Forbidden', status: 403 as const };
   return startPublish(row.projectId, row.kind);
 }
 
@@ -252,18 +294,26 @@ export async function deleteDeploymentAction(id: string, confirmSlug: string) {
     include: { project: { select: { ownerId: true } } },
   });
   if (!row) return { ok: false as const, error: 'Deployment not found', status: 404 as const };
-  if (!canMutate(user, row.project.ownerId)) return { ok: false as const, error: 'Forbidden', status: 403 as const };
+  if (!canMutate(user, row.project.ownerId))
+    return { ok: false as const, error: 'Forbidden', status: 403 as const };
   if (confirmSlug.trim() !== row.slug) {
     return { ok: false as const, error: 'Type the slug to confirm', status: 422 as const };
   }
-  await destroyDeployment(id, { deleteRepo: true });
+  const destroyed = await destroyDeployment(id, { deleteRepo: true });
   await writeAudit({
     actorId: user.id,
     actorEmail: user.email,
     action: 'deployment.delete',
     targetType: 'deployment',
     targetId: id,
-    after: { slug: row.slug, kind: row.kind },
+    // A Path B zone is never deleted from Cloudflare, and this delete just removed the
+    // CustomDomain row that pointed at it. The audit entry is the surviving pointer, so an
+    // operator can still find (and reclaim) the zone afterwards.
+    after: {
+      slug: row.slug,
+      kind: row.kind,
+      keptCloudflareZones: destroyed?.keptCloudflareZones ?? [],
+    },
   });
   return { ok: true as const, data: { id } };
 }

@@ -1,8 +1,8 @@
 import { prisma } from '@/lib/db';
 import {
+  addApplicationDomain,
   createApplication,
   getDeploymentStatus,
-  setDomain,
   triggerDeploy,
   type CoolifyServerAuth,
   type CreateApplicationInput,
@@ -10,6 +10,7 @@ import {
 } from '@/lib/coolify/client';
 import { pickCoolifyServer, serverAuth } from '@/lib/coolify/servers';
 import { upsertARecord } from '@/lib/cloudflare/dns';
+import { applyPrimaryRedirects } from '@/lib/domains/redirects';
 import { ensureDeployRepo, pushFiles } from '@/lib/github/deploy-client';
 import { getRootDomain } from '@/lib/integrations/store';
 import { getStack } from '@/lib/stacks';
@@ -17,7 +18,7 @@ import { beginJobHeartbeat, failJob, markJobRunning, succeedJob } from '@/lib/jo
 import { getJob, updateJobFields } from '@/lib/jobs/store';
 import type { JobResourceIds, JobStep } from '@/lib/jobs/types';
 import { log } from '@/lib/logger';
-import { PREVIEW_BASIC_USER, PUBLISH_POLL_MS, PUBLISH_POLL_TIMEOUT_MS } from './constants';
+import { PUBLISH_POLL_MS, PUBLISH_POLL_TIMEOUT_MS } from './constants';
 import { collectPublishFiles, publishJobErrorCode } from './files';
 import { injectPreviewFiles } from './preview-inject';
 import { coolifyAppName, dnsLabel, deployRepoName } from './naming';
@@ -61,7 +62,14 @@ export type PublishDeps = {
   ) => Promise<string>;
   createApp: (auth: CoolifyServerAuth, input: CreateApplicationInput) => Promise<{ uuid: string }>;
   upsertDns: (label: string, ip: string) => Promise<string>;
-  setAppDomain: (auth: CoolifyServerAuth, appUuid: string, host: string) => Promise<void>;
+  /**
+   * Read-modify-write: a re-publish must not PATCH the hostname list down to the publish
+   * host. That silently unrouted every verified custom domain (and every primary 301)
+   * while the Domains tab still showed them ACTIVE.
+   */
+  addAppDomain: (auth: CoolifyServerAuth, appUuid: string, host: string) => Promise<void>;
+  /** Re-asserts primary + alias 301s after the publish host is (re-)attached. */
+  applyRedirects: (deploymentId: string) => Promise<void>;
   startDeploy: (
     auth: CoolifyServerAuth,
     appUuid: string,
@@ -80,7 +88,8 @@ export const livePublishDeps: PublishDeps = {
   pushFiles,
   createApp: createApplication,
   upsertDns: upsertARecord,
-  setAppDomain: setDomain,
+  addAppDomain: addApplicationDomain,
+  applyRedirects: applyPrimaryRedirects,
   startDeploy: triggerDeploy,
   deployHealth: getDeploymentStatus,
 };
@@ -96,7 +105,12 @@ function initialSteps(): JobStep[] {
   }));
 }
 
-function patchSteps(steps: JobStep[], key: string, status: JobStep['status'], error?: string | null) {
+function patchSteps(
+  steps: JobStep[],
+  key: string,
+  status: JobStep['status'],
+  error?: string | null,
+) {
   const now = new Date().toISOString();
   return steps.map((step) =>
     step.key === key
@@ -247,7 +261,12 @@ export async function runPublishJob(jobId: string, deps: PublishDeps = livePubli
         jobStatus: key === FINAL_STEP ? 'SUCCEEDED' : undefined,
       });
     } catch (error) {
-      steps = patchSteps(steps, key, 'failed', error instanceof Error ? error.message : 'Publish failed');
+      steps = patchSteps(
+        steps,
+        key,
+        'failed',
+        error instanceof Error ? error.message : 'Publish failed',
+      );
       await persistProgress(jobId, deployment.id, {
         steps,
         currentStep: key,
@@ -266,26 +285,28 @@ export async function runPublishJob(jobId: string, deps: PublishDeps = livePubli
       where: { id: deployment.serverId },
     });
 
+    // One source for both call sites below. The gate follows `Deployment.passwordHash`,
+    // not the request: hardcoding `password: null` here meant every publish of a node
+    // stack shipped a middleware with the Basic-Auth branch stripped out while the UI
+    // kept reporting `hasPassword: true`. The plaintext never reaches the deploy repo —
+    // it lives on the Coolify application as PREVIEW_PASSWORD.
+    const collectForPublish = async () => {
+      const collected = await deps.collectFiles(job.projectId);
+      if (kind !== 'PREVIEW') return collected;
+      return injectPreviewFiles(collected, {
+        stack: stack.id,
+        deployType: stack.deployType,
+        passwordProtected: Boolean(deployment.passwordHash),
+      });
+    };
+
     await step('limit', async () => {});
     await step('files', async () => {
-      files = await deps.collectFiles(job.projectId);
-      if (kind === 'PREVIEW') {
-        files = injectPreviewFiles(files, {
-          stack: stack.id,
-          deployType: stack.deployType,
-          password: null,
-        });
-      }
+      files = await collectForPublish();
     });
     if (Object.keys(files).length === 0) {
-      files = await deps.collectFiles(job.projectId);
-      if (kind === 'PREVIEW') {
-        files = injectPreviewFiles(files, {
-          stack: stack.id,
-          deployType: stack.deployType,
-          password: null,
-        });
-      }
+      // A resumed job skips the already-succeeded `files` step, so nothing filled `files`.
+      files = await collectForPublish();
     }
     await step('slug', async () => {
       if (hadSuccessfulDeployment) return;
@@ -391,7 +412,11 @@ export async function runPublishJob(jobId: string, deps: PublishDeps = livePubli
     await step('domain', async () => {
       const appUuid = resourceIds.coolifyAppUuid || deployment.coolifyAppUuid;
       if (!appUuid) throw new Error('Coolify app missing — publish again');
-      await deps.setAppDomain(auth, appUuid, host);
+      // Every re-publish runs this step again (a fresh job starts with all steps pending),
+      // so it merges instead of overwriting, then re-asserts the primary/alias 301s.
+      // Overwriting used to strip every ACTIVE custom domain off the application.
+      await deps.addAppDomain(auth, appUuid, host);
+      await deps.applyRedirects(deployment.id);
     });
 
     let buildLogUrl = deployment.buildLogUrl;

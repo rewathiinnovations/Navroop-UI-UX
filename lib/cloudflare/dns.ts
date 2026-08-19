@@ -27,7 +27,9 @@ async function credentials(workspaceId = DEFAULT_WORKSPACE_ID) {
 }
 
 function fqdn(subdomain: string, root: string) {
-  const label = subdomain.replace(/\.$/, '').replace(new RegExp(`\\.${root.replace(/\./g, '\\.')}$`), '');
+  const label = subdomain
+    .replace(/\.$/, '')
+    .replace(new RegExp(`\\.${root.replace(/\./g, '\\.')}$`), '');
   return `${label}.${root}`;
 }
 
@@ -66,7 +68,11 @@ async function findARecord(token: string, zoneId: string, name: string): Promise
 }
 
 /** Creates or updates a proxied A record. Publishing twice must not duplicate. */
-export async function upsertARecord(subdomain: string, ip: string, workspaceId = DEFAULT_WORKSPACE_ID) {
+export async function upsertARecord(
+  subdomain: string,
+  ip: string,
+  workspaceId = DEFAULT_WORKSPACE_ID,
+) {
   const { zoneId, token, root } = await credentials(workspaceId);
   const name = fqdn(subdomain, root);
   const existing = await findARecord(token, zoneId, name);
@@ -92,7 +98,14 @@ export async function upsertARecord(subdomain: string, ip: string, workspaceId =
   return created.id;
 }
 
-export async function listManagedARecords(workspaceId = DEFAULT_WORKSPACE_ID) {
+/**
+ * Every A record in the zone — including the operator's own `www`, `api`, `mail`.
+ * This list is an inventory, NOT a set of records Navroop owns: it was called
+ * `listManagedARecords`, and the orphan cron read that name literally and deleted
+ * anything in it whose label looked like a slug. Ownership is decided by the caller
+ * against recorded ids (`lib/jobs/orphans.ts`), never by anything on these rows.
+ */
+export async function listZoneARecords(workspaceId = DEFAULT_WORKSPACE_ID) {
   const { zoneId, token, root } = await credentials(workspaceId);
   const records = await cf<Array<DnsRecord & { created_on?: string }>>(
     token,
@@ -102,7 +115,9 @@ export async function listManagedARecords(workspaceId = DEFAULT_WORKSPACE_ID) {
   return list.map((row) => ({
     id: row.id,
     name: row.name,
-    createdAt: row.created_on ? new Date(row.created_on) : new Date(0),
+    // No `created_on` means the age is unknown. The old `new Date(0)` fallback turned
+    // that into "created in 1970", i.e. instantly past the cron's 24h grace period.
+    createdAt: row.created_on ? new Date(row.created_on) : null,
     zone: root,
   }));
 }

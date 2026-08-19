@@ -12,7 +12,7 @@ import { runPublishJob } from '@/lib/publish/execute';
 import { startPublishJob, PublishSetupError } from '@/lib/publish/publish';
 import { jsonError } from '@/lib/api/error-response';
 import { log } from '@/lib/logger';
-import { acquireLock, runWithHeldLock } from '@/lib/projects/lock';
+import { holdProjectLock } from '@/lib/projects/lock';
 import { lockConflictJson } from '@/lib/projects/lock-http';
 
 export const maxDuration = 600;
@@ -21,10 +21,7 @@ function parseKind(value: unknown): DeploymentKind | null {
   return value === 'LIVE' || value === 'PREVIEW' ? value : null;
 }
 
-export async function GET(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> },
-) {
+export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const user = await getSessionUser();
   if (!user) return NextResponse.json({ error: 'Sign in required' }, { status: 401 });
   const { id } = await params;
@@ -40,14 +37,11 @@ export async function GET(
   return NextResponse.json(result.data);
 }
 
-export async function POST(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> },
-) {
+export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const user = await getSessionUser();
   if (!user) return NextResponse.json({ error: 'Sign in required' }, { status: 401 });
   const { id } = await params;
-  const body = (await request.json().catch(() => ({}))) as { kind?: unknown; password?: unknown };
+  const body = (await request.json().catch(() => ({}))) as { kind?: unknown };
   const kind = parseKind(body.kind);
   if (!kind) return NextResponse.json({ error: 'kind must be PREVIEW or LIVE' }, { status: 422 });
 
@@ -60,12 +54,13 @@ export async function POST(
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
-  const password = typeof body.password === 'string' && body.password.trim() ? body.password : null;
-
   const missing = await getMissingIntegrations(DEFAULT_WORKSPACE_ID);
   const setupMessage = publishBlockedMessage(missing, user.role === 'ADMIN');
   if (setupMessage) {
-    return NextResponse.json({ error: setupMessage, missingIntegrations: missing }, { status: 409 });
+    return NextResponse.json(
+      { error: setupMessage, missingIntegrations: missing },
+      { status: 409 },
+    );
   }
 
   try {
@@ -80,20 +75,35 @@ export async function POST(
     throw error;
   }
 
-  const lock = await acquireLock(id, user.id, 'publish');
-  if (!lock.ok) return lockConflictJson(lock);
+  const hold = await holdProjectLock(id, user.id, 'publish');
+  if (!hold.ok) return lockConflictJson(hold);
+
+  const run = async () => {
+    try {
+      const started = await startPublishJob({ projectId: id, kind, userId: user.id });
+      await runPublishJob(started.jobId);
+    } finally {
+      await hold.release();
+    }
+  };
 
   try {
     after(() =>
-      runWithHeldLock(id, user.id, async () => {
-        const started = await startPublishJob({ projectId: id, kind, userId: user.id, password });
-        await runPublishJob(started.jobId);
-      }).catch((error) => {
-        log.warn('publish.route_failed', { id, kind, error: error instanceof Error ? error.message : String(error) });
+      run().catch((error) => {
+        log.warn('publish.route_failed', {
+          id,
+          kind,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }),
     );
   } catch {
-    void startPublish(id, kind, password);
+    // `after` is unavailable outside a request scope, so nothing will ever run `run` — or
+    // its `finally`. Hand the lock back before the fallback tries to take it: left held,
+    // that call would re-enter our own hold, own nothing, release nothing, and strand the
+    // project until the TTL expires.
+    await hold.release();
+    void startPublish(id, kind);
   }
 
   const state = await getPublishState(id);
@@ -111,7 +121,14 @@ export function publishErrorResponse(error: unknown) {
     );
   }
   if (error instanceof PublishSetupError) {
-    return NextResponse.json({ error: error.message, missingIntegrations: error.missing }, { status: 409 });
+    return NextResponse.json(
+      { error: error.message, missingIntegrations: error.missing },
+      { status: 409 },
+    );
   }
-  return jsonError(error instanceof Error ? error.message : 'Publish failed', 'PUBLISH_FAILED', 500);
+  return jsonError(
+    error instanceof Error ? error.message : 'Publish failed',
+    'PUBLISH_FAILED',
+    500,
+  );
 }

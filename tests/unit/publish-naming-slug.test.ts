@@ -3,17 +3,19 @@ import {
   coolifyAppName,
   deployRepoName,
   dnsLabel,
-  isManagedCoolifyName,
-  isManagedDnsName,
-  isManagedRepoName,
   publishIdempotencyKey,
 } from '@/lib/publish/naming';
 import { isReservedSlug, slugCandidate, slugFromName } from '@/lib/publish/slug';
 
 /**
- * Publish names are how cleanup recognises what it owns. If creation and
- * recognition ever disagree, cleanup either orphans real resources or deletes
- * something it did not create, so both directions are pinned here.
+ * Publish names are how creation stays deterministic: a re-publish has to land on the
+ * same Coolify app, repo and host rather than growing a second set.
+ *
+ * Recognition is deliberately not tested here because it no longer exists. The name
+ * classifiers were deleted with the name-shape orphan reaper — a bare LIVE slug is
+ * indistinguishable from `www`, and matching on it deleted operators' own DNS records.
+ * Cleanup reads recorded provenance (Deployment rows and PUBLISH `resourceIds`), which
+ * `tests/unit/orphan-cleanup-provenance.test.ts` covers.
  */
 describe('publish naming', () => {
   it('derives the app, repo and DNS names per kind', () => {
@@ -24,24 +26,6 @@ describe('publish naming', () => {
     expect(deployRepoName('acme', 'PREVIEW')).toBe('preview-acme');
     expect(dnsLabel('acme', 'LIVE')).toBe('acme');
     expect(dnsLabel('acme', 'PREVIEW')).toBe('preview-acme');
-  });
-
-  it('recognises the names it generates, and rejects foreign ones', () => {
-    for (const kind of ['LIVE', 'PREVIEW'] as const) {
-      expect(isManagedCoolifyName(coolifyAppName('acme', kind))).toBe(true);
-      expect(isManagedRepoName(deployRepoName('acme', kind))).toBe(true);
-      expect(isManagedDnsName(`${dnsLabel('acme', kind)}.example.com`, 'example.com')).toBe(true);
-    }
-    expect(isManagedCoolifyName('someone-elses-app')).toBe(false);
-    expect(isManagedDnsName('acme.other.com', 'example.com')).toBe(false);
-  });
-
-  it('matches a repo name given as owner/name', () => {
-    expect(isManagedRepoName('rewathi/acme')).toBe(true);
-  });
-
-  it('tolerates a trailing dot and case in DNS comparison', () => {
-    expect(isManagedDnsName('ACME.Example.com.', 'example.com')).toBe(true);
   });
 
   it('keys publish idempotency by project, kind and attempt', () => {

@@ -49,7 +49,10 @@ async function cleanup() {
   await prisma.deployment
     .deleteMany({
       where: {
-        OR: [{ projectId: { startsWith: `proj_${SLUG_PREFIX}_` } }, { slug: { startsWith: SLUG_PREFIX } }],
+        OR: [
+          { projectId: { startsWith: `proj_${SLUG_PREFIX}_` } },
+          { slug: { startsWith: SLUG_PREFIX } },
+        ],
       },
     })
     .catch(() => undefined);
@@ -124,7 +127,9 @@ async function seedCase(input: {
 }
 
 async function queuePublishJob(seeded: SeededCase, kind: 'LIVE' | 'PREVIEW') {
-  const deployment = await prisma.deployment.findUniqueOrThrow({ where: { id: seeded.deploymentId } });
+  const deployment = await prisma.deployment.findUniqueOrThrow({
+    where: { id: seeded.deploymentId },
+  });
   const job = await insertJobRaw({
     projectId: seeded.projectId,
     workspaceId: WS,
@@ -189,7 +194,8 @@ function publishSpy(
       if (options.onDns) await options.onDns();
       return options.dnsRecordId ?? 'dns-record-1';
     },
-    async setAppDomain() {},
+    async addAppDomain() {},
+    async applyRedirects() {},
     async startDeploy() {
       return { deploymentUuid: 'coolify-deployment-1' };
     },
@@ -267,7 +273,9 @@ describe('compensateAbandonedPublish — Deployment uuid stays aligned with the 
       where: { id: seeded.deploymentId },
     });
     expect(afterCompensate?.resourceIds?.coolifyAppUuid).toBe(KEPT_APP);
-    expect(deploymentAfterCompensate.coolifyAppUuid).toBe(afterCompensate?.resourceIds?.coolifyAppUuid);
+    expect(deploymentAfterCompensate.coolifyAppUuid).toBe(
+      afterCompensate?.resourceIds?.coolifyAppUuid,
+    );
     expect(deploymentAfterCompensate.coolifyAppUuid).toBe(KEPT_APP);
 
     await updateJobFields(jobId, {
@@ -283,7 +291,9 @@ describe('compensateAbandonedPublish — Deployment uuid stays aligned with the 
     expect(second.counts.upsertDns).toBe(1);
 
     const job = await getJob(jobId);
-    const deployment = await prisma.deployment.findUniqueOrThrow({ where: { id: seeded.deploymentId } });
+    const deployment = await prisma.deployment.findUniqueOrThrow({
+      where: { id: seeded.deploymentId },
+    });
     expect(job?.status).toBe('SUCCEEDED');
     expect(deployment.status).toBe('LIVE');
     expect(deployment.coolifyAppUuid).toBe(job?.resourceIds?.coolifyAppUuid);
@@ -337,7 +347,9 @@ describe('compensateAbandonedPublish — Deployment uuid stays aligned with the 
     expect(second.counts.createApp).toBe(1);
 
     const job = await getJob(jobId);
-    const deployment = await prisma.deployment.findUniqueOrThrow({ where: { id: seeded.deploymentId } });
+    const deployment = await prisma.deployment.findUniqueOrThrow({
+      where: { id: seeded.deploymentId },
+    });
     expect(job?.status).toBe('SUCCEEDED');
     expect(deployment.coolifyAppUuid).toBe(job?.resourceIds?.coolifyAppUuid);
     expect(deployment.coolifyAppUuid).toBe(NEW_APP);
@@ -376,7 +388,9 @@ describe('compensateAbandonedPublish — Deployment uuid stays aligned with the 
     expect(compensation).toBe('kept_live');
     expect(adapters.deleted).toEqual([]);
 
-    const deployment = await prisma.deployment.findUniqueOrThrow({ where: { id: seeded.deploymentId } });
+    const deployment = await prisma.deployment.findUniqueOrThrow({
+      where: { id: seeded.deploymentId },
+    });
     const after = await getJob(job.id);
     expect(deployment.coolifyAppUuid).toBe('coolify-app-live');
     expect(after?.resourceIds?.coolifyAppUuid).toBe('coolify-app-live');

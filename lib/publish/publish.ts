@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { DeploymentKind } from '@/generated/prisma';
 import { prisma } from '@/lib/db';
-import { setBasicAuth } from '@/lib/coolify/client';
+import { setApplicationEnvVars, setBasicAuth } from '@/lib/coolify/client';
 import { pickCoolifyServer, serverAuth } from '@/lib/coolify/servers';
 import { getMissingIntegrations } from '@/lib/integrations/store';
 import { publishBlockedMessage } from '@/lib/integrations/messages';
@@ -10,10 +10,7 @@ import { createOrReuseJob, getActiveJob } from '@/lib/jobs';
 import { WORKSPACE_ROW_ID } from '@/lib/storage/usage';
 import { log } from '@/lib/logger';
 import { trackStart } from '@/lib/observability/track';
-import {
-  DEFAULT_WORKSPACE_ID,
-  PREVIEW_BASIC_USER,
-} from './constants';
+import { DEFAULT_WORKSPACE_ID, PREVIEW_BASIC_USER } from './constants';
 import { assertPublishSlot } from './limits';
 import { publishIdempotencyKey } from './naming';
 import { runPublishJob } from './execute';
@@ -43,7 +40,6 @@ export type PublishInput = {
   projectId: string;
   kind: DeploymentKind;
   userId: string;
-  password?: string | null;
 };
 
 export type PublishStartResult = {
@@ -206,13 +202,38 @@ export async function updatePreviewPassword(input: {
       input.password ? { username: PREVIEW_BASIC_USER, password: input.password } : null,
     );
   } else {
+    // Node stacks gate in middleware, which reads PREVIEW_PASSWORD from the container.
+    // The Coolify application is the only home for the plaintext (the DB keeps the bcrypt
+    // hash, which middleware cannot verify), so write the env var first, then re-publish:
+    // the injected middleware and the value it compares against land in the same build.
+    // Clearing writes an empty string so a removed password does not linger on the app.
+    await setApplicationEnvVars(auth, deployment.coolifyAppUuid, {
+      PREVIEW_PASSWORD: input.password ?? '',
+    });
     const started = await startPublishJob({
       projectId: input.projectId,
       kind: 'PREVIEW',
       userId: input.userId,
-      password: input.password,
     });
-    await runPublishJob(started.jobId);
+    try {
+      await runPublishJob(started.jobId);
+    } catch (error) {
+      // The gate is injected from the hash, so the hash has to be written before the build.
+      // If the build never lands, the running app still serves the previous middleware —
+      // put the row back rather than let `hasPassword` claim protection nobody deployed.
+      try {
+        await prisma.deployment.update({
+          where: { id: deployment.id },
+          data: { passwordHash: deployment.passwordHash },
+        });
+      } catch (rollbackError) {
+        log.error('publish.preview_password_rollback_failed', {
+          deploymentId: deployment.id,
+          error: rollbackError instanceof Error ? rollbackError.message : String(rollbackError),
+        });
+      }
+      throw error;
+    }
   }
 
   return prisma.deployment.findUniqueOrThrow({ where: { id: deployment.id } });

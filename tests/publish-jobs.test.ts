@@ -21,7 +21,7 @@ import {
   recoveryCauseLine,
 } from '../lib/jobs/copy.ts';
 import { isPublishRunning } from '../lib/jobs/types.ts';
-import { coolifyAppName, deployRepoName, dnsLabel, isManagedCoolifyName } from '../lib/publish/naming.ts';
+import { coolifyAppName, deployRepoName, dnsLabel } from '../lib/publish/naming.ts';
 import { isRetryableProviderError, withProviderRetry } from '../lib/publish/retry.ts';
 import {
   claimSlug,
@@ -43,35 +43,69 @@ function assert(cond: unknown, name: string) {
   console.error(`FAIL  ${name}`);
 }
 
-assert(PUBLISH_RECOVERY_HEADING === 'Publish did not finish', 'publish recovery heading is English');
+assert(
+  PUBLISH_RECOVERY_HEADING === 'Publish did not finish',
+  'publish recovery heading is English',
+);
 assert(PUBLISH_ROLLBACK_LINE === 'Incomplete work was cleaned up', 'rollback copy is English');
-assert(PUBLISH_KEPT_LIVE_LINE === 'Your previous live site is still running', 'kept-live copy is English');
+assert(
+  PUBLISH_KEPT_LIVE_LINE === 'Your previous live site is still running',
+  'kept-live copy is English',
+);
 assert(recoveryCauseLine('server_restarted') === 'The server restarted', 'cause: server restarted');
 assert(recoveryCauseLine('timeout') === 'The build ran too long', 'cause: timeout');
 // Exact, like the lines around it. The old form also accepted any string containing
 // "provider" — including the raw `provider_error` code echoed back at the user.
-assert(recoveryCauseLine('provider_error') === 'The AI service did not respond', 'cause: provider error');
+assert(
+  recoveryCauseLine('provider_error') === 'The AI service did not respond',
+  'cause: provider error',
+);
 assert(recoveryCauseLine('deploying') === 'The server is deploying', 'cause: deploying');
-assert(recoveryCauseLine(null) !== RECOVERY_HEADING, 'missing cause does not repeat the recovery heading');
-assert(recoveryCauseLine(undefined) !== RECOVERY_HEADING, 'undefined cause does not repeat the recovery heading');
-assert(recoveryCauseLine('not-a-real-code') !== RECOVERY_HEADING, 'unknown cause does not repeat the recovery heading');
+assert(
+  recoveryCauseLine(null) !== RECOVERY_HEADING,
+  'missing cause does not repeat the recovery heading',
+);
+assert(
+  recoveryCauseLine(undefined) !== RECOVERY_HEADING,
+  'undefined cause does not repeat the recovery heading',
+);
+assert(
+  recoveryCauseLine('not-a-real-code') !== RECOVERY_HEADING,
+  'unknown cause does not repeat the recovery heading',
+);
 
 assert(shouldCompensatePublish(false) === true, 'first-time publish compensates');
 assert(shouldCompensatePublish(true) === false, 're-publish does not compensate');
 
 assert(coolifyAppName('acme', 'LIVE') === 'live-acme', 'Coolify name is kind-slug');
-assert(coolifyAppName('acme', 'PREVIEW') === 'preview-acme', 'preview Coolify name is preview-slug');
+assert(
+  coolifyAppName('acme', 'PREVIEW') === 'preview-acme',
+  'preview Coolify name is preview-slug',
+);
 assert(deployRepoName('acme', 'LIVE') === 'acme', 'live repo name is the slug');
 assert(deployRepoName('acme', 'PREVIEW') === 'preview-acme', 'preview repo name is preview-slug');
 assert(dnsLabel('acme', 'LIVE') === 'acme', 'live DNS label is the slug');
 assert(dnsLabel('acme', 'PREVIEW') === 'preview-acme', 'preview DNS label is preview-slug');
-assert(isManagedCoolifyName('live-acme') === true, 'managed Coolify name matches live-*');
-assert(isManagedCoolifyName('random-app') === false, 'unrelated Coolify name is not managed');
+// No name-classifier asserts: the `isManaged*` helpers are gone. Orphan reaping matches
+// recorded provenance, never a name shape, because a bare LIVE slug looks exactly like an
+// operator's own `www` record — see reconcileOrphans/classifyOrphan below.
 
-assert(isPublishRunning({ kind: 'PUBLISH', status: 'RUNNING' }) === true, 'RUNNING publish job disables the button');
-assert(isPublishRunning({ kind: 'PUBLISH', status: 'ABANDONED' }) === false, 'abandoned publish job is not running');
-assert(isPublishRunning({ kind: 'PUBLISH', status: 'FAILED' }) === false, 'failed publish job is not running');
-assert(isPublishRunning({ kind: 'BUILD', status: 'RUNNING' }) === false, 'generation job does not disable publish');
+assert(
+  isPublishRunning({ kind: 'PUBLISH', status: 'RUNNING' }) === true,
+  'RUNNING publish job disables the button',
+);
+assert(
+  isPublishRunning({ kind: 'PUBLISH', status: 'ABANDONED' }) === false,
+  'abandoned publish job is not running',
+);
+assert(
+  isPublishRunning({ kind: 'PUBLISH', status: 'FAILED' }) === false,
+  'failed publish job is not running',
+);
+assert(
+  isPublishRunning({ kind: 'BUILD', status: 'RUNNING' }) === false,
+  'generation job does not disable publish',
+);
 
 const firstDeleted: string[] = [];
 const first = await compensateJobResources({
@@ -92,7 +126,10 @@ const first = await compensateJobResources({
 assert(first.rolledBack === true, 'first-time abandon rolls back');
 assert(firstDeleted.includes('coolify:app-1'), 'first-time abandon deletes the Coolify app');
 assert(firstDeleted.includes('repo:org/acme'), 'first-time abandon archives the repo');
-assert(!firstDeleted.some((row) => row.startsWith('dns:')), 'no DNS id recorded → nothing to delete');
+assert(
+  !firstDeleted.some((row) => row.startsWith('dns:')),
+  'no DNS id recorded → nothing to delete',
+);
 
 const liveDeleted: string[] = [];
 const live = await compensateJobResources({
@@ -142,12 +179,25 @@ const orphanReport = await reconcileOrphans({
       { uuid: 'orphan-young', name: 'live-ghost', createdAt: new Date('2026-08-17T01:00:00.000Z') },
       { uuid: 'orphan-old', name: 'live-stale', createdAt: new Date('2026-08-16T11:00:00.000Z') },
       { uuid: 'known', name: 'live-acme', createdAt: new Date('2026-08-01T00:00:00.000Z') },
+      // Another product's app on a shared Coolify server. It matches the `live-*` name
+      // regex the cron used to trust, and nothing recorded it, so it is not ours.
+      {
+        uuid: 'not-ours',
+        name: 'live-otherproduct',
+        createdAt: new Date('2026-08-01T00:00:00.000Z'),
+      },
     ],
     dnsRecords: [],
     repos: [{ name: 'org/lonely', createdAt: new Date('2026-08-01T00:00:00.000Z') }],
   },
   deployments: [{ coolifyAppUuid: 'known', dnsRecordId: null, repoFullName: 'org/acme' }],
-  isManagedName: (name, kind) => (kind === 'repo' ? name.startsWith('org/') : isManagedCoolifyName(name)),
+  // The ids publish recorded when it created them — a Deployment row or a PUBLISH job's
+  // `resourceIds`. Deletion is eligible only for these.
+  provenance: {
+    coolifyAppUuids: new Set(['orphan-young', 'orphan-old', 'known']),
+    dnsRecordIds: new Set<string>(),
+    repoFullNames: new Set(['org/acme', 'org/lonely']),
+  },
   adapters: {
     async deleteCoolifyApp(uuid) {
       deletedOrphans.push(uuid);
@@ -158,11 +208,13 @@ assert(
   orphanReport.coolify.some((row) => row.uuid === 'orphan-young' && row.action === 'report'),
   'orphan cron reports a Coolify app with no Deployment',
 );
-assert(
-  !deletedOrphans.includes('orphan-young'),
-  'orphan Coolify app is not deleted until 24h',
-);
+assert(!deletedOrphans.includes('orphan-young'), 'orphan Coolify app is not deleted until 24h');
 assert(deletedOrphans.includes('orphan-old'), 'orphan Coolify app older than 24h is deleted');
+assert(!deletedOrphans.includes('not-ours'), 'a live-* app nobody recorded is never deleted');
+assert(
+  orphanReport.skipped.coolify.includes('live-otherproduct'),
+  'an unrecorded Coolify app is reported as skipped, not as an orphan',
+);
 assert(
   orphanReport.repos.some((row) => row.name === 'org/lonely' && row.action === 'report'),
   'orphan repo is reported',
@@ -187,9 +239,15 @@ const compensatedAfterKill = await compensateJobResources({
     async archiveDeployRepo() {},
   },
 });
-assert(compensatedAfterKill.rolledBack === true, 'abandoned first-time publish cleans up the orphaned Coolify app');
+assert(
+  compensatedAfterKill.rolledBack === true,
+  'abandoned first-time publish cleans up the orphaned Coolify app',
+);
 assert(firstDeleted.includes('postkill:app-new'), 'the orphaned Coolify app is the one deleted');
-assert(isPublishRunning({ kind: 'PUBLISH', status: 'ABANDONED' }) === false, 'publish button is usable after abandon');
+assert(
+  isPublishRunning({ kind: 'PUBLISH', status: 'ABANDONED' }) === false,
+  'publish button is usable after abandon',
+);
 
 const republishDeleted: string[] = [];
 const republishCompensate = await compensateJobResources({
@@ -320,7 +378,10 @@ try {
 } catch (error) {
   exhaustedMessage = error instanceof Error ? error.message : '';
 }
-assert(exhaustedMessage === SLUG_UNAVAILABLE_MESSAGE, 'exhausted slug retries fail with English copy');
+assert(
+  exhaustedMessage === SLUG_UNAVAILABLE_MESSAGE,
+  'exhausted slug retries fail with English copy',
+);
 assert(
   isSlugTakenError({ code: '23505' }) && isSlugTakenError({ code: 'P2002' }),
   'both Prisma P2002 and Postgres 23505 count as a taken slug',

@@ -6,6 +6,12 @@ import { injectPreviewFiles } from '@/lib/publish/preview-inject';
  * HTML noindex / robots.txt / Next middleware paths that `runPublishJob` hits for
  * PREVIEW but that the execute suite only drives for a Next.js app with no
  * existing config and no password.
+ *
+ * The gate case used to hand in `password: 'preview-secret'`, which no caller ever did —
+ * `runPublishJob` passed a hardcoded `null`, so the assertion stayed green while every real
+ * node-stack preview shipped without a gate. The input is now the flag the loop actually
+ * derives from `Deployment.passwordHash`; `publish-republish-invariants.test.ts` drives the
+ * loop end to end so the caller cannot pass the wrong thing again.
  */
 
 const PAGE = 'export default function Page(){return null}';
@@ -24,8 +30,12 @@ describe('injectPreviewFiles — static HTML preview', () => {
   });
 
   it('leaves HTML that already has a robots meta alone', () => {
-    const html = '<html><head><meta name="robots" content="index, follow" /></head><body></body></html>';
-    const files = injectPreviewFiles({ 'about.htm': html }, { stack: 'STATIC_HTML', deployType: 'static' });
+    const html =
+      '<html><head><meta name="robots" content="index, follow" /></head><body></body></html>';
+    const files = injectPreviewFiles(
+      { 'about.htm': html },
+      { stack: 'STATIC_HTML', deployType: 'static' },
+    );
 
     expect(files['about.htm']).toBe(html);
     expect(files['robots.txt']).toBe('User-agent: *\nDisallow: /\n');
@@ -37,7 +47,9 @@ describe('injectPreviewFiles — static HTML preview', () => {
       { stack: 'STATIC_HTML', deployType: 'static' },
     );
 
-    expect(files['index.html']).toBe('<meta name="robots" content="noindex, nofollow" />\n<p>bare</p>');
+    expect(files['index.html']).toBe(
+      '<meta name="robots" content="noindex, nofollow" />\n<p>bare</p>',
+    );
   });
 
   it('does not rewrite non-HTML files on a static preview', () => {
@@ -66,7 +78,8 @@ describe('injectPreviewFiles — Next.js preview', () => {
   });
 
   it('leaves a next.config that already sets X-Robots-Tag', () => {
-    const config = 'module.exports = { headers: () => [{ key: "X-Robots-Tag", value: "noindex" }] };';
+    const config =
+      'module.exports = { headers: () => [{ key: "X-Robots-Tag", value: "noindex" }] };';
     const files = injectPreviewFiles(
       { 'app/page.tsx': PAGE, 'next.config.js': config },
       { stack: 'NEXTJS', deployType: 'node' },
@@ -75,15 +88,27 @@ describe('injectPreviewFiles — Next.js preview', () => {
     expect(files['next.config.js']).toBe(config);
   });
 
-  it('embeds the preview password check when a password is set', () => {
+  it('embeds the preview password check when the deployment is protected', () => {
     const files = injectPreviewFiles(
       { 'app/page.tsx': PAGE },
-      { stack: 'NEXTJS', deployType: 'node', password: 'preview-secret' },
+      { stack: 'NEXTJS', deployType: 'node', passwordProtected: true },
     );
 
     expect(files['middleware.ts']).toContain('PREVIEW_PASSWORD');
     expect(files['middleware.ts']).toContain('unauthorized()');
-    expect(files['middleware.ts']).not.toContain('preview-secret');
+    // Fail closed: the app losing the env var must not reopen the preview.
+    expect(files['middleware.ts']).toContain('if (!expected) return unauthorized();');
     expect(files['next.config.js']).toContain('X-Robots-Tag');
+  });
+
+  it('omits the 401 helper entirely when there is no gate to serve it', () => {
+    const files = injectPreviewFiles(
+      { 'app/page.tsx': PAGE },
+      { stack: 'NEXTJS', deployType: 'node', passwordProtected: false },
+    );
+
+    // An unreferenced function would fail lint in the generated project.
+    expect(files['middleware.ts']).not.toContain('unauthorized');
+    expect(files['middleware.ts']).toContain('X-Robots-Tag');
   });
 });
