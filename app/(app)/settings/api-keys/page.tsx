@@ -41,6 +41,20 @@ export default function ApiKeysPage() {
   const [orgDrafts, setOrgDrafts] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState('');
+  /**
+   * The server renders this page with no session, so it never emits the
+   * admin-only section below. Showing that section the moment `isAdmin` flips
+   * put it into the tree while React was still hydrating, which React reports
+   * as a hydration failure (#418) and recovers from by re-rendering the tree.
+   * It only bit on a cold server, where the gap between the HTML arriving and
+   * hydration finishing is wide enough for the session fetch to land inside
+   * it — invisible in dev and on warm reloads.
+   *
+   * Waiting for the team defaults themselves puts this section on the same
+   * footing as the personal keys above, which have always appeared after
+   * their own round trip without upsetting hydration.
+   */
+  const [orgLoaded, setOrgLoaded] = useState(false);
 
   const loadPersonal = async () => {
     const result = await listPersonalApiKeys();
@@ -59,6 +73,7 @@ export default function ApiKeysPage() {
       return;
     }
     setOrgKeys(data.keys || []);
+    setOrgLoaded(true);
   };
 
   useEffect(() => {
@@ -205,7 +220,7 @@ export default function ApiKeysPage() {
           ))}
         </div>
 
-        {isAdmin && (
+        {isAdmin && orgLoaded && (
           <section className="mt-40">
             <h2 className="mb-12 text-[18px] font-medium text-[var(--studio-fg)]">Team defaults</h2>
             <p className="mb-16 text-[13px] text-[var(--studio-muted)]">
