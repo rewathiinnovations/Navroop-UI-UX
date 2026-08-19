@@ -118,10 +118,16 @@ describe('conversation state is scoped per project', () => {
 describe('the generate route trusts the project row, not the client', () => {
   it('loads the project\u2019s files whenever there is a project, not when the client says isEdit', () => {
     const source = readFileSync(ROUTE, 'utf8');
-    const load = source.slice(
-      source.indexOf('let backendFiles: Record<string, string> = {};'),
-      source.indexOf('let hasBackendFiles ='),
-    );
+    const load = source
+      .slice(
+        source.indexOf('let backendFiles: Record<string, string> = {};'),
+        source.indexOf('let hasBackendFiles ='),
+      )
+      // Code only. The block now carries a comment naming `isEdit` to say why it
+      // is not consulted — the rule this test enforces — and a raw text scan
+      // cannot tell that apart from a real gate.
+      .replace(/\/\/.*$/gm, '')
+      .replace(/\/\*[\s\S]*?\*\//g, '');
     // `isEdit` is a client hint. Reading the row only when the client claimed an edit let a
     // request that claimed `isEdit: false` skip the read, land in FIRST GENERATION MODE, and
     // have the model rewrite a project that already had stored code from scratch.

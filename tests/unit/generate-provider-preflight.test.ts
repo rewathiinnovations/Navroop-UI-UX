@@ -43,7 +43,17 @@ describe('generate-ai-code-stream provider and sandbox preflight', () => {
     expect(settleAt).toBeGreaterThan(0);
     const settleBlock = source.slice(settleAt, settleAt + 600);
     expect(settleBlock).toMatch(/producedFiles:\s*files\.length/);
-    expect(source).not.toMatch(/await succeedJob\(generationJob\.id/);
+    // There is exactly one direct succeed, and it is the conversational-answer turn: a
+    // reply with no files has nothing to persist, and `settleStreamedGeneration` would fail
+    // it `no_files_generated` whenever the project has no site yet — the false failure that
+    // put a red recovery panel over the model answering "hello". A run that produced files
+    // still cannot reach it: the `chatAnswer` branch guards it and comes before the settle.
+    const bareSucceeds = source.match(/await succeedJob\(/g) ?? [];
+    expect(bareSucceeds).toHaveLength(1);
+    const succeedAt = source.indexOf('await succeedJob(generationJob.id');
+    expect(succeedAt).toBeGreaterThan(0);
+    expect(source.slice(succeedAt - 1200, succeedAt)).toMatch(/if \(chatAnswer\) \{/);
+    expect(succeedAt).toBeLessThan(settleAt);
   });
 
   it('does not wait on the rate-limit queue before switching providers', () => {

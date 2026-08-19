@@ -46,8 +46,14 @@ import { log, logError } from '@/lib/logger';
 import { trackFailure, trackStart, trackSuccess } from '@/lib/observability/track';
 import { holdProjectLock } from '@/lib/projects/lock';
 import { lockConflictJson } from '@/lib/projects/lock-http';
-import { beginJobHeartbeat, createOrReuseJob, failJob, markJobRunning } from '@/lib/jobs/lifecycle';
-import { settleStreamedGeneration } from '@/lib/jobs/settle-generation';
+import {
+  beginJobHeartbeat,
+  createOrReuseJob,
+  failJob,
+  markJobRunning,
+  succeedJob,
+} from '@/lib/jobs/lifecycle';
+import { settleStreamedGeneration, type StreamSettleResult } from '@/lib/jobs/settle-generation';
 import { createProgressBatcher } from '@/lib/jobs/progress';
 import { ensureJobSettled } from '@/lib/jobs/settle';
 import { recordJobStepFailure } from '@/lib/jobs/step-failure';
@@ -73,7 +79,11 @@ import {
 } from '@/lib/ai/providers';
 import { loadEffectiveProviderEnv } from '@/lib/ai/effective-env';
 import { clientForEntry } from '@/lib/ai/client-for-entry';
-import { bindStreamErrorCapture, EmptyCompletionError } from '@/lib/ai/empty-completion';
+import {
+  bindStreamErrorCapture,
+  EmptyCompletionError,
+  surfaceStreamFailure,
+} from '@/lib/ai/empty-completion';
 import { sanitizeGenerationPath } from '@/lib/generation/parse-files';
 import {
   collectRecoveredStreamText,
@@ -86,8 +96,16 @@ import {
   ProviderRunError,
   type ProviderAttempt,
 } from '@/lib/ai/run';
-import { describeNoChanges } from '@/lib/generation/no-changes';
+import {
+  attemptProducedOutput,
+  classifyReplyOutcome,
+  describeNoChanges,
+  MISSING_FILES_ASKED_AGAIN,
+  MISSING_FILES_CORRECTION,
+  MISSING_FILES_STEP_ERROR,
+} from '@/lib/generation/no-changes';
 import { summarizeGenerationOutput } from '@/lib/generation/output-summary';
+import { runBuildValidation } from '@/lib/validation/run-build-validation';
 
 // Force dynamic route to enable streaming
 export const dynamic = 'force-dynamic';
@@ -95,6 +113,14 @@ export const dynamic = 'force-dynamic';
 // Check if we're using Vercel AI Gateway
 const isUsingAIGateway = !!process.env.AI_GATEWAY_API_KEY;
 const aiGatewayBaseURL = 'https://ai-gateway.vercel.sh/v1';
+
+/**
+ * How much of a fileless reply is echoed back to the model on the corrective ask.
+ *
+ * Enough for it to see the claim it made; short enough that a reply which ran to tens of
+ * thousands of output tokens is not bought a second time as input.
+ */
+const CORRECTIVE_ECHO_CHARS = 2000;
 
 log.info('generation.provider_config', {
   isUsingAIGateway,
@@ -228,6 +254,11 @@ async function generateAiCodeStream(request: NextRequest) {
       stack: requestStack,
       designDirection: requestDirection,
       idempotencyKey: requestIdempotencyKey,
+      // Carried back by the client when this generation is a repair of a failed build
+      // check, so the auto-fix policy can count attempts and spot a repeated failure
+      // instead of looping on the same one.
+      buildFixAttempt,
+      buildFixSignature,
     } = await request.json();
     // Explicit only: defaulting this to appConfig.ai.defaultModel pushed that
     // model to the front of the chain and demoted the configured primary
@@ -866,6 +897,10 @@ User request: "${prompt}"`;
         // the site it was about to overwrite. Request-supplied fields stay optional; the
         // project id is what decides whether this runs.
         let fullPrompt = prompt;
+        // Declared out here because the validation below needs the same map: a build check
+        // over only the newly generated files reports a correct one-file edit as broken,
+        // since every import into the rest of the project resolves to nothing.
+        let backendFiles: Record<string, string> = {};
         if (context || conversationProjectId) {
           const contextParts = [];
 
@@ -896,7 +931,7 @@ User request: "${prompt}"`;
           // exists: with files loaded, `else if (!hasBackendFiles)` can no
           // longer reach first-generation mode, and a genuinely new project
           // still finds nothing here and still gets it.
-          let backendFiles: Record<string, string> = {};
+          backendFiles = {};
           if (conversationProjectId) {
             const projectFilesRow = await prisma.project.findFirst({
               where: { id: conversationProjectId, deletedAt: null },
@@ -1396,10 +1431,10 @@ User request: "${prompt}"`;
                 stop: clientDisconnected,
               };
             },
-            // A parsed file is the only evidence a run changed anything: nothing applies
-            // Morph `<edit>` blocks, so counting them here retried the wrong attempts and
-            // let an edit that changed nothing pass as complete.
-            (out) => out.stop || out.files.length > 0,
+            // "Complete" here means only that this provider did its job — see
+            // `attemptProducedOutput`. Whether the reply contained files is a separate
+            // question, decided once below on the final reply.
+            attemptProducedOutput,
             { circuit: getDefaultCircuit() },
           );
           servedProvider = failover.provider;
@@ -1456,6 +1491,138 @@ User request: "${prompt}"`;
         // indefinitely for a build that was over. Everything from here is
         // server-side work: parse, persist, settle. The browser is welcome to
         // be gone for all of it.
+
+        // A reply that parsed to zero files but owed us some — it claimed a change, or
+        // pasted source that missed the `{path=…}` contract — gets exactly one corrective
+        // ask, against the provider that just answered.
+        //
+        // This is deliberately not failover. Failover answers "is this vendor working", and
+        // a model that talked is a working vendor: walking the chain for it pays a second
+        // provider to repeat the mistake. Credits were charged once for this job, at
+        // `markJobRunning({ chargeCredits: true })` before the first call, and nothing here
+        // charges again — the ask is part of the same job. It happens at most once: the
+        // `askedAgain` flag below is what stops a model that likes talking from being paid
+        // to talk in a loop.
+        let askedForFilesAgain = false;
+        const correctiveEntry =
+          (servedProvider && servedModel
+            ? providerChain.find(
+                (entry: ProviderEntry) =>
+                  entry.provider === servedProvider && entry.model === servedModel,
+              )
+            : null) ??
+          providerChain[0] ??
+          null;
+        if (
+          correctiveEntry &&
+          // Nobody is listening, so this would buy tokens for a reply no one reads and a
+          // build no one asked to see — the same reason the first call is skipped above.
+          !clientDisconnected &&
+          classifyReplyOutcome({
+            fileCount: files.length,
+            reply: generatedCode,
+            askedAgain: false,
+          }) === 'ask_again'
+        ) {
+          askedForFilesAgain = true;
+          log.warn('generation.missing_files_ask_again', {
+            jobId: generationJob?.id ?? null,
+            provider: correctiveEntry.provider,
+            model: correctiveEntry.model,
+            ...summarizeGenerationOutput(generatedCode),
+          });
+          // Recorded even when the ask then succeeds. Without it this class of miss is
+          // invisible in /admin/jobs, and the only evidence we ever had of it was a user's
+          // photograph of the chat.
+          await recordJobStepFailure(generationJob?.id, {
+            key: 'return-files',
+            label: 'Return the changed files',
+            error: MISSING_FILES_STEP_ERROR,
+          });
+          await sendProgress({ type: 'info', message: MISSING_FILES_ASKED_AGAIN });
+          try {
+            const capture = bindStreamErrorCapture();
+            const correctiveClient = clientForEntry(correctiveEntry, providerEnv);
+            const corrective = capture.attach(
+              streamText({
+                ...streamOptions,
+                model: correctiveClient(correctiveEntry.model),
+                maxOutputTokens: Math.min(outputTokenCap, maxOutputTokensForEntry(correctiveEntry)),
+                messages: [
+                  ...(streamOptions.messages ?? []),
+                  // Its own words back, capped: the claim is what it has to answer for, and
+                  // a reply that ran to tens of thousands of tokens must not be bought a
+                  // second time as input.
+                  { role: 'assistant', content: generatedCode.slice(0, CORRECTIVE_ECHO_CHARS) },
+                  { role: 'user', content: MISSING_FILES_CORRECTION },
+                ],
+                onError: capture.onError,
+              }),
+            );
+            let correctedCode = '';
+            for await (const part of corrective.textStream ?? []) {
+              const text = part || '';
+              correctedCode += text;
+              const capAbort = capTracker.addChunk(text);
+              if (capAbort) {
+                await jobProgress?.flush();
+                throw capAbort;
+              }
+              await sendProgress({ type: 'stream', text, raw: true });
+            }
+            // `textStream` drops error parts, so a rejected call iterates zero chunks and
+            // resolves to nothing — indistinguishable from a model with nothing to say
+            // unless the captured rejection is surfaced here.
+            const correctiveFailure = await surfaceStreamFailure(corrective);
+            if (correctiveFailure != null) throw correctiveFailure;
+            const correctedFiles = Object.entries(filesFromReply(correctedCode)).flatMap(
+              ([path, content]) => {
+                const safe = sanitizeGenerationPath(path);
+                return safe.ok ? [{ path: safe.path, content }] : [];
+              },
+            );
+            if (correctedFiles.length > 0) {
+              generatedCode = correctedCode;
+              files = correctedFiles;
+              // Counted against the job's caps exactly like the first pass: the file cap and
+              // the per-path loop guard apply to the whole job, not per stream, and
+              // `partialFiles` is what "keep what was built" recovers.
+              for (const file of files) {
+                const fileAbort = capTracker.addFile(file.path, file.content);
+                jobProgress?.addFile(file.path, file.content);
+                if (fileAbort) {
+                  await jobProgress?.flush();
+                  throw fileAbort;
+                }
+              }
+              await sendProgress({
+                type: 'info',
+                message: `The second ask returned ${files.length} file${files.length === 1 ? '' : 's'}.`,
+              });
+            } else {
+              // The first reply is kept when the ask adds nothing: it is what the user
+              // watched arrive, and adopting a second helping of prose would let a nudged
+              // reply pass as the answer to a question the user never asked.
+              log.warn('generation.missing_files_ask_again_missed', {
+                jobId: generationJob?.id ?? null,
+                ...summarizeGenerationOutput(correctedCode),
+              });
+            }
+          } catch (correctiveError) {
+            if (correctiveError instanceof JobCapError) throw correctiveError;
+            // A failed second ask never becomes the run's cause: the first reply still
+            // stands and the settle below reports exactly what it was worth. Recorded under
+            // its own step key so it cannot overwrite the miss that prompted it.
+            const askFailure = providerFailureMessage(correctiveError, correctiveEntry.provider);
+            logError('generation.missing_files_ask_again_failed', correctiveError);
+            await recordJobStepFailure(generationJob?.id, {
+              key: 'ask-files-again',
+              label: 'Ask again for the files',
+              error: askFailure,
+            });
+            await sendProgress({ type: 'warning', message: askFailure });
+          }
+        }
 
         // Extract explanation
         const explanationMatch = generatedCode.match(/<explanation>([\s\S]*?)<\/explanation>/);
@@ -1676,13 +1843,25 @@ Provide the complete file content without any truncation. Include all necessary 
           logError('generation.tokens_failed', tokenError);
         }
 
-        // A run that produced no file block changed nothing. That used to end as a 200 with
-        // `files: 0` and a SUCCEEDED job, which told the user their request had been carried
-        // out when it had not. Morph `<edit>` blocks used to count as evidence of a change
-        // here; nothing has applied them since the apply route was deleted, so counting them
-        // only let an edit that changed nothing report success. The prompt no longer asks
-        // for them either, so a parsed file is the only evidence there is.
-        const hadNoChanges = files.length === 0;
+        // What a fileless reply means, decided once, on the final reply.
+        //
+        // Zero files used to mean one thing — failure — and that was wrong for the commonest
+        // case of all. A finished project, the user types "hello", the model answers in
+        // prose: nothing was asked to change, so nothing changing is the correct outcome.
+        // Reporting it as `no_files_generated` failed the job and drew the red recovery
+        // panel with a Try again button over a model that had done nothing wrong.
+        //
+        // A parsed file is still the only evidence a run changed anything (nothing applies
+        // Morph `<edit>` blocks, so counting them let an edit that changed nothing report
+        // success), and a reply that owed files and did not deliver after being asked twice
+        // is still a failure. An answer is not.
+        const replyOutcome = classifyReplyOutcome({
+          fileCount: files.length,
+          reply: generatedCode,
+          askedAgain: askedForFilesAgain,
+        });
+        const chatAnswer = replyOutcome === 'answer';
+        const hadNoChanges = replyOutcome === 'no_files';
         const noChangeReason = hadNoChanges
           ? describeNoChanges({
               isEdit,
@@ -1703,7 +1882,43 @@ Provide the complete file content without any truncation. Include all necessary 
               )
             : null;
 
-        let streamSettle: Awaited<ReturnType<typeof settleStreamedGeneration>> | null = null;
+        // Check the generated code before anyone is told the build worked.
+        //
+        // The class this catches reached a user: `No matching export in "vfs:lib/data.ts"
+        // for import "site"` — the model imported a named export it never wrote, and the
+        // preview died on it. The check that was supposed to catch it ran the stack's build
+        // command inside a sandbox and skipped when there was no sandbox, so once the
+        // sandbox subsystem was removed it skipped on every single run.
+        //
+        // Skipped for zero files on purpose: a fileless reply is either an answer or a
+        // reported miss, and both are decided above.
+        const buildFix =
+          files.length > 0
+            ? (
+                await runBuildValidation({
+                  stack: projectStack,
+                  // The stored project merged with what this run produced. A partial map
+                  // makes a correct one-file edit look like a broken project, because every
+                  // import into the untouched rest of the site resolves to nothing.
+                  files: {
+                    ...backendFiles,
+                    ...Object.fromEntries(files.map((file) => [file.path, file.content])),
+                  },
+                  changedPaths: files.map((file) => file.path),
+                  jobId: generationJob?.id ?? null,
+                  attempt: Number(buildFixAttempt ?? 0),
+                  previousSignature:
+                    typeof buildFixSignature === 'string' ? buildFixSignature : null,
+                  // It writes its own chat notice and its own `validate-build` job step, so
+                  // nothing here repeats them.
+                  notify: (message, level) => sendProgress({ type: level, message }),
+                })
+              ).retry
+            : null;
+
+        let streamSettle: StreamSettleResult | null = null;
+        /** Set when the answer turn could not be recorded as finished. */
+        let answerSettleFailure: string | null = null;
         if (generationJob) {
           await jobProgress?.flush();
           // The tokens were spent either way, so they are recorded either way.
@@ -1715,36 +1930,103 @@ Provide the complete file content without any truncation. Include all necessary 
             provider: servedProvider,
             model: servedModel,
           });
-          // Streamed files are not a finished site. A sandbox that never went READY
-          // must not settle SUCCEEDED / COMPLETE with lastCode still null.
-          try {
-            streamSettle = await settleStreamedGeneration({
-              jobId: generationJob.id,
-              producedFiles: files.length,
-              streamedCode: generatedCode,
-              noChangeReason,
-              stackMismatchReason,
-              tokensIn: inputTokens,
-              tokensOut: outputTokens,
-              estimatedCostUsd,
-              provider: servedProvider,
-              model: servedModel,
-            });
-          } catch (settleError) {
-            await reportSettleFailure({
-              jobId: generationJob.id,
-              intended: noChangeReason ? 'failed' : 'succeeded',
-              error: settleError,
-            });
-            streamSettle = {
-              outcome: 'failed',
-              errorCode: 'settle_write_failed',
-              errorMessage:
-                settleError instanceof Error
-                  ? settleError.message
-                  : 'The generated files were not saved because we could not record the build.',
-            };
+          if (chatAnswer) {
+            // An answer changed nothing, so there is nothing to persist and no site to
+            // claim. `succeedJob` puts the project back on the phase the evidence supports
+            // (`resumablePhaseFromEvidence`: lastCode / checkpoints, never job.filesWritten),
+            // so "hello" on a finished site lands on COMPLETE and "hello" on an empty
+            // project lands back on PLANNING. Hard-coding COMPLETE here would make an empty
+            // project insist it has a site, and the preview would then insist there is
+            // something to show.
+            //
+            // `settleStreamedGeneration` is deliberately not used for this: it fails
+            // `no_files_generated` whenever the project has no site yet, which is the same
+            // false failure this branch exists to remove. No credits are charged here —
+            // this job's one charge happened at `markJobRunning` before the first call.
+            try {
+              await succeedJob(generationJob.id, {
+                tokensIn: inputTokens,
+                tokensOut: outputTokens,
+                estimatedCostUsd,
+                provider: servedProvider,
+                model: servedModel,
+              });
+            } catch (settleError) {
+              // A lost settle leaves the chat busy, so it is reported rather than left to
+              // unwind through the outer catch — which would describe a database failure as
+              // a provider failure. `reportSettleFailure` never throws and its
+              // `ensureJobSettled` fallback still gets the row out of RUNNING.
+              await reportSettleFailure({
+                jobId: generationJob.id,
+                intended: 'succeeded',
+                error: settleError,
+              });
+              answerSettleFailure =
+                'The AI answered, but we could not record this turn as finished. Reload the project if it still shows as busy.';
+            }
+          } else {
+            // Streamed files are not a finished site. A sandbox that never went READY
+            // must not settle SUCCEEDED / COMPLETE with lastCode still null.
+            try {
+              streamSettle = await settleStreamedGeneration({
+                jobId: generationJob.id,
+                producedFiles: files.length,
+                streamedCode: generatedCode,
+                noChangeReason,
+                stackMismatchReason,
+                tokensIn: inputTokens,
+                tokensOut: outputTokens,
+                estimatedCostUsd,
+                provider: servedProvider,
+                model: servedModel,
+              });
+            } catch (settleError) {
+              await reportSettleFailure({
+                jobId: generationJob.id,
+                intended: noChangeReason ? 'failed' : 'succeeded',
+                error: settleError,
+              });
+              streamSettle = {
+                outcome: 'failed',
+                errorCode: 'settle_write_failed',
+                errorMessage:
+                  settleError instanceof Error
+                    ? settleError.message
+                    : 'The generated files were not saved because we could not record the build.',
+              };
+            }
           }
+        }
+
+        if (chatAnswer) {
+          log.info('generation.chat_answer', {
+            jobId: generationJob?.id ?? null,
+            isEdit,
+            ...summarizeGenerationOutput(generatedCode),
+          });
+          if (answerSettleFailure) {
+            // The answer itself is already in chat; what failed is recording the turn as
+            // finished, and the workspace has to be told or it keeps showing as busy.
+            await sendProgress({ type: 'conversation', text: answerSettleFailure });
+            await sendProgress({ type: 'error', error: answerSettleFailure });
+            return;
+          }
+          // The reply is already in chat: the stream loop flushes its conversational buffer
+          // when the stream ends, and the client renders a `conversation` frame as the
+          // assistant's message. So the only thing left is to end the run cleanly. No
+          // `error` frame — that is what threw on the client, set `lastError` and drew the
+          // recovery panel over an answer. No `trackSuccess` and no conversation-edit
+          // record either: nothing was generated, and claiming an edit here would put a
+          // change that never happened into the project's history.
+          await sendProgress({
+            type: 'complete',
+            generatedCode,
+            files: 0,
+            components: 0,
+            model,
+            skillNames: injectedSkills.names,
+          });
+          return;
         }
 
         if (noChangeReason) {
@@ -1825,6 +2107,9 @@ Provide the complete file content without any truncation. Include all necessary 
           packagesToInstall: packagesToInstall.length > 0 ? packagesToInstall : undefined,
           warnings: truncationWarnings.length > 0 ? truncationWarnings : undefined,
           skillNames: injectedSkills.names,
+          // Present only when the build check failed and the policy allows a repair
+          // generation; the workspace runs one more pass with this instruction.
+          buildFix: buildFix ?? undefined,
         });
 
         // Track edit in conversation history. Writes land on the state this
