@@ -1,4 +1,4 @@
-import { LIVE_MODE_START_FAILED, PREVIEW_NOT_READY_NOTICE } from './labels';
+import { PREVIEW_NOT_READY_NOTICE } from './labels';
 
 export type PreviewAfterGenerationResult =
   { ok: true } | { ok: false; skipped?: boolean; error?: string; reason?: string };
@@ -110,10 +110,6 @@ export async function capturePreviewAfterGeneration(
   } finally {
     inflight.delete(key);
   }
-}
-
-export function noticeForLiveModeStart(ok: boolean): string | null {
-  return ok ? null : LIVE_MODE_START_FAILED;
 }
 
 export type PreviewPaneKind = 'planning' | 'preparing' | 'ready' | 'preview-failed' | 'empty';

@@ -7,6 +7,8 @@ import SidebarInput from '@/components/app/generation/SidebarInput';
 import ProjectWorkspace from '@/components/workspace/ProjectWorkspace';
 import { pagesFromFiles } from '@/components/workspace/pages-from-files';
 import {
+  hasExistingSite,
+  hasStoredSite,
   shouldRequestFollowUpPlan,
   type ChatMode,
   type MessageSource,
@@ -14,26 +16,12 @@ import {
   type WorkspacePlan,
   type WorkspaceView,
 } from '@/components/workspace/types';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
-// Import icons from centralized module to avoid Turbopack chunk issues
-import {
-  FiFile,
-  FiChevronRight,
-  FiChevronDown,
-  FiGithub,
-  BsFolderFill,
-  BsFolder2Open,
-  SiJavascript,
-  SiReact,
-  SiCss3,
-  SiJson,
-} from '@/lib/icons';
-import { motion } from 'framer-motion';
+import GenerationCodeView from '@/components/workspace/GenerationCodeView';
 import CodeApplicationProgress from '@/components/CodeApplicationProgress';
 import { persistProject } from '@/lib/projects/persist-client';
 import { decidePendingPromptAction } from '@/lib/projects/pending-prompt';
 import { projectDisplayName } from '@/lib/projects/prompt';
+import { takeProjectArm } from '@/lib/projects/start-from-prompt';
 import { shouldRequestSandbox } from '@/lib/workspace/sandbox-request';
 import { streamProjectImport } from '@/lib/import/client';
 import { retryProjectPlan } from '@/lib/projects/plan-client';
@@ -41,7 +29,9 @@ import { DEFAULT_IMPORT_MODE, resolveImportMode, type ImportMode } from '@/lib/i
 import { useGeneration } from '@/components/app/generation/GenerationProvider';
 import { applyPageCopy, shouldAddApplyChat } from '@/lib/generation/apply-page-copy';
 import { getGenerationState, surfacePreviewNotice } from '@/lib/generation/generation-runtime';
+import { filesFromReply } from '@/lib/generation/parse-blocks';
 import { isActiveGenerationStatus } from '@/lib/generation/types';
+import { streamingFilesLabel } from './BuildingIndicator';
 import { notify } from '@/lib/notify';
 
 interface SandboxData {
@@ -137,10 +127,6 @@ function AISandboxPage({
   const [urlInput, setUrlInput] = useState('');
   const [urlStatus, setUrlStatus] = useState<string[]>([]);
   const [showHomeScreen, setShowHomeScreen] = useState(true);
-  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(
-    new Set(['app', 'src', 'src/components']),
-  );
-  const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [homeScreenFading, setHomeScreenFading] = useState(false);
   const [homeUrlInput, setHomeUrlInput] = useState('');
   const [homeContextInput, setHomeContextInput] = useState('');
@@ -164,19 +150,54 @@ function AISandboxPage({
   const [hasInitialSubmission, setHasInitialSubmission] = useState<boolean>(false);
   const [fileStructure, setFileStructure] = useState<string>('');
 
+  /**
+   * True once the mount fetch below has been refused (403 for a member on a
+   * teammate's project, or any 5xx). Read by `hasStoredSite` at send time so an
+   * unreadable project counts as having a site instead of as an empty one — a
+   * swallowed fetch failure used to be enough to make the model rewrite it.
+   */
+  const fileMapUnreadableRef = useRef(false);
+  /** Which project the map in state belongs to, so a switch can clear it. */
+  const loadedFilesProjectRef = useRef<string | null>(null);
+
   // The Code tab used to fill only after an apply in this browser session, so
   // reopening a finished project showed an empty tree. Load the persisted site
   // once on mount; later applies refresh it through fetchSandboxFiles.
   useEffect(() => {
     const id = projectId ?? projectIdFromPath;
     if (!id) return;
+    // Switching projects in the sidebar navigates to /project/{id} — the same
+    // route segment — so React keeps this component and its state. The sticky
+    // setter below then refused to overwrite the previous project's map, which
+    // made `hasExistingSite` answer "yes" for a brand-new project and sent its
+    // very first message as an edit: the route pushes EDIT MODE ("DO NOT
+    // regenerate App.jsx") at a project with no files and the first build comes
+    // back half-done. Only clear on a real switch: projectId also goes
+    // null -> id when a project is created mid-generation, and that stream's
+    // files must survive.
+    const previousId = loadedFilesProjectRef.current;
+    loadedFilesProjectRef.current = id;
+    if (previousId && previousId !== id) {
+      setSandboxFiles({});
+      setFileStructure('');
+      setGenerationProgress((prev) => (prev.isGenerating ? prev : { ...prev, files: [] }));
+    }
+    fileMapUnreadableRef.current = false;
     let cancelled = false;
     void (async () => {
       try {
         const response = await fetch(`/api/projects/${encodeURIComponent(id)}/files`);
-        if (!response.ok) return;
+        if (!response.ok) {
+          // Cannot see the files, so cannot claim there are none.
+          fileMapUnreadableRef.current = true;
+          return;
+        }
         const data = await response.json();
-        if (!cancelled && data.success) {
+        if (!data.success) {
+          fileMapUnreadableRef.current = true;
+          return;
+        }
+        if (!cancelled) {
           setSandboxFiles((current) =>
             Object.keys(current).length > 0 ? current : data.files || {},
           );
@@ -201,7 +222,9 @@ function AISandboxPage({
           }
         }
       } catch {
-        // The tab stays empty; the next apply refreshes it.
+        // The tab stays empty; the next apply refreshes it. The next send still
+        // has to treat this project as built — see fileMapUnreadableRef.
+        fileMapUnreadableRef.current = true;
       }
     })();
     return () => {
@@ -225,7 +248,6 @@ function AISandboxPage({
 
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
-  const codeDisplayRef = useRef<HTMLDivElement>(null);
 
   // Store flag to trigger generation after component mounts
   const [shouldAutoGenerate, setShouldAutoGenerate] = useState(false);
@@ -252,11 +274,14 @@ function AISandboxPage({
       const templateParam = searchParams.get('template');
       const detailsParam = searchParams.get('details');
 
-      // Then check session storage as fallback
-      const storedUrl = urlParam || sessionStorage.getItem('targetUrl');
-      const storedStyle = templateParam || sessionStorage.getItem('selectedStyle');
-      const storedModel = sessionStorage.getItem('selectedModel');
-      const storedInstructions = sessionStorage.getItem('additionalInstructions');
+      // URL params only. These used to fall back to global sessionStorage keys
+      // (`targetUrl`, `selectedStyle`, `selectedModel`, `additionalInstructions`) that no
+      // project owned, so a leftover `targetUrl` from an earlier creation auto-started a paid
+      // build here, on a project the user had merely opened, from someone else's URL. What a
+      // freshly created project needs is either its own arm (below) or its own `ImportSource`
+      // row, both of which name the project.
+      const storedUrl = urlParam;
+      const storedStyle = templateParam;
 
       const projectIdParam = projectIdFromPath || searchParams.get('project');
       const live = attachToProject(projectIdParam);
@@ -344,65 +369,25 @@ function AISandboxPage({
         } catch (error) {
           console.error('[generation] Failed to load project', error);
         }
-        const pendingPrompt = sessionStorage.getItem('navroopPrompt');
-        if (pendingPrompt) {
-          sessionStorage.removeItem('navroopPrompt');
-          pendingChatPromptRef.current = pendingPrompt;
+        // Taken for this project id and no other, and taken exactly once — the arm ends in a
+        // chat send that can start a build.
+        const armedPrompt = takeProjectArm(projectIdParam);
+        if (armedPrompt) {
+          pendingChatPromptRef.current = armedPrompt;
         }
       }
 
       if (storedUrl) {
-        // Mark that we have an initial submission since we're loading with a URL
+        // Arrived as `?url=` (with optional `?template=` / `?details=`): treat it as an
+        // initial submission and start on it. The style-name lookup and the model/
+        // instruction fallbacks that used to live here only ever read the global
+        // sessionStorage keys, which are gone — a URL import created from the dashboard
+        // carries its own `ImportSource` row instead, and is resumed from it above.
         setHasInitialSubmission(true);
-
-        // Clear sessionStorage after reading
-        sessionStorage.removeItem('targetUrl');
-        sessionStorage.removeItem('selectedStyle');
-        sessionStorage.removeItem('selectedModel');
-        sessionStorage.removeItem('additionalInstructions');
-        // Note: Don't clear siteMarkdown here, it will be cleared when used
-
-        // Set the values in the component state
         setHomeUrlInput(storedUrl);
         setSelectedStyle(storedStyle || 'modern');
-
-        // Add details to context if provided
         if (detailsParam) {
           setHomeContextInput(detailsParam);
-        } else if (storedStyle && !urlParam) {
-          // Only apply stored style if no screenshot URL is provided
-          // This prevents unwanted style inheritance when using screenshot search
-          const styleNames: Record<string, string> = {
-            '1': 'Glassmorphism',
-            '2': 'Neumorphism',
-            '3': 'Brutalism',
-            '4': 'Minimalist',
-            '5': 'Dark Mode',
-            '6': 'Gradient Rich',
-            '7': '3D Depth',
-            '8': 'Retro Wave',
-            modern: 'Modern clean and minimalist',
-            playful: 'Fun colorful and playful',
-            professional: 'Corporate professional and sleek',
-            artistic: 'Creative artistic and unique',
-          };
-          const styleName = styleNames[storedStyle] || storedStyle;
-          let contextString = `${styleName} style design`;
-
-          // Add additional instructions if provided
-          if (storedInstructions) {
-            contextString += `. ${storedInstructions}`;
-          }
-
-          setHomeContextInput(contextString);
-        } else if (storedInstructions && !urlParam) {
-          // Apply only instructions if no style but instructions are provided
-          // and no screenshot URL is provided
-          setHomeContextInput(storedInstructions);
-        }
-
-        if (storedModel) {
-          setAiModel(storedModel);
         }
 
         // Skip the home screen and go directly to builder
@@ -411,9 +396,6 @@ function AISandboxPage({
 
         // Set flag to auto-trigger generation after component updates
         setShouldAutoGenerate(true);
-
-        // Also set autoStart flag for the effect
-        sessionStorage.setItem('autoStart', 'true');
       }
 
       // Clear old conversation
@@ -433,27 +415,10 @@ function AISandboxPage({
 
       if (!isMounted) return;
 
-      setLoading(true);
-      try {
-        // If we have a URL from the home page, mark for automatic start
-        if (storedUrl && isMounted) {
-          // We'll trigger the generation after the component is fully mounted
-          // and the startGeneration function is defined
-          sessionStorage.setItem('autoStart', 'true');
-        }
-      } catch (error) {
-        // All this block does is set a sessionStorage flag, so the only way
-        // here is storage being unavailable (private mode, quota). Saying
-        // "could not start" describes what the user actually loses.
-        console.error('[workspace] Could not mark the prompt for auto-start:', error);
-        if (isMounted) {
-          addChatMessage('Could not start automatically — send your prompt to begin.', 'error');
-        }
-      } finally {
-        if (isMounted) {
-          setLoading(false);
-        }
-      }
+      // `shouldAutoGenerate` above is the only auto-start signal now. The `autoStart`
+      // sessionStorage flag this block used to write was a second, global one: it outlived
+      // the mount that set it and started a paid build on whatever project opened next.
+      setLoading(false);
     };
 
     initializePage();
@@ -491,20 +456,10 @@ function AISandboxPage({
     }
   }, [showHomeScreen, homeUrlInput]);
 
-  // Auto-start generation if flagged
-  useEffect(() => {
-    if (reconnectedRef.current || isJobActive) return;
-    const autoStart = sessionStorage.getItem('autoStart');
-    if (autoStart === 'true' && !showHomeScreen && homeUrlInput) {
-      sessionStorage.removeItem('autoStart');
-      // Small delay to ensure everything is ready
-      setTimeout(() => {
-        console.log('[generation] Auto-starting generation for URL:', homeUrlInput);
-        // eslint-disable-next-line react-hooks/immutability -- declared later in this component
-        startGeneration();
-      }, 1000);
-    }
-  }, [showHomeScreen, homeUrlInput]);
+  // The `autoStart` sessionStorage trigger that used to live here is gone. It was a second
+  // auto-start path next to `shouldAutoGenerate` below, keyed to nothing, and it read a flag
+  // any earlier mount could have left behind — which is how a project the user only opened
+  // started a build it never asked for.
 
   // Nothing to check on mount: there is no VM whose status could differ from
   // the project's stored files.
@@ -522,9 +477,13 @@ function AISandboxPage({
       // Reset the flag
       setShouldAutoGenerate(false);
 
-      // Trigger generation after a short delay to ensure everything is set up
+      // Small delay so everything is set up. Clearing the handle on unmount is not cosmetic:
+      // startGeneration spends credits and hands the work to the module-level runtime that
+      // deliberately outlives this page, so a timer left armed after the person navigated
+      // away started a paid generation nobody was watching.
       const timer = setTimeout(() => {
         console.log('[generation] Auto-triggering generation from URL params');
+        // eslint-disable-next-line react-hooks/immutability -- declared later in this component
         startGeneration();
       }, 1000);
 
@@ -598,11 +557,12 @@ function AISandboxPage({
         sandboxId: overrides?.sandboxId || sandboxData?.sandboxId || null,
         previewUrl: overrides?.previewUrl || sandboxData?.url || null,
         screenshot: urlScreenshot,
-        lastCode:
-          getGenerationState().lastGeneratedCode ||
-          conversationContext.lastGeneratedCode ||
-          lastGeneratedCode ||
-          null,
+        // No lastCode: the server owns it. This sent the model's raw markdown
+        // reply, which overwrote the normalised <file path=…> lastCode that
+        // settleStreamedGeneration had written — getCurrentProjectFiles then
+        // collapsed the whole chat answer into one bogus src/App.jsx and the
+        // site was destroyed. lastGeneratedCode stays in state for prompt and
+        // title text only.
         status: getGenerationState().status,
         progressMessage: getGenerationState().generationProgress.status || null,
         sourceMessage: [...getGenerationState().messages]
@@ -628,14 +588,6 @@ function AISandboxPage({
     } catch (error) {
       console.error('[generation] Failed to save project', error);
       setSaveState('idle');
-    }
-  };
-
-  const displayStructure = (structure: any) => {
-    if (typeof structure === 'object') {
-      setStructureContent(JSON.stringify(structure, null, 2));
-    } else {
-      setStructureContent(structure || 'No structure available');
     }
   };
 
@@ -675,9 +627,6 @@ function AISandboxPage({
         previousBuildSignature: autoFix?.previousSignature ?? null,
       });
       const finalData: any = applyResult.finalData;
-      if (finalData?.type === 'complete') {
-        setLoading(false);
-      }
 
       // Close the build → fix → re-apply loop. The server decides whether a
       // retry is warranted (attempt cap, repeated-failure guard, actionability)
@@ -716,295 +665,24 @@ function AISandboxPage({
         }
       }
 
-      // Process final data
-      if (finalData && finalData.type === 'complete') {
-        const data: any = {
-          success: true,
-          results: finalData.results,
-          explanation: finalData.explanation,
-          structure: finalData.structure,
-          message: finalData.message,
-          autoCompleted: finalData.autoCompleted,
-          autoCompletedComponents: finalData.autoCompletedComponents,
-          warning: finalData.warning,
-          missingImports: finalData.missingImports,
-          debug: finalData.debug,
-        };
-
-        if (data.success) {
-          const { results } = data;
-
-          // Log package installation results without duplicate messages
-          if (results.packagesInstalled?.length > 0) {
-            log(`Packages installed: ${results.packagesInstalled.join(', ')}`);
-          }
-
-          if (results.filesCreated?.length > 0) {
-            log('Files created:');
-            results.filesCreated.forEach((file: string) => {
-              log(`  ${file}`, 'command');
-            });
-
-            // Verify files were actually created by refreshing the sandbox if needed
-            if (sandboxData?.sandboxId && results.filesCreated.length > 0) {
-              // Small delay to ensure files are written
-              setTimeout(() => {
-                // Force refresh the iframe to show new files
-                if (iframeRef.current) {
-                  iframeRef.current.src = iframeRef.current.src;
-                }
-              }, 1000);
-            }
-          }
-
-          if (results.filesUpdated?.length > 0) {
-            log('Files updated:');
-            results.filesUpdated.forEach((file: string) => {
-              log(`  ${file}`, 'command');
-            });
-          }
-
-          // Update conversation context with applied code
-          setConversationContext((prev) => ({
-            ...prev,
-            appliedCode: [
-              ...prev.appliedCode,
-              {
-                files: [...(results.filesCreated || []), ...(results.filesUpdated || [])],
-                timestamp: new Date(),
-              },
-            ],
-          }));
-
-          if (results.commandsExecuted?.length > 0) {
-            log('Commands executed:');
-            results.commandsExecuted.forEach((cmd: string) => {
-              log(`  $ ${cmd}`, 'command');
-            });
-          }
-
-          if (results.errors?.length > 0) {
-            results.errors.forEach((err: string) => {
-              log(err, 'error');
-            });
-          }
-
-          if (data.structure) {
-            displayStructure(data.structure);
-          }
-
-          if (data.explanation) {
-            log(data.explanation);
-          }
-
-          if (data.autoCompleted) {
-            log('Auto-generating missing components...', 'command');
-
-            if (data.autoCompletedComponents) {
-              setTimeout(() => {
-                log('Auto-generated missing components:', 'info');
-                data.autoCompletedComponents.forEach((comp: string) => {
-                  log(`  ${comp}`, 'command');
-                });
-              }, 1000);
-            }
-          } else if (data.warning) {
-            log(data.warning, 'error');
-
-            if (data.missingImports && data.missingImports.length > 0) {
-              const missingList = data.missingImports.join(', ');
-              addChatMessage(
-                `Ask me to "create the missing components: ${missingList}" to fix these import errors.`,
-                'system',
-              );
-            }
-          }
-
-          const applyCopy = applyPageCopy({
-            filesCreated: results.filesCreated,
-            filesUpdated: results.filesUpdated,
-            errors: results.errors,
-          });
-          log(applyCopy.message, applyCopy.warning ? 'error' : 'info');
-          const lastChat = getGenerationState().messages.at(-1)?.content;
-          if (shouldAddApplyChat(lastChat, applyCopy.message)) {
-            addChatMessage(
-              applyCopy.message,
-              'system',
-              !isEdit && results.filesCreated?.length > 0
-                ? { appliedFiles: results.filesCreated }
-                : undefined,
-            );
-          }
-          void saveCurrentProject();
-          console.log('[applyGeneratedCode] Response data:', data);
-          console.log('[applyGeneratedCode] Debug info:', data.debug);
-          console.log('[applyGeneratedCode] Current sandboxData:', sandboxData);
-          console.log('[applyGeneratedCode] Current iframe element:', iframeRef.current);
-          console.log('[applyGeneratedCode] Current iframe src:', iframeRef.current?.src);
-
-          // Set applying code state for edits to show loading overlay
-          // Removed overlay - changes apply directly
-
-          if (results.filesCreated?.length > 0) {
-            setConversationContext((prev) => ({
-              ...prev,
-              appliedCode: [
-                ...prev.appliedCode,
-                {
-                  files: results.filesCreated,
-                  timestamp: new Date(),
-                },
-              ],
-            }));
-
-            // If there are failed packages, add a message about checking for errors
-            if (results.packagesFailed?.length > 0) {
-              addChatMessage(
-                `⚠️ Some packages failed to install. Check the error banner above for details.`,
-                'system',
-              );
-            }
-
-            // Fetch updated file structure
-            await fetchSandboxFiles();
-
-            // Skip automatic package check - it's not needed here and can cause false "no sandbox" messages
-            // Packages are already installed during the apply-ai-code-stream process
-
-            // Test build to ensure everything compiles correctly
-            // Skip build test for now - it's causing errors with undefined activeSandbox
-            // The build test was trying to access global.activeSandbox from the frontend,
-            // but that's only available in the backend API routes
-            console.log('[build-test] Skipping build test - would need API endpoint');
-
-            // Force iframe refresh after applying code
-            const refreshDelay = appConfig.codeApplication.defaultRefreshDelay; // Allow Vite to process changes
-
-            setTimeout(() => {
-              const currentSandboxData = effectiveSandboxData;
-              if (iframeRef.current && currentSandboxData?.url) {
-                console.log('[home] Refreshing iframe after code application...');
-
-                // Method 1: Change src with timestamp
-                const urlWithTimestamp = `${currentSandboxData.url}?t=${Date.now()}&applied=true`;
-                iframeRef.current.src = urlWithTimestamp;
-
-                // Method 2: Force reload after a short delay
-                setTimeout(() => {
-                  try {
-                    if (iframeRef.current?.contentWindow) {
-                      iframeRef.current.contentWindow.location.reload();
-                      console.log('[home] Force reloaded iframe content');
-                    }
-                  } catch (e) {
-                    console.log('[home] Could not reload iframe (cross-origin):', e);
-                  }
-                  // Reload completed
-                }, 1000);
-              }
-            }, refreshDelay);
-
-            // Vite error checking removed - handled by template setup
-          }
-
-          // Give Vite HMR a moment to detect changes, then ensure refresh
-          const currentSandboxData = effectiveSandboxData;
-          if (iframeRef.current && currentSandboxData?.url) {
-            // Wait for Vite to process the file changes
-            // If packages were installed, wait longer for Vite to restart
-            const packagesInstalled =
-              results?.packagesInstalled?.length > 0 || data.results?.packagesInstalled?.length > 0;
-            const refreshDelay = packagesInstalled
-              ? appConfig.codeApplication.packageInstallRefreshDelay
-              : appConfig.codeApplication.defaultRefreshDelay;
-            console.log(
-              `[applyGeneratedCode] Packages installed: ${packagesInstalled}, refresh delay: ${refreshDelay}ms`,
-            );
-
-            setTimeout(async () => {
-              if (iframeRef.current && currentSandboxData?.url) {
-                console.log('[applyGeneratedCode] Starting iframe refresh sequence...');
-                console.log('[applyGeneratedCode] Current iframe src:', iframeRef.current.src);
-                console.log('[applyGeneratedCode] Sandbox URL:', currentSandboxData.url);
-
-                // Method 1: Try direct navigation first
-                try {
-                  const urlWithTimestamp = `${currentSandboxData.url}?t=${Date.now()}&force=true`;
-                  console.log(
-                    '[applyGeneratedCode] Attempting direct navigation to:',
-                    urlWithTimestamp,
-                  );
-
-                  // Remove any existing onload handler
-                  iframeRef.current.onload = null;
-
-                  // Navigate directly
-                  iframeRef.current.src = urlWithTimestamp;
-
-                  // Wait a bit and check if it loaded
-                  await new Promise((resolve) => setTimeout(resolve, 2000));
-
-                  // Try to access the iframe content to verify it loaded
-                  try {
-                    const iframeDoc =
-                      iframeRef.current.contentDocument ||
-                      iframeRef.current.contentWindow?.document;
-                    if (iframeDoc && iframeDoc.readyState === 'complete') {
-                      console.log('[applyGeneratedCode] Iframe loaded successfully');
-                      return;
-                    }
-                  } catch {
-                    console.log(
-                      '[applyGeneratedCode] Cannot access iframe content (CORS), assuming loaded',
-                    );
-                    return;
-                  }
-                } catch (e) {
-                  console.error('[applyGeneratedCode] Direct navigation failed:', e);
-                }
-
-                // Method 2: Force complete iframe recreation if direct navigation failed
-                console.log('[applyGeneratedCode] Falling back to iframe recreation...');
-                const parent = iframeRef.current.parentElement;
-                const newIframe = document.createElement('iframe');
-
-                // Copy attributes
-                newIframe.className = iframeRef.current.className;
-                newIframe.title = iframeRef.current.title;
-                newIframe.allow = iframeRef.current.allow;
-                // Copy sandbox attributes
-                const sandboxValue = iframeRef.current.getAttribute('sandbox');
-                if (sandboxValue) {
-                  newIframe.setAttribute('sandbox', sandboxValue);
-                }
-
-                // Remove old iframe
-                iframeRef.current.remove();
-
-                // Add new iframe
-                newIframe.src = `${currentSandboxData.url}?t=${Date.now()}&recreated=true`;
-                parent?.appendChild(newIframe);
-
-                // Update ref
-                (iframeRef as any).current = newIframe;
-
-                console.log('[applyGeneratedCode] Iframe recreated with new content');
-              } else {
-                console.error(
-                  '[applyGeneratedCode] No iframe or sandbox URL available for refresh',
-                );
-              }
-            }, refreshDelay); // Dynamic delay based on whether packages were installed
-          }
-        } else {
-          throw new Error(finalData?.error || 'Failed to apply code');
-        }
-      } else {
-        // If no final data was received, still close loading
+      // A resolved startApply is success. Applying is no longer a stream: the
+      // generate route already wrote the files and runApplyStream only marks
+      // the job ready, so it resolves `{ finalData: null }` by design and a
+      // real failure arrives as a rejection, handled below. The old
+      // `finalData.type === 'complete'` branch could therefore never run, and
+      // its else arm closed every successful build with "Code application may
+      // have partially succeeded. Check the preview." — telling the user to
+      // doubt a result that was fine, on every single turn.
+      const appliedFiles = Object.keys(filesFromReply(code));
+      await fetchSandboxFiles();
+      const applyCopy = applyPageCopy({ filesCreated: appliedFiles });
+      log(applyCopy.message, applyCopy.warning ? 'error' : 'info');
+      const lastChat = getGenerationState().messages.at(-1)?.content;
+      if (shouldAddApplyChat(lastChat, applyCopy.message)) {
         addChatMessage(
-          'Code application may have partially succeeded. Check the preview.',
+          applyCopy.message,
           'system',
+          !isEdit && appliedFiles.length > 0 ? { appliedFiles } : undefined,
         );
       }
     } catch (error: any) {
@@ -1085,479 +763,14 @@ function AISandboxPage({
   //   };
 
   const renderMainContent = () => {
+    // The Code view during a build. `isGenerating` alone is enough: a build that
+    // has not produced a fence yet must still land on the panel, which says
+    // "Code appears here as each file is written" instead of a bare spinner.
     if (
       activeTab === 'generation' &&
       (generationProgress.isGenerating || generationProgress.files.length > 0)
     ) {
-      return (
-        /* Generation Tab Content */
-        <div className="absolute inset-0 flex overflow-hidden">
-          {/* File Explorer - Hide during edits */}
-          {!generationProgress.isEdit && (
-            <div className="w-[250px] border-r border-gray-200 bg-white flex flex-col flex-shrink-0">
-              <div className="p-4 bg-gray-100 text-gray-900 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <BsFolderFill style={{ width: '16px', height: '16px' }} />
-                  <span className="text-sm font-medium">Explorer</span>
-                </div>
-              </div>
-
-              {/* File Tree */}
-              <div className="flex-1 overflow-y-auto p-4 scrollbar-hide">
-                <div className="text-sm">
-                  {/* Root app folder */}
-                  <div
-                    className="flex items-center gap-2 py-0.5 px-3 hover:bg-gray-100 rounded cursor-pointer text-gray-700"
-                    onClick={() => toggleFolder('app')}
-                  >
-                    {expandedFolders.has('app') ? (
-                      <FiChevronDown
-                        style={{ width: '16px', height: '16px' }}
-                        className="text-gray-600"
-                      />
-                    ) : (
-                      <FiChevronRight
-                        style={{ width: '16px', height: '16px' }}
-                        className="text-gray-600"
-                      />
-                    )}
-                    {expandedFolders.has('app') ? (
-                      <BsFolder2Open
-                        style={{ width: '16px', height: '16px' }}
-                        className="text-blue-500"
-                      />
-                    ) : (
-                      <BsFolderFill
-                        style={{ width: '16px', height: '16px' }}
-                        className="text-blue-500"
-                      />
-                    )}
-                    <span className="font-medium text-gray-800">app</span>
-                  </div>
-
-                  {expandedFolders.has('app') && (
-                    <div className="ml-6">
-                      {/* Group files by directory */}
-                      {(() => {
-                        const fileTree: {
-                          [key: string]: Array<{ name: string; edited?: boolean }>;
-                        } = {};
-
-                        // Create a map of edited files
-                        // const editedFiles = new Set(
-                        //   generationProgress.files
-                        //     .filter(f => f.edited)
-                        //     .map(f => f.path)
-                        // );
-
-                        // Process all files from generation progress
-                        generationProgress.files.forEach((file) => {
-                          const parts = file.path.split('/');
-                          const dir = parts.length > 1 ? parts.slice(0, -1).join('/') : '';
-                          const fileName = parts[parts.length - 1];
-
-                          if (!fileTree[dir]) fileTree[dir] = [];
-                          fileTree[dir].push({
-                            name: fileName,
-                            edited: file.edited || false,
-                          });
-                        });
-
-                        return Object.entries(fileTree).map(([dir, files]) => (
-                          <div key={dir} className="mb-1">
-                            {dir && (
-                              <div
-                                className="flex items-center gap-2 py-0.5 px-3 hover:bg-gray-100 rounded cursor-pointer text-gray-700"
-                                onClick={() => toggleFolder(dir)}
-                              >
-                                {expandedFolders.has(dir) ? (
-                                  <FiChevronDown
-                                    style={{ width: '16px', height: '16px' }}
-                                    className="text-gray-600"
-                                  />
-                                ) : (
-                                  <FiChevronRight
-                                    style={{ width: '16px', height: '16px' }}
-                                    className="text-gray-600"
-                                  />
-                                )}
-                                {expandedFolders.has(dir) ? (
-                                  <BsFolder2Open
-                                    style={{ width: '16px', height: '16px' }}
-                                    className="text-yellow-600"
-                                  />
-                                ) : (
-                                  <BsFolderFill
-                                    style={{ width: '16px', height: '16px' }}
-                                    className="text-yellow-600"
-                                  />
-                                )}
-                                <span className="text-gray-700">{dir.split('/').pop()}</span>
-                              </div>
-                            )}
-                            {(!dir || expandedFolders.has(dir)) && (
-                              <div className={dir ? 'ml-8' : ''}>
-                                {files
-                                  .sort((a, b) => a.name.localeCompare(b.name))
-                                  .map((fileInfo) => {
-                                    const fullPath = dir
-                                      ? `${dir}/${fileInfo.name}`
-                                      : fileInfo.name;
-                                    const isSelected = selectedFile === fullPath;
-
-                                    return (
-                                      <div
-                                        key={fullPath}
-                                        className={`flex items-center gap-2 py-0.5 px-3 rounded cursor-pointer transition-all ${
-                                          isSelected
-                                            ? 'bg-blue-500 text-white'
-                                            : 'text-gray-700 hover:bg-gray-100'
-                                        }`}
-                                        onClick={() => handleFileClick(fullPath)}
-                                      >
-                                        {getFileIcon(fileInfo.name)}
-                                        <span
-                                          className={`text-xs flex items-center gap-1 ${isSelected ? 'font-medium' : ''}`}
-                                        >
-                                          {fileInfo.name}
-                                          {fileInfo.edited && (
-                                            <span
-                                              className={`text-[10px] px-1 rounded ${
-                                                isSelected
-                                                  ? 'bg-blue-400'
-                                                  : 'bg-orange-500 text-white'
-                                              }`}
-                                            >
-                                              ✓
-                                            </span>
-                                          )}
-                                        </span>
-                                      </div>
-                                    );
-                                  })}
-                              </div>
-                            )}
-                          </div>
-                        ));
-                      })()}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Code Content */}
-          <div className="flex-1 flex flex-col overflow-hidden">
-            {/* Thinking Mode Display - Only show during active generation */}
-            {generationProgress.isGenerating &&
-              (generationProgress.isThinking || generationProgress.thinkingText) && (
-                <div className="px-6 pb-6">
-                  <div className="flex items-center gap-2 mb-2">
-                    <div className="text-purple-600 font-medium flex items-center gap-2">
-                      {generationProgress.isThinking ? (
-                        <>
-                          <div className="w-3 h-3 bg-purple-600 rounded-full animate-pulse" />
-                          AI is thinking...
-                        </>
-                      ) : (
-                        <>
-                          <span className="text-purple-600">✓</span>
-                          Thought for {generationProgress.thinkingDuration || 0} seconds
-                        </>
-                      )}
-                    </div>
-                  </div>
-                  {generationProgress.thinkingText && (
-                    <div className="bg-purple-950 border border-purple-700 rounded-lg p-4 max-h-48 overflow-y-auto scrollbar-hide">
-                      <pre className="text-xs font-mono text-purple-300 whitespace-pre-wrap">
-                        {generationProgress.thinkingText}
-                      </pre>
-                    </div>
-                  )}
-                </div>
-              )}
-
-            {/* Live Code Display */}
-            <div className="flex-1 rounded-lg p-6 flex flex-col min-h-0 overflow-hidden">
-              <div className="flex-1 overflow-y-auto min-h-0 scrollbar-hide" ref={codeDisplayRef}>
-                {/* Show selected file if one is selected */}
-                {selectedFile ? (
-                  <div className="animate-in fade-in slide-in-from-top-2 duration-300">
-                    <div className="bg-black border border-gray-200 rounded-lg overflow-hidden shadow-sm">
-                      <div className="px-4 py-2 bg-[#36322F] text-white flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          {getFileIcon(selectedFile)}
-                          <span className="font-mono text-sm">{selectedFile}</span>
-                        </div>
-                        <button
-                          onClick={() => setSelectedFile(null)}
-                          className="hover:bg-black/20 p-1 rounded transition-colors"
-                        >
-                          <svg
-                            width="16"
-                            height="16"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              strokeWidth={2}
-                              d="M6 18L18 6M6 6l12 12"
-                            />
-                          </svg>
-                        </button>
-                      </div>
-                      <div className="bg-gray-900 border border-gray-700 rounded">
-                        <SyntaxHighlighter
-                          language={(() => {
-                            const ext = selectedFile.split('.').pop()?.toLowerCase();
-                            if (ext === 'css') return 'css';
-                            if (ext === 'json') return 'json';
-                            if (ext === 'html') return 'html';
-                            return 'jsx';
-                          })()}
-                          style={vscDarkPlus}
-                          customStyle={{
-                            margin: 0,
-                            padding: '1rem',
-                            fontSize: '0.875rem',
-                            background: 'transparent',
-                          }}
-                          showLineNumbers={true}
-                        >
-                          {(() => {
-                            // Find the file content from generated files
-                            const file = generationProgress.files.find(
-                              (f) => f.path === selectedFile,
-                            );
-                            return file?.content || '// File content will appear here';
-                          })()}
-                        </SyntaxHighlighter>
-                      </div>
-                    </div>
-                  </div>
-                ) : /* If no files parsed yet, show loading or raw stream */
-                generationProgress.files.length === 0 && !generationProgress.currentFile ? (
-                  generationProgress.isThinking ? (
-                    // Beautiful loading state while thinking
-                    <div className="flex items-center justify-center h-full">
-                      <div className="text-center">
-                        <div className="mb-8 relative">
-                          <div className="w-48 h-48 mx-auto">
-                            <div className="absolute inset-0 border-8 border-gray-800 rounded-full"></div>
-                            <div className="absolute inset-0 border-8 border-green-500 rounded-full animate-spin border-t-transparent"></div>
-                          </div>
-                        </div>
-                        <h3 className="text-xl font-medium text-white mb-2">
-                          AI is analyzing your request
-                        </h3>
-                        <p className="text-gray-400 text-sm">
-                          {generationProgress.status || 'Preparing to generate code...'}
-                        </p>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="bg-black border border-gray-200 rounded-lg overflow-hidden">
-                      <div className="px-4 py-2 bg-gray-100 text-gray-900 flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <div className="w-16 h-16 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
-                          <span className="font-mono text-sm">Streaming code...</span>
-                        </div>
-                      </div>
-                      <div className="p-4 bg-gray-900 rounded">
-                        <SyntaxHighlighter
-                          language="jsx"
-                          style={vscDarkPlus}
-                          customStyle={{
-                            margin: 0,
-                            padding: '1rem',
-                            fontSize: '0.875rem',
-                            background: 'transparent',
-                          }}
-                          showLineNumbers={true}
-                        >
-                          {generationProgress.streamedCode || 'Starting code generation...'}
-                        </SyntaxHighlighter>
-                        <span className="inline-block w-3 h-5 bg-orange-400 ml-1 animate-pulse" />
-                      </div>
-                    </div>
-                  )
-                ) : (
-                  <div className="space-y-4">
-                    {/* Show current file being generated */}
-                    {generationProgress.currentFile && (
-                      <div className="bg-black border-2 border-gray-400 rounded-lg overflow-hidden shadow-sm">
-                        <div className="px-4 py-2 bg-[#36322F] text-white flex items-center justify-between">
-                          <div className="flex items-center gap-2">
-                            <div className="w-16 h-16 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                            <span className="font-mono text-sm">
-                              {generationProgress.currentFile.path}
-                            </span>
-                            <span
-                              className={`px-2 py-0.5 text-xs rounded ${
-                                generationProgress.currentFile.type === 'css'
-                                  ? 'bg-blue-600 text-white'
-                                  : generationProgress.currentFile.type === 'javascript'
-                                    ? 'bg-yellow-600 text-white'
-                                    : generationProgress.currentFile.type === 'json'
-                                      ? 'bg-green-600 text-white'
-                                      : 'bg-gray-200 text-gray-700'
-                              }`}
-                            >
-                              {generationProgress.currentFile.type === 'javascript'
-                                ? 'JSX'
-                                : generationProgress.currentFile.type.toUpperCase()}
-                            </span>
-                          </div>
-                        </div>
-                        <div className="bg-gray-900 border border-gray-700 rounded">
-                          <SyntaxHighlighter
-                            language={
-                              generationProgress.currentFile.type === 'css'
-                                ? 'css'
-                                : generationProgress.currentFile.type === 'json'
-                                  ? 'json'
-                                  : generationProgress.currentFile.type === 'html'
-                                    ? 'html'
-                                    : 'jsx'
-                            }
-                            style={vscDarkPlus}
-                            customStyle={{
-                              margin: 0,
-                              padding: '1rem',
-                              fontSize: '0.75rem',
-                              background: 'transparent',
-                            }}
-                            showLineNumbers={true}
-                          >
-                            {generationProgress.currentFile.content}
-                          </SyntaxHighlighter>
-                          <span className="inline-block w-3 h-4 bg-orange-400 ml-4 mb-4 animate-pulse" />
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Show completed files */}
-                    {generationProgress.files.map((file, idx) => (
-                      <div
-                        key={idx}
-                        className="bg-white border border-gray-200 rounded-lg overflow-hidden"
-                      >
-                        <div className="px-4 py-2 bg-[#36322F] text-white flex items-center justify-between">
-                          <div className="flex items-center gap-2">
-                            <span className="text-green-500">✓</span>
-                            <span className="font-mono text-sm">{file.path}</span>
-                          </div>
-                          <span
-                            className={`px-2 py-0.5 text-xs rounded ${
-                              file.type === 'css'
-                                ? 'bg-blue-600 text-white'
-                                : file.type === 'javascript'
-                                  ? 'bg-yellow-600 text-white'
-                                  : file.type === 'json'
-                                    ? 'bg-green-600 text-white'
-                                    : 'bg-gray-200 text-gray-700'
-                            }`}
-                          >
-                            {file.type === 'javascript' ? 'JSX' : file.type.toUpperCase()}
-                          </span>
-                        </div>
-                        <div className="bg-gray-900 border border-gray-700  max-h-48 overflow-y-auto scrollbar-hide">
-                          <SyntaxHighlighter
-                            language={
-                              file.type === 'css'
-                                ? 'css'
-                                : file.type === 'json'
-                                  ? 'json'
-                                  : file.type === 'html'
-                                    ? 'html'
-                                    : 'jsx'
-                            }
-                            style={vscDarkPlus}
-                            customStyle={{
-                              margin: 0,
-                              padding: '1rem',
-                              fontSize: '0.75rem',
-                              background: 'transparent',
-                            }}
-                            showLineNumbers={true}
-                            wrapLongLines={true}
-                          >
-                            {file.content}
-                          </SyntaxHighlighter>
-                        </div>
-                      </div>
-                    ))}
-
-                    {/* Show remaining raw stream if there's content after the last file */}
-                    {!generationProgress.currentFile &&
-                      generationProgress.streamedCode.length > 0 && (
-                        <div className="bg-black border border-gray-200 rounded-lg overflow-hidden">
-                          <div className="px-4 py-2 bg-[#36322F] text-white flex items-center justify-between">
-                            <div className="flex items-center gap-2">
-                              <div className="w-16 h-16 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
-                              <span className="font-mono text-sm">Processing...</span>
-                            </div>
-                          </div>
-                          <div className="bg-gray-900 border border-gray-700 rounded">
-                            <SyntaxHighlighter
-                              language="jsx"
-                              style={vscDarkPlus}
-                              customStyle={{
-                                margin: 0,
-                                padding: '1rem',
-                                fontSize: '0.75rem',
-                                background: 'transparent',
-                              }}
-                              showLineNumbers={false}
-                            >
-                              {(() => {
-                                // Show only the tail of the stream after the last file
-                                const lastFileEnd =
-                                  generationProgress.files.length > 0
-                                    ? generationProgress.streamedCode.lastIndexOf('</file>') + 7
-                                    : 0;
-                                let remainingContent = generationProgress.streamedCode
-                                  .slice(lastFileEnd)
-                                  .trim();
-
-                                // Remove explanation tags and content
-                                remainingContent = remainingContent
-                                  .replace(/<explanation>[\s\S]*?<\/explanation>/g, '')
-                                  .trim();
-
-                                // If only whitespace or nothing left, show loading message
-                                // Use "Loading sandbox..." instead of "Waiting for next file..." for better UX
-                                return remainingContent || 'Loading sandbox...';
-                              })()}
-                            </SyntaxHighlighter>
-                          </div>
-                        </div>
-                      )}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Progress indicator */}
-            {generationProgress.components.length > 0 && (
-              <div className="mx-6 mb-6">
-                <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-gradient-to-r from-orange-500 to-orange-400 transition-all duration-300"
-                    style={{
-                      width: `${(generationProgress.currentComponent / Math.max(generationProgress.components.length, 1)) * 100}%`,
-                    }}
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      );
+      return <GenerationCodeView progress={generationProgress} />;
     } else if (activeTab === 'preview') {
       // Show loading state for initial generation or when starting a new generation with existing sandbox
       const isInitialGeneration =
@@ -1613,14 +826,19 @@ function AISandboxPage({
                     />
                   </div>
 
-                  {/* Status text */}
+                  {/* Status text. `generationProgress.status` is derived from the same
+                      fences the file rail is built from, so it names the file being
+                      written ("Generating app/page.tsx") and only falls back to the
+                      generic line before the first fence arrives. The literals here
+                      used to override it, which is why a 30-second build showed one
+                      unchanging sentence. */}
                   <p className="text-white text-lg font-medium">
                     {isCapturingScreenshot
                       ? 'Analyzing website...'
                       : isPreparingDesign
                         ? 'Preparing design...'
                         : generationProgress.isGenerating
-                          ? 'Generating code...'
+                          ? generationProgress.status || 'Generating code...'
                           : 'Loading...'}
                   </p>
 
@@ -1631,7 +849,8 @@ function AISandboxPage({
                       : isPreparingDesign
                         ? 'Understanding the layout and structure'
                         : generationProgress.isGenerating
-                          ? 'Writing React components'
+                          ? (streamingFilesLabel(generationProgress.files) ??
+                            'Writing the first file')
                           : 'Please wait...'}
                   </p>
                 </div>
@@ -1736,7 +955,9 @@ function AISandboxPage({
               !codeApplicationState.stage && (
                 <div className="absolute top-4 right-4 inline-flex items-center gap-2 px-3 py-1.5 bg-black/80 backdrop-blur-sm rounded-lg">
                   <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
-                  <span className="text-white text-xs font-medium">Generating code...</span>
+                  <span className="text-white text-xs font-medium">
+                    {generationProgress.status || 'Generating code...'}
+                  </span>
                 </div>
               )}
 
@@ -1850,8 +1071,20 @@ function AISandboxPage({
     // Nothing to boot before generating: the files go to the database and the
     // preview compiles them here.
 
-    // Determine if this is an edit
-    const isEdit = conversationContext.appliedCode.length > 0;
+    // An edit whenever the project already has a site to change. Never derive
+    // this from conversationContext.appliedCode again — see hasExistingSite.
+    // The decision fails closed: a project this browser could not read, or one
+    // the server already rendered as COMPLETE, is treated as having a site even
+    // when every client-side input is empty.
+    const isEdit = hasExistingSite({
+      projectFiles: sandboxFiles,
+      streamedFiles: generationProgress.files,
+      appliedCode: conversationContext.appliedCode,
+      storedSite: hasStoredSite({
+        initialPhase,
+        fileMapUnreadable: fileMapUnreadableRef.current,
+      }),
+    });
 
     try {
       // Generation tab is already active from scraping phase
@@ -1890,14 +1123,14 @@ function AISandboxPage({
       // Debug what we're sending
       console.log('[chat] Sending context to AI:');
       console.log('[chat] - sandboxId:', fullContext.sandboxId);
-      console.log('[chat] - isEdit:', conversationContext.appliedCode.length > 0);
+      console.log('[chat] - isEdit:', isEdit);
 
       const streamResult = await startGenerationStream({
         prompt: message,
         model: aiModel,
         styleHint: selectedStyle || homeContextInput,
         context: { ...fullContext, styleName: selectedStyle || homeContextInput, mode },
-        isEdit: conversationContext.appliedCode.length > 0,
+        isEdit,
         projectId,
         sandboxData,
       });
@@ -1981,44 +1214,6 @@ function AISandboxPage({
     }, 400);
     return () => clearTimeout(timer);
   }, [initialPhase, projectId]);
-
-  // Auto-scroll code display to bottom when streaming
-  useEffect(() => {
-    if (codeDisplayRef.current && generationProgress.isStreaming) {
-      codeDisplayRef.current.scrollTop = codeDisplayRef.current.scrollHeight;
-    }
-  }, [generationProgress.streamedCode, generationProgress.isStreaming]);
-
-  const toggleFolder = (folderPath: string) => {
-    const newExpanded = new Set(expandedFolders);
-    if (newExpanded.has(folderPath)) {
-      newExpanded.delete(folderPath);
-    } else {
-      newExpanded.add(folderPath);
-    }
-    setExpandedFolders(newExpanded);
-  };
-
-  const handleFileClick = async (filePath: string) => {
-    setSelectedFile(filePath);
-    // TODO: Add file content fetching logic here
-  };
-
-  const getFileIcon = (fileName: string) => {
-    const ext = fileName.split('.').pop()?.toLowerCase();
-
-    if (ext === 'jsx' || ext === 'js') {
-      return <SiJavascript style={{ width: '16px', height: '16px' }} className="text-yellow-500" />;
-    } else if (ext === 'tsx' || ext === 'ts') {
-      return <SiReact style={{ width: '16px', height: '16px' }} className="text-blue-500" />;
-    } else if (ext === 'css') {
-      return <SiCss3 style={{ width: '16px', height: '16px' }} className="text-blue-500" />;
-    } else if (ext === 'json') {
-      return <SiJson style={{ width: '16px', height: '16px' }} className="text-gray-600" />;
-    } else {
-      return <FiFile style={{ width: '16px', height: '16px' }} className="text-gray-600" />;
-    }
-  };
 
   //   const clearChatHistory = () => {
   //     setChatMessages([{
@@ -2469,7 +1664,6 @@ function AISandboxPage({
 
       // Now start the clone process which will stream the generation
       setUrlInput(homeUrlInput);
-      setUrlOverlayVisible(false); // Make sure overlay is closed
       setUrlStatus(['Scraping website content...']);
 
       try {
@@ -2535,12 +1729,12 @@ function AISandboxPage({
           if (!id) {
             throw new Error('Could not create project for URL import');
           }
-          const storedMode = sessionStorage.getItem('navroopImportMode');
-          if (storedMode) sessionStorage.removeItem('navroopImportMode');
           const imported = await streamProjectImport({
             projectId: id,
             sourceUrl: url,
-            mode: resolveImportMode(storedMode || importMode),
+            // From this project's `ImportSource` row (read on mount), not from a global
+            // `navroopImportMode` key that the previous import in this tab could have left.
+            mode: resolveImportMode(importMode),
             onProgress: (message) => addChatMessage(message, 'system'),
           });
           imported.warnings.forEach((warning) => addChatMessage(warning, 'system'));
@@ -2961,14 +2155,14 @@ Focus on the key sections and content, making it clean and modern.`;
             <div className="border-b border-[var(--studio-line)] p-12">
               <SidebarInput
                 onSubmit={(url, style, model, instructions) => {
+                  // Straight into this page's state. These five values used to be written to
+                  // global sessionStorage keys as well, which no project owned: the leftovers
+                  // auto-started a paid build on the next project opened in this tab.
                   setHasInitialSubmission(true);
-                  sessionStorage.setItem('targetUrl', url);
-                  sessionStorage.setItem('selectedStyle', style);
-                  sessionStorage.setItem('selectedModel', model);
-                  if (instructions) sessionStorage.setItem('additionalInstructions', instructions);
-                  sessionStorage.setItem('autoStart', 'true');
                   setHomeUrlInput(url);
                   setHomeContextInput(instructions || '');
+                  setSelectedStyle(style);
+                  setAiModel(model);
                   startGeneration();
                 }}
                 disabled={loading || generationProgress.isGenerating}
@@ -2990,6 +2184,8 @@ Focus on the key sections and content, making it clean and modern.`;
       initialPhase={initialPhase}
       initialPlan={initialPlan}
       isJobActive={isJobActive}
+      streamFiles={generationProgress.files}
+      streamedText={generationProgress.streamedCode}
       generationStatus={generationJobStatus}
       onStartApprovedBuild={(promptContext) => {
         void sendChatMessage(promptContext, { mode: 'build', silent: true });

@@ -5,6 +5,78 @@ export function shouldRequestFollowUpPlan(mode: ChatMode | string | undefined) {
   return mode === 'plan';
 }
 
+/**
+ * The other send-routing decision: does this project already have a site, so
+ * the next message is an edit rather than a fresh build?
+ *
+ * This used to be `conversationContext.appliedCode.length > 0` inside
+ * GenerationWorkspace, but that list stopped growing when applying stopped
+ * being a stream — startApply resolves `{ finalData: null }` by design, so the
+ * branch that appended to it was dead and every follow-up reached
+ * /api/generate-ai-code-stream with isEdit false. The route then printed
+ * "FIRST GENERATION MODE", never loaded the project's existing files, and the
+ * model rewrote the whole site instead of changing the one thing that was
+ * asked for — the failure the route's own comment describes. So decide from
+ * state that survives a reload: the project's stored file map, which the
+ * workspace loads on mount and refreshes after every apply. The streamed file
+ * list and the URL-import marker stay as fallbacks for the turn right after a
+ * build, when the file fetch may not have landed yet.
+ *
+ * `storedSite` is what makes the answer fail CLOSED, and it is not optional.
+ * The three client-side inputs can only ever *under*-report a site: the file
+ * map arrives from a best-effort fetch that swallows its own failure, and
+ * `GET /api/projects/[id]/files` answers 403 to every non-owner non-admin
+ * while the workspace renders for any signed-in member. A member opening a
+ * teammate's finished project therefore got an empty map every single time —
+ * not a race — sent isEdit false, and had the model replace someone else's
+ * site with a brand-new one. The same chain fired for the owner on any 5xx.
+ * Only a successful, empty read proves a project has nothing to change;
+ * anything we could not read counts as having a site. See `hasStoredSite`.
+ *
+ * `streamedFiles` now carries the file currently being written as a
+ * `completed: false` entry, and a half-written block is not a site: a stream that
+ * died just after the first `{path=…}` opener would otherwise send the retry as
+ * an edit ("DO NOT regenerate App.jsx") at a project that still has nothing.
+ */
+export function hasExistingSite(input: {
+  projectFiles: Record<string, string>;
+  streamedFiles: readonly { path: string; completed?: boolean }[];
+  appliedCode: readonly unknown[];
+  /** Server-side evidence of stored code — see `hasStoredSite`. */
+  storedSite: boolean;
+}): boolean {
+  return (
+    input.storedSite ||
+    Object.keys(input.projectFiles).length > 0 ||
+    input.streamedFiles.some((file) => file.completed !== false) ||
+    input.appliedCode.length > 0
+  );
+}
+
+/**
+ * The fail-closed half of `hasExistingSite`, exported separately so the
+ * workspace's actual decision is testable without rendering a 2800-line
+ * component.
+ *
+ * `initialPhase` is server-rendered by app/project/[id]/page.tsx and COMPLETE
+ * means the project row has code (lastCode/checkpoint), which no failed client
+ * fetch can take away. `fileMapUnreadable` is the other direction: the mount
+ * fetch came back 403 (a member on a teammate's project) or 5xx, so this
+ * browser has no idea what the project holds and must not claim it is empty.
+ *
+ * Deliberately NOT true while that fetch is merely *pending*: the commonest
+ * path in the product is "type on the home page, project is created, generate
+ * immediately", and calling that first build an edit sends the model EDIT MODE
+ * ("DO NOT regenerate App.jsx") at a project with no files, which comes back
+ * as a half-built site. Absence of an answer is not evidence; a refusal is.
+ */
+export function hasStoredSite(input: {
+  initialPhase: ProjectPhase | null;
+  fileMapUnreadable: boolean;
+}): boolean {
+  return input.initialPhase === 'COMPLETE' || input.fileMapUnreadable;
+}
+
 export type MessageSource = 'chat' | 'visual-edit' | 'comment';
 
 export type SendMessageOptions = {
@@ -76,13 +148,13 @@ export function approvedBuildPrompt(plan: WorkspacePlan) {
 
 export type VisualEditTool = 'select' | 'text' | 'instruct' | 'comment';
 
-/** Labeled Preview/Code control in the top bar. */
+/** The primary Preview/Code switch in the top bar. */
 export const WORKSPACE_PRIMARY_TABS = [
   { id: 'preview', label: 'Preview' },
   { id: 'code', label: 'Code' },
 ] as const;
 
-/** Icon-only tools to the right of Preview/Code. Append here, not as labeled pills. */
+/** Secondary views, behind the top bar's "More views" overflow. Append here. */
 export const WORKSPACE_TOOL_TABS = [
   { id: 'seo', label: 'Quality' },
   { id: 'assets', label: 'Assets' },
