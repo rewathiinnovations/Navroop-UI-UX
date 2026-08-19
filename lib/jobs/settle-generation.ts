@@ -1,7 +1,11 @@
 import { prisma } from '@/lib/db';
 import { filesFromReply } from '@/lib/generation/parse-blocks';
 import { sanitizeGenerationPath } from '@/lib/generation/parse-files';
-import { placeholderReplacements, replaceNeedImageTokens } from '@/lib/assets/need-image';
+import {
+  placeholderReplacements,
+  replaceNeedImageTokens,
+  sweepNeedImageTokens,
+} from '@/lib/assets/need-image';
 import { getCurrentProjectFiles } from '@/lib/github/current-files';
 import { log } from '@/lib/logger';
 import { toLastCode } from '@/lib/projects/last-code';
@@ -60,7 +64,12 @@ function withoutRawImageTokens(files: Record<string, string>): Record<string, st
   const out: Record<string, string> = {};
   for (const [path, content] of Object.entries(files)) {
     const leftovers = placeholderReplacements(content);
-    out[path] = leftovers.length > 0 ? replaceNeedImageTokens(content, leftovers) : content;
+    const replaced = leftovers.length > 0 ? replaceNeedImageTokens(content, leftovers) : content;
+    // `placeholderReplacements` can only replace what the parser recognised. A real
+    // build asked for `| 3:4`, which the pattern did not match, and the literal
+    // token shipped inside the user's `lib/site.ts`. The sweep is textual, so a
+    // shape nobody anticipated still cannot reach storage.
+    out[path] = sweepNeedImageTokens(replaced);
   }
   return out;
 }

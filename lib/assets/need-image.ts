@@ -7,14 +7,59 @@ export type NeedImageDirective = {
   aspect: NeedImageAspect;
 };
 
-const DIRECTIVE_RE =
-  /NEED_IMAGE:\s*([^|\n<"']+?)(?:\s*\|\s*(16:9|1:1|4:5|1200x630))?(?=["'<\n]|$)/gi;
+/**
+ * The aspect suffix accepts anything, deliberately.
+ *
+ * It used to accept only the four aspects the prompt lists, and because the
+ * description cannot contain `|`, an unlisted one made the whole pattern fail to
+ * match: a real build asked for `| 3:4` and `| 4:3`, so nothing recognised those
+ * directives, fulfilment never saw them, the placeholder sweep never saw them,
+ * and the literal `NEED_IMAGE: … | 3:4` string shipped inside the user's
+ * `lib/site.ts`. A ratio we did not advertise is a request to interpret, never a
+ * reason to leak a token into generated code.
+ */
+const DIRECTIVE_RE = /NEED_IMAGE:\s*([^|\n<"']+?)(?:\s*\|\s*([^"'<\n]+?))?\s*(?=["'<\n]|$)/gi;
+
+/** Ratios of the aspects the pipeline can actually produce. */
+const ASPECT_RATIOS: Array<{ aspect: NeedImageAspect; ratio: number }> = [
+  { aspect: '16:9', ratio: 16 / 9 },
+  { aspect: '1:1', ratio: 1 },
+  { aspect: '4:5', ratio: 4 / 5 },
+  { aspect: '1200x630', ratio: 1200 / 630 },
+];
 
 function normalizeAspect(value?: string | null): NeedImageAspect {
-  if (value === '1:1' || value === '4:5' || value === '1200x630' || value === '16:9') {
-    return value;
+  const raw = (value ?? '').trim();
+  if (!raw) return '16:9';
+  const exact = NEED_IMAGE_ASPECTS.find((aspect) => aspect === raw);
+  if (exact) return exact;
+
+  // `3:4`, `4:3`, `1920x1080` — a ratio we did not list. Serve the closest one we
+  // can produce rather than silently reframing everything as 16:9.
+  const parts = /^(\d+(?:\.\d+)?)\s*[:x×]\s*(\d+(?:\.\d+)?)$/i.exec(raw);
+  if (!parts) return '16:9';
+  const width = Number(parts[1]);
+  const height = Number(parts[2]);
+  if (!width || !height) return '16:9';
+
+  const ratio = width / height;
+  let best = ASPECT_RATIOS[0];
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const candidate of ASPECT_RATIOS) {
+    // Compared in log space so 2:1 and 1:2 are equally far from square.
+    const distance = Math.abs(Math.log(ratio) - Math.log(candidate.ratio));
+    // A tie goes to the shape on the same side of square as the request, so a
+    // landscape ask never lands on a portrait crop.
+    const closer =
+      distance < bestDistance - 1e-9 ||
+      (Math.abs(distance - bestDistance) <= 1e-9 &&
+        (ratio >= 1 ? candidate.ratio > best.ratio : candidate.ratio < best.ratio));
+    if (closer) {
+      best = candidate;
+      bestDistance = distance;
+    }
   }
-  return '16:9';
+  return best.aspect;
 }
 
 export function parseNeedImageDirectives(text: string): NeedImageDirective[] {
@@ -26,14 +71,10 @@ export function parseNeedImageDirectives(text: string): NeedImageDirective[] {
     const description = match[1].replace(/\s+/g, ' ').trim();
     if (!description) continue;
     const aspect = normalizeAspect(match[2]);
-    const token = match[2]
-      ? `NEED_IMAGE: ${description} | ${aspect}`
-      : `NEED_IMAGE: ${description}`;
     const key = `${description.toLowerCase()}|${aspect}`;
     if (seen.has(key)) continue;
     seen.add(key);
     found.push({ token: match[0].trim(), description, aspect });
-    void token;
   }
   return found;
 }
@@ -86,4 +127,27 @@ export function placeholderReplacements(text: string): Array<{ token: string; ur
     token: directive.token,
     url: placeholderImageDataUri(directive.aspect),
   }));
+}
+
+/**
+ * The floor: no `NEED_IMAGE:` string may reach stored files, whatever the parser
+ * made of it.
+ *
+ * `placeholderReplacements` can only replace what `parseNeedImageDirectives`
+ * recognised, so a directive shaped in a way the pattern misses survived every
+ * layer and shipped inside the user's source. This works on the raw text instead:
+ * from the token to the end of that string literal or line, whatever it contains.
+ * Belt and braces on purpose — one is a parser, the other is a guarantee.
+ */
+export function sweepNeedImageTokens(content: string): string {
+  if (!content.includes('NEED_IMAGE:')) return content;
+  return content.replace(/NEED_IMAGE:[^"'`<\n]*/gi, (token) => {
+    const aspect = /\|\s*([^"'`<\n]+)$/.exec(token)?.[1];
+    return placeholderImageDataUri(normalizePublicAspect(aspect));
+  });
+}
+
+/** `normalizeAspect` for callers outside the parser; same nearest-shape rule. */
+function normalizePublicAspect(value?: string | null): NeedImageAspect {
+  return parseNeedImageDirectives(`NEED_IMAGE: x | ${(value ?? '').trim()}`)[0]?.aspect ?? '16:9';
 }
