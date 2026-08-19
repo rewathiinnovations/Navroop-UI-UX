@@ -196,10 +196,15 @@ export default function DashboardPage() {
         ) : (
           <>
             {loading && (
-              <div className="grid grid-cols-1 gap-16 sm:grid-cols-2 lg:grid-cols-3">
+              <div
+                className="grid grid-cols-1 gap-16 sm:grid-cols-2 lg:grid-cols-3"
+                role="status"
+                aria-label="Loading projects"
+              >
                 {[0, 1, 2, 3].map((key) => (
                   <div
                     key={key}
+                    aria-hidden
                     className="h-240 rounded-12 bg-[var(--studio-skeleton)] animate-pulse"
                   />
                 ))}

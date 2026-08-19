@@ -297,10 +297,13 @@ function ProjectsContent() {
                 ? 'grid grid-cols-1 gap-16 sm:grid-cols-2 lg:grid-cols-3'
                 : 'flex flex-col gap-10'
             }
+            role="status"
+            aria-label="Loading projects"
           >
             {[0, 1, 2, 3].map((key) => (
               <div
                 key={key}
+                aria-hidden
                 className="h-200 rounded-12 bg-[var(--studio-skeleton)] animate-pulse"
               />
             ))}
