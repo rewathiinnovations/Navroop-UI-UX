@@ -123,7 +123,6 @@ try {
 
   const staleResult = await reconcileAbandonedJobs({
     now: new Date(),
-    currentInstance: getInstanceId(),
     timeoutMs: JOB_TIMEOUT_MS,
     staleMs: HEARTBEAT_STALE_MS,
     projectIds: [project.id],
@@ -137,7 +136,10 @@ try {
     WHERE id = ${project.id}
   `;
   assert(afterStale?.status === 'ABANDONED', 'stale heartbeat is abandoned');
-  assert(afterStale?.errorCode === 'server_restarted', 'stale heartbeat errorCode is server_restarted');
+  assert(
+    afterStale?.errorCode === 'server_restarted',
+    'stale heartbeat errorCode is server_restarted',
+  );
   assert(lockAfterStale[0]?.lockedById == null, 'lock released on ABANDONED');
   assert(lockAfterStale[0]?.activeJobId == null, 'activeJobId cleared on abandon');
   assert(lockAfterStale[0]?.phase !== 'BUILDING', 'phase is resumable after abandon');
@@ -166,7 +168,6 @@ try {
   `;
   await reconcileAbandonedJobs({
     now: new Date(),
-    currentInstance: getInstanceId(),
     timeoutMs: JOB_TIMEOUT_MS,
     staleMs: HEARTBEAT_STALE_MS,
     projectIds: [project.id],
@@ -191,7 +192,6 @@ try {
   });
   const freshShort = await reconcileAbandonedJobs({
     now: new Date(),
-    currentInstance: getInstanceId(),
     timeoutMs: JOB_TIMEOUT_MS,
     staleMs: HEARTBEAT_STALE_MS,
     projectIds: [project.id],
@@ -207,7 +207,6 @@ try {
   `;
   const staleShort = await reconcileAbandonedJobs({
     now: new Date(),
-    currentInstance: getInstanceId(),
     timeoutMs: JOB_TIMEOUT_MS,
     staleMs: HEARTBEAT_STALE_MS,
     projectIds: [project.id],
@@ -244,8 +243,14 @@ try {
   });
   assert(reverted.planReverted && reverted.phaseReverted, 'compensation reports both reverts');
   assert(planAfterRevert?.status === 'PENDING', 'failed job creation leaves the plan PENDING');
-  assert(projectAfterRevert?.phase !== 'BUILDING', 'failed job creation does not leave phase BUILDING');
-  assert(projectAfterRevert?.phase === 'PLANNING', 'phase goes back to PLANNING so approve works again');
+  assert(
+    projectAfterRevert?.phase !== 'BUILDING',
+    'failed job creation does not leave phase BUILDING',
+  );
+  assert(
+    projectAfterRevert?.phase === 'PLANNING',
+    'phase goes back to PLANNING so approve works again',
+  );
 
   const revertedTwice = await revertApprovedPlan({ projectId: project.id, planId: plan.id });
   assert(
@@ -316,7 +321,10 @@ try {
     inputPrompt: 'approve twice',
     idempotencyKey: key,
   });
-  assert(succeededTwin.id === a.id, 'idempotency key reuse while RUNNING does not start a second job');
+  assert(
+    succeededTwin.id === a.id,
+    'idempotency key reuse while RUNNING does not start a second job',
+  );
   await abandonJob(a.id, { errorCode: 'server_restarted', errorMessage: 'cleanup idempotency' });
 
   // Reset the counter, not just create it. The cases below each consume a credit and the
@@ -374,7 +382,12 @@ try {
     where: { id: WORKSPACE_ROW_ID },
     select: { creditsUsed: true },
   });
-  const racedCharge = { workspaceId: WORKSPACE_ROW_ID, userId: owner.id, action: 'generation' as const, projectId: project.id };
+  const racedCharge = {
+    workspaceId: WORKSPACE_ROW_ID,
+    userId: owner.id,
+    action: 'generation' as const,
+    projectId: project.id,
+  };
   const racedResults = await Promise.all([
     chargeJobCreditsOnce(racedJob.id, racedCharge),
     chargeJobCreditsOnce(racedJob.id, racedCharge),
@@ -391,7 +404,10 @@ try {
     afterRaced.creditsUsed === beforeRaced.creditsUsed + 1,
     'concurrent chargeJobCreditsOnce debits the workspace once',
   );
-  await abandonJob(racedJob.id, { errorCode: 'server_restarted', errorMessage: 'cleanup raced credits' });
+  await abandonJob(racedJob.id, {
+    errorCode: 'server_restarted',
+    errorMessage: 'cleanup raced credits',
+  });
 
   const legacy = await prisma.project.create({
     data: {
@@ -404,7 +420,6 @@ try {
   });
   await reconcileAbandonedJobs({
     now: new Date(),
-    currentInstance: getInstanceId(),
     timeoutMs: JOB_TIMEOUT_MS,
     staleMs: HEARTBEAT_STALE_MS,
     projectIds: [legacy.id],
@@ -413,7 +428,10 @@ try {
     where: { id: legacy.id },
     select: { phase: true, generationStatus: true },
   });
-  assert(legacyAfter?.phase !== 'BUILDING', 'legacy BUILDING + idle + no job row is unstuck at reconcile');
+  assert(
+    legacyAfter?.phase !== 'BUILDING',
+    'legacy BUILDING + idle + no job row is unstuck at reconcile',
+  );
   assert(legacyAfter?.generationStatus === 'idle', 'legacy unstuck project stays idle');
 
   await consumeCredits(WORKSPACE_ROW_ID, owner.id, 'generation', project.id).catch(() => undefined);

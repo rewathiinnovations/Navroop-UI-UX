@@ -88,7 +88,7 @@ export function parseExtractedMemories(raw: string): ExtractedProposal[] {
 }
 
 async function defaultComplete(userText: string) {
-  const { client, actualModel } = getProviderForModel(appConfig.ai.defaultModel);
+  const { client, actualModel } = await getProviderForModel(appConfig.ai.defaultModel);
   const result = await generateText({
     model: client(actualModel),
     temperature: 0,
@@ -102,7 +102,10 @@ async function defaultListActive(projectId: string) {
   const rows = await prisma.memoryEntry.findMany({
     where: {
       status: 'ACTIVE',
-      OR: [{ scope: 'WORKSPACE', projectId: null }, { scope: 'PROJECT', projectId }],
+      OR: [
+        { scope: 'WORKSPACE', projectId: null },
+        { scope: 'PROJECT', projectId },
+      ],
     },
     select: { content: true },
   });

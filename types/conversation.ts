@@ -44,8 +44,10 @@ export interface ConversationContext {
 
 export interface ConversationState {
   conversationId: string;
-  /** Project this history belongs to. The state is a server-global; requests
-   *  for a different project must reset it rather than inherit it. */
+  /** Project this history belongs to. State is keyed per project by
+   *  `conversationStateFor(projectId)` in lib/generation/conversation-state.ts.
+   *  It was a process-global that callers had to reset between projects, which
+   *  raced and bled one project's prompt context into another's generation. */
   projectId?: string | null;
   startedAt: number;
   lastUpdated: number;

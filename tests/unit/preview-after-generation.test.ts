@@ -1,12 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import {
-  LIVE_MODE_START_FAILED,
-  PREVIEW_EMPTY,
-  PREVIEW_NOT_READY_NOTICE,
-} from '../../lib/preview/labels';
+import { PREVIEW_EMPTY, PREVIEW_NOT_READY_NOTICE } from '../../lib/preview/labels';
 import {
   capturePreviewAfterGeneration,
-  noticeForLiveModeStart,
   noticeForPreviewAfterGeneration,
   previewPaneKind,
 } from '../../lib/preview/after-generation';
@@ -39,12 +34,13 @@ describe('preview after a successful generation', () => {
   });
 });
 
-describe('live mode start and empty preview pane', () => {
-  it('explains a failed Live mode start instead of returning silently', () => {
-    expect(noticeForLiveModeStart(true)).toBeNull();
-    expect(noticeForLiveModeStart(false)).toBe(LIVE_MODE_START_FAILED);
-  });
-
+/**
+ * `noticeForLiveModeStart` and LIVE_MODE_START_FAILED were asserted here until
+ * Live mode died with the sandbox subsystem (migration
+ * 20260819010000_drop_sandbox_columns). `useLivePreviewMode` has no `startLive`
+ * left to report on, so the helper had no caller outside this file.
+ */
+describe('empty preview pane', () => {
   it('is empty only when the project has no files at all', () => {
     expect(
       previewPaneKind({

@@ -176,6 +176,53 @@ describe('settleStreamedGeneration — stream files are not a finished site', ()
       }),
     ).toBe(true);
   });
+
+  it('fails an edit whose every path was refused, instead of succeeding on the site already there', async () => {
+    const job = await startBuild();
+    // The project already has a site, which is what hid this: `hasSite` was true from the
+    // existing lastCode, so a reply whose every path was refused skipped the write block,
+    // skipped the no-files failure, and reached succeedJob. Chat reported the change as made
+    // and lastCode had not moved — only a log line recorded it.
+    const existing = [
+      '<file path="src/App.jsx">',
+      'export default function App() { return null; }',
+      '</file>',
+    ].join('\n');
+    await prisma.project.update({ where: { id: PROJECT }, data: { lastCode: existing } });
+
+    const streamedCode = [
+      'Updated the config.',
+      '```env{path=../../.env}',
+      'AUTH_SECRET=leaked',
+      '```',
+      '```ts{path=C:/windows/system32/evil.ts}',
+      'export const evil = 1;',
+      '```',
+    ].join('\n');
+
+    const settled = await settleStreamedGeneration({
+      jobId: job.id,
+      producedFiles: 2,
+      streamedCode,
+      provider: 'openai',
+      model: 'gpt-4o-mini',
+    });
+
+    expect(settled.outcome).toBe('failed');
+    expect(settled.errorCode).toBe('no_files_generated');
+    expect(settled.errorMessage).toMatch(/unsafe path/i);
+    const [row] = await prisma.$queryRaw<Array<{ status: string; errorCode: string | null }>>`
+      SELECT status, "errorCode" FROM "GenerationJob" WHERE id = ${job.id}
+    `;
+    expect(row?.status).toBe('FAILED');
+    expect(row?.errorCode).toBe('no_files_generated');
+    // The site that was already there is untouched, not overwritten and not deleted.
+    const project = await prisma.project.findUniqueOrThrow({
+      where: { id: PROJECT },
+      select: { lastCode: true },
+    });
+    expect(project.lastCode).toBe(existing);
+  });
 });
 
 describe('settleStreamedGeneration — stack mismatch', () => {
