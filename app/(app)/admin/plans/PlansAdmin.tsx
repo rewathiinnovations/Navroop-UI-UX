@@ -25,6 +25,9 @@ const FIELDS = [
 const INPUT_CLASS =
   'h-32 w-full rounded-8 border border-[var(--studio-line)] bg-[var(--studio-bg)] px-8 text-[13px] text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]';
 
+const CHECKBOX_CLASS =
+  'size-16 rounded-4 accent-[var(--studio-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]';
+
 export default function PlansAdmin({
   initialPlans,
   assignedPlanId,
@@ -192,18 +195,20 @@ export default function PlansAdmin({
                 />
               </Td>
               <Td>
-                <label className="flex items-center gap-6">
+                <label className="flex items-center gap-6 text-[13px] text-[var(--studio-fg)]">
                   <input
                     type="checkbox"
+                    className={CHECKBOX_CLASS}
                     checked={plan.isActive}
                     disabled={busy === plan.id || plan.isDefault}
                     onChange={(event) => void patch(plan.id, { isActive: event.target.checked })}
                   />
                   Active
                 </label>
-                <label className="mt-6 flex items-center gap-6">
+                <label className="mt-6 flex items-center gap-6 text-[13px] text-[var(--studio-fg)]">
                   <input
                     type="checkbox"
+                    className={CHECKBOX_CLASS}
                     checked={plan.isDefault}
                     disabled={busy === plan.id}
                     onChange={(event) => {
@@ -212,9 +217,10 @@ export default function PlansAdmin({
                   />
                   Default
                 </label>
-                <label className="mt-6 flex items-center gap-6">
+                <label className="mt-6 flex items-center gap-6 text-[13px] text-[var(--studio-fg)]">
                   <input
                     type="checkbox"
+                    className={CHECKBOX_CLASS}
                     checked={plan.allowCustomDomain}
                     disabled={busy === plan.id}
                     onChange={(event) =>
@@ -223,9 +229,10 @@ export default function PlansAdmin({
                   />
                   Domain
                 </label>
-                <label className="mt-6 flex items-center gap-6">
+                <label className="mt-6 flex items-center gap-6 text-[13px] text-[var(--studio-fg)]">
                   <input
                     type="checkbox"
+                    className={CHECKBOX_CLASS}
                     checked={plan.allowGithubSync}
                     disabled={busy === plan.id}
                     onChange={(event) =>

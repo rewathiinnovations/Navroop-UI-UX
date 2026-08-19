@@ -157,6 +157,7 @@ export default function SkillsPanel() {
                     <label className="inline-flex items-center gap-6 text-[12px] text-[var(--studio-muted)]">
                       <input
                         type="checkbox"
+                        className="size-16 rounded-4 accent-[var(--studio-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
                         checked={skill.enabled}
                         onChange={() => void toggle(skill)}
                         aria-label={`Enable ${skill.name}`}

@@ -788,6 +788,7 @@ export default function IntegrationsAdmin({
                 <label key={server.uuid} className="flex items-start gap-10 text-[13px]">
                   <input
                     type="checkbox"
+                    className="mt-2 size-16 shrink-0 rounded-4 accent-[var(--studio-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
                     checked={Boolean(selectedServers[server.uuid]?.on)}
                     onChange={(event) =>
                       setSelectedServers((current) => ({
@@ -1041,6 +1042,7 @@ export default function IntegrationsAdmin({
               <label className="flex items-center gap-8 text-[13px] text-[var(--studio-fg)]">
                 <input
                   type="checkbox"
+                  className="size-16 rounded-4 accent-[var(--studio-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
                   checked={sentryReplay}
                   onChange={(event) => setSentryReplay(event.target.checked)}
                 />
@@ -1052,6 +1054,7 @@ export default function IntegrationsAdmin({
               <label className="flex items-center gap-8 text-[13px] text-[var(--studio-fg)]">
                 <input
                   type="checkbox"
+                  className="size-16 rounded-4 accent-[var(--studio-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
                   checked={sentryPerf}
                   onChange={(event) => setSentryPerf(event.target.checked)}
                 />
