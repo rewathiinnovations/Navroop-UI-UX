@@ -134,21 +134,15 @@ function catchForCall(source: string, callName: string): string[] {
 describe('generate-ai-code-stream unexpected-throw job steps', () => {
   const source = readFileSync(GENERATE_STREAM, 'utf8');
 
+  // The read-sandbox-files step is gone with the sandbox: current files come
+  // from the project row, and a failure there fails the request rather than
+  // being recorded as a skipped step.
   it('records analyze-edit-intent when analyzeEditIntent throws', () => {
     const catches = catchForCall(source, 'analyzeEditIntent');
-    expect(catches.length).toBeGreaterThanOrEqual(2);
+    expect(catches.length).toBeGreaterThanOrEqual(1);
     for (const block of catches) {
       expect(block).toMatch(/recordJobStepFailure\(/);
       expect(block).toMatch(/key:\s*'analyze-edit-intent'/);
-    }
-  });
-
-  it('records read-sandbox-files when readSandboxFiles throws', () => {
-    const catches = catchForCall(source, 'readSandboxFiles');
-    expect(catches.length).toBeGreaterThanOrEqual(2);
-    for (const block of catches) {
-      expect(block).toMatch(/recordJobStepFailure\(/);
-      expect(block).toMatch(/key:\s*'read-sandbox-files'/);
     }
   });
 });

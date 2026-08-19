@@ -1,23 +1,13 @@
-export const API_KEY_PROVIDERS = [
-  { id: 'firecrawl', label: 'Firecrawl', env: 'FIRECRAWL_API_KEY' },
-  { id: 'e2b', label: 'E2B', env: 'E2B_API_KEY' },
-  { id: 'openai', label: 'OpenAI', env: 'OPENAI_API_KEY' },
-  { id: 'anthropic', label: 'Anthropic', env: 'ANTHROPIC_API_KEY' },
-  { id: 'google', label: 'Google Gemini', env: 'GEMINI_API_KEY' },
-  { id: 'groq', label: 'Groq', env: 'GROQ_API_KEY' },
-  { id: 'gateway', label: 'Vercel AI Gateway', env: 'AI_GATEWAY_API_KEY' },
-] as const;
+/**
+ * Keys a person can set for themselves.
+ *
+ * Firecrawl is the only one left: E2B went with the sandboxes, and generation
+ * runs on DeepSeek with one workspace-wide key set in Admin → Configuration,
+ * not a per-user one. Listing the others invited people to paste keys that
+ * nothing would ever read.
+ */
+export const SETTINGS_API_KEY_PROVIDERS = [{ id: 'firecrawl', label: 'Firecrawl' }] as const;
 
-export const SETTINGS_API_KEY_PROVIDERS = [
-  { id: 'firecrawl', label: 'Firecrawl' },
-  { id: 'e2b', label: 'E2B' },
-  { id: 'anthropic', label: 'Anthropic' },
-  { id: 'openai', label: 'OpenAI' },
-  { id: 'gemini', label: 'Google Gemini' },
-  { id: 'groq', label: 'Groq' },
-] as const;
-
-export type ApiKeyProvider = (typeof API_KEY_PROVIDERS)[number]['id'];
 export type SettingsApiKeyProvider = (typeof SETTINGS_API_KEY_PROVIDERS)[number]['id'];
 
 export function maskSecret(value?: string | null) {
@@ -31,31 +21,45 @@ export function last4FromSecret(value: string) {
 }
 
 const PROVIDER_ALIASES: Record<string, string[]> = {
+  deepseek: ['deepseek'],
   openai: ['openai'],
   google: ['google', 'gemini'],
   gemini: ['gemini', 'google'],
-  anthropic: ['anthropic'],
-  groq: ['groq'],
   firecrawl: ['firecrawl'],
-  e2b: ['e2b'],
-  gateway: ['gateway'],
 };
 
-/** Registry keys for the providers that /admin/config manages. */
+/**
+ * Registry keys for the providers that /admin/config manages.
+ *
+ * `deepseek` has to be here. Without it a key saved in Admin → Configuration
+ * resolved to null, the overlay left DEEPSEEK_API_KEY at whatever the
+ * environment had, and generation kept reporting "DeepSeek is not configured"
+ * — while pointing the admin at the page they had just used.
+ */
 const SETTING_KEY_BY_PROVIDER: Record<string, string> = {
+  deepseek: 'ai.deepseek.apiKey',
   openai: 'ai.openai.apiKey',
-  anthropic: 'ai.anthropic.apiKey',
   google: 'ai.google.apiKey',
   gemini: 'ai.google.apiKey',
-  groq: 'ai.groq.apiKey',
-  gateway: 'ai.gateway.apiKey',
   firecrawl: 'tooling.firecrawl.apiKey',
-  e2b: 'tooling.e2b.apiKey',
+};
+
+/** Environment variable each provider falls back to. */
+const ENV_BY_PROVIDER: Record<string, string> = {
+  deepseek: 'DEEPSEEK_API_KEY',
+  openai: 'OPENAI_API_KEY',
+  google: 'GEMINI_API_KEY',
+  gemini: 'GEMINI_API_KEY',
+  firecrawl: 'FIRECRAWL_API_KEY',
 };
 
 function envNameForProvider(id: string) {
-  if (id === 'gemini') return 'GEMINI_API_KEY';
-  return API_KEY_PROVIDERS.find((provider) => provider.id === id)?.env;
+  return ENV_BY_PROVIDER[id];
+}
+
+/** The Admin → Configuration setting a provider's key is stored under. */
+export function settingKeyForProvider(id: string): string | undefined {
+  return SETTING_KEY_BY_PROVIDER[id];
 }
 
 async function decodeStoredSecret(secret: string) {

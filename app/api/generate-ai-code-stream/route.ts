@@ -46,25 +46,9 @@ import { checkCredits } from '@/lib/plans/limits';
 import { WORKSPACE_ROW_ID } from '@/lib/storage/usage';
 import { jsonError } from '@/lib/api/error-response';
 import { withRequest } from '@/lib/api/with-request';
+import { prisma } from '@/lib/db';
+import { getCurrentProjectFiles } from '@/lib/github/current-files';
 import { analyzeEditIntent } from '@/lib/generation/analyze-edit-intent';
-import {
-  NO_PROJECT_FILES_NOTICE,
-  SANDBOX_READ_FAILED_NOTICE,
-  shouldRetrySandboxFileRead,
-} from '@/lib/generation/sandbox-read-notices';
-
-/**
- * There is no sandbox to read from any more: a project's files live in the
- * database and render in the browser. The follow-up paths below still ask for
- * a live file listing, so this reports it as unavailable rather than
- * pretending an empty project.
- */
-async function readSandboxFiles(): Promise<
-  | { ok: true; files: Record<string, string>; manifest?: FileManifest }
-  | { ok: false; error: string }
-> {
-  return { ok: false, error: 'No live workspace — files are read from the project instead.' };
-}
 import { log, logError } from '@/lib/logger';
 import { trackFailure, trackStart, trackSuccess } from '@/lib/observability/track';
 import { acquireLock, beginLockHeartbeat, releaseLock } from '@/lib/projects/lock';
@@ -565,7 +549,6 @@ async function generateAiCodeStream(request: NextRequest) {
         // Check if we have a file manifest for edit mode
         let editContext = null;
         let enhancedSystemPrompt = '';
-        let sandboxReadWarned = false;
 
         if (isEdit) {
           console.log(
@@ -731,253 +714,6 @@ User request: "${prompt}"`;
               type: 'status',
               message: `Identified edit type: ${editContext.editIntent?.description || 'Code modification'}`,
             });
-          } else if (!manifest) {
-            console.log('[generate-ai-code-stream] WARNING: No manifest available for edit mode!');
-
-            // Try to fetch files from sandbox if we have one
-            if (global.activeSandbox) {
-              await sendProgress({
-                type: 'status',
-                message: 'Fetching current files from sandbox...',
-              });
-
-              try {
-                // Read files directly from sandbox
-                const filesData = await readSandboxFiles();
-
-                if (filesData.ok) {
-                  const manifest = filesData.manifest;
-                  console.log(
-                    '[generate-ai-code-stream] Successfully fetched manifest from sandbox',
-                  );
-
-                  {
-                    // Analyze edit intent with the manifest we just read
-                    try {
-                      const intent = await analyzeEditIntent({ prompt, manifest, model });
-
-                      if (intent.ok) {
-                        const searchPlan = intent.searchPlan;
-                        console.log(
-                          '[generate-ai-code-stream] Search plan received (after fetch):',
-                          searchPlan,
-                        );
-
-                        // For now, fall back to keyword search since we don't have file contents for search execution
-                        // This path happens when no manifest was initially available
-                        let targetFiles: any[] = [];
-                        if (!searchPlan || searchPlan.searchTerms.length === 0) {
-                          console.warn(
-                            '[generate-ai-code-stream] No target files after fetch, searching for relevant files',
-                          );
-
-                          const promptLower = prompt.toLowerCase();
-                          const allFilePaths = Object.keys(manifest?.files ?? {});
-
-                          // Look for component names mentioned in the prompt
-                          if (promptLower.includes('hero')) {
-                            targetFiles = allFilePaths.filter((p) =>
-                              p.toLowerCase().includes('hero'),
-                            );
-                          } else if (promptLower.includes('header')) {
-                            targetFiles = allFilePaths.filter((p) =>
-                              p.toLowerCase().includes('header'),
-                            );
-                          } else if (promptLower.includes('footer')) {
-                            targetFiles = allFilePaths.filter((p) =>
-                              p.toLowerCase().includes('footer'),
-                            );
-                          } else if (promptLower.includes('nav')) {
-                            targetFiles = allFilePaths.filter((p) =>
-                              p.toLowerCase().includes('nav'),
-                            );
-                          } else if (promptLower.includes('button')) {
-                            targetFiles = allFilePaths.filter((p) =>
-                              p.toLowerCase().includes('button'),
-                            );
-                          }
-
-                          if (targetFiles.length > 0) {
-                            console.log(
-                              '[generate-ai-code-stream] Found target files by keyword search after fetch:',
-                              targetFiles,
-                            );
-                          }
-                        }
-
-                        const allFiles = Object.keys(manifest?.files ?? {}).filter(
-                          (path) => !targetFiles.includes(path),
-                        );
-
-                        editContext = {
-                          primaryFiles: targetFiles,
-                          contextFiles: allFiles,
-                          systemPrompt: `
-You are an expert senior software engineer performing a surgical, context-aware code modification. Your primary directive is **precision and preservation**.
-
-Think of yourself as a surgeon making a precise incision, not a construction worker demolishing a wall.
-
-## Search-Based Edit
-Search Terms: ${searchPlan?.searchTerms?.join(', ') || 'keyword-based'}
-Edit Type: ${searchPlan?.editType || 'UPDATE_COMPONENT'}
-Reasoning: ${searchPlan?.reasoning || 'Modifying based on user request'}
-
-Files to Edit: ${targetFiles.join(', ') || 'To be determined'}
-User Request: "${prompt}"
-
-## Your Mandatory Thought Process (Execute Internally):
-Before writing ANY code, you MUST follow these steps:
-
-1. **Understand Intent:**
-   - What is the user's core goal? (adding feature, fixing bug, changing style?)
-   - Does the conversation history provide extra clues?
-
-2. **Locate the Code:**
-   - First examine the Primary Files provided
-   - Check the "ALL PROJECT FILES" list to find the EXACT file name
-   - "nav" might be Navigation.tsx, NavBar.tsx, Nav.tsx, or Header.tsx
-   - DO NOT create a new file if a similar one exists!
-
-3. **Plan the Changes (Mental Diff):**
-   - What is the *minimal* set of changes required?
-   - Which exact lines need to be added, modified, or deleted?
-   - Will this require new packages?
-
-4. **Verify Preservation:**
-   - What existing code, props, state, and logic must NOT be touched?
-   - How can I make my change without disrupting surrounding code?
-
-5. **Construct the Final Code:**
-   - Only after completing steps above, generate the final code
-   - Provide the ENTIRE file content with modifications integrated
-
-## Critical Rules & Constraints:
-
-**PRESERVATION IS KEY:** You MUST NOT rewrite entire components or files. Integrate your changes into the existing code. Preserve all existing logic, props, state, and comments not directly related to the user's request.
-
-**MINIMALISM:** Only output files you have actually changed. If a file doesn't need modification, don't include it.
-
-**COMPLETENESS:** Each file must be COMPLETE from first line to last:
-- NEVER TRUNCATE - Include EVERY line
-- NO ellipsis (...) to skip content
-- ALL imports, functions, JSX, and closing tags must be present
-- The file MUST be runnable
-
-**SURGICAL PRECISION:**
-- Change ONLY what's explicitly requested
-- If user says "change background to green", change ONLY the background class
-- 99% of the original code should remain untouched
-- NO refactoring, reformatting, or "improvements" unless requested
-
-**NO CONVERSATION:** Your output must contain ONLY the code. No explanations or apologies.
-
-## EXAMPLES:
-
-### CORRECT APPROACH for "change hero background to blue":
-<thinking>
-I need to change the background color of the Hero component. Looking at the file, I see the main div has 'bg-gray-900'. I will change ONLY this to 'bg-blue-500' and leave everything else exactly as is.
-</thinking>
-
-Then return the EXACT same file with only 'bg-gray-900' changed to 'bg-blue-500'.
-
-### WRONG APPROACH (DO NOT DO THIS):
-- Rewriting the Hero component from scratch
-- Changing the structure or reorganizing imports
-- Adding or removing unrelated code
-- Reformatting or "cleaning up" the code
-
-Remember: You are a SURGEON making a precise incision, not an artist repainting the canvas!`,
-                          editIntent: {
-                            type: searchPlan?.editType || 'UPDATE_COMPONENT',
-                            targetFiles: targetFiles,
-                            confidence: searchPlan ? 0.85 : 0.6,
-                            description: searchPlan?.reasoning || 'Keyword-based file selection',
-                            suggestedContext: [],
-                          },
-                        };
-
-                        enhancedSystemPrompt = editContext.systemPrompt;
-
-                        await sendProgress({
-                          type: 'status',
-                          message: `Identified edit type: ${editContext.editIntent.description}`,
-                        });
-                      } else {
-                        // Log and continue, as above: a missing plan costs
-                        // precision, not the edit itself.
-                        console.error(
-                          '[generate-ai-code-stream] Failed to get search plan after fetch:',
-                          intent.error,
-                        );
-                        await recordJobStepFailure(generationJob?.id, {
-                          key: 'analyze-edit-intent',
-                          label: 'Plan the edit',
-                          error: intent.error,
-                        });
-                      }
-                    } catch (error) {
-                      console.error(
-                        '[generate-ai-code-stream] Error analyzing intent after fetch:',
-                        error,
-                      );
-                      await recordJobStepFailure(generationJob?.id, {
-                        key: 'analyze-edit-intent',
-                        label: 'Plan the edit',
-                        error: error instanceof Error ? error.message : String(error),
-                      });
-                    }
-                  }
-                } else {
-                  // Log and continue: the sandbox read is an attempt to recover
-                  // context we do not have. Without it the model works from the
-                  // prompt and the conversation alone, which is worse but still
-                  // produces an edit.
-                  console.error(
-                    '[generate-ai-code-stream] Failed to read sandbox files:',
-                    filesData.error,
-                  );
-                  if (!sandboxReadWarned) {
-                    await sendProgress({
-                      type: 'warning',
-                      message: SANDBOX_READ_FAILED_NOTICE,
-                    });
-                    sandboxReadWarned = true;
-                  }
-                  await recordJobStepFailure(generationJob?.id, {
-                    key: 'read-sandbox-files',
-                    label: 'Read current files',
-                    error: filesData.error,
-                  });
-                }
-              } catch (error) {
-                console.error('[generate-ai-code-stream] Error fetching sandbox files:', error);
-                if (!sandboxReadWarned) {
-                  await sendProgress({
-                    type: 'warning',
-                    message: SANDBOX_READ_FAILED_NOTICE,
-                  });
-                  sandboxReadWarned = true;
-                }
-                await recordJobStepFailure(generationJob?.id, {
-                  key: 'read-sandbox-files',
-                  label: 'Read current files',
-                  error: error instanceof Error ? error.message : String(error),
-                });
-              }
-            } else {
-              console.log('[generate-ai-code-stream] No active sandbox to fetch files from');
-              await sendProgress({
-                type: 'warning',
-                message: NO_PROJECT_FILES_NOTICE,
-              });
-              sandboxReadWarned = true;
-              await recordJobStepFailure(generationJob?.id, {
-                key: 'read-sandbox-files',
-                label: 'Read current files',
-                error:
-                  'No workspace was running for this project, so its current files could not be read.',
-              });
-            }
           }
         }
 
@@ -1165,244 +901,65 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
             contextParts.push(`Current file structure:\n${context.structure}`);
           }
 
-          // Use backend file cache instead of frontend-provided files
-          let backendFiles = global.sandboxState?.fileCache?.files || {};
+          // The project's files come from its row. This used to read a
+          // server-global cache that a sandbox kept in sync; nothing writes
+          // that cache any more, so every edit found no files and fell through
+          // to FIRST GENERATION MODE below — the model never saw the site it
+          // was being asked to change, and rewrote it from scratch instead.
+          //
+          // Loading per project also settles the hazard the cache had: it was
+          // never scoped, so a REACT initial build once inherited the previous
+          // NEXTJS project's app/ tree as "EXISTING APPLICATION" context and
+          // edited that instead of following the stack prompt. An initial
+          // build generates from scratch by definition, so only an edit reads
+          // files at all.
+          let backendFiles: Record<string, string> = {};
+          if (isEdit && conversationProjectId) {
+            const projectFilesRow = await prisma.project.findFirst({
+              where: { id: conversationProjectId, deletedAt: null },
+              select: { lastCode: true },
+            });
+            if (projectFilesRow) backendFiles = getCurrentProjectFiles(projectFilesRow);
+            log.info('generation.project_files_loaded', {
+              requestId: getRequestId(),
+              projectId: conversationProjectId,
+              fileCount: Object.keys(backendFiles).length,
+            });
+          }
           let hasBackendFiles = Object.keys(backendFiles).length > 0;
 
-          // The backend file cache is a server-global left by whichever sandbox
-          // last synced it — it is NOT scoped to this project. A REACT initial
-          // build once inherited the previous NEXTJS project's app/ tree as
-          // "EXISTING APPLICATION" context, and the model edited that tree
-          // instead of following the REACT stack prompt. Only trust the cache
-          // when it was written by this project's own sandbox.
-          // An initial build generates from scratch by definition. The
-          // "EXISTING APPLICATION — TARGETED EDIT REQUIRED" framing below is
-          // edit-only: fed to an initial build it makes the model edit
-          // whatever tree the cache happens to hold. (A stale client once
-          // stamped the previous project's sandboxId onto a new project row,
-          // which let the cache pass the ownership check and a REACT build
-          // "edited" the old project's Next.js files.)
-          if (hasBackendFiles && !isEdit) {
-            log.info('generation.backend_cache_skipped', {
-              requestId: getRequestId(),
-              reason: 'initial_build',
-            });
-            backendFiles = {};
-            hasBackendFiles = false;
-          }
-
-          console.log('[generate-ai-code-stream] Backend file cache status:');
-          console.log('[generate-ai-code-stream] - Has sandboxState:', !!global.sandboxState);
-          console.log(
-            '[generate-ai-code-stream] - Has fileCache:',
-            !!global.sandboxState?.fileCache,
-          );
           console.log('[generate-ai-code-stream] - File count:', Object.keys(backendFiles).length);
-          console.log(
-            '[generate-ai-code-stream] - Has manifest:',
-            !!global.sandboxState?.fileCache?.manifest,
-          );
 
-          // If no backend files and we're in edit mode, try to fetch from sandbox
-          if (
-            shouldRetrySandboxFileRead({
-              hasBackendFiles,
-              isEdit,
-              hasActiveSandbox: Boolean(global.activeSandbox),
-            })
-          ) {
-            console.log(
-              '[generate-ai-code-stream] No backend files, attempting to fetch from sandbox...',
-            );
-
-            try {
-              const filesData = await readSandboxFiles();
-
-              if (filesData.ok) {
-                {
-                  console.log(
-                    '[generate-ai-code-stream] Successfully fetched',
-                    Object.keys(filesData.files).length,
-                    'files from sandbox',
-                  );
-
-                  // Initialize sandboxState if needed
-                  if (!global.sandboxState) {
-                    global.sandboxState = {
-                      fileCache: {
-                        files: {},
-                        lastSync: Date.now(),
-                        sandboxId: context?.sandboxId || 'unknown',
-                      },
-                    } as any;
-                  } else if (!global.sandboxState.fileCache) {
-                    global.sandboxState.fileCache = {
-                      files: {},
-                      lastSync: Date.now(),
-                      sandboxId: context?.sandboxId || 'unknown',
-                    };
-                  }
-
-                  // Store files in cache
-                  for (const [path, content] of Object.entries(filesData.files)) {
-                    const normalizedPath = path.replace('/home/user/app/', '');
-                    if (global.sandboxState.fileCache) {
-                      global.sandboxState.fileCache.files[normalizedPath] = {
-                        content: content as string,
-                        lastModified: Date.now(),
-                      };
-                    }
-                  }
-
-                  if (filesData.manifest && global.sandboxState.fileCache) {
-                    global.sandboxState.fileCache.manifest = filesData.manifest;
-
-                    // Now try to analyze edit intent with the fetched manifest
-                    if (!editContext) {
-                      console.log(
-                        '[generate-ai-code-stream] Analyzing edit intent with fetched manifest',
-                      );
-                      try {
-                        const intent = await analyzeEditIntent({
-                          prompt,
-                          manifest: filesData.manifest,
-                          model,
-                        });
-
-                        if (intent.ok) {
-                          console.log(
-                            '[generate-ai-code-stream] Search plan received:',
-                            intent.searchPlan,
-                          );
-
-                          // Create edit context from AI analysis
-                          // Note: We can't execute search here without file contents, so fall back to keyword method
-                          const fileContext = selectFilesForEdit(prompt, filesData.manifest);
-                          editContext = fileContext;
-                          enhancedSystemPrompt = fileContext.systemPrompt;
-
-                          console.log(
-                            '[generate-ai-code-stream] Edit context created with',
-                            editContext.primaryFiles.length,
-                            'primary files',
-                          );
-                        } else {
-                          // Log and continue: same trade-off as the other two
-                          // planning call sites.
-                          console.error(
-                            '[generate-ai-code-stream] Failed to get search plan:',
-                            intent.error,
-                          );
-                          await recordJobStepFailure(generationJob?.id, {
-                            key: 'analyze-edit-intent',
-                            label: 'Plan the edit',
-                            error: intent.error,
-                          });
-                        }
-                      } catch (error) {
-                        console.error(
-                          '[generate-ai-code-stream] Failed to analyze edit intent:',
-                          error,
-                        );
-                        await recordJobStepFailure(generationJob?.id, {
-                          key: 'analyze-edit-intent',
-                          label: 'Plan the edit',
-                          error: error instanceof Error ? error.message : String(error),
-                        });
-                      }
-                    }
-                  }
-
-                  // Update variables
-                  backendFiles = global.sandboxState.fileCache?.files || {};
-                  hasBackendFiles = Object.keys(backendFiles).length > 0;
-                  console.log('[generate-ai-code-stream] Updated backend cache with fetched files');
-                }
-              } else {
-                // Log and continue: this is a best-effort attempt to recover a
-                // file cache we do not have. The generation proceeds with the
-                // context already assembled.
-                console.error(
-                  '[generate-ai-code-stream] Failed to read sandbox files:',
-                  filesData.error,
-                );
-                if (!sandboxReadWarned) {
-                  await sendProgress({
-                    type: 'warning',
-                    message: SANDBOX_READ_FAILED_NOTICE,
-                  });
-                  sandboxReadWarned = true;
-                }
-                await recordJobStepFailure(generationJob?.id, {
-                  key: 'read-sandbox-files',
-                  label: 'Read current files',
-                  error: filesData.error,
-                });
-              }
-            } catch (error) {
-              console.error('[generate-ai-code-stream] Failed to fetch sandbox files:', error);
-              await recordJobStepFailure(generationJob?.id, {
-                key: 'read-sandbox-files',
-                label: 'Read current files',
-                error: error instanceof Error ? error.message : String(error),
-              });
-            }
-          }
-
-          // Include current file contents from backend cache
+          // Show the model the files it is being asked to change.
           if (hasBackendFiles) {
-            // If we have edit context, use intelligent file selection
-            if (editContext && editContext.primaryFiles.length > 0) {
-              contextParts.push('\nEXISTING APPLICATION - TARGETED EDIT MODE');
-              contextParts.push(`\n${editContext.systemPrompt || enhancedSystemPrompt}\n`);
-
-              // Get contents of primary and context files
-              const primaryFileContents = await getFileContents(
-                editContext.primaryFiles,
-                global.sandboxState!.fileCache!.manifest!,
-              );
-              const contextFileContents = await getFileContents(
-                editContext.contextFiles,
-                global.sandboxState!.fileCache!.manifest!,
-              );
-              const formattedFiles = formatFilesForAI(primaryFileContents, {});
-              contextParts.push(formattedFiles);
-              const selectedRest = selectFileContext({
-                files: contextFileContents,
-                userMessage: prompt,
-                recentlyModifiedPaths: editContext.primaryFiles,
-              });
-              if (selectedRest.formatted) {
-                contextParts.push(selectedRest.formatted);
-              }
-
-              contextParts.push(
-                '\nIMPORTANT: Only modify the files listed under "Files to Edit". The context files are provided for reference only.',
-              );
-            } else {
-              console.log(
-                '[generate-ai-code-stream] Selective file context (no edit-context primary set)',
-              );
-              contextParts.push('\nEXISTING APPLICATION - TARGETED EDIT REQUIRED');
-              contextParts.push(
-                '\nYou MUST analyze the user request and determine which specific file(s) to edit.',
-              );
-              const recentPaths = (global.conversationState?.context.edits ?? [])
-                .flatMap((edit) => edit.targetFiles || [])
-                .slice(-12);
-              const selected = selectFileContext({
-                files: backendFiles,
-                userMessage: prompt,
-                recentlyModifiedPaths: recentPaths,
-              });
-              console.log(
-                `[generate-ai-code-stream] Selective context: ${selected.fullPaths.length} full, ${selected.pathOnly.length} path-only, ~${selected.estimatedTokens} tokens`,
-              );
-              contextParts.push(selected.formatted);
-              contextParts.push(
-                '\nEdit only the files required. Path-only entries are listed for orientation — do not regenerate them.',
-              );
+            contextParts.push('\nEXISTING APPLICATION - TARGETED EDIT REQUIRED');
+            contextParts.push(
+              '\nYou MUST analyze the user request and determine which specific file(s) to edit.',
+            );
+            if (editContext?.systemPrompt) {
+              contextParts.push(`\n${editContext.systemPrompt}\n`);
             }
+            // Selection reads `backendFiles` directly. It used to have a
+            // second path that pulled contents out of a FileManifest, but a
+            // manifest only ever came from a sandbox sync — the assertions on
+            // it (`global.sandboxState!.fileCache!.manifest!`) would throw the
+            // moment real files arrived here.
+            const recentPaths = (global.conversationState?.context.edits ?? [])
+              .flatMap((edit) => edit.targetFiles || [])
+              .slice(-12);
+            const selected = selectFileContext({
+              files: backendFiles,
+              userMessage: prompt,
+              recentlyModifiedPaths: recentPaths,
+              primaryPaths: editContext?.primaryFiles,
+            });
+            console.log(
+              `[generate-ai-code-stream] Selective context: ${selected.fullPaths.length} full, ${selected.pathOnly.length} path-only, ~${selected.estimatedTokens} tokens`,
+            );
+            contextParts.push(selected.formatted);
+            contextParts.push(
+              '\nEdit only the files required. Path-only entries are listed for orientation — do not regenerate them.',
+            );
           } else if (context.currentFiles && Object.keys(context.currentFiles).length > 0) {
             console.log(
               '[generate-ai-code-stream] Warning: Backend cache empty, using selective frontend files',

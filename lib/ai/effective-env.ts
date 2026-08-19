@@ -1,7 +1,7 @@
 import { getEffectiveApiKey } from '@/lib/api-keys';
 import { getSettings } from '@/lib/settings/resolve';
 
-const OVERLAY_KEYS = [{ env: 'DEEPSEEK_API_KEY', provider: 'deepseek' }] as const;
+export const OVERLAY_KEYS = [{ env: 'DEEPSEEK_API_KEY', provider: 'deepseek' }] as const;
 
 /** Non-secret AI settings configured in Admin → Configuration, not only in the environment. */
 const OVERLAY_BASE_URLS = [
