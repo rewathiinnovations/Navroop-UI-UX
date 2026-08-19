@@ -6,7 +6,8 @@ export type PersistProjectInput = {
   prompt: string;
   style?: string | null;
   model?: string | null;
-  sandboxId?: string | null;
+  // No sandboxId: the column went with 20260819010000_drop_sandbox_columns, and
+  // sending it anyway made every generation PATCH answer 500.
   previewUrl?: string | null;
   screenshot?: string | null;
   lastCode?: string | null;
@@ -24,7 +25,7 @@ export async function persistProject(input: PersistProjectInput) {
     prompt: input.prompt,
     style: input.style,
     model: input.model,
-    sandboxId: input.sandboxId,
+
     previewUrl: input.previewUrl,
     thumbnailUrl: input.screenshot,
     screenshot: input.screenshot,

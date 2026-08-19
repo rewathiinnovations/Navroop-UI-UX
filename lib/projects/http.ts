@@ -3,11 +3,17 @@ import type { ActionErr } from '@/lib/projects/actions';
 
 export function actionError(result: ActionErr) {
   const details =
-    result.details && typeof result.details === 'object' ? (result.details as Record<string, unknown>) : {};
+    result.details && typeof result.details === 'object'
+      ? (result.details as Record<string, unknown>)
+      : {};
   return NextResponse.json(
     {
       error: result.error,
-      ...(result.status === 402 || result.status === 409 ? details : result.details ? { details: result.details } : {}),
+      ...(result.status === 402 || result.status === 409
+        ? details
+        : result.details
+          ? { details: result.details }
+          : {}),
     },
     { status: result.status },
   );
@@ -27,8 +33,12 @@ export function readCreateInput(body: Record<string, unknown>) {
     ...(typeof body.designDirection === 'string' && body.designDirection
       ? { designDirection: body.designDirection }
       : {}),
-    ...(typeof body.importMode === 'string' && body.importMode ? { importMode: body.importMode } : {}),
-    ...(typeof body.templateId === 'string' && body.templateId ? { templateId: body.templateId } : {}),
+    ...(typeof body.importMode === 'string' && body.importMode
+      ? { importMode: body.importMode }
+      : {}),
+    ...(typeof body.templateId === 'string' && body.templateId
+      ? { templateId: body.templateId }
+      : {}),
   };
 }
 
@@ -51,7 +61,9 @@ export function readGenerationInput(body: Record<string, unknown>) {
   return {
     style: body.style as string | null | undefined,
     model: body.model as string | null | undefined,
-    sandboxId: body.sandboxId as string | null | undefined,
+    // No sandboxId. `Project` lost that column in 20260819010000_drop_sandbox_columns,
+    // and accepting it here is what carried a dead field into prisma.project.update,
+    // where it threw `Unknown argument` on every generation persist.
     previewUrl: body.previewUrl as string | null | undefined,
     thumbnailUrl,
     lastCode: body.lastCode as string | null | undefined,
@@ -66,7 +78,6 @@ export function hasGenerationFields(input: ReturnType<typeof readGenerationInput
   return (
     input.style !== undefined ||
     input.model !== undefined ||
-    input.sandboxId !== undefined ||
     input.previewUrl !== undefined ||
     input.thumbnailUrl !== undefined ||
     input.lastCode !== undefined ||

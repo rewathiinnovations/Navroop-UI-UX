@@ -483,8 +483,6 @@ export async function duplicateProject(id: string) {
 
 export type GenerationPersistInput = {
   style?: string | null;
-  model?: string | null;
-  sandboxId?: string | null;
   previewUrl?: string | null;
   thumbnailUrl?: string | null;
   lastCode?: string | null;
@@ -492,7 +490,20 @@ export type GenerationPersistInput = {
   progressMessage?: string | null;
   sourceMessage?: string | null;
   source?: string | null;
+  model?: string | null;
 };
+
+/**
+ * No `sandboxId`. The column went with `20260819010000_drop_sandbox_columns`, but
+ * this input kept accepting it and spreading it into `prisma.project.update`, and
+ * the client always sent it — as `null`, which is present, not absent. So every
+ * persist threw `PrismaClientValidationError: Unknown argument 'sandboxId'`, the
+ * PATCH answered 500, and the client's stream reader died on the FIRST progress
+ * frame. The server went on streaming for eleven minutes and 96k output tokens
+ * while the workspace showed an empty pane and "Building your project…" — a
+ * generation that looked hung and then lost its files. Adding a field here that
+ * `Project` does not have is not a typo, it is an outage.
+ */
 
 export async function persistProjectGeneration(id: string, input: GenerationPersistInput) {
   const stored = peekActor();
@@ -513,30 +524,36 @@ export async function persistProjectGeneration(id: string, input: GenerationPers
   // generation was started for, so it is the owner on that path too.
   if (!canMutate(user, existing.ownerId)) return forbidden();
 
+  // Annotated, not inferred. A spread into an inline `data` object is structurally
+  // checked against `ProjectUpdateInput` only loosely once optional spreads are
+  // involved, which is how `sandboxId` survived a migration that dropped the column
+  // and turned every persist into a 500. Naming the type here makes a field that
+  // `Project` does not have a compile error instead of a runtime outage.
+  const data: Prisma.ProjectUpdateInput = {
+    ...(input.style !== undefined ? { style: input.style } : {}),
+    ...(input.model !== undefined ? { model: input.model } : {}),
+    ...(input.previewUrl !== undefined ? { previewUrl: input.previewUrl } : {}),
+    ...(input.thumbnailUrl !== undefined ? { thumbnailUrl: input.thumbnailUrl } : {}),
+    ...(input.lastCode !== undefined ? { lastCode: input.lastCode } : {}),
+    ...(input.generationStatus !== undefined && input.generationStatus
+      ? { generationStatus: input.generationStatus }
+      : {}),
+    ...(input.progressMessage !== undefined ? { progressMessage: input.progressMessage } : {}),
+    // COMPLETE means a finished site (lastCode / checkpoint). Gating this on
+    // phase === BUILDING stranded projects: a build that ran after "Start
+    // over" (which resets to PLANNING) persisted its site and stayed in
+    // PLANNING forever, with the preview panel telling the user nothing was
+    // built. Site evidence in this persist is the gate, not the prior phase.
+    ...(existing.phase !== 'COMPLETE' &&
+    input.generationStatus === 'ready' &&
+    (input.lastCode || existing.phase === 'BUILDING')
+      ? { phase: 'COMPLETE' as const }
+      : {}),
+  };
+
   const project = await prisma.project.update({
     where: { id },
-    data: {
-      ...(input.style !== undefined ? { style: input.style } : {}),
-      ...(input.model !== undefined ? { model: input.model } : {}),
-      ...(input.sandboxId !== undefined ? { sandboxId: input.sandboxId } : {}),
-      ...(input.previewUrl !== undefined ? { previewUrl: input.previewUrl } : {}),
-      ...(input.thumbnailUrl !== undefined ? { thumbnailUrl: input.thumbnailUrl } : {}),
-      ...(input.lastCode !== undefined ? { lastCode: input.lastCode } : {}),
-      ...(input.generationStatus !== undefined && input.generationStatus
-        ? { generationStatus: input.generationStatus }
-        : {}),
-      ...(input.progressMessage !== undefined ? { progressMessage: input.progressMessage } : {}),
-      // COMPLETE means a finished site (lastCode / checkpoint). Gating this on
-      // phase === BUILDING stranded projects: a build that ran after "Start
-      // over" (which resets to PLANNING) persisted its site and stayed in
-      // PLANNING forever, with the preview panel telling the user nothing was
-      // built. Site evidence in this persist is the gate, not the prior phase.
-      ...(existing.phase !== 'COMPLETE' &&
-      input.generationStatus === 'ready' &&
-      (input.lastCode || existing.phase === 'BUILDING')
-        ? { phase: 'COMPLETE' as const }
-        : {}),
-    },
+    data,
     include: { owner: { select: ownerSelect } },
   });
 

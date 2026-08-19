@@ -410,7 +410,6 @@ async function deliverPersistPreviewNotice(response: Response, status?: Generati
 async function persistProgress(partial: {
   status?: GenerationStatus;
   progressMessage?: string | null;
-  sandboxId?: string | null;
   previewUrl?: string | null;
 }) {
   const projectId = state.projectId;
@@ -469,7 +468,8 @@ function setJobStatus(status: GenerationStatus, lastError: string | null = null)
   return persistProgress({
     status,
     progressMessage: lastError || state.generationProgress.status || status,
-    sandboxId: state.sandboxData?.sandboxId || null,
+    // No sandboxId: the column is gone, and sending it made this PATCH 500 —
+    // which is what killed the stream reader on the first progress frame.
     previewUrl: state.sandboxData?.url || null,
   });
 }
@@ -800,7 +800,15 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
             const files = prev.files.length > 0 ? finalizeStreamedFiles(prev.files) : parsedFiles;
             return {
               ...prev,
-              status: `Generated ${files.length} file${files.length !== 1 ? 's' : ''}!`,
+              // `complete` with zero files is now a real outcome, not a failure:
+              // the route settles a prose-only reply (the "hello" case) as SUCCEEDED
+              // and sends the answer here with no files. "Generated 0 files!" reads
+              // as a broken build; say what actually happened. A genuine no-files
+              // failure still arrives earlier as conversation + an error frame.
+              status:
+                files.length > 0
+                  ? `Generated ${files.length} file${files.length !== 1 ? 's' : ''}!`
+                  : 'Answered — no changes made',
               isGenerating: false,
               isStreaming: false,
               isThinking: false,
