@@ -92,3 +92,6 @@ bun.lockb
 
 # In-browser preview vendor asset (copied from node_modules/esbuild-wasm at install)
 public/preview-vendor/esbuild.wasm
+
+# Local git worktrees for isolated agent workspaces
+/.worktrees/
