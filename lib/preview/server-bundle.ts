@@ -25,7 +25,9 @@ export async function buildStaticSite(
   }
 
   if (assembly.kind === 'html') {
-    // Static projects ship as-is; their assets are already relative files.
+    // Static projects ship as-is; their assets are already relative files. The paths
+    // are model output, so they are not trusted here: buildStaticPreview runs each
+    // one through sanitizeGenerationPath before it becomes a storage key.
     return { ok: true, files: { ...projectFiles, 'index.html': assembly.html } };
   }
 

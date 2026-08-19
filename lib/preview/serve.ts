@@ -38,6 +38,87 @@ const NOT_FOUND_HTML = `<!doctype html>
 </body>
 </html>`;
 
+/**
+ * The request path becomes part of a storage key, so it must not be able to walk
+ * out of `previews/{projectId}/{buildId}`. This route is public — a share link is
+ * opened by people without an account — and before this guard
+ * `GET /preview-static/{pid}/%2e%2e%2f%2e%2e%2f%2e%2e%2fsnapshots%2f{other}/{cp}.json.gz`
+ * returned another project's whole source snapshot.
+ *
+ * The path as received is checked, and so is every percent-decoding round of it:
+ * Next hands encoded `%2e%2e%2f` over as `../` while collapsing plain `..`, so the
+ * encoded form is the one that arrives here, and a proxy that decodes one round
+ * differently must not reopen the hole. Decoding stops at a malformed escape
+ * rather than refusing the request, because a filename may legitimately contain a
+ * bare `%` and the raw form — the one that becomes the key — is already checked.
+ *
+ * The leading slash is stripped once, up front. The route builds its path as
+ * `/${segments.join('/')}`, so that slash is this function's own caller rather
+ * than anything a visitor sent — and rejecting it as "absolute" 404'd every
+ * preview that has ever been served, entry page included, while the tests stayed
+ * green because they all passed the unprefixed form. A slash that appears only
+ * after decoding is NOT stripped: there it does mean an absolute path.
+ *
+ * Returns null when the path escapes the prefix — the caller answers 404 rather
+ * than confirming which of the two situations it hit.
+ */
+export function safePreviewRequestPath(requestPath: string): string | null {
+  const raw = String(requestPath).replace(/\\/g, '/').replace(/^\/+/, '');
+  for (const candidate of decodeRounds(raw)) {
+    if (escapesPrefix(candidate)) return null;
+  }
+  return resolveSegments(raw);
+}
+
+function decodeRounds(path: string) {
+  const rounds = [path];
+  let current = path;
+  // Three is past anything legitimate; a deeper encoding still only ever resolves
+  // to a literal segment name, which cannot leave the prefix.
+  for (let round = 0; round < 3; round += 1) {
+    let next: string;
+    try {
+      next = decodeURIComponent(current);
+    } catch {
+      break;
+    }
+    if (next === current) break;
+    current = next;
+    rounds.push(current);
+  }
+  return rounds;
+}
+
+function escapesPrefix(path: string) {
+  const unified = path.replace(/\\/g, '/');
+  if (unified.includes('\0')) return true;
+  if (unified.startsWith('/') || /^[a-zA-Z]:\//.test(unified)) return true;
+  let depth = 0;
+  for (const segment of unified.split('/')) {
+    if (!segment || segment === '.') continue;
+    if (segment !== '..') {
+      depth += 1;
+      continue;
+    }
+    depth -= 1;
+    if (depth < 0) return true;
+  }
+  return false;
+}
+
+function resolveSegments(path: string) {
+  const segments: string[] = [];
+  for (const segment of path.split('/')) {
+    if (!segment || segment === '.') continue;
+    if (segment === '..') {
+      segments.pop();
+      continue;
+    }
+    segments.push(segment);
+  }
+  return segments.join('/');
+}
+
 export async function handlePreviewRequest(input: {
   projectId: string;
   path: string;
@@ -64,10 +145,23 @@ export async function handlePreviewRequest(input: {
 
   const build = await input.loadBuild();
   if (!build?.storagePrefix) {
-    return { status: 404, headers: { ...headers, 'Content-Type': 'text/html; charset=utf-8' }, body: NOT_FOUND_HTML };
+    return {
+      status: 404,
+      headers: { ...headers, 'Content-Type': 'text/html; charset=utf-8' },
+      body: NOT_FOUND_HTML,
+    };
   }
 
-  const relative = resolvePreviewObjectPath(input.path, {
+  const safePath = safePreviewRequestPath(input.path);
+  if (safePath === null) {
+    return {
+      status: 404,
+      headers: { ...headers, 'Content-Type': 'text/html; charset=utf-8' },
+      body: NOT_FOUND_HTML,
+    };
+  }
+
+  const relative = resolvePreviewObjectPath(safePath, {
     spaFallback: build.isSpa,
     entryPath: build.entryPath,
   });

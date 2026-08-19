@@ -14,6 +14,10 @@
  * Key convention: projects/{projectId}/assets/{id}.{ext}
  * Checkpoint snapshots: snapshots/{projectId}/{checkpointId}.json.gz
  *
+ * Keys are resolved, not trimmed: see `normalizeKey`. Every driver call rejects a
+ * key that walks above the root, so a traversal in a caller-assembled key fails
+ * loudly instead of reading or writing the wrong file.
+ *
  * Contract for both drivers: `get` returns null and `exists` returns false ONLY for an
  * object that is genuinely absent. Every other failure throws. Callers turn an absent
  * snapshot into "this version was pruned" and an absent preview file into a 404, so a
@@ -29,7 +33,7 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
-import { dirname, join, relative, sep } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { getSetting, getSettings } from '@/lib/settings/resolve';
 import { isObjectNotFoundError } from './s3-errors';
 
@@ -49,25 +53,88 @@ async function localRoot() {
   return (await getSetting('storage.localDir')) || join(process.cwd(), 'public', 'uploads');
 }
 
-function normalizeKey(key: string) {
-  return key.replace(/^\/+/, '').replace(/\\/g, '/');
+/**
+ * A key that must never reach a driver: it walks above the storage root, is
+ * absolute or drive-qualified, carries a NUL byte, or is empty once resolved.
+ *
+ * Thrown, never rewritten. `normalizeKey` used to strip leading slashes and
+ * nothing else, so `previews/{projectId}/{buildId}/../../../.env` — a key the
+ * *public* preview route assembles straight from the request path — read any
+ * file under, or above, the uploads root, because join() resolves `..`. A
+ * caller that assembles `..` into a key is a bug or an attack; quietly serving
+ * some other object instead of the one asked for hides both.
+ */
+export class StorageKeyError extends Error {
+  /** The rejected key. Kept out of the message so a route cannot echo it back. */
+  key: string;
+
+  constructor(key: string, reason: string) {
+    super(`Unsafe storage key: ${reason}`);
+    this.name = 'StorageKeyError';
+    this.key = key;
+  }
+}
+
+/**
+ * Resolve a key to plain `a/b/c` form: `.` segments drop, `..` pops the segment
+ * before it, and anything that would leave the root throws.
+ *
+ * A trailing slash survives, because it is load-bearing for prefixes: purging
+ * `snapshots/proj_1/` must not also list `snapshots/proj_10/...` on S3.
+ */
+export function normalizeKey(key: string) {
+  const unified = String(key).replace(/\\/g, '/');
+  if (unified.includes('\0')) throw new StorageKeyError(key, 'contains a NUL byte');
+  if (unified.startsWith('/')) throw new StorageKeyError(key, 'is an absolute path');
+  if (/^[a-zA-Z]:\//.test(unified)) throw new StorageKeyError(key, 'is drive-qualified');
+
+  const segments: string[] = [];
+  for (const segment of unified.split('/')) {
+    if (!segment || segment === '.') continue;
+    if (segment !== '..') {
+      segments.push(segment);
+      continue;
+    }
+    if (segments.length === 0) throw new StorageKeyError(key, 'walks above the storage root');
+    segments.pop();
+  }
+  if (segments.length === 0) throw new StorageKeyError(key, 'is empty');
+
+  const resolved = segments.join('/');
+  return unified.endsWith('/') ? `${resolved}/` : resolved;
 }
 
 function localUrl(key: string) {
   return `/uploads/${normalizeKey(key)}`;
 }
 
+/**
+ * The absolute path a key maps to on the local driver, proven to sit inside the
+ * root before anything reads, writes or unlinks it. `normalizeKey` has already
+ * removed every `..`; this re-checks the resolved path at the syscall rather
+ * than trusting that, because the one time it did not hold the public preview
+ * route became an arbitrary file read.
+ */
+async function localTarget(key: string) {
+  const root = resolve(await localRoot());
+  const normalized = normalizeKey(key);
+  const path = resolve(root, normalized);
+  if (path !== root && !path.startsWith(root + sep)) {
+    throw new StorageKeyError(key, 'resolves outside the storage root');
+  }
+  return { root, path, key: normalized };
+}
+
 async function localUpload(buffer: Buffer, input: UploadInput): Promise<UploadResult> {
-  const key = normalizeKey(input.key);
-  const dest = join(await localRoot(), key);
-  await mkdir(dirname(dest), { recursive: true });
-  await writeFile(dest, buffer);
-  return { url: localUrl(key) };
+  const target = await localTarget(input.key);
+  await mkdir(dirname(target.path), { recursive: true });
+  await writeFile(target.path, buffer);
+  return { url: localUrl(target.key) };
 }
 
 async function localExists(key: string) {
   try {
-    await stat(join(await localRoot(), normalizeKey(key)));
+    await stat((await localTarget(key)).path);
     return true;
   } catch (error) {
     // ENOTDIR: a path component is a file, so nothing can be stored under it. Anything
@@ -80,7 +147,7 @@ async function localExists(key: string) {
 
 async function localDelete(key: string) {
   try {
-    await unlink(join(await localRoot(), normalizeKey(key)));
+    await unlink((await localTarget(key)).path);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code !== 'ENOENT') throw error;
@@ -128,7 +195,9 @@ async function s3PublicUrl(key: string) {
 
 async function s3Upload(buffer: Buffer, input: UploadInput): Promise<UploadResult> {
   const key = normalizeKey(input.key);
-  await (await s3Client()).send(
+  await (
+    await s3Client()
+  ).send(
     new PutObjectCommand({
       Bucket: await s3Bucket(),
       Key: key,
@@ -142,7 +211,9 @@ async function s3Upload(buffer: Buffer, input: UploadInput): Promise<UploadResul
 
 async function s3Exists(key: string) {
   try {
-    await (await s3Client()).send(
+    await (
+      await s3Client()
+    ).send(
       new HeadObjectCommand({
         Bucket: await s3Bucket(),
         Key: normalizeKey(key),
@@ -156,7 +227,9 @@ async function s3Exists(key: string) {
 }
 
 async function s3Delete(key: string) {
-  await (await s3Client()).send(
+  await (
+    await s3Client()
+  ).send(
     new DeleteObjectCommand({
       Bucket: await s3Bucket(),
       Key: normalizeKey(key),
@@ -181,7 +254,7 @@ export async function deleteObject(key: string) {
 
 async function localGet(key: string): Promise<Buffer | null> {
   try {
-    return await readFile(join(await localRoot(), normalizeKey(key)));
+    return await readFile((await localTarget(key)).path);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === 'ENOENT') return null;
@@ -191,7 +264,9 @@ async function localGet(key: string): Promise<Buffer | null> {
 
 async function s3Get(key: string): Promise<Buffer | null> {
   try {
-    const response = await (await s3Client()).send(
+    const response = await (
+      await s3Client()
+    ).send(
       new GetObjectCommand({
         Bucket: await s3Bucket(),
         Key: normalizeKey(key),
@@ -212,8 +287,8 @@ export async function get(key: string): Promise<Buffer | null> {
 }
 
 async function localListKeys(prefix: string): Promise<string[]> {
-  const root = await localRoot();
-  const start = join(root, normalizeKey(prefix));
+  const target = await localTarget(prefix);
+  const root = target.root;
   const keys: string[] = [];
 
   async function walk(dir: string) {
@@ -235,7 +310,7 @@ async function localListKeys(prefix: string): Promise<string[]> {
     }
   }
 
-  await walk(start);
+  await walk(target.path);
   return keys;
 }
 
@@ -243,7 +318,9 @@ async function s3ListKeys(prefix: string): Promise<string[]> {
   const keys: string[] = [];
   let token: string | undefined;
   do {
-    const response = await (await s3Client()).send(
+    const response = await (
+      await s3Client()
+    ).send(
       new ListObjectsV2Command({
         Bucket: await s3Bucket(),
         Prefix: normalizeKey(prefix),
@@ -269,7 +346,9 @@ export { deleteObject as delete };
 /** Trivial HEAD for /api/health. Local stats the uploads root; s3 lists one key. Throws on failure. */
 export async function headStorage() {
   if ((await driver()) === 's3') {
-    await (await s3Client()).send(
+    await (
+      await s3Client()
+    ).send(
       new ListObjectsV2Command({
         Bucket: await s3Bucket(),
         MaxKeys: 1,

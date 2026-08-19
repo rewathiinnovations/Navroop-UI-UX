@@ -1,4 +1,4 @@
-import { isAbsolute, normalize, sep } from 'node:path';
+import { posix } from 'node:path';
 
 export type ParseFilesErrorCode =
   | 'empty'
@@ -43,20 +43,38 @@ function isBinary(content: string) {
   return sample.length > 0 && control / sample.length > 0.3;
 }
 
-export function sanitizeGenerationPath(raw: string): { ok: true; path: string } | { ok: false; code: ParseFilesErrorCode } {
+/**
+ * Every path this guards becomes a posix-semantic name — a storage key, a zip
+ * entry, a `<file path=…>` block — so it is normalized with `posix`, never with
+ * the platform's `path`. That is not a style preference: bare `node:path` made
+ * the verdict depend on the host, and on Windows it let a `..` through its own
+ * traversal check, because win32 `normalize` keeps the drive-relative prefix and
+ * neither test below can see the `..` behind it.
+ *
+ *     sanitizeGenerationPath('C:x/a/../..\\..')
+ *       win32 → { ok: true, path: 'C:..' }        ← escapes, silently
+ *       posix → { ok: false, code: 'path_traversal' }
+ *
+ * Same shape for `C:x/../y` (`C:y` vs `y`) and `C:` (`C:.` vs `C:`). Windows dev
+ * boxes ran the first column while the Linux container ran the second. Never go
+ * back to the unqualified import.
+ */
+export function sanitizeGenerationPath(
+  raw: string,
+): { ok: true; path: string } | { ok: false; code: ParseFilesErrorCode } {
   const trimmed = raw.trim().replace(/\\/g, '/');
   if (!trimmed) return { ok: false, code: 'empty' };
   if (trimmed.split('/').some((segment) => segment === '')) {
     return { ok: false, code: 'empty' };
   }
-  if (isAbsolute(trimmed) || /^[a-zA-Z]:\//.test(trimmed) || trimmed.startsWith('/')) {
+  if (posix.isAbsolute(trimmed) || /^[a-zA-Z]:\//.test(trimmed) || trimmed.startsWith('/')) {
     return { ok: false, code: 'absolute_path' };
   }
-  const normalized = normalize(trimmed).replace(/\\/g, '/');
+  const normalized = posix.normalize(trimmed);
+  // `posix.sep` is '/', so the second split the platform version needed was this
+  // same check twice. One is enough, and `posix.normalize` can only ever leave a
+  // `..` at the front, which `startsWith` already catches.
   if (normalized.startsWith('..') || normalized.split('/').includes('..')) {
-    return { ok: false, code: 'path_traversal' };
-  }
-  if (normalized.split(sep).includes('..')) {
     return { ok: false, code: 'path_traversal' };
   }
   return { ok: true, path: normalized.replace(/^\.\//, '') };

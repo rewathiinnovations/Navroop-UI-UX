@@ -1,5 +1,6 @@
 import { Readable } from 'node:stream';
 import type { FileSnapshotEntry } from '@/lib/checkpoints/snapshot-store';
+import { sanitizeGenerationPath } from '@/lib/generation/parse-files';
 import { log } from '@/lib/logger';
 
 type Archiver = {
@@ -15,15 +16,24 @@ export async function streamExportZip(files: FileSnapshotEntry[], readme: string
   const mod = await import('archiver');
   const create = (mod as { default?: (format: string, opts?: object) => Archiver }).default;
   if (!create) {
-    throw new Error('archiver is not installed — ask the server agent to stop :3000, then pnpm add archiver');
+    throw new Error(
+      'archiver is not installed — ask the server agent to stop :3000, then pnpm add archiver',
+    );
   }
 
   const archive = create('zip', { zlib: { level: 9 } });
   archive.append(readme, { name: 'README.md' });
   for (const file of files) {
-    const name = file.path.replace(/\\/g, '/').replace(/^\.\//, '');
-    if (name === 'README.md') continue;
-    archive.append(file.content, { name });
+    // filterExportFiles already drops these, but streamExportZip is exported on its
+    // own: the entry name is proven safe where it is written, not upstream, so no
+    // future caller can ship a `../../..` entry that unzips over the user's files.
+    const safe = sanitizeGenerationPath(file.path);
+    if (!safe.ok) {
+      log.warn('export.archive_skipped_unsafe_path', { path: file.path, code: safe.code });
+      continue;
+    }
+    if (safe.path === 'README.md') continue;
+    archive.append(file.content, { name: safe.path });
   }
   const body = Readable.toWeb(Readable.from(archive)) as ReadableStream<Uint8Array>;
   // finalize() is intentionally not awaited so the zip streams, but an unhandled
