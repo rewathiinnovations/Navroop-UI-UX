@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 import AuthModal, { type AuthMode } from '@/components/app/auth/AuthModal';
@@ -13,6 +13,7 @@ import { PENDING_PROMPT_KEY, clearDraftStorage } from '@/hooks/useDraftStorage';
 import type { DesignDirectionId } from '@/lib/design/directions';
 import type { ImportMode } from '@/lib/import/mode';
 import { createProjectFromPrompt } from '@/lib/projects/start-from-prompt';
+import { createSignedOutSubmit, type SignedOutSubmit } from '@/lib/projects/signed-out-submit';
 import type { StackId } from '@/lib/stacks';
 import { notify } from '@/lib/notify';
 
@@ -41,10 +42,26 @@ export default function HomeLanding({
     setAuthOpen(true);
   }, [initialAuth]);
 
+  /**
+   * The submit the visitor pressed while signed out, waiting for the sign-in to land. Per
+   * tab, in memory, spent when taken — see `lib/projects/signed-out-submit.ts` for the two
+   * ways the old localStorage handoff misfired.
+   */
+  const pendingSubmitRef = useRef<SignedOutSubmit | null>(null);
+  pendingSubmitRef.current ??= createSignedOutSubmit();
+
+  const takePendingSubmit = useCallback(() => pendingSubmitRef.current?.take() ?? null, []);
+
   const openAuth = (mode: AuthMode) => {
     heroRef.current?.flush();
     setAuthMode(mode);
     setAuthOpen(true);
+  };
+
+  const closeAuth = () => {
+    // Walking away from the sign-in withdraws the submit; the text stays in the hero draft.
+    pendingSubmitRef.current?.withdraw();
+    setAuthOpen(false);
   };
 
   const onSubmit = async (
@@ -54,6 +71,7 @@ export default function HomeLanding({
     importMode: ImportMode,
   ) => {
     if (!session?.user) {
+      pendingSubmitRef.current?.arm({ text: value, stack, designDirection, importMode });
       openAuth('signup');
       return;
     }
@@ -126,10 +144,11 @@ export default function HomeLanding({
         open={authOpen}
         mode={authMode}
         onModeChange={setAuthMode}
-        onClose={() => setAuthOpen(false)}
+        onClose={closeAuth}
         nextPath={nextPath}
         initialForgot={initialForgot}
         resetSuccess={resetSuccess}
+        takePendingPrompt={takePendingSubmit}
       />
     </div>
   );

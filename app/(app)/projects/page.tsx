@@ -1,69 +1,69 @@
-"use client";
+'use client';
 
-import Link from "next/link";
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
-import { LayoutGrid, List, Plus } from "lucide-react";
-import StudioButton from "@/components/app/studio/StudioButton";
-import StudioShell from "@/components/app/studio/StudioShell";
-import ProjectCard from "@/components/dashboard/ProjectCard";
+import Link from 'next/link';
+import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
+import { LayoutGrid, List, Plus } from 'lucide-react';
+import StudioButton from '@/components/app/studio/StudioButton';
+import StudioShell from '@/components/app/studio/StudioShell';
+import ProjectCard from '@/components/dashboard/ProjectCard';
 import {
   bucketProjectsByUpdatedAt,
   fetchProjectList,
   isProjectGenerating,
   type ListProject,
-} from "@/lib/projects/list-client";
-import { cn } from "@/utils/cn";
+} from '@/lib/projects/list-client';
+import { cn } from '@/utils/cn';
 
-type SortKey = "updatedAt" | "name" | "createdAt";
-type StatusFilter = "any" | "draft" | "published";
-type Density = "grid" | "list";
+type SortKey = 'updatedAt' | 'name' | 'createdAt';
+type StatusFilter = 'any' | 'draft' | 'published';
+type Density = 'grid' | 'list';
 
 function parseSort(value: string | null): SortKey {
-  if (value === "name" || value === "createdAt" || value === "updatedAt") return value;
-  return "updatedAt";
+  if (value === 'name' || value === 'createdAt' || value === 'updatedAt') return value;
+  return 'updatedAt';
 }
 
 function parseStatus(value: string | null): StatusFilter {
-  if (value === "draft" || value === "published") return value;
-  return "any";
+  if (value === 'draft' || value === 'published') return value;
+  return 'any';
 }
 
 function parseMine(value: string | null): boolean | undefined {
-  if (value === "true") return true;
-  if (value === "false") return false;
+  if (value === 'true') return true;
+  if (value === 'false') return false;
   return undefined;
 }
 
 function ProjectsContent() {
   const searchParams = useSearchParams();
-  const [search, setSearch] = useState(searchParams.get("search") ?? "");
-  const [sort, setSort] = useState<SortKey>(parseSort(searchParams.get("sort")));
-  const [status, setStatus] = useState<StatusFilter>(parseStatus(searchParams.get("status")));
-  const [mine, setMine] = useState<boolean | undefined>(parseMine(searchParams.get("mine")));
-  const starred = searchParams.get("starred") === "true";
-  const [density, setDensity] = useState<Density>("grid");
+  const [search, setSearch] = useState(searchParams.get('search') ?? '');
+  const [sort, setSort] = useState<SortKey>(parseSort(searchParams.get('sort')));
+  const [status, setStatus] = useState<StatusFilter>(parseStatus(searchParams.get('status')));
+  const [mine, setMine] = useState<boolean | undefined>(parseMine(searchParams.get('mine')));
+  const starred = searchParams.get('starred') === 'true';
+  const [density, setDensity] = useState<Density>('grid');
   const [createOpen, setCreateOpen] = useState(false);
   const [projects, setProjects] = useState<ListProject[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const [error, setError] = useState('');
 
   useEffect(() => {
-    setSearch(searchParams.get("search") ?? "");
-    setSort(parseSort(searchParams.get("sort")));
-    setStatus(parseStatus(searchParams.get("status")));
-    setMine(parseMine(searchParams.get("mine")));
+    setSearch(searchParams.get('search') ?? '');
+    setSort(parseSort(searchParams.get('sort')));
+    setStatus(parseStatus(searchParams.get('status')));
+    setMine(parseMine(searchParams.get('mine')));
   }, [searchParams]);
 
   useEffect(() => {
     if (!createOpen) return;
     const close = () => setCreateOpen(false);
     const timer = window.setTimeout(() => {
-      document.addEventListener("click", close);
+      document.addEventListener('click', close);
     }, 0);
     return () => {
       window.clearTimeout(timer);
-      document.removeEventListener("click", close);
+      document.removeEventListener('click', close);
     };
   }, [createOpen]);
 
@@ -78,15 +78,15 @@ function ProjectsContent() {
       const nextSearch = (patch.search !== undefined ? patch.search : search).trim();
       const nextSort = patch.sort !== undefined ? patch.sort : sort;
       const nextStatus = patch.status !== undefined ? patch.status : status;
-      const nextMine = "mine" in patch ? patch.mine : mine;
-      if (nextSearch) params.set("search", nextSearch);
-      if (nextSort !== "updatedAt") params.set("sort", nextSort);
-      if (nextStatus !== "any") params.set("status", nextStatus);
-      if (nextMine === true) params.set("mine", "true");
-      if (nextMine === false) params.set("mine", "false");
-      if (starred) params.set("starred", "true");
+      const nextMine = 'mine' in patch ? patch.mine : mine;
+      if (nextSearch) params.set('search', nextSearch);
+      if (nextSort !== 'updatedAt') params.set('sort', nextSort);
+      if (nextStatus !== 'any') params.set('status', nextStatus);
+      if (nextMine === true) params.set('mine', 'true');
+      if (nextMine === false) params.set('mine', 'false');
+      if (starred) params.set('starred', 'true');
       const qs = params.toString();
-      window.history.replaceState(null, "", qs ? `/projects?${qs}` : "/projects");
+      window.history.replaceState(null, '', qs ? `/projects?${qs}` : '/projects');
     },
     [mine, search, sort, starred, status],
   );
@@ -94,39 +94,14 @@ function ProjectsContent() {
   const load = useCallback(
     async (silent = false) => {
       if (!silent) setLoading(true);
-      const query = search.trim();
-      if (query) {
-        const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          setError(String(data.error || 'Could not search projects'));
-          if (!silent) setLoading(false);
-          return;
-        }
-        const hits = (data.projects || []) as Array<{
-          id: string;
-          name: string;
-          status: string;
-          phase?: ListProject['phase'];
-          updatedAt: string;
-        }>;
-        setProjects(
-          hits.map((hit) => ({
-            id: hit.id,
-            name: hit.name,
-            thumbnailUrl: null,
-            status: hit.status,
-            phase: hit.phase,
-            updatedAt: typeof hit.updatedAt === 'string' ? hit.updatedAt : new Date(hit.updatedAt).toISOString(),
-            ownerId: '',
-          })),
-        );
-        setError('');
-        if (!silent) setLoading(false);
-        return;
-      }
-
+      // One path, search or not. Typing in the box used to switch to `/api/search`, whose
+      // payload carries no thumbnail, no owner and no star state — so every card lost its
+      // screenshot and read as owned by "Member" — and which takes neither `mine` nor
+      // `starred`, so picking "Owned by me" or "Starred" silently stopped applying and the
+      // results were the whole workspace. `/api/projects` filters by name and prompt
+      // server-side and returns the same rows the unsearched list does.
       const result = await fetchProjectList({
+        search: search.trim() || undefined,
         sort,
         mine,
         starred: starred || undefined,
@@ -137,16 +112,19 @@ function ProjectsContent() {
         return;
       }
       setProjects(result.projects);
-      setError("");
+      setError('');
       if (!silent) setLoading(false);
     },
     [mine, search, sort, starred],
   );
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void load();
-    }, search ? 250 : 0);
+    const timer = window.setTimeout(
+      () => {
+        void load();
+      },
+      search ? 250 : 0,
+    );
     return () => window.clearTimeout(timer);
   }, [load, search]);
 
@@ -159,14 +137,16 @@ function ProjectsContent() {
   }, [load, projects]);
 
   const filtered = useMemo(() => {
-    if (status === "any") return projects;
+    if (status === 'any') return projects;
     return projects.filter((project) => project.status === status);
   }, [projects, status]);
 
   const buckets = useMemo(() => bucketProjectsByUpdatedAt(filtered), [filtered]);
 
   const onRenamed = (id: string, name: string) => {
-    setProjects((current) => current.map((project) => (project.id === id ? { ...project, name } : project)));
+    setProjects((current) =>
+      current.map((project) => (project.id === id ? { ...project, name } : project)),
+    );
   };
 
   const onDuplicated = (project: ListProject) => {
@@ -178,7 +158,7 @@ function ProjectsContent() {
   };
 
   const selectClass =
-    "h-44 rounded-10 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-12 text-[14px] text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]";
+    'h-44 rounded-10 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-12 text-[14px] text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]';
 
   return (
     <StudioShell variant="workspace">
@@ -261,9 +241,9 @@ function ProjectsContent() {
             <label className="flex items-center gap-8 text-[13px] text-[var(--studio-muted)]">
               Owner
               <select
-                value={mine === true ? "mine" : "all"}
+                value={mine === true ? 'mine' : 'all'}
                 onChange={(event) => {
-                  const next = event.target.value === "mine" ? true : undefined;
+                  const next = event.target.value === 'mine' ? true : undefined;
                   setMine(next);
                   persistUrl({ mine: next });
                 }}
@@ -274,31 +254,35 @@ function ProjectsContent() {
               </select>
             </label>
           </div>
-          <div className="inline-flex rounded-10 border border-[var(--studio-line)] p-4" role="group" aria-label="Layout">
+          <div
+            className="inline-flex rounded-10 border border-[var(--studio-line)] p-4"
+            role="group"
+            aria-label="Layout"
+          >
             <button
               type="button"
-              aria-pressed={density === "grid"}
+              aria-pressed={density === 'grid'}
               aria-label="Grid view"
-              onClick={() => setDensity("grid")}
+              onClick={() => setDensity('grid')}
               className={cn(
-                "inline-flex size-[36px] items-center justify-center rounded-8 transition-colors duration-200",
-                density === "grid"
-                  ? "bg-[var(--studio-surface-hover)] text-[var(--studio-fg)]"
-                  : "text-[var(--studio-muted)] hover:text-[var(--studio-fg)]",
+                'inline-flex size-[36px] items-center justify-center rounded-8 transition-colors duration-200',
+                density === 'grid'
+                  ? 'bg-[var(--studio-surface-hover)] text-[var(--studio-fg)]'
+                  : 'text-[var(--studio-muted)] hover:text-[var(--studio-fg)]',
               )}
             >
               <LayoutGrid className="size-16" aria-hidden />
             </button>
             <button
               type="button"
-              aria-pressed={density === "list"}
+              aria-pressed={density === 'list'}
               aria-label="List view"
-              onClick={() => setDensity("list")}
+              onClick={() => setDensity('list')}
               className={cn(
-                "inline-flex size-[36px] items-center justify-center rounded-8 transition-colors duration-200",
-                density === "list"
-                  ? "bg-[var(--studio-surface-hover)] text-[var(--studio-fg)]"
-                  : "text-[var(--studio-muted)] hover:text-[var(--studio-fg)]",
+                'inline-flex size-[36px] items-center justify-center rounded-8 transition-colors duration-200',
+                density === 'list'
+                  ? 'bg-[var(--studio-surface-hover)] text-[var(--studio-fg)]'
+                  : 'text-[var(--studio-muted)] hover:text-[var(--studio-fg)]',
               )}
             >
               <List className="size-16" aria-hidden />
@@ -307,9 +291,18 @@ function ProjectsContent() {
         </div>
 
         {loading && (
-          <div className={density === "grid" ? "grid grid-cols-1 gap-16 sm:grid-cols-2 lg:grid-cols-3" : "flex flex-col gap-10"}>
+          <div
+            className={
+              density === 'grid'
+                ? 'grid grid-cols-1 gap-16 sm:grid-cols-2 lg:grid-cols-3'
+                : 'flex flex-col gap-10'
+            }
+          >
             {[0, 1, 2, 3].map((key) => (
-              <div key={key} className="h-200 rounded-12 bg-[var(--studio-skeleton)] animate-pulse" />
+              <div
+                key={key}
+                className="h-200 rounded-12 bg-[var(--studio-skeleton)] animate-pulse"
+              />
             ))}
           </div>
         )}
@@ -356,9 +349,9 @@ function ProjectsContent() {
               </h2>
               <div
                 className={
-                  density === "grid"
-                    ? "grid grid-cols-1 gap-16 sm:grid-cols-2 lg:grid-cols-3"
-                    : "flex flex-col gap-10"
+                  density === 'grid'
+                    ? 'grid grid-cols-1 gap-16 sm:grid-cols-2 lg:grid-cols-3'
+                    : 'flex flex-col gap-10'
                 }
               >
                 {bucket.items.map((project) => (

@@ -12,12 +12,7 @@ import PromptTipsPanel from '@/components/dashboard/PromptTipsPanel';
 import ProjectCard from '@/components/dashboard/ProjectCard';
 import { loginModalHref } from '@/lib/auth/public-login';
 import { notify } from '@/lib/notify';
-import {
-  PENDING_PROMPT_KEY,
-  clearDraftStorage,
-  readDraftStorage,
-  writeDraftStorage,
-} from '@/hooks/useDraftStorage';
+import { PENDING_PROMPT_KEY, clearDraftStorage } from '@/hooks/useDraftStorage';
 import type { DesignDirectionId } from '@/lib/design/directions';
 import type { ImportMode } from '@/lib/import/mode';
 import { createProject } from '@/lib/projects/actions';
@@ -87,13 +82,16 @@ export default function DashboardPage() {
     designDirection: DesignDirectionId,
     importMode: ImportMode,
   ) => {
-    const draft = readDraftStorage(PENDING_PROMPT_KEY);
+    // No `templateId`: template attribution belongs to the sheet's own create call
+    // (`POST /api/templates/[id]/create`). This used to read it back out of the shared hero
+    // draft, which the template sheet wrote into — so the next unrelated prompt sent from the
+    // dashboard was filed against, and counted a second use of, a template it had nothing to
+    // do with.
     const created = await createProject({
       initialPrompt: text,
       stack,
       designDirection,
       importMode,
-      templateId: draft?.templateId || undefined,
       // Land in the workspace immediately; the plan streams in behind it.
       deferPlanning: true,
     });
@@ -108,7 +106,7 @@ export default function DashboardPage() {
       return;
     }
     clearDraftStorage(PENDING_PROMPT_KEY);
-    armProjectGeneration(text, importMode);
+    armProjectGeneration(created.data.id, text);
     router.push(`/project/${created.data.id}`);
   };
 
@@ -220,7 +218,8 @@ export default function DashboardPage() {
                 <div className="mt-20">
                   <ExamplePromptCards
                     onChoose={(prompt) => {
-                      writeDraftStorage(PENDING_PROMPT_KEY, prompt);
+                      // `fill` already flushes the draft, and it does so with the stack and
+                      // design direction the hero is actually showing.
                       heroRef.current?.fill(prompt);
                     }}
                   />
