@@ -7,6 +7,44 @@ import { trySandboxGitPush } from './sandbox-git';
 
 export { CONNECT_FIRST_MESSAGE };
 
+export const GITHUB_REAUTH_MESSAGE =
+  'GitHub rejected the saved credentials. Reconnect GitHub from Connectors (or Admin → Configuration) and push again.';
+
+/**
+ * GitHub answers an expired or revoked token with "Bad credentials", which is
+ * true and useless — it reads like the push was malformed and says nothing
+ * about what to do. A live push failed exactly this way while the connector
+ * still showed CONNECTED, so the studio insisted GitHub was fine.
+ */
+export function isGitHubAuthFailure(message: string): boolean {
+  return /bad credentials|requires authentication|401|token .*(expired|revoked)/i.test(message);
+}
+
+function pushFailureMessage(message: string): string {
+  return isGitHubAuthFailure(message) ? GITHUB_REAUTH_MESSAGE : message;
+}
+
+/**
+ * Record a rejected token against the connector so /connectors and the health
+ * page stop reporting CONNECTED. Best effort — a push already failed, and
+ * failing to write the note must not replace that error with a worse one.
+ */
+async function noteGitHubAuthFailure(message: string): Promise<void> {
+  if (!isGitHubAuthFailure(message)) return;
+  try {
+    const [{ prisma }, { WORKSPACE_ROW_ID }] = await Promise.all([
+      import('@/lib/db'),
+      import('@/lib/storage/usage'),
+    ]);
+    await prisma.integration.updateMany({
+      where: { workspaceId: WORKSPACE_ROW_ID, kind: 'GITHUB_DEPLOY' },
+      data: { status: 'ERROR', lastError: GITHUB_REAUTH_MESSAGE, lastCheckedAt: new Date() },
+    });
+  } catch {
+    /* the push error is the one that matters */
+  }
+}
+
 export type PushActor = { id: string; role: string };
 
 export type PushDeps = {
@@ -115,7 +153,8 @@ export async function pushProjectToGitHubForUser(
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Could not create GitHub repository';
-      return { ok: false as const, error: message, status: 502 as const };
+      await noteGitHubAuthFailure(message);
+      return { ok: false as const, error: pushFailureMessage(message), status: 502 as const };
     }
   }
 
@@ -127,9 +166,10 @@ export async function pushProjectToGitHubForUser(
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Could not push to GitHub';
+    await noteGitHubAuthFailure(message);
     return {
       ok: false as const,
-      error: message,
+      error: pushFailureMessage(message),
       status: 502 as const,
       data: { githubRepoFullName: fullName, githubRepoUrl: htmlUrl },
     };

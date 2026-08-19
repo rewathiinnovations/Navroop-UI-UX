@@ -11,6 +11,22 @@ export const STREAM_NO_FILES_MESSAGE =
   'The AI finished without producing any files we could save. Try again.';
 
 /**
+ * Last line of defence: no file is stored with a raw `NEED_IMAGE: …` sitting
+ * in a `src`. Fulfilment only sees the files a run rewrote, so a token in an
+ * untouched file — written before fulfilment worked, or left when an image
+ * provider was down — would otherwise stay broken forever. This pass only
+ * swaps in the inline placeholder, so it never spends image credits.
+ */
+function withoutRawImageTokens(files: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [path, content] of Object.entries(files)) {
+    const leftovers = placeholderReplacements(content);
+    out[path] = leftovers.length > 0 ? replaceNeedImageTokens(content, leftovers) : content;
+  }
+  return out;
+}
+
+/**
  * Turn the model's `NEED_IMAGE: …` requests into real pictures before the site
  * is stored.
  *
@@ -24,22 +40,6 @@ export const STREAM_NO_FILES_MESSAGE =
  * Never fatal: a site with a plain panel where a photo should be still beats
  * losing a finished build to an image provider that is down or unconfigured.
  */
-/**
- * Last line of defence: no file is stored with a raw `NEED_IMAGE: …` sitting
- * in a `src`. Fulfilment above only sees the files this run rewrote, so a
- * token in an untouched file — written before fulfilment worked, or left when
- * an image provider was down — would otherwise stay broken forever. This pass
- * only swaps in the inline placeholder, so it never spends image credits.
- */
-function withoutRawImageTokens(files: Record<string, string>): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [path, content] of Object.entries(files)) {
-    const leftovers = placeholderReplacements(content);
-    out[path] = leftovers.length > 0 ? replaceNeedImageTokens(content, leftovers) : content;
-  }
-  return out;
-}
-
 async function resolveImages(input: {
   projectId: string;
   userId: string;
