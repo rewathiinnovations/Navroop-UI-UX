@@ -247,6 +247,65 @@ describe('validateGeneratedImports — the missing-export incident', () => {
   });
 });
 
+describe('validateGeneratedImports — a rewritten module breaks its consumers', () => {
+  /**
+   * The live incident. A follow-up rewrote `lib/site.ts`, consolidating a dozen
+   * exported constants into one `SITE` object, and returned that single file. Eight
+   * untouched components kept importing SITE_NAME, EMAIL, HOURS and PHONE_TEL from
+   * it. Every broken importer was outside the run's scope, so the check reported
+   * nothing, the build was called finished, and the preview then refused to compile
+   * with fifteen missing exports.
+   *
+   * Reproduced against the real project's files: scope `['lib/site.ts']` reported 0
+   * problems before this, 12 after.
+   */
+  const CONSOLIDATED = {
+    'lib/site.ts': 'export const SITE = { name: "Cinder & Sage", email: "hi@example.com" };',
+    'app/page.tsx':
+      'import { SITE_NAME, EMAIL } from "@/lib/site";\nexport default function Page() { return <p>{SITE_NAME}{EMAIL}</p>; }',
+    'components/Footer.tsx':
+      'import { PHONE_TEL } from "@/lib/site";\nexport default function Footer() { return <a href={PHONE_TEL} />; }',
+  };
+
+  it('blames the run that changed the exports, not the files that still import them', () => {
+    const result = validateGeneratedImports({ files: CONSOLIDATED, scope: ['lib/site.ts'] });
+
+    const symbols = result.problems.map((problem) => problem.symbol);
+    expect(symbols).toContain('SITE_NAME');
+    expect(symbols).toContain('EMAIL');
+    expect(symbols).toContain('PHONE_TEL');
+    // The message has to name the consumer, because that is the file to edit.
+    expect(result.problems.some((problem) => problem.file === 'components/Footer.tsx')).toBe(true);
+  });
+
+  it('says what the module does export, so the repair is obvious', () => {
+    const result = validateGeneratedImports({ files: CONSOLIDATED, scope: ['lib/site.ts'] });
+
+    expect(result.problems[0]?.message).toContain('lib/site.ts exports: SITE');
+  });
+
+  it('still ignores breakage in files this run had nothing to do with', () => {
+    // Both ends out of scope: pre-existing, and failing a good build for it would
+    // make every later edit inherit someone else's bug.
+    const files = {
+      ...CONSOLIDATED,
+      'components/Unrelated.tsx': 'import { GONE } from "@/lib/other";\nexport default () => null;',
+      'lib/other.ts': 'export const KEPT = 1;',
+    };
+
+    const result = validateGeneratedImports({ files, scope: ['lib/site.ts'] });
+
+    expect(result.problems.some((problem) => problem.symbol === 'GONE')).toBe(false);
+  });
+
+  it('reports a consumer once per missing symbol, not once per file', () => {
+    const result = validateGeneratedImports({ files: CONSOLIDATED, scope: ['lib/site.ts'] });
+
+    const pageProblems = result.problems.filter((problem) => problem.file === 'app/page.tsx');
+    expect(pageProblems).toHaveLength(2);
+  });
+});
+
 describe('validateGeneratedImports — the false-positive guard', () => {
   it('finds nothing in a correct 15-file Next.js app', () => {
     const result = validateGeneratedImports({ files: GOOD_APP });

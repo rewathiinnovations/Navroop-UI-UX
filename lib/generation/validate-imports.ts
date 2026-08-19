@@ -152,7 +152,16 @@ export function validateGeneratedImports(input: {
 
       // A dynamic import's symbols are read off a promise at runtime, so only
       // its resolution is checkable here.
-      if (!inScope || statement.dynamic || !isCode(target)) continue;
+      //
+      // The scope test looks at both ends. A module whose export surface this run
+      // rewrote is this run's responsibility even where the broken import lives in
+      // a file it never touched: a follow-up consolidated `lib/site.ts` into one
+      // `SITE` object while eight untouched components kept importing SITE_NAME,
+      // EMAIL, HOURS and PHONE_TEL from it. Every broken importer was out of
+      // scope, so this reported nothing, the build was called finished, and the
+      // preview refused to compile with fifteen missing exports.
+      const targetInScope = !scope || scope.has(target);
+      if ((!inScope && !targetInScope) || statement.dynamic || !isCode(target)) continue;
 
       const exported = exportsOf(target, files, exportsCache);
       // `open` means the scanner could not enumerate this module's exports
