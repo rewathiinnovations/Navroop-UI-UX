@@ -1,11 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { isChatRecoveryStatus } from '@/lib/jobs/chat-ui';
-import {
-  nextPollIntervalMs,
-  shouldStopClientPoll,
-} from '@/lib/jobs/poll';
+import { isChatRecoveryStatus, isJobSettled } from '@/lib/jobs/chat-ui';
+import { nextPollIntervalMs, shouldStopClientPoll } from '@/lib/jobs/poll';
 import type { PublicGenerationJob } from '@/lib/jobs/types';
 
 export function useGenerationJob({
@@ -51,15 +48,19 @@ export function useGenerationJob({
     const tick = async () => {
       const next = await refresh();
       if (cancelled) return;
+      // Settled first: the job's own end state is the answer, and asking the
+      // watchdog about a job that already finished only invents a failure —
+      // its heartbeat stopped when it ended, so it is stale by definition.
+      if (isJobSettled(next?.status)) {
+        setClientStop(null);
+        return;
+      }
       const stop = shouldStopClientPoll({
         startedAtMs: startedAtRef.current ?? Date.now(),
         heartbeatAt: next?.heartbeatAt ?? null,
       });
       if (stop) {
         setClientStop(stop);
-        return;
-      }
-      if (next && (next.status === 'ABANDONED' || next.status === 'FAILED' || next.status === 'SUCCEEDED' || next.status === 'CANCELLED')) {
         return;
       }
       const elapsed = Date.now() - (startedAtRef.current ?? Date.now());
@@ -75,7 +76,33 @@ export function useGenerationJob({
     };
   }, [refresh, shouldPoll]);
 
-  const recovery = clientStop !== null || isChatRecoveryStatus(job?.status);
+  /**
+   * Catch up the moment the tab is looked at again.
+   *
+   * Browsers throttle timers in background tabs to a minute or more, so a
+   * build watched from another tab polls far too slowly to see it finish —
+   * the person comes back to a spinner, or to a stale-heartbeat verdict on
+   * work that succeeded while they were away. Waiting is the normal thing to
+   * do while a site builds, so returning has to re-read the truth.
+   */
+  useEffect(() => {
+    if (!projectId) return;
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void refresh();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
+    };
+  }, [projectId, refresh]);
+
+  // A watchdog stop only means "we stopped watching". If the job has since
+  // settled, its status decides — a SUCCEEDED build must never show recovery.
+  const recovery = isJobSettled(job?.status)
+    ? isChatRecoveryStatus(job?.status)
+    : clientStop !== null;
 
   const act = useCallback(
     async (action: 'keep' | 'retry' | 'start-over', body?: Record<string, unknown>) => {
@@ -94,7 +121,9 @@ export function useGenerationJob({
         };
         if (!response.ok) {
           const message =
-            typeof data.error === 'string' ? data.error : data.error?.message || 'Could not recover the build';
+            typeof data.error === 'string'
+              ? data.error
+              : data.error?.message || 'Could not recover the build';
           return { ok: false as const, error: message };
         }
         setClientStop(null);

@@ -10,6 +10,20 @@ export function isChatRecoveryStatus(status?: string | null) {
   return status === 'ABANDONED' || status === 'FAILED' || status === 'CANCELLED';
 }
 
+/**
+ * The job reached an end state, so nothing more is coming.
+ *
+ * A settled job cannot be stalled, which is what the client's stale-heartbeat
+ * watchdog decides. The heartbeat stops when a job ends, so 90 seconds later
+ * every finished job looks stale — and a backgrounded tab (where timers are
+ * throttled to a minute or more) is past that on its very next tick. Without
+ * this, a build that succeeded reported itself as "The last build did not
+ * finish" whenever the person looked away while it ran.
+ */
+export function isJobSettled(status?: string | null) {
+  return status === 'SUCCEEDED' || isChatRecoveryStatus(status);
+}
+
 /** Chat recovery is for work the person started from chat — not publish, audit, or crons. */
 export function showsChatRecovery(kind?: string | null) {
   return kind === 'PLAN' || kind === 'BUILD' || kind === 'FOLLOWUP' || kind === 'IMPORT';
