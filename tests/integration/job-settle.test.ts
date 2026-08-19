@@ -21,7 +21,12 @@ const prisma = testPrismaClient();
 
 const USER = 'user_job_settle';
 const WS = 'ws_job_settle';
-const PROJECTS = ['proj_settle_throw', 'proj_settle_cancel', 'proj_settle_idem', 'proj_settle_abort'];
+const PROJECTS = [
+  'proj_settle_throw',
+  'proj_settle_cancel',
+  'proj_settle_idem',
+  'proj_settle_abort',
+];
 
 async function seed(projectId: string) {
   await prisma.workspace.upsert({
@@ -206,36 +211,45 @@ describe('job settles on every exit path', () => {
     await failJob(job.id, { errorCode: 'provider_error', errorMessage: 'late cleanup' });
     expect((await statusOf(job.id))[0]?.status).toBe('SUCCEEDED');
 
-    expect(await ensureJobSettled(job.id, { errorCode: 'server_restarted' })).toBe('already_settled');
+    expect(await ensureJobSettled(job.id, { errorCode: 'server_restarted' })).toBe(
+      'already_settled',
+    );
     expect((await statusOf(job.id))[0]?.status).toBe('SUCCEEDED');
   });
 
-  it('an aborted request stops the heartbeat so the reaper can see the job', async () => {
+  // These two used to assert the opposite: that an aborted request stopped the
+  // heartbeat "so the reaper can see the job". That conflated the person
+  // leaving with the work stopping. The generation keeps streaming and
+  // persisting server-side after a tab closes, so going quiet marked live work
+  // as stale within 90 seconds — the client called a running build failed, and
+  // the reaper was free to abandon a job that was still writing files. What
+  // makes a finished job visible to the reaper is settling it, which the test
+  // below ('stops itself once the job is no longer active') covers.
+  it('an aborted request keeps beating while the work continues', async () => {
     const job = await startJob('proj_settle_abort');
     const stale = new Date(Date.now() - HEARTBEAT_STALE_MS * 2);
     await updateJobFields(job.id, { heartbeatAt: stale });
 
     const controller = new AbortController();
-    const heartbeat = beginJobHeartbeat(job.id, { intervalMs: INTERVAL_MS, signal: controller.signal });
+    const heartbeat = beginJobHeartbeat(job.id, {
+      intervalMs: INTERVAL_MS,
+      signal: controller.signal,
+    });
     try {
-      // First write: the timer started, and it rescued the row from the stale timestamp the
-      // reaper would have acted on.
       const beating = await waitForHeartbeat(job.id, stale.getTime());
       expect(beating).not.toBe(stale.getTime());
-      // Second write: it is beating repeatedly, which is what makes the silence below mean
-      // "the timer is dead" instead of "the timer is slow".
-      await waitForHeartbeat(job.id, beating);
 
-      // Client gone: the timer must go quiet even though nothing called stop().
+      // Client gone, job still RUNNING: the row must go on looking alive.
       controller.abort();
-      await sleep(INTERVAL_MS * 2); // let any in-flight tick land
-      await expectHeartbeatSilent(job.id);
+      const afterAbort = await waitForHeartbeat(job.id, beating);
+      expect(afterAbort).not.toBe(beating);
+      await waitForHeartbeat(job.id, afterAbort);
     } finally {
       heartbeat.stop();
     }
   });
 
-  it('an already-aborted signal never starts beating', async () => {
+  it('a signal that is already aborted still beats for a running job', async () => {
     const job = await startJob('proj_settle_abort');
     const stale = new Date(Date.now() - HEARTBEAT_STALE_MS * 2);
     await updateJobFields(job.id, { heartbeatAt: stale });
@@ -245,10 +259,11 @@ describe('job settles on every exit path', () => {
       signal: AbortSignal.abort(),
     });
     try {
-      // The control for the test above: same setup, same window, only the signal differs. That
-      // one proves the window is long enough for writes to appear, so silence here is a result.
-      await sleep(SILENCE_WINDOW_MS);
-      expect((await statusOf(job.id))[0]?.heartbeatAt?.getTime()).toBe(stale.getTime());
+      // A retry can begin after the original request is already gone. The work
+      // is real either way, so the row has to be rescued from a timestamp the
+      // reaper would otherwise act on.
+      const beating = await waitForHeartbeat(job.id, stale.getTime());
+      expect(beating).not.toBe(stale.getTime());
     } finally {
       heartbeat.stop();
     }

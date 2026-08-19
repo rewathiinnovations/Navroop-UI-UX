@@ -34,6 +34,14 @@ export const START_OVER_LABEL = 'Start over';
 export const POLL_TIMEOUT_CAUSE = 'The build ran too long';
 
 /**
+ * Shared so the generate route can settle a job with the same sentence the
+ * recovery panel shows. It went unused for a while: the route returned on
+ * disconnect without failing the job, so this code existed but never reached
+ * anyone — the build simply stayed RUNNING forever.
+ */
+export const CLIENT_DISCONNECTED_MESSAGE = 'Your browser disconnected before the build finished';
+
+/**
  * One plain-English line per job error code, shown under the recovery heading.
  *
  * Typed as an exhaustive `Record<JobErrorCode, string>` on purpose: a new code added to
@@ -50,7 +58,7 @@ const CAUSE_LINES: Record<JobErrorCode, string> = {
   job_cap_exceeded: 'This build got too large — try a shorter prompt',
   loop_detected: 'Loop detected — the same file was rewritten too many times',
   queue_timeout: 'The build waited too long in the queue',
-  client_disconnected: 'Your browser disconnected before the build finished',
+  client_disconnected: CLIENT_DISCONNECTED_MESSAGE,
   no_files_generated: 'The AI finished without producing any files',
   stack_mismatch:
     "The AI wrote files that don't fit this project's framework, so they were not applied",

@@ -66,7 +66,14 @@ export const appConfig = {
     // previously sent under the v4 name `maxTokens`, which v5 ignores — so this
     // ceiling binds for the first time and must be generous enough for a
     // multi-file first build.
-    maxTokens: 32000,
+    //
+    // 32000 was not. A five-page Next.js site stopped at exactly 32000 output
+    // tokens: one component ended mid-identifier and four more that page.tsx
+    // imported were never written, so the site was stored and could not
+    // compile. A whole site has to fit in one reply, because there is no
+    // continuation — DeepSeek V4 allows far more (384K), and the plan's
+    // maxTokensPerJob (120K by default) still bounds this.
+    maxTokens: 96000,
 
     // Max output tokens for truncation recovery (rewrites one full file).
     truncationRecoveryMaxTokens: 16000,

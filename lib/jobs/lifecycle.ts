@@ -61,7 +61,13 @@ async function applyPhaseForStart(projectId: string, kind: JobKind) {
     `;
     return;
   }
-  if (kind === 'AUDIT' || kind === 'PUBLISH' || kind === 'DOMAIN_VERIFY' || kind === 'EXPORT' || kind === 'TEMPLATE_THUMBNAIL') {
+  if (
+    kind === 'AUDIT' ||
+    kind === 'PUBLISH' ||
+    kind === 'DOMAIN_VERIFY' ||
+    kind === 'EXPORT' ||
+    kind === 'TEMPLATE_THUMBNAIL'
+  ) {
     return;
   }
   await prisma.$executeRaw`
@@ -95,7 +101,12 @@ export async function createOrReuseJob(input: CreateJobInput): Promise<Generatio
 
   if (input.idempotencyKey) {
     const existing = await findJobByIdempotency(input.projectId, input.idempotencyKey);
-    if (existing && (existing.status === 'QUEUED' || existing.status === 'RUNNING' || existing.status === 'SUCCEEDED')) {
+    if (
+      existing &&
+      (existing.status === 'QUEUED' ||
+        existing.status === 'RUNNING' ||
+        existing.status === 'SUCCEEDED')
+    ) {
       return existing;
     }
   }
@@ -131,7 +142,10 @@ export async function createOrReuseJob(input: CreateJobInput): Promise<Generatio
 }
 
 function isActiveJobUniqueViolation(error: unknown) {
-  const code = typeof error === 'object' && error && 'code' in error ? String((error as { code?: string }).code) : '';
+  const code =
+    typeof error === 'object' && error && 'code' in error
+      ? String((error as { code?: string }).code)
+      : '';
   if (code === 'P2002' || code === '23505') return true;
   const message = error instanceof Error ? error.message : String(error);
   return /one_active_job_per_project|23505/i.test(message);
@@ -264,10 +278,7 @@ export type JobHeartbeatOptions = {
   signal?: AbortSignal;
 };
 
-export function beginJobHeartbeat(
-  jobId: string,
-  options: number | JobHeartbeatOptions = {},
-) {
+export function beginJobHeartbeat(jobId: string, options: number | JobHeartbeatOptions = {}) {
   const { intervalMs = HEARTBEAT_INTERVAL_MS, signal } =
     typeof options === 'number' ? { intervalMs: options } : options;
 
@@ -313,8 +324,14 @@ export function beginJobHeartbeat(
   }
 
   function onAbort() {
-    log.warn('jobs.heartbeat_aborted', { jobId, reason: 'client_disconnected' });
-    stop();
+    // Keep beating. The request aborting means the person navigated away, not
+    // that the work stopped — the generation keeps streaming server-side and
+    // its files are still being persisted. Stopping here made a job that was
+    // very much alive look stale within 90 seconds: the client watchdog called
+    // it failed, the reaper was entitled to abandon it, and the workspace sat
+    // on "Building your project…" with a frozen heartbeat behind it. The
+    // interval clears when the work actually settles.
+    log.warn('jobs.heartbeat_client_gone', { jobId, reason: 'client_disconnected' });
   }
 
   if (signal) {
@@ -505,15 +522,17 @@ export async function succeedJob(
         "updatedAt" = NOW()
       WHERE id = ${job.projectId}
     `;
-  } else if (job.kind === 'AUDIT' || job.kind === 'PUBLISH' || job.kind === 'DOMAIN_VERIFY' || job.kind === 'EXPORT' || job.kind === 'TEMPLATE_THUMBNAIL') {
+  } else if (
+    job.kind === 'AUDIT' ||
+    job.kind === 'PUBLISH' ||
+    job.kind === 'DOMAIN_VERIFY' ||
+    job.kind === 'EXPORT' ||
+    job.kind === 'TEMPLATE_THUMBNAIL'
+  ) {
     await setProjectActiveJob(job.projectId, null);
   } else {
     const phase = await resolveResumablePhase(job.projectId);
-    await setProjectResumablePhase(
-      job.projectId,
-      phase,
-      phase === 'COMPLETE' ? 'ready' : 'idle',
-    );
+    await setProjectResumablePhase(job.projectId, phase, phase === 'COMPLETE' ? 'ready' : 'idle');
   }
   await releaseLockQuietly(job.projectId, job.userId);
   return settled;
@@ -567,7 +586,13 @@ export async function reconcileAbandonedJobs(options: ReconcileOptions = {}) {
   const staleBefore = new Date(now.getTime() - staleMs);
   const timeoutBefore = new Date(now.getTime() - timeoutMs);
 
-  const abandoned: Array<{ jobId: string; projectId: string; errorCode: string; filesWritten: number; lastStep: string | null }> = [];
+  const abandoned: Array<{
+    jobId: string;
+    projectId: string;
+    errorCode: string;
+    filesWritten: number;
+    lastStep: string | null;
+  }> = [];
   const seen = new Set<string>();
 
   const timeoutJobs = await listTimeoutCandidates(timeoutBefore);
@@ -597,10 +622,19 @@ export async function reconcileAbandonedJobs(options: ReconcileOptions = {}) {
   for (const job of staleJobs) {
     if (seen.has(job.id)) continue;
     if (!matchesReconcileProject(job.projectId, options.projectIds)) continue;
-    if (job.ownerInstance === currentInstance && job.heartbeatAt && job.heartbeatAt >= staleBefore) {
+    if (
+      job.ownerInstance === currentInstance &&
+      job.heartbeatAt &&
+      job.heartbeatAt >= staleBefore
+    ) {
       continue;
     }
-    if (job.ownerInstance === currentInstance && job.status === 'RUNNING' && job.heartbeatAt && job.heartbeatAt >= staleBefore) {
+    if (
+      job.ownerInstance === currentInstance &&
+      job.status === 'RUNNING' &&
+      job.heartbeatAt &&
+      job.heartbeatAt >= staleBefore
+    ) {
       continue;
     }
     seen.add(job.id);
@@ -642,7 +676,10 @@ export async function reconcileAbandonedJobs(options: ReconcileOptions = {}) {
   return { abandoned, legacyProjects };
 }
 
-export async function abandonInstanceJobs(errorCode: 'deploying' | 'server_restarted', ownerInstance = getInstanceId()) {
+export async function abandonInstanceJobs(
+  errorCode: 'deploying' | 'server_restarted',
+  ownerInstance = getInstanceId(),
+) {
   const jobs = await prisma.$queryRaw<Array<{ id: string }>>`
     SELECT id FROM "GenerationJob"
     WHERE status IN ('QUEUED', 'RUNNING')
