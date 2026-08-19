@@ -1,72 +1,27 @@
-import { Prisma } from '@/generated/prisma';
 import { prisma } from '@/lib/db';
-import { hashPassword, validateEmail } from '@/lib/password';
 import { TERMS_REQUIRED_MESSAGE, TERMS_VERSION } from './terms';
 
-const DUPLICATE_EMAIL = 'An account with this email already exists — log in instead';
+/**
+ * Terms acceptance for an account an admin already created.
+ *
+ * This module used to export `registerAccount`, which minted a MEMBER for anyone who
+ * posted a form to `POST /api/auth/register` — and because project reads are
+ * workspace-wide by design, a self-registered stranger could read every project in the
+ * workspace. The first fix gated it on a pending `Invite` row for the submitted email.
+ * That gate was unsatisfiable by construction: the only invite producer,
+ * `POST /api/admin/invite`, writes the row with `acceptedAt` already set and creates the
+ * User (plus a temporary password) itself, so no claimable invite has ever existed. The
+ * endpoint therefore answered 403 to everyone, forever, while the auth modal still
+ * offered the form. Navroop is invite-only (see `.cursor/rules/navroop-product.mdc`), so
+ * the endpoint is now closed outright rather than guarded by a control that cannot fire,
+ * and the registration code is gone rather than left here looking live.
+ *
+ * What is left is the invitee's own path: they sign in with the temporary password the
+ * admin passes on, and their acceptance of the current terms is read and recorded through
+ * `GET`/`POST /api/legal/accept`, the only caller of the two functions below.
+ */
 
 export { TERMS_VERSION, TERMS_REQUIRED_MESSAGE };
-
-export type RegisterInput = {
-  name?: string;
-  email?: string;
-  password?: string;
-  acceptTerms?: boolean;
-};
-
-export type RegisterResult =
-  | { ok: true; user: { id: string; email: string; name: string; role: string } }
-  | { ok: false; error: string; status: number; code?: string };
-
-export async function registerAccount(input: RegisterInput): Promise<RegisterResult> {
-  const name = String(input.name || '').trim();
-  const email = String(input.email || '').trim().toLowerCase();
-  const password = String(input.password || '');
-
-  if (!input.acceptTerms) {
-    return { ok: false, error: TERMS_REQUIRED_MESSAGE, status: 400 };
-  }
-  if (!name) {
-    return { ok: false, error: 'Name is required', status: 400 };
-  }
-  if (!validateEmail(email)) {
-    return { ok: false, error: 'Enter a valid email address', status: 400 };
-  }
-  if (password.length < 8) {
-    return { ok: false, error: 'Password must be at least 8 characters', status: 400 };
-  }
-
-  const existing = await prisma.user.findUnique({ where: { email } });
-  if (existing) {
-    return { ok: false, error: DUPLICATE_EMAIL, status: 409, code: 'EMAIL_EXISTS' };
-  }
-
-  try {
-    const user = await prisma.user.create({
-      data: {
-        name,
-        email,
-        passwordHash: await hashPassword(password),
-        role: 'MEMBER',
-      },
-      select: { id: true, email: true, name: true, role: true },
-    });
-
-    const acceptedAt = new Date();
-    await prisma.$executeRaw`
-      UPDATE "User"
-      SET "termsAcceptedAt" = ${acceptedAt}, "termsVersion" = ${TERMS_VERSION}
-      WHERE id = ${user.id}
-    `;
-
-    return { ok: true, user };
-  } catch (error) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
-      return { ok: false, error: DUPLICATE_EMAIL, status: 409, code: 'EMAIL_EXISTS' };
-    }
-    throw error;
-  }
-}
 
 export async function acceptTermsForUser(userId: string) {
   const acceptedAt = new Date();
@@ -79,7 +34,9 @@ export async function acceptTermsForUser(userId: string) {
 }
 
 export async function getTermsStatus(userId: string) {
-  const rows = await prisma.$queryRaw<Array<{ termsAcceptedAt: Date | null; termsVersion: string | null }>>`
+  const rows = await prisma.$queryRaw<
+    Array<{ termsAcceptedAt: Date | null; termsVersion: string | null }>
+  >`
     SELECT "termsAcceptedAt", "termsVersion" FROM "User" WHERE id = ${userId}
   `;
   const row = rows[0];

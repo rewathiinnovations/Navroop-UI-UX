@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useEffect, useId, useState } from 'react';
+import { FormEvent, useEffect, useState } from 'react';
 import { signIn } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 import { CircleAlert, Shield, User, X } from 'lucide-react';
@@ -16,10 +16,24 @@ import { isDevQuickLoginEnabled } from '@/lib/dev-quick-login';
 import { validateEmail } from '@/lib/email';
 import { safeNextPath } from '@/lib/auth/public-login';
 import { createProjectFromPrompt } from '@/lib/projects/start-from-prompt';
-import { TERMS_REQUIRED_MESSAGE } from '@/lib/legal/terms';
 import { notify } from '@/lib/notify';
-import { PENDING_PROMPT_KEY, clearDraftStorage, readDraftStorage } from '@/hooks/useDraftStorage';
+import { PENDING_PROMPT_KEY, clearDraftStorage } from '@/hooks/useDraftStorage';
+import type { PendingPrompt } from '@/lib/projects/signed-out-submit';
 
+/**
+ * `'signup'` no longer means "show a registration form" — it means "explain how access
+ * works". Navroop is invite-only: an admin creates the account through
+ * `POST /api/admin/invite` and passes on a temporary password, and both
+ * `POST /api/auth/register` and `POST /api/auth/signup` answer 403 without touching the
+ * database. This modal used to POST to `/api/auth/register`, which meant the only
+ * possible outcome of filling the form in was an error — including for someone who had
+ * just been invited. The mode is kept in the union because the entry points that open it
+ * (`?auth=signup`, the landing page buttons) live outside this file; what changed is that
+ * it now renders copy instead of inputs.
+ *
+ * The panel asks for no email, so it cannot confirm or deny that a given address was
+ * invited.
+ */
 export type AuthMode = 'login' | 'signup';
 
 type AuthModalProps = {
@@ -30,9 +44,9 @@ type AuthModalProps = {
   nextPath?: string | null;
   initialForgot?: boolean;
   resetSuccess?: boolean;
+  /** Consumes the pending submit, if any: it must not survive being acted on. */
+  takePendingPrompt?: () => PendingPrompt | null;
 };
-
-const DUPLICATE_EMAIL = 'An account with this email already exists — log in instead';
 
 export default function AuthModal({
   open,
@@ -42,32 +56,28 @@ export default function AuthModal({
   nextPath,
   initialForgot = false,
   resetSuccess = false,
+  takePendingPrompt,
 }: AuthModalProps) {
   const router = useRouter();
   const showQuickLogin = isDevQuickLoginEnabled();
-  const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
-  const [duplicateEmail, setDuplicateEmail] = useState(false);
   const [loading, setLoading] = useState(false);
   const [quickRole, setQuickRole] = useState<'admin' | 'member' | null>(null);
   const [panel, setPanel] = useState<'auth' | 'forgot' | 'forgot-sent'>(
     initialForgot ? 'forgot' : 'auth',
   );
   const [info, setInfo] = useState(resetSuccess ? 'Password updated — sign in' : '');
-  const [acceptTerms, setAcceptTerms] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     setError('');
-    setDuplicateEmail(false);
     setPassword('');
     setLoading(false);
     setQuickRole(null);
     setPanel(initialForgot ? 'forgot' : 'auth');
     setInfo(resetSuccess ? 'Password updated — sign in' : '');
-    setAcceptTerms(false);
   }, [open, mode, initialForgot, resetSuccess]);
 
   const finishAuthenticated = async (welcome: string) => {
@@ -75,14 +85,23 @@ export default function AuthModal({
     // the user lands on a different page.
     notify.success(welcome, { key: 'auth' });
 
-    const draft = readDraftStorage(PENDING_PROMPT_KEY);
-    const prompt = draft?.text.trim() || '';
-    if (draft && prompt) {
+    // Taken, not read — and taken before the project is created, so it is spent either way.
+    //
+    // This used to read `PENDING_PROMPT_KEY` out of localStorage and treat any text there as
+    // an instruction to create a project. That key is the hero's autosave: an abandoned
+    // half-sentence in it turned the *next* sign-in — including the one at the end of a
+    // password reset, which ignored `nextPath` entirely — into a new project with a plan job
+    // running against it, and it was retried on every sign-in until one happened to succeed.
+    // Pressing submit on the signed-out hero is the only thing that is consent to spend
+    // credits, and that is what fills this in (in memory, so a second tab has nothing to
+    // clobber and nothing to inherit).
+    const pending = takePendingPrompt?.() ?? null;
+    if (pending) {
       const created = await createProjectFromPrompt(
-        prompt,
-        draft.stack,
-        draft.designDirection,
-        draft.importMode,
+        pending.text,
+        pending.stack,
+        pending.designDirection,
+        pending.importMode,
       );
       if (created.ok) {
         clearDraftStorage(PENDING_PROMPT_KEY);
@@ -92,7 +111,8 @@ export default function AuthModal({
         return;
       }
       // The saved prompt could not be turned into a project — say so rather
-      // than dropping the user on the dashboard with no explanation.
+      // than dropping the user on the dashboard with no explanation. The hero draft is
+      // deliberately left alone so the text is still there to resubmit.
       notify.error(created.error, {
         fallback: 'Signed in, but that prompt could not be started.',
         key: 'auth-draft',
@@ -108,28 +128,16 @@ export default function AuthModal({
     router.refresh();
   };
 
+  // Sign-in only. There is no account-creation branch here because there is no endpoint
+  // that would accept one.
   const onSubmit = async (event: FormEvent) => {
     event.preventDefault();
     setError('');
-    setDuplicateEmail(false);
 
-    const trimmedName = name.trim();
     const trimmedEmail = email.trim().toLowerCase();
 
-    if (mode === 'signup' && !trimmedName) {
-      setError('Name is required');
-      return;
-    }
     if (!validateEmail(trimmedEmail)) {
       setError('Enter a valid email address');
-      return;
-    }
-    if (mode === 'signup' && password.length < 8) {
-      setError('Password must be at least 8 characters');
-      return;
-    }
-    if (mode === 'signup' && !acceptTerms) {
-      setError(TERMS_REQUIRED_MESSAGE);
       return;
     }
     if (!password) {
@@ -139,43 +147,18 @@ export default function AuthModal({
 
     setLoading(true);
     try {
-      if (mode === 'signup') {
-        const response = await fetch('/api/auth/register', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name: trimmedName,
-            email: trimmedEmail,
-            password,
-            acceptTerms,
-          }),
-        });
-        const data = await response.json().catch(() => ({}));
-        if (response.status === 409 || data.code === 'EMAIL_EXISTS') {
-          setDuplicateEmail(true);
-          setError(DUPLICATE_EMAIL);
-          return;
-        }
-        if (!response.ok) {
-          setError(data.error || 'Could not create account');
-          return;
-        }
-      }
-
       const result = await signIn('credentials', {
         email: trimmedEmail,
         password,
         redirect: false,
       });
       if (result?.error) {
-        setError(mode === 'login' ? 'Invalid email or password' : 'Could not sign in');
+        setError('Invalid email or password');
         return;
       }
-      await finishAuthenticated(
-        mode === 'signup' ? 'Account created — welcome aboard.' : 'Signed in.',
-      );
+      await finishAuthenticated('Signed in.');
     } catch {
-      setError(mode === 'login' ? 'Could not sign in' : 'Could not create account');
+      setError('Could not sign in');
     } finally {
       setLoading(false);
     }
@@ -212,7 +195,6 @@ export default function AuthModal({
 
   const onQuickLogin = async (role: 'admin' | 'member') => {
     setError('');
-    setDuplicateEmail(false);
     setQuickRole(role);
     setLoading(true);
     try {
@@ -233,6 +215,8 @@ export default function AuthModal({
     }
   };
 
+  const inviteOnly = panel === 'auth' && mode === 'signup';
+
   return (
     <Dialog
       open={open}
@@ -249,15 +233,15 @@ export default function AuthModal({
             <DialogTitle className="text-[22px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">
               {panel !== 'auth'
                 ? 'Password reset'
-                : mode === 'signup'
-                  ? 'Create your account'
+                : inviteOnly
+                  ? 'Navroop is invite only'
                   : 'Welcome back'}
             </DialogTitle>
             <DialogDescription className="mt-6 text-[14px] leading-5 text-[var(--studio-muted)]">
               {panel !== 'auth'
                 ? "We'll send a reset link to the registered email."
-                : mode === 'signup'
-                  ? 'Save your prompt and start building in the studio.'
+                : inviteOnly
+                  ? 'Accounts are created by an admin, so there is no sign-up form.'
                   : 'Sign in to open your projects and keep building.'}
             </DialogDescription>
           </div>
@@ -313,19 +297,51 @@ export default function AuthModal({
               Back to sign in
             </button>
           </form>
+        ) : inviteOnly ? (
+          // No inputs on purpose: every field here would feed an endpoint that returns
+          // 403 to everyone. Ask an admin, then sign in.
+          <div className="space-y-14">
+            <p className="text-[13px] leading-5 text-[var(--studio-fg)]">
+              An admin creates your account from the Team page and passes on a temporary password.
+              Nothing is emailed — ask whoever runs this workspace for it, sign in, then change it
+              under Settings → Profile.
+            </p>
+            <p className="text-[13px] leading-5 text-[var(--studio-muted)]">
+              Already have your temporary password? Sign in — anything you typed on the landing page
+              is kept and starts building once you are in.
+            </p>
+            <StudioButton
+              type="button"
+              variant="inverted"
+              className="w-full"
+              onClick={() => onModeChange('login')}
+            >
+              Go to sign in
+            </StudioButton>
+            <p className="text-[13px] leading-5 text-[var(--studio-muted)]">
+              Read the{' '}
+              <a
+                href="/terms"
+                target="_blank"
+                rel="noreferrer"
+                className="underline underline-offset-2"
+              >
+                Terms
+              </a>{' '}
+              and{' '}
+              <a
+                href="/privacy"
+                target="_blank"
+                rel="noreferrer"
+                className="underline underline-offset-2"
+              >
+                Privacy Policy
+              </a>{' '}
+              — using Navroop means you accept both.
+            </p>
+          </div>
         ) : (
           <form onSubmit={onSubmit} className="space-y-14">
-            {mode === 'signup' && (
-              <StudioField
-                id="auth-name"
-                label="Name"
-                autoComplete="name"
-                required
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                placeholder="Your name"
-              />
-            )}
             <StudioField
               id="auth-email"
               label="Email"
@@ -340,56 +356,22 @@ export default function AuthModal({
               id="auth-password"
               label="Password"
               type="password"
-              autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
+              autoComplete="current-password"
               required
-              minLength={mode === 'signup' ? 8 : undefined}
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              placeholder={mode === 'signup' ? 'At least 8 characters' : 'Your password'}
+              placeholder="Your password"
             />
-            {mode === 'signup' && (
-              <label className="flex items-start gap-10 text-[13px] leading-5 text-[var(--studio-fg)]">
-                <input
-                  type="checkbox"
-                  checked={acceptTerms}
-                  onChange={(event) => setAcceptTerms(event.target.checked)}
-                  className="mt-2 size-16"
-                  required
-                />
-                <span>
-                  I agree to the{' '}
-                  <a
-                    href="/terms"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="underline underline-offset-2"
-                  >
-                    Terms
-                  </a>{' '}
-                  and{' '}
-                  <a
-                    href="/privacy"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="underline underline-offset-2"
-                  >
-                    Privacy Policy
-                  </a>
-                </span>
-              </label>
-            )}
-            {mode === 'login' && (
-              <button
-                type="button"
-                onClick={() => {
-                  setPanel('forgot');
-                  setError('');
-                }}
-                className="text-[13px] font-medium text-[var(--studio-fg)] underline underline-offset-2 cursor-pointer"
-              >
-                Forgot password?
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => {
+                setPanel('forgot');
+                setError('');
+              }}
+              className="text-[13px] font-medium text-[var(--studio-fg)] underline underline-offset-2 cursor-pointer"
+            >
+              Forgot password?
+            </button>
             {info && (
               <p className="text-[13px] leading-5 text-[var(--studio-fg)]" role="status">
                 {info}
@@ -402,32 +384,12 @@ export default function AuthModal({
                 role="alert"
               >
                 <CircleAlert className="size-16 mt-2 shrink-0" aria-hidden />
-                <span>
-                  {error}
-                  {duplicateEmail && (
-                    <>
-                      {' '}
-                      <button
-                        type="button"
-                        onClick={() => onModeChange('login')}
-                        className="font-medium underline underline-offset-2 cursor-pointer"
-                      >
-                        Log in
-                      </button>
-                    </>
-                  )}
-                </span>
+                <span>{error}</span>
               </p>
             )}
 
             <StudioButton type="submit" variant="inverted" className="w-full" disabled={loading}>
-              {loading && !quickRole
-                ? mode === 'signup'
-                  ? 'Creating account…'
-                  : 'Signing in…'
-                : mode === 'signup'
-                  ? 'Sign up'
-                  : 'Log in'}
+              {loading && !quickRole ? 'Signing in…' : 'Log in'}
             </StudioButton>
           </form>
         )}
@@ -462,15 +424,15 @@ export default function AuthModal({
           </div>
         )}
 
-        {panel === 'auth' && (
+        {panel === 'auth' && !inviteOnly && (
           <p className="mt-18 text-center text-[13px] text-[var(--studio-muted)]">
-            {mode === 'signup' ? 'Already have an account?' : 'New to Navroop?'}{' '}
+            New to Navroop?{' '}
             <button
               type="button"
-              onClick={() => onModeChange(mode === 'signup' ? 'login' : 'signup')}
+              onClick={() => onModeChange('signup')}
               className="font-medium text-[var(--studio-fg)] underline underline-offset-2 cursor-pointer"
             >
-              {mode === 'signup' ? 'Log in' : 'Sign up'}
+              How to get access
             </button>
           </p>
         )}

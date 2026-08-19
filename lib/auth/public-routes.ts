@@ -100,8 +100,14 @@ export const PUBLIC_API_ROUTES: PublicRouteRule[] = [
   {
     pattern: '/api/auth/register',
     methods: ['POST'],
-    reason: 'Invited users complete registration before they have a session.',
-    ownMechanism: 'A valid single-use invite token is required.',
+    reason: 'Kept reachable so the closed-registration message is returned, not a 401.',
+    // Deliberately not "a single-use invite token": the Invite model has no token column,
+    // and nothing in the product creates a claimable invite — `POST /api/admin/invite`
+    // creates the User itself and writes the invite already accepted. Self-serve
+    // registration does not exist, so this route is closed rather than guarded, and the
+    // handler reads no body and touches no table.
+    ownMechanism:
+      'Always returns 403 without reading the request or the database; accounts come from an admin invite.',
   },
   {
     pattern: '/api/auth/signup',
@@ -254,7 +260,11 @@ export function validatePublicRoutes(rules: PublicRouteRule[] = PUBLIC_API_ROUTE
       problems.push(`${at}: pattern must start with "/".`);
     }
 
-    if (rule.pattern === '/*' || rule.pattern === '/api/*' || rule.pattern === '/preview-static/*') {
+    if (
+      rule.pattern === '/*' ||
+      rule.pattern === '/api/*' ||
+      rule.pattern === '/preview-static/*'
+    ) {
       problems.push(`${at}: a prefix this broad publishes routes nobody reviewed.`);
     }
     if (rule.pattern.includes('**')) {

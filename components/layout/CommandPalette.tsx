@@ -22,6 +22,28 @@ type CommandPaletteContextValue = {
 
 const CommandPaletteContext = createContext<CommandPaletteContextValue | null>(null);
 
+// Postgres `ts_headline` wraps matched lexemes in <mark>…</mark> and passes the rest of
+// the document through verbatim, so a search snippet is a project name/prompt — member
+// input, validated only for length — carrying two known delimiters. It used to be handed
+// to dangerouslySetInnerHTML, which meant a project named `<img src=x onerror=…>` ran
+// script in every other member's palette, admins included, with no CSP to stop it.
+// Splitting on the delimiters and returning React nodes keeps the highlight and removes
+// the raw-HTML sink: everything outside a <mark> is a text node React escapes for us.
+const HIGHLIGHT = /<mark>([\s\S]*?)<\/mark>/g;
+
+export function renderSnippet(snippet: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  let cursor = 0;
+  for (const match of snippet.matchAll(HIGHLIGHT)) {
+    const start = match.index ?? 0;
+    if (start > cursor) nodes.push(snippet.slice(cursor, start));
+    nodes.push(<mark key={start}>{match[1]}</mark>);
+    cursor = start + match[0].length;
+  }
+  if (cursor < snippet.length) nodes.push(snippet.slice(cursor));
+  return nodes;
+}
+
 export function useCommandPalette() {
   const context = useContext(CommandPaletteContext);
   if (!context) {
@@ -90,10 +112,9 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
     const timer = window.setTimeout(async () => {
       setLoading(true);
       try {
-        const response = await fetch(
-          `/api/search?q=${encodeURIComponent(needle)}`,
-          { signal: controller.signal },
-        );
+        const response = await fetch(`/api/search?q=${encodeURIComponent(needle)}`, {
+          signal: controller.signal,
+        });
         if (!response.ok) return;
         const data = (await response.json()) as { projects?: PaletteProject[] };
         setResults(data.projects ?? []);
@@ -195,35 +216,37 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
               {!loading && query.trim() && results.length === 0 && (
                 <p className="px-10 py-12 text-[13px] text-[var(--studio-muted)]">Nothing found</p>
               )}
-              {!loading && results.map((project, index) => (
-                <button
-                  key={project.id}
-                  type="button"
-                  onClick={() => goTo(project)}
-                  onMouseEnter={() => setActiveIndex(index)}
-                  className={cn(
-                    'flex w-full min-h-[44px] flex-col items-start justify-center rounded-10 px-10 py-8 text-left transition-colors duration-200',
-                    index === activeIndex
-                      ? 'bg-[var(--studio-surface-hover)]'
-                      : 'hover:bg-[var(--studio-surface-hover)]',
-                  )}
-                >
-                  <span className="flex w-full items-center justify-between gap-8">
-                    <span className="truncate text-[14px] text-[var(--studio-fg)]">{project.name}</span>
-                    {project.status ? (
-                      <span className="shrink-0 rounded-full border border-[var(--studio-line)] px-6 py-1 text-[11px] capitalize text-[var(--studio-muted)]">
-                        {project.status}
+              {!loading &&
+                results.map((project, index) => (
+                  <button
+                    key={project.id}
+                    type="button"
+                    onClick={() => goTo(project)}
+                    onMouseEnter={() => setActiveIndex(index)}
+                    className={cn(
+                      'flex w-full min-h-[44px] flex-col items-start justify-center rounded-10 px-10 py-8 text-left transition-colors duration-200',
+                      index === activeIndex
+                        ? 'bg-[var(--studio-surface-hover)]'
+                        : 'hover:bg-[var(--studio-surface-hover)]',
+                    )}
+                  >
+                    <span className="flex w-full items-center justify-between gap-8">
+                      <span className="truncate text-[14px] text-[var(--studio-fg)]">
+                        {project.name}
+                      </span>
+                      {project.status ? (
+                        <span className="shrink-0 rounded-full border border-[var(--studio-line)] px-6 py-1 text-[11px] capitalize text-[var(--studio-muted)]">
+                          {project.status}
+                        </span>
+                      ) : null}
+                    </span>
+                    {project.snippet ? (
+                      <span className="mt-2 line-clamp-2 text-[12px] text-[var(--studio-faint)] [&_mark]:bg-transparent [&_mark]:font-medium [&_mark]:text-[var(--studio-fg)]">
+                        {renderSnippet(project.snippet)}
                       </span>
                     ) : null}
-                  </span>
-                  {project.snippet ? (
-                    <span
-                      className="mt-2 line-clamp-2 text-[12px] text-[var(--studio-faint)] [&_mark]:bg-transparent [&_mark]:font-medium [&_mark]:text-[var(--studio-fg)]"
-                      dangerouslySetInnerHTML={{ __html: project.snippet }}
-                    />
-                  ) : null}
-                </button>
-              ))}
+                  </button>
+                ))}
               {!query.trim() && (
                 <p className="px-10 py-12 text-[13px] text-[var(--studio-muted)]">
                   Type to search, then press Enter to open.
