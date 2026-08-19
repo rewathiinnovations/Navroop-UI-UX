@@ -165,7 +165,8 @@ export default function ChatPanel({
                         'bg-[var(--studio-surface)] text-[var(--studio-fg)] border border-[var(--studio-line)]',
                       message.type === 'system' &&
                         'bg-[var(--studio-bg)] text-[var(--studio-muted)] border border-[var(--studio-line)]',
-                      message.type === 'error' && 'bg-rose-50 text-rose-900 border border-rose-200',
+                      message.type === 'error' &&
+                        'bg-[var(--studio-danger)]/10 text-[var(--studio-danger)] border border-[var(--studio-danger)]/25',
                       message.type === 'command' &&
                         'bg-zinc-900 font-mono text-[12px] text-zinc-100',
                       message.type === 'file-update' &&

@@ -204,7 +204,7 @@ function PendingStrip({
   if (entries.length === 0) return null;
 
   return (
-    <section className="border-b border-[var(--studio-line)] bg-amber-50 px-16 py-12">
+    <section className="border-b border-[var(--studio-line)] bg-amber-500/8 px-16 py-12">
       <h3 className="text-[13px] font-semibold text-[var(--studio-fg)]">Review extracted memory</h3>
       <p className="mt-4 text-[12px] text-[var(--studio-muted)]">
         These are not injected until you approve them.
@@ -214,7 +214,10 @@ function PendingStrip({
           const draft = drafts[entry.id] ?? entry.content;
           const editing = editingId === entry.id;
           return (
-            <li key={entry.id} className="rounded-10 border border-amber-200 bg-white px-12 py-10">
+            <li
+              key={entry.id}
+              className="rounded-10 border border-amber-500/20 bg-[var(--studio-surface)] px-12 py-10"
+            >
               <p className="text-[11px] uppercase tracking-[0.06em] text-[var(--studio-faint)]">
                 {CATEGORY_LABEL[entry.category]} ·{' '}
                 {entry.scope === 'WORKSPACE' ? 'Workspace' : 'This project'}
@@ -488,7 +491,7 @@ export default function BrainPanel({ projectId }: { projectId: string }) {
           Active memory: {budget ? `${budget.tokenEstimate} / ${MEMORY_TOKEN_BUDGET} tokens` : '—'}
         </p>
         {budget?.truncated && (
-          <p className="mt-4 text-[12px] text-amber-800" role="status">
+          <p className="mt-4 text-[12px] text-amber-700 dark:text-amber-400" role="status">
             Some rules are not injected — the block is truncated at the 1500-token budget. Archive
             unused entries so later rules can take effect.
           </p>

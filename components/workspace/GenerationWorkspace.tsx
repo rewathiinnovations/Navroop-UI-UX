@@ -894,7 +894,7 @@ function AISandboxPage({
 
             {/* Package installation overlay - shows when installing packages or applying code */}
             {codeApplicationState.stage && codeApplicationState.stage !== 'complete' && (
-              <div className="absolute inset-0 bg-white/95 backdrop-blur-sm flex items-center justify-center z-10">
+              <div className="absolute inset-0 bg-[var(--studio-bg)]/95 backdrop-blur-sm flex items-center justify-center z-10">
                 <div className="text-center max-w-md">
                   <div className="mb-6">
                     {/* Animated icon based on stage */}
@@ -919,7 +919,7 @@ function AISandboxPage({
                     ) : null}
                   </div>
 
-                  <h3 className="text-lg font-semibold text-gray-900 mb-2">
+                  <h3 className="text-lg font-semibold text-[var(--studio-fg)] mb-2">
                     {codeApplicationState.stage === 'analyzing' && 'Analyzing code...'}
                     {codeApplicationState.stage === 'installing' && 'Installing packages...'}
                     {codeApplicationState.stage === 'applying' && 'Applying changes...'}
@@ -934,8 +934,8 @@ function AISandboxPage({
                             key={index}
                             className={`px-2 py-1 text-xs rounded-full transition-all ${
                               codeApplicationState.installedPackages?.includes(pkg)
-                                ? 'bg-green-100 text-green-700'
-                                : 'bg-gray-100 text-gray-600'
+                                ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400'
+                                : 'bg-[var(--studio-skeleton)] text-[var(--studio-muted)]'
                             }`}
                           >
                             {pkg}
@@ -951,12 +951,12 @@ function AISandboxPage({
                   {/* Files being generated */}
                   {codeApplicationState.stage === 'applying' &&
                     codeApplicationState.filesGenerated && (
-                      <div className="text-sm text-gray-600">
+                      <div className="text-sm text-[var(--studio-muted)]">
                         Creating {codeApplicationState.filesGenerated.length} files...
                       </div>
                     )}
 
-                  <p className="text-sm text-gray-500 mt-2">
+                  <p className="text-sm text-[var(--studio-muted)] mt-2">
                     {codeApplicationState.stage === 'analyzing' &&
                       'Parsing generated code and detecting dependencies...'}
                     {codeApplicationState.stage === 'installing' &&
@@ -989,7 +989,7 @@ function AISandboxPage({
                   iframeRef.current.src = newSrc;
                 }
               }}
-              className="absolute bottom-4 right-4 bg-white/90 hover:bg-white text-gray-700 p-2 rounded-lg shadow-lg transition-all duration-200 hover:scale-105"
+              className="absolute bottom-4 right-4 bg-[var(--studio-surface)]/90 hover:bg-[var(--studio-surface)] text-[var(--studio-fg)] p-2 rounded-lg shadow-lg transition-all duration-200 hover:scale-105"
               title="Refresh sandbox"
             >
               <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1007,19 +1007,19 @@ function AISandboxPage({
 
       // Default state when no sandbox and no screenshot
       return (
-        <div className="flex items-center justify-center h-full bg-gray-50 text-gray-600 text-lg">
+        <div className="flex items-center justify-center h-full bg-[var(--studio-bg)] text-[var(--studio-muted)] text-lg">
           {screenshotError ? (
             <div className="text-center">
               <p className="mb-2">Failed to capture screenshot</p>
-              <p className="text-sm text-gray-500">{screenshotError}</p>
+              <p className="text-sm text-[var(--studio-faint)]">{screenshotError}</p>
             </div>
           ) : sandboxData ? (
-            <div className="text-gray-500">
-              <div className="w-16 h-16 border-2 border-gray-300 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
+            <div className="text-[var(--studio-muted)]">
+              <div className="w-16 h-16 border-2 border-[var(--studio-line-strong)] border-t-transparent rounded-full animate-spin mx-auto mb-2" />
               <p className="text-sm">Loading preview...</p>
             </div>
           ) : (
-            <div className="text-gray-500 text-center">
+            <div className="text-[var(--studio-muted)] text-center">
               <p className="text-sm">Start chatting to create your first app</p>
             </div>
           )}

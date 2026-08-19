@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Check, Copy, Globe, Lock, Trash2 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import { notify } from '@/lib/notify';
+import StatusPill, { type StatusTone } from '@/components/admin/StatusPill';
 import {
   addProjectDomain,
   checkProjectDomain,
@@ -42,6 +43,12 @@ function statusLabel(status: PublicCustomDomain['status']) {
     default:
       return 'Waiting for DNS';
   }
+}
+
+function statusTone(status: PublicCustomDomain['status']): StatusTone {
+  if (status === 'ACTIVE') return 'positive';
+  if (status === 'FAILED') return 'danger';
+  return 'neutral';
 }
 
 async function copyText(value: string) {
@@ -277,23 +284,8 @@ export default function DomainsPanel({ projectId }: { projectId: string }) {
                 <p className="text-[14px] font-semibold text-[var(--studio-fg)]">
                   {domain.hostname}
                 </p>
-                <span
-                  className={cn(
-                    'rounded-full px-8 py-2 text-[11px] font-medium',
-                    domain.status === 'ACTIVE'
-                      ? 'bg-emerald-100 text-emerald-800'
-                      : domain.status === 'FAILED'
-                        ? 'bg-red-100 text-red-800'
-                        : 'bg-[var(--studio-surface)] text-[var(--studio-muted)]',
-                  )}
-                >
-                  {statusLabel(domain.status)}
-                </span>
-                {domain.isPrimary ? (
-                  <span className="rounded-full bg-emerald-100 px-8 py-2 text-[11px] font-medium text-emerald-800">
-                    Primary
-                  </span>
-                ) : null}
+                <StatusPill tone={statusTone(domain.status)}>{statusLabel(domain.status)}</StatusPill>
+                {domain.isPrimary ? <StatusPill tone="positive">Primary</StatusPill> : null}
               </div>
               <div className="flex flex-wrap gap-8">
                 {domain.status === 'ACTIVE' && !domain.isPrimary ? (
@@ -358,7 +350,7 @@ export default function DomainsPanel({ projectId }: { projectId: string }) {
                     className={cn(
                       'flex size-18 items-center justify-center rounded-full',
                       step.done
-                        ? 'bg-emerald-600 text-white'
+                        ? 'bg-[var(--studio-accent)] text-white'
                         : 'bg-[var(--studio-surface)] text-[var(--studio-muted)]',
                     )}
                   >
@@ -378,7 +370,7 @@ export default function DomainsPanel({ projectId }: { projectId: string }) {
             </ol>
 
             {domain.lastError ? (
-              <p className="rounded-10 bg-red-50 px-10 py-8 text-[12px] text-red-800">
+              <p className="rounded-10 bg-[var(--studio-danger)]/10 px-10 py-8 text-[12px] text-[var(--studio-danger)]">
                 {domain.lastError}
               </p>
             ) : null}

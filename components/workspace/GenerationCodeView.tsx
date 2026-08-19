@@ -33,12 +33,12 @@ export default function GenerationCodeView({ progress }: { progress: GenerationP
     <div className="absolute inset-0 flex flex-col gap-12 overflow-hidden p-16">
       {showThinking ? (
         <div className="shrink-0">
-          <p className="mb-6 flex items-center gap-8 text-[13px] font-medium text-purple-600">
+          <p className="mb-6 flex items-center gap-8 text-[13px] font-medium text-purple-600 dark:text-purple-400">
             {progress.isThinking ? (
               <>
                 <span
                   aria-hidden
-                  className="size-8 rounded-full bg-purple-600 motion-safe:animate-pulse"
+                  className="size-8 rounded-full bg-purple-600 motion-safe:animate-pulse dark:bg-purple-400"
                 />
                 AI is thinking...
               </>
@@ -54,8 +54,8 @@ export default function GenerationCodeView({ progress }: { progress: GenerationP
             )}
           </p>
           {progress.thinkingText ? (
-            <div className="max-h-48 overflow-y-auto rounded-12 border border-purple-700 bg-purple-950 p-12 scrollbar-hide">
-              <pre className="font-mono text-[12px] whitespace-pre-wrap text-purple-300">
+            <div className="max-h-48 overflow-y-auto rounded-12 border border-purple-500/30 bg-purple-500/10 p-12 scrollbar-hide dark:border-purple-400/25 dark:bg-purple-400/10">
+              <pre className="font-mono text-[12px] whitespace-pre-wrap text-purple-700 dark:text-purple-300">
                 {progress.thinkingText}
               </pre>
             </div>
@@ -79,7 +79,7 @@ export default function GenerationCodeView({ progress }: { progress: GenerationP
           different count from the panel's "N files written", and the only place
           it is shown. */}
       {totalComponents > 0 ? (
-        <div className="h-2 shrink-0 overflow-hidden rounded-full bg-gray-200">
+        <div className="h-2 shrink-0 overflow-hidden rounded-full bg-[var(--studio-skeleton)]">
           <div
             className="h-full bg-gradient-to-r from-orange-500 to-orange-400 transition-all duration-300"
             style={{

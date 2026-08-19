@@ -8,6 +8,7 @@ import { sortFindings } from '@/lib/seo/findings';
 import type { SeoFinding, SeoSeverity } from '@/lib/seo/types';
 import type { SendMessageOptions } from './types';
 import { useSeoAudit } from './useSeoAudit';
+import StatusPill, { type StatusTone } from '@/components/admin/StatusPill';
 
 const SEVERITY_LABEL: Record<SeoSeverity, string> = {
   high: 'High',
@@ -16,27 +17,18 @@ const SEVERITY_LABEL: Record<SeoSeverity, string> = {
   pass: 'Pass',
 };
 
+const SEVERITY_TONE: Record<SeoSeverity, StatusTone> = {
+  high: 'danger',
+  medium: 'warning',
+  low: 'neutral',
+  pass: 'positive',
+};
+
 function SeverityBadge({ status, fixed }: { status: SeoSeverity; fixed?: boolean }) {
   if (fixed && status !== 'pass') {
-    return (
-      <span className="inline-flex items-center rounded-full bg-[var(--studio-accent-soft)] px-8 py-2 text-[11px] font-medium text-[var(--studio-accent)]">
-        Fixed
-      </span>
-    );
+    return <StatusPill tone="positive">Fixed</StatusPill>;
   }
-  return (
-    <span
-      className={cn(
-        'inline-flex items-center rounded-full px-8 py-2 text-[11px] font-medium',
-        status === 'high' && 'bg-rose-100 text-rose-800',
-        status === 'medium' && 'bg-amber-100 text-amber-800',
-        status === 'low' && 'bg-sky-100 text-sky-800',
-        status === 'pass' && 'bg-emerald-100 text-emerald-800',
-      )}
-    >
-      {SEVERITY_LABEL[status]}
-    </span>
-  );
+  return <StatusPill tone={SEVERITY_TONE[status]}>{SEVERITY_LABEL[status]}</StatusPill>;
 }
 
 function FindingRow({
