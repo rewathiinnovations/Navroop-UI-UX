@@ -123,7 +123,14 @@ export function providerConcurrency(env: Record<string, string | undefined> = pr
  * multi-file sites mid-file, and the completion check then discarded the whole
  * stream as "no files". V4 allows far more (384K max output, 1M context), so a
  * whole site fits in one response.
+ *
+ * 32768 still did not fit one. A five-page Next.js build stopped dead at the
+ * cap: `SectionHeading.tsx` ended mid-identifier and four components that
+ * `app/page.tsx` imported were never written, so the preview could not resolve
+ * them. There is no continuation pass — whatever one reply holds is the site —
+ * so this has to leave room for the largest build a plan permits, and
+ * `maxTokensPerJob` remains the real ceiling.
  */
 export function maxOutputTokensForEntry(_entry?: Pick<ProviderEntry, 'provider'>): number {
-  return 32768;
+  return 128_000;
 }

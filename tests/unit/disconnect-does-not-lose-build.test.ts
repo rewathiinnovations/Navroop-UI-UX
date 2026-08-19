@@ -1,0 +1,70 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { describe, expect, it } from 'vitest';
+
+/**
+ * Reloading the tab during a build must not cost the build.
+ *
+ * A real run got stuck exactly here: the person reloaded while a Next.js site
+ * was generating, the request aborted, and three things followed. The stream
+ * loop broke mid-site, so the reply was never complete. The route returned
+ * before its settle, so the job row stayed RUNNING. And the heartbeat stopped
+ * on abort, so the row looked stale while nothing was left to finish it — the
+ * workspace showed "Building your project…" over a build that was already
+ * over, with no error and no way back.
+ *
+ * The site is persisted server-side, so a departed browser changes nothing
+ * about the work: finish the stream, persist, settle. This pins the shape of
+ * that, since all three regressions are single lines that look harmless.
+ */
+
+const ROUTE = fileURLToPath(
+  new URL('../../app/api/generate-ai-code-stream/route.ts', import.meta.url),
+);
+const LIFECYCLE = fileURLToPath(new URL('../../lib/jobs/lifecycle.ts', import.meta.url));
+
+/** Source with comments stripped — the prose here quotes the old code. */
+function live(path: string): string {
+  return readFileSync(path, 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('//') && !line.trim().startsWith('*'))
+    .join('\n');
+}
+
+describe('a disconnected client does not abandon the generation', () => {
+  it('keeps consuming the model stream', () => {
+    const source = live(ROUTE);
+    expect(source).toContain('for await (const textPart of stream.textStream');
+    expect(source).not.toMatch(/if \(clientDisconnected\) break;/);
+  });
+
+  it('does not return before the job is settled', () => {
+    const source = live(ROUTE);
+    // The bare early exit that skipped persist + settle.
+    expect(source).not.toMatch(/if \(clientDisconnected\) \{\s*return;\s*\}/);
+    // The settle itself still has to be there.
+    expect(source).toContain('settleStreamedGeneration({');
+  });
+
+  it('parses the reply before deciding nothing was produced', () => {
+    const source = live(ROUTE);
+    // The short-circuit that returned `files` before the parse ran. A real
+    // build lost seven path-tagged fences to it.
+    expect(source).not.toMatch(/return \{ generatedCode, files, morphEditBlocks: 0, stop: true/);
+    // Parsing is the lenient block parser, and it has to be reached.
+    const parseAt = source.indexOf('filesFromReply(generatedCode)');
+    const disconnectAt = source.indexOf('client_left_mid_stream');
+    expect(parseAt).toBeGreaterThan(-1);
+    expect(disconnectAt).toBeGreaterThan(-1);
+    expect(parseAt).toBeGreaterThan(disconnectAt);
+  });
+
+  it('keeps the heartbeat beating while the work continues', () => {
+    const source = live(LIFECYCLE);
+    const onAbort = source.slice(source.indexOf('function onAbort()'));
+    const body = onAbort.slice(0, onAbort.indexOf('\n  }'));
+    // Stopping here is what made live work look stale to watchdog and reaper.
+    expect(body).not.toContain('stop()');
+  });
+});

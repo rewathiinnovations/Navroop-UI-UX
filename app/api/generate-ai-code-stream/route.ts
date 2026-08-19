@@ -1154,7 +1154,13 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
 
               // Stream the response and parse in real-time
               for await (const textPart of stream.textStream || []) {
-                if (clientDisconnected) break;
+                // Deliberately no `break` on a disconnected client. Breaking
+                // here threw away a build the moment someone reloaded the tab:
+                // the loop stopped mid-site, the settle below never got a
+                // complete reply, and the work — already paid for in tokens —
+                // was lost. The site is persisted server-side, so finishing
+                // the stream is what lets them come back to it. Writes to the
+                // browser are already skipped while it is gone.
                 const text = textPart || '';
                 generatedCode += text;
                 currentFile += text;
@@ -1286,14 +1292,18 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
               console.log('\n\n[generate-ai-code-stream] Streaming complete.');
 
               if (clientDisconnected) {
-                // Whatever the model produced so far is already on the job row via jobProgress, so
-                // the recovery panel can resume from it. The `finally` settles the job as abandoned.
-                log.warn('generation.stopped_mid_stream', {
+                // Note it and carry on. Returning here returned `files` before
+                // the reply was ever parsed — parsing happens further down —
+                // so a build whose browser had gone away arrived with zero
+                // files and was recorded as "the AI produced nothing". A real
+                // run lost a complete five-page site this way: the model had
+                // emitted seven path-tagged fences, and every one was dropped
+                // because the person reloaded the tab while it streamed.
+                log.warn('generation.client_left_mid_stream', {
                   jobId: generationJob?.id ?? null,
                   reason: clientDisconnectReason,
                   charsGenerated: generatedCode.length,
                 });
-                return { generatedCode, files, morphEditBlocks: 0, stop: true as const };
               }
 
               // Send any remaining conversational text
@@ -1469,9 +1479,12 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
           }
         }
 
-        if (clientDisconnected) {
-          return;
-        }
+        // No early return for a disconnected client. Returning here skipped
+        // the settle below, so the row stayed RUNNING with a heartbeat that
+        // had already stopped — the workspace showed "Building your project…"
+        // indefinitely for a build that was over. Everything from here is
+        // server-side work: parse, persist, settle. The browser is welcome to
+        // be gone for all of it.
 
         // Extract explanation
         const explanationMatch = generatedCode.match(/<explanation>([\s\S]*?)<\/explanation>/);
