@@ -43,9 +43,12 @@ describe('a draft hydration never overwrites what the reader already typed', () 
     // The restore must sit behind the decision, not run unconditionally.
     expect(source).toMatch(/if \(draftHydrationApplies\(editedForKeyRef\.current, key\)\) \{/);
 
-    // A bare `setValue(stored?.text ?? "")` outside that block is the regression.
+    // A bare `setValue(stored?.text ?? '')` outside that block is the regression.
+    // Quote style is prettier's business, not this test's: pinning `""` made this
+    // fail the moment the hook was reformatted, reporting a regression that had not
+    // happened. Accept either quoting and keep asserting the placement.
     const guarded = source.slice(source.indexOf('draftHydrationApplies(editedForKeyRef.current'));
-    expect(guarded).toMatch(/setValueState\(stored\?\.text \?\? ""\)/);
+    expect(guarded).toMatch(/setValueState\(stored\?\.text \?\? (?:''|"")\)/);
 
     // The ref only means anything if editing sets it, and it must record the key rather
     // than a boolean.
