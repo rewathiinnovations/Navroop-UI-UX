@@ -1,17 +1,24 @@
-import { getStack, type StackId } from '@/lib/stacks';
-import type { SandboxRunner } from '@/lib/audit/types';
+import { buildStaticSite } from '@/lib/preview/server-bundle';
+import type { StackId } from '@/lib/stacks';
 
 /**
- * Stack-aware build validation for the post-apply auto-fix loop.
+ * The bundle half of validation: compiles the generated files with the same
+ * esbuild pass the preview and the published site run, and reports what failed.
  *
- * Supersedes lib/build-validator.ts, which fetched the preview HTML and looked
- * for `vite-error-overlay` and `id="root"` — signals only REACT produces. NEXTJS
- * is the default stack and would have reported a false pass on every broken
- * build. Running the stack's own build command is the signal that generalizes:
- * it is what actually has to succeed, and it fails loudly with a parseable error.
+ * Two earlier versions of this were worse than nothing. lib/build-validator.ts
+ * fetched the preview HTML and looked for `vite-error-overlay` / `id="root"` —
+ * signals only REACT produces, so NEXTJS (the default stack) reported a false
+ * pass on every broken build. Its replacement shelled `npm run build` into a
+ * sandbox VM and skipped when there was no sandbox; the sandbox subsystem was
+ * then deleted (migration 20260819010000_drop_sandbox_columns), which left a
+ * check that skipped every single time while the docs described a working loop.
+ * Compiling in-process cannot skip, and it is a truer signal anyway: it is
+ * exactly what the user's preview runs.
+ *
+ * The cheap half runs first — see lib/validation/import-check.ts.
  */
 
-export type BuildErrorKind = 'missing-package' | 'syntax' | 'type' | 'unknown';
+export type BuildErrorKind = 'missing-package' | 'syntax' | 'type' | 'import' | 'unknown';
 
 export type BuildError = {
   kind: BuildErrorKind;
@@ -30,7 +37,7 @@ export type BuildCheckResult = {
   /** Stable across retries of the same failure. Null when nothing failed. */
   signature: string | null;
   /** Reason a check was skipped, for the job step. */
-  skipReason?: 'no-build-command' | 'no-files';
+  skipReason?: 'no-build-command' | 'no-files' | 'checker-unavailable';
 };
 
 /** Build output can be megabytes; only the tail matters and only some of it. */
@@ -40,6 +47,16 @@ const MAX_ERRORS = 10;
 /** Compilers say this when the build itself failed, not when code merely logs "error". */
 const BUILD_FAILED =
   /Failed to compile|Build failed|error during build|Type error:|SyntaxError|Module not found/i;
+
+/**
+ * The bundler itself failing rather than the code failing — a missing or
+ * unspawnable esbuild binary. Reported, never treated as a code fault: the
+ * previous generation of this check turned an infrastructure gap into a silent
+ * pass, and turning it into a *rewrite* would be the same mistake pointed the
+ * other way, at the user's credits.
+ */
+const CHECKER_UNAVAILABLE =
+  /spawn|ENOENT|EACCES|EPERM|Cannot find module 'esbuild'|host version|binary/i;
 
 const MISSING_PACKAGE_PATTERNS = [
   /Failed to resolve import ["']([^"']+)["']/g,
@@ -84,6 +101,10 @@ function locate(line: string): { file: string | null; line: number | null } {
 }
 
 function classify(line: string): BuildErrorKind {
+  // esbuild's wording for the failure that reached a user: `No matching export
+  // in "vfs:lib/data.ts" for import "site"`. Not a missing package — there is
+  // nothing to install — so it must not be classified as one.
+  if (/no matching export|cannot resolve ["']\.|is not exported/i.test(line)) return 'import';
   if (/cannot find module|failed to resolve import|module not found/i.test(line))
     return 'missing-package';
   if (/syntaxerror|unexpected token|parsing error|unterminated/i.test(line)) return 'syntax';
@@ -191,7 +212,6 @@ export async function checkBuild(input: {
     };
   }
 
-  const { buildStaticSite } = await import('@/lib/preview/server-bundle');
   const built = await buildStaticSite(stack, files);
   if (built.ok) {
     return { status: 'passed', stack, errors: [], missingPackages: [], signature: null };
@@ -199,6 +219,18 @@ export async function checkBuild(input: {
 
   const errors = parseBuildErrors(built.error);
   if (errors.length === 0) {
+    // Nothing diagnostic in the output and it reads like the toolchain rather
+    // than the code: report it as unchecked, not as a fault in the site.
+    if (CHECKER_UNAVAILABLE.test(built.error)) {
+      return {
+        status: 'skipped',
+        stack,
+        errors: [],
+        missingPackages: [],
+        signature: null,
+        skipReason: 'checker-unavailable',
+      };
+    }
     errors.push({ kind: 'unknown', message: built.error, file: null, line: null });
   }
 

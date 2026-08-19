@@ -23,7 +23,7 @@ export type AutoFixDecision =
   | { action: 'reprompt'; instruction: string; attempt: number }
   | {
       action: 'stop';
-      reason: 'attempts-exhausted' | 'no-progress' | 'not-actionable';
+      reason: 'attempts-exhausted' | 'no-progress' | 'not-actionable' | 'autofix-disabled';
       detail: string;
     };
 
@@ -33,12 +33,28 @@ export function decideAutoFix(input: {
   attempt: number;
   /** Signature of the previous failure, if this is already a retry. */
   previousSignature?: string | null;
+  /**
+   * The `buildAutoFixEnabled` admin setting. It governs the *fix*, never the
+   * check: with it off the failure is still reported to the user and recorded on
+   * the job, because a workspace that declined to spend a generation on repairs
+   * did not ask to be told a broken build succeeded.
+   */
+  enabled?: boolean;
 }): AutoFixDecision {
   const { result, attempt, previousSignature } = input;
 
   if (result.status === 'passed') return { action: 'none', reason: 'build-passed' };
   // A skipped check is an absence of evidence, never evidence of a fault.
   if (result.status === 'skipped') return { action: 'none', reason: 'build-skipped' };
+
+  if (input.enabled === false) {
+    return {
+      action: 'stop',
+      reason: 'autofix-disabled',
+      detail:
+        'Automatic build fixes are turned off for this workspace, so the code was left as generated.',
+    };
+  }
 
   // Identical failure after an edit means the model is not converging. Stopping
   // here is the difference between a loop and a bill.

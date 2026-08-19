@@ -1,14 +1,19 @@
 import { prisma } from '@/lib/db';
 
 /**
- * Admin toggle for post-apply build validation and the auto-fix loop.
+ * Admin toggle for the post-generation auto-fix loop.
  *
- * This is a setting rather than always-on because validation runs the stack's
- * real build command after every apply. That is the only signal that generalizes
- * across stacks, but it costs wall-clock time and metered sandbox minutes on
- * every edit — including a one-word copy change. Enabled by default (a site that
- * does not compile is worse than one that took longer to produce), off in one
- * click when that trade is wrong for a workspace.
+ * It governs the *fix*, never the check. Both checks now run unconditionally —
+ * the static import scan is free, and the esbuild compile is in-process — because
+ * the earlier arrangement is what let a broken build reach a user: the check
+ * shelled a build command into a sandbox, the sandbox subsystem was deleted, and
+ * every run silently "skipped". A check that can be switched off invisibly is the
+ * same hole with a different cause.
+ *
+ * What this setting decides is whether a failure earns another generation, which
+ * costs credits and wall-clock time. With it off the user is still told exactly
+ * what is broken and the job still records the failure — see
+ * `decideAutoFix({ enabled: false })`.
  *
  * Follows lib/memory/settings.ts: an AppSetting row read defensively, never
  * throwing into the generation path.
