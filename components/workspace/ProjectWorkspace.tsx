@@ -6,6 +6,8 @@ import '@/components/app/studio/studio.css';
 import ChatInput from './ChatInput';
 import ChatPanel from './ChatPanel';
 import PreviewPanel from './PreviewPanel';
+import { BrowserPreview } from './BrowserPreview';
+import { useProjectFiles } from './useProjectFiles';
 import AssetsPanel from './AssetsPanel';
 import BrainPanel from './BrainPanel';
 import DomainsPanel from './DomainsPanel';
@@ -154,6 +156,7 @@ export default function ProjectWorkspace({
     selfBusy: isJobActive || generationStatus === 'ready' || generationStatus === 'applying',
   });
   const generationJob = useGenerationJob({ projectId, phase, isJobActive });
+  const projectFiles = useProjectFiles(projectId);
 
   const handleSend = (text: string, options: SendMessageOptions) => {
     if (phase === 'PLANNING') {
@@ -292,12 +295,6 @@ export default function ProjectWorkspace({
         onRefresh={onRefresh}
         onShare={share}
         previewUrl={previewUrl}
-        liveMode={livePreview.enabled}
-        liveModeLocked={livePreview.lockedOn}
-        liveModeReason={staticPreview.liveReason}
-        onToggleLiveMode={() => {
-          void livePreview.toggle();
-        }}
         previewDevice={previewDevice.device}
         previewRotated={previewDevice.rotated}
         onPreviewDeviceChange={previewDevice.setDevice}
@@ -418,6 +415,7 @@ export default function ProjectWorkspace({
           <PreviewPanel
             iframeRef={iframeRef}
             sandboxUrl={previewUrl}
+            hasFiles={Object.keys(projectFiles.files).length > 0}
             selectedPage={selectedPage}
             expanded={chatCollapsed}
             previewDevice={previewDevice.device}
@@ -462,6 +460,11 @@ export default function ProjectWorkspace({
               <BrainPanel projectId={projectId} />
             ) : view === 'domains' && projectId ? (
               <DomainsPanel projectId={projectId} />
+            ) : view === 'preview' && projectId && !isJobActive ? (
+              // Compiled and run in this browser from the project's stored
+              // files. `preview` still owns the generation view, which streams
+              // code into the file explorer while a build is running.
+              <BrowserPreview stack={projectFiles.stack} files={projectFiles.files} />
             ) : (
               preview
             )}

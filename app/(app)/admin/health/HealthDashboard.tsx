@@ -19,6 +19,7 @@ import { notify, toMessage } from '@/lib/notify';
 import StudioButton from '@/components/app/studio/StudioButton';
 import { useEffect, useState } from 'react';
 import { formatAdminDate, formatAdminDateTime } from '../format-admin-date';
+import type { getAdminHealth } from '@/lib/health/admin';
 
 type HealthPayload = {
   release?: {
@@ -39,11 +40,10 @@ type HealthPayload = {
     lastError: string | null;
   }>;
   failures: {
-    last24h: { generations: number; publishes: number; sandboxBoots: number };
-    last7d: { generations: number; publishes: number; sandboxBoots: number };
+    last24h: { generations: number; publishes: number };
+    last7d: { generations: number; publishes: number };
   };
   topErrorCodes: Array<{ code: string; count: number }>;
-  sandboxes: { current: number; limit: number };
   orphans?: {
     checkedAt: string | null;
     coolify: number;
@@ -96,6 +96,24 @@ type HealthPayload = {
   };
 };
 
+/**
+ * HealthPayload is hand-written, so it can drift from the route that fills it
+ * and nothing complains: when the sandbox subsystem went away the payload lost
+ * `sandboxes` and `failures.*.sandboxBoots`, but this type kept declaring them,
+ * so `data.sandboxes.current` typechecked and then threw at render, blanking
+ * the page. This fails the build instead if a field here has no counterpart on
+ * the server. It is types only — `import type` and the aliases below erase, so
+ * no server module reaches the client bundle.
+ */
+type FieldsTheServerDoesNotSend = Exclude<
+  keyof HealthPayload,
+  keyof Awaited<ReturnType<typeof getAdminHealth>>
+>;
+type Assert<T extends true> = T;
+type _HealthPayloadMatchesServer = Assert<
+  [FieldsTheServerDoesNotSend] extends [never] ? true : false
+>;
+
 export default function HealthDashboard() {
   const [data, setData] = useState<HealthPayload | null>(null);
   const [error, setError] = useState('');
@@ -137,14 +155,8 @@ export default function HealthDashboard() {
     ? [
         { label: 'Failed generations (24h)', value: String(data.failures.last24h.generations) },
         { label: 'Failed publishes (24h)', value: String(data.failures.last24h.publishes) },
-        { label: 'Failed sandbox boots (24h)', value: String(data.failures.last24h.sandboxBoots) },
         { label: 'Failed generations (7d)', value: String(data.failures.last7d.generations) },
         { label: 'Failed publishes (7d)', value: String(data.failures.last7d.publishes) },
-        { label: 'Failed sandbox boots (7d)', value: String(data.failures.last7d.sandboxBoots) },
-        {
-          label: 'Sandboxes vs plan',
-          value: `${data.sandboxes.current} / ${data.sandboxes.limit < 0 ? '∞' : data.sandboxes.limit}`,
-        },
         { label: 'Orphan Coolify apps', value: String(data.orphans?.coolify ?? 0) },
         { label: 'Orphan DNS records', value: String(data.orphans?.dns ?? 0) },
         {

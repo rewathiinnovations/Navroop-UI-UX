@@ -173,7 +173,7 @@ function AISandboxPage({
     let cancelled = false;
     void (async () => {
       try {
-        const response = await fetch(`/api/get-sandbox-files?projectId=${encodeURIComponent(id)}`);
+        const response = await fetch(`/api/projects/${encodeURIComponent(id)}/files`);
         if (!response.ok) return;
         const data = await response.json();
         if (!cancelled && data.success) {
@@ -289,7 +289,7 @@ function AISandboxPage({
 
       if (getGenerationState().messages.length === 0) {
         addChatMessage(
-          'Welcome! I can help you generate code with full context of your sandbox files and structure. Just start chatting - I\'ll automatically create a sandbox for you if needed!\n\nTip: If you see package errors like "react-router-dom not found", just type "npm install" or "check packages" to automatically install missing packages.',
+          'Welcome! Describe the site you want and I will build it — I can see every file in this project, so you can ask for changes to any of them.\n\nThe preview compiles in your browser as soon as the code lands, so there is nothing to install or start.',
           'system',
         );
       }
@@ -435,12 +435,6 @@ function AISandboxPage({
 
       setLoading(true);
       try {
-        if (shouldRequestSandbox('open')) {
-          sandboxCreated = true;
-          // eslint-disable-next-line react-hooks/immutability -- declared later in this component
-          await createSandbox(true);
-        }
-
         // If we have a URL from the home page, mark for automatic start
         if (storedUrl && isMounted) {
           // We'll trigger the generation after the component is fully mounted
@@ -448,9 +442,12 @@ function AISandboxPage({
           sessionStorage.setItem('autoStart', 'true');
         }
       } catch (error) {
-        console.error('[ai-sandbox] Failed to create or restore sandbox:', error);
+        // All this block does is set a sessionStorage flag, so the only way
+        // here is storage being unavailable (private mode, quota). Saying
+        // "could not start" describes what the user actually loses.
+        console.error('[workspace] Could not mark the prompt for auto-start:', error);
         if (isMounted) {
-          addChatMessage('Failed to create or restore sandbox.', 'error');
+          addChatMessage('Could not start automatically — send your prompt to begin.', 'error');
         }
       } finally {
         if (isMounted) {
@@ -509,15 +506,8 @@ function AISandboxPage({
     }
   }, [showHomeScreen, homeUrlInput]);
 
-  useEffect(() => {
-    // Only check sandbox status on mount if we don't already have sandboxData
-    // AND we're not auto-starting a new generation (which would create a new sandbox)
-    const autoStart = sessionStorage.getItem('autoStart');
-    if (!sandboxData && autoStart !== 'true') {
-      // eslint-disable-next-line react-hooks/immutability -- declared later in this component
-      checkSandboxStatus();
-    }
-  }, []);
+  // Nothing to check on mount: there is no VM whose status could differ from
+  // the project's stored files.
 
   useEffect(() => {
     if (chatMessagesRef.current) {
@@ -573,18 +563,6 @@ function AISandboxPage({
     setResponseArea((prev) => [...prev, `[${type}] ${message}`]);
   };
 
-  const checkAndInstallPackages = async () => {
-    // This function is only called when user explicitly requests it
-    // Don't show error if no sandbox - it's likely being created
-    if (!sandboxData) {
-      console.log('[checkAndInstallPackages] No sandbox data available yet');
-      return;
-    }
-
-    // Vite error checking removed - handled by template setup
-    addChatMessage('Checking packages... Sandbox is ready with Vite configuration.', 'system');
-  };
-
   const handleSurfaceError = (_errors: any[]) => {
     // Function kept for compatibility but Vite errors are now handled by template
 
@@ -595,222 +573,7 @@ function AISandboxPage({
     }
   };
 
-  const installPackages = async (packages: string[]) => {
-    if (!sandboxData) {
-      addChatMessage('No active sandbox. Create a sandbox first!', 'system');
-      return;
-    }
-
-    try {
-      const response = await fetch('/api/install-packages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ packages }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Failed to install packages: ${response.statusText}`);
-      }
-
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-
-      while (reader) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk = decoder.decode(value);
-        const lines = chunk.split('\n');
-
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              const data = JSON.parse(line.slice(6));
-
-              switch (data.type) {
-                case 'command':
-                  // Don't show npm install commands - they're handled by info messages
-                  if (!data.command.includes('npm install')) {
-                    addChatMessage(data.command, 'command', { commandType: 'input' });
-                  }
-                  break;
-                case 'output':
-                  addChatMessage(data.message, 'command', { commandType: 'output' });
-                  break;
-                case 'error':
-                  if (data.message && data.message !== 'undefined') {
-                    addChatMessage(data.message, 'command', { commandType: 'error' });
-                  }
-                  break;
-                case 'warning':
-                  addChatMessage(data.message, 'command', { commandType: 'output' });
-                  break;
-                case 'success':
-                  addChatMessage(`${data.message}`, 'system');
-                  break;
-                case 'status':
-                  addChatMessage(data.message, 'system');
-                  break;
-              }
-            } catch (e) {
-              console.error('Failed to parse SSE data:', e);
-            }
-          }
-        }
-      }
-    } catch (error: any) {
-      addChatMessage(`Failed to install packages: ${error.message}`, 'system');
-    }
-  };
-
-  const checkSandboxStatus = async () => {
-    try {
-      const response = await fetch('/api/sandbox-status');
-      const data = await response.json();
-
-      if (data.active && data.healthy && data.sandboxData) {
-        console.log('[checkSandboxStatus] Setting sandboxData from API:', data.sandboxData);
-        setSandboxData(data.sandboxData);
-        updateStatus('Sandbox active', true);
-      } else if (data.active && !data.healthy) {
-        // Sandbox exists but not responding
-        updateStatus('Sandbox not responding', false);
-        // Keep existing sandboxData if we have it - don't clear it
-      } else {
-        // Only clear sandboxData if we don't already have it or if we're explicitly checking from a fresh state
-        // This prevents clearing sandboxData during normal operation when it should persist
-        if (!sandboxData) {
-          console.log('[checkSandboxStatus] No existing sandboxData, clearing state');
-          setSandboxData(null);
-          updateStatus('No sandbox', false);
-        } else {
-          // Keep existing sandboxData and just update status
-          console.log(
-            '[checkSandboxStatus] Keeping existing sandboxData, sandbox inactive but data preserved',
-          );
-          updateStatus('Sandbox status unknown', false);
-        }
-      }
-    } catch (error) {
-      console.error('Failed to check sandbox status:', error);
-      // Only clear on error if we don't have existing sandboxData
-      if (!sandboxData) {
-        setSandboxData(null);
-        updateStatus('Error', false);
-      } else {
-        updateStatus('Status check failed', false);
-      }
-    }
-  };
-
   const sandboxCreationRef = useRef<boolean>(false);
-
-  const createSandbox = async (fromHomeScreen = false) => {
-    // Prevent duplicate sandbox creation
-    if (sandboxCreationRef.current) {
-      console.log('[createSandbox] Sandbox creation already in progress, skipping...');
-      return null;
-    }
-
-    sandboxCreationRef.current = true;
-    console.log('[createSandbox] Starting sandbox creation...');
-    setLoading(true);
-    setShowLoadingBackground(true);
-    updateStatus('Creating sandbox...', false);
-    setResponseArea([]);
-    setScreenshotError(null);
-
-    try {
-      const response = await fetch('/api/create-ai-sandbox-v2', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          projectId: getGenerationState().projectId ?? projectId ?? projectIdFromPath,
-        }),
-      });
-
-      const data = await response.json();
-      console.log('[createSandbox] Response data:', data);
-
-      if (data.success) {
-        sandboxCreationRef.current = false; // Reset the ref on success
-        console.log('[createSandbox] Setting sandboxData from creation:', data);
-        setSandboxData(data);
-        updateStatus('Sandbox active', true);
-        log('Sandbox created successfully!');
-        log(`Sandbox ID: ${data.sandboxId}`);
-        log(`URL: ${data.url}`);
-
-        // Update URL with sandbox ID
-        const newParams = new URLSearchParams(searchParams.toString());
-        newParams.set('sandbox', data.sandboxId);
-        if (aiModel) newParams.set('model', aiModel);
-        const sandboxProjectId = getGenerationState().projectId ?? projectId ?? projectIdFromPath;
-        if (sandboxProjectId) {
-          router.push(`/project/${sandboxProjectId}?${newParams.toString()}`, { scroll: false });
-        }
-
-        // Fade out loading background after sandbox loads
-        setTimeout(() => {
-          setShowLoadingBackground(false);
-        }, 3000);
-
-        if (data.structure) {
-          displayStructure(data.structure);
-        }
-
-        // Fetch sandbox files after creation
-        setTimeout(fetchSandboxFiles, 1000);
-
-        if (pendingRestoreCodeRef.current) {
-          const codeToRestore = pendingRestoreCodeRef.current;
-          pendingRestoreCodeRef.current = null;
-          await applyGeneratedCode(codeToRestore, false, data);
-        }
-
-        // Vite is already started during setupViteApp
-        // No need to restart it immediately after creation
-        // Only restart if there's an actual issue later
-        console.log('[createSandbox] Sandbox ready with Vite server running');
-
-        // Only add welcome message if not coming from home screen
-        if (!fromHomeScreen) {
-          addChatMessage(
-            `Sandbox created! ID: ${data.sandboxId}. I now have context of your sandbox and can help you build your app. Just ask me to create components and I'll automatically apply them!
-
-Tip: I automatically detect and install npm packages from your code imports (like react-router-dom, axios, etc.)`,
-            'system',
-          );
-        }
-
-        setTimeout(() => {
-          if (iframeRef.current) {
-            iframeRef.current.src = data.url;
-          }
-        }, 100);
-
-        void saveCurrentProject({
-          sandboxId: data.sandboxId,
-          previewUrl: data.url,
-          prompt: homeUrlInput || homeContextInput || 'New website',
-        });
-
-        // Return the sandbox data so it can be used immediately
-        return data;
-      } else {
-        throw new Error(data.error || 'Unknown error');
-      }
-    } catch (error: any) {
-      console.error('[createSandbox] Error:', error);
-      updateStatus('Error', false);
-      log(`Failed to create sandbox: ${error.message}`, 'error');
-      addChatMessage(`Failed to create sandbox: ${error.message}`, 'system');
-      throw error;
-    } finally {
-      setLoading(false);
-      sandboxCreationRef.current = false; // Reset the ref
-    }
-  };
 
   const saveCurrentProject = async (overrides?: {
     sandboxId?: string;
@@ -1264,8 +1027,8 @@ Tip: I automatically detect and install npm packages from your code imports (lik
     if (!sandboxData && !filesProjectId) return;
 
     try {
-      const query = filesProjectId ? `?projectId=${encodeURIComponent(filesProjectId)}` : '';
-      const response = await fetch(`/api/get-sandbox-files${query}`, {
+      if (!filesProjectId) return;
+      const response = await fetch(`/api/projects/${encodeURIComponent(filesProjectId)}/files`, {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
@@ -1289,25 +1052,6 @@ Tip: I automatically detect and install npm packages from your code imports (lik
     }
   };
 
-  //   const restartViteServer = async () => {
-  //     try {
-  //       addChatMessage('Restarting Vite dev server...', 'system');
-  //
-  //       const response = await fetch('/api/restart-vite', {
-  //         method: 'POST',
-  //         headers: { 'Content-Type': 'application/json' }
-  //       });
-  //
-  //       if (response.ok) {
-  //         const data = await response.json();
-  //         if (data.success) {
-  //           addChatMessage('✓ Vite dev server restarted successfully!', 'system');
-  //
-  //           // Refresh the iframe after a short delay
-  //           setTimeout(() => {
-  //             if (iframeRef.current && sandboxData?.url) {
-  //               iframeRef.current.src = `${sandboxData.url}?t=${Date.now()}`;
-  //             }
   //           }, 2000);
   //         } else {
   //           addChatMessage(`Failed to restart Vite: ${data.error}`, 'error');
@@ -2072,15 +1816,10 @@ Tip: I automatically detect and install npm packages from your code imports (lik
       lowerMessage === 'install packages' ||
       lowerMessage === 'npm install'
     ) {
-      if (!sandboxData) {
-        // More helpful message - user might be trying to run this too early
-        addChatMessage(
-          'The sandbox is still being set up. Please wait for the generation to complete, then try again.',
-          'system',
-        );
-        return;
-      }
-      await checkAndInstallPackages();
+      addChatMessage(
+        'There is nothing to install — the preview loads each dependency straight from the CDN when it compiles. Just ask for the package you want to use.',
+        'system',
+      );
       return;
     }
 
@@ -2108,18 +1847,8 @@ Tip: I automatically detect and install npm packages from your code imports (lik
       return;
     }
 
-    // Start sandbox creation in parallel if needed
-    let sandboxPromise: Promise<void> | null = null;
-    let sandboxCreating = false;
-
-    if (!sandboxData && shouldRequestSandbox('generate')) {
-      sandboxCreating = true;
-      addChatMessage('Creating sandbox while I plan your app...', 'system');
-      sandboxPromise = createSandbox(true).catch((error: any) => {
-        addChatMessage(`Failed to create sandbox: ${error.message}`, 'system');
-        throw error;
-      });
-    }
+    // Nothing to boot before generating: the files go to the database and the
+    // preview compiles them here.
 
     // Determine if this is an edit
     const isEdit = conversationContext.appliedCode.length > 0;
@@ -2149,13 +1878,13 @@ Tip: I automatically detect and install npm packages from your code imports (lik
       console.log('[chat] Using backend file cache for context');
 
       const fullContext = {
-        sandboxId: sandboxData?.sandboxId || (sandboxCreating ? 'pending' : null),
+        sandboxId: null,
         structure: structureContent,
         recentMessages: chatMessages.slice(-20),
         conversationContext: conversationContext,
         currentCode: promptInput,
-        sandboxUrl: sandboxData?.url,
-        sandboxCreating: sandboxCreating,
+        sandboxUrl: undefined,
+        sandboxCreating: false,
       };
 
       // Debug what we're sending
@@ -2204,49 +1933,11 @@ Tip: I automatically detect and install npm packages from your code imports (lik
         // Don't show the Generated Code panel by default
         // setLeftPanelVisible(true);
 
-        // Wait for sandbox creation if it's still in progress
-        let activeSandboxData = sandboxData;
-        if (sandboxPromise) {
-          addChatMessage('Waiting for sandbox to be ready...', 'system');
-          try {
-            const newSandboxData = await sandboxPromise;
-            if (newSandboxData != null) {
-              activeSandboxData = newSandboxData;
-              // Also update the state for future use
-              setSandboxData(newSandboxData);
-            }
-            // Remove the waiting message
-            setChatMessages((prev) =>
-              prev.filter((msg) => msg.content !== 'Waiting for sandbox to be ready...'),
-            );
-          } catch (sandboxError: unknown) {
-            const sandboxMessage =
-              sandboxError instanceof Error
-                ? sandboxError.message
-                : 'Sandbox creation failed. Cannot apply code.';
-            addChatMessage(sandboxMessage, 'system');
-            markError(sandboxMessage);
-            return;
-          }
-        }
-
-        if (activeSandboxData && generatedCode) {
-          // For new sandbox creations, add a delay to ensure Vite is ready
-          if (sandboxCreating) {
-            console.log(
-              '[startGeneration] New sandbox created, waiting for services to be ready...',
-            );
-            await new Promise((resolve) => setTimeout(resolve, 2000));
-          }
-
-          // Use isEdit flag that was determined at the start
-          // Pass the sandbox data from the promise if it's different from the state
-          await applyGeneratedCode(
-            generatedCode,
-            isEdit,
-            activeSandboxData !== sandboxData ? activeSandboxData : undefined,
-          );
-        }
+        // Applying writes the files to the project and the preview recompiles
+        // from them, so there is nothing to boot or wait for first. This used
+        // to be gated on live sandbox data, which is now always null — every
+        // generation streamed in, printed its files, and was then dropped.
+        await applyGeneratedCode(generatedCode, isEdit);
       }
 
       // Show completion status briefly then switch to preview
@@ -2290,75 +1981,6 @@ Tip: I automatically detect and install npm packages from your code imports (lik
     }, 400);
     return () => clearTimeout(timer);
   }, [initialPhase, projectId]);
-
-  const downloadZip = async () => {
-    if (!sandboxData) {
-      addChatMessage('Please wait for the sandbox to be created before downloading.', 'system');
-      return;
-    }
-
-    setLoading(true);
-    log('Creating zip file...');
-    addChatMessage('Creating ZIP file of your Vite app...', 'system');
-
-    try {
-      const response = await fetch('/api/create-zip', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
-
-      const data = await response.json();
-
-      if (data.success) {
-        log('Zip file created!');
-        addChatMessage('ZIP file created! Download starting...', 'system');
-
-        const link = document.createElement('a');
-        link.href = data.dataUrl;
-        link.download = data.fileName || 'e2b-project.zip';
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-
-        // The chat carries the run-locally steps; the toast confirms the
-        // download itself, which lands away from the chat's focus.
-        notify.success('Download started.', { key: 'download-zip' });
-
-        addChatMessage(
-          'Your Vite app has been downloaded! To run it locally:\n' +
-            '1. Unzip the file\n' +
-            '2. Run: npm install\n' +
-            '3. Run: npm run dev\n' +
-            '4. Open http://localhost:5173',
-          'system',
-        );
-      } else {
-        throw new Error(data.error);
-      }
-    } catch (error: any) {
-      log(`Failed to create zip: ${error.message}`, 'error');
-      addChatMessage(`Failed to create ZIP: ${error.message}`, 'system');
-      notify.error(error, { fallback: 'Could not create the ZIP', key: 'download-zip' });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const reapplyLastGeneration = async () => {
-    if (!conversationContext.lastGeneratedCode) {
-      addChatMessage('No previous generation to re-apply', 'system');
-      return;
-    }
-
-    if (!sandboxData) {
-      addChatMessage('Please create a sandbox first', 'system');
-      return;
-    }
-
-    addChatMessage('Re-applying last generation...', 'system');
-    const isEdit = conversationContext.appliedCode.length > 0;
-    await applyGeneratedCode(conversationContext.lastGeneratedCode, isEdit);
-  };
 
   // Auto-scroll code display to bottom when streaming
   useEffect(() => {
@@ -2822,10 +2444,7 @@ Tip: I automatically detect and install npm packages from your code imports (lik
       'system',
     );
 
-    // Start creating sandbox and capturing screenshot immediately in parallel
-    const sandboxPromise = shouldRequestSandbox('generate')
-      ? createSandbox(true)
-      : Promise.resolve(null);
+    const sandboxPromise = Promise.resolve(null);
 
     // Set loading stage immediately before hiding home screen
     setLoadingStage('gathering');

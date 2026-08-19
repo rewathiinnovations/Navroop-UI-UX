@@ -15,6 +15,7 @@ import {
   type StartGenerationInput,
 } from './types';
 import { emitLockConflict, parseLockConflict } from '@/lib/projects/lock-client';
+import { PROJECT_FILES_CHANGED_EVENT } from '@/lib/preview/events';
 
 type Listener = () => void;
 type JobHandler = (job: RuntimeJob) => Promise<void>;
@@ -684,133 +685,29 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
   return { generatedCode, explanation, packagesToInstall, skillNames };
 }
 
+/**
+ * Settles a finished generation.
+ *
+ * This used to POST the whole reply to /api/apply-ai-code-stream, which wrote
+ * the files into a sandbox VM and installed packages. There is no VM: the
+ * generate route already parsed the reply and wrote the files to the project,
+ * and the preview compiles them in this browser. So the only work left is to
+ * mark the generation finished and let the preview pick the new files up.
+ */
 async function runApplyStream(input: StartApplyInput): Promise<ApplyResult> {
-  const controller = getAbortController();
   setJobStatus('applying');
-  setCodeApplicationState({ stage: 'analyzing' });
+  setCodeApplicationState({ stage: 'applying', filesGenerated: [] });
 
-  const response = await fetch('/api/apply-ai-code-stream', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      response: input.code,
-      isEdit: input.isEdit,
-      packages: input.packages || [],
-      sandboxId: input.sandboxId,
-      projectId: state.projectId,
-      autoFixAttempt: input.autoFixAttempt ?? 0,
-      previousBuildSignature: input.previousBuildSignature ?? null,
-    }),
-    signal: controller.signal,
-  });
+  patchGenerationState({ lastGeneratedCode: input.code });
+  // Terminal status: persists the code and surfaces any preview notice.
+  await setJobStatus('ready');
 
-  if (response.status === 409) {
-    const body = await response.json().catch(() => ({}));
-    const conflict = parseLockConflict(409, body);
-    if (conflict) emitLockConflict(conflict);
-    setJobStatus('idle');
-    return { finalData: null };
+  setCodeApplicationState({ stage: 'complete' });
+  // Tells the workspace the stored files changed, so the preview rebuilds.
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(PROJECT_FILES_CHANGED_EVENT));
   }
-
-  if (!response.ok) {
-    throw new Error(`Failed to apply code: ${response.statusText}`);
-  }
-
-  const reader = response.body?.getReader();
-  const decoder = new TextDecoder();
-  let finalData: Record<string, unknown> | null = null;
-
-  while (reader) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    const chunk = decoder.decode(value);
-    const lines = chunk.split('\n');
-
-    for (const line of lines) {
-      if (!line.startsWith('data: ')) continue;
-      try {
-        const data = JSON.parse(line.slice(6));
-        switch (data.type) {
-          case 'start':
-            setCodeApplicationState({ stage: 'analyzing' });
-            break;
-          case 'step':
-            if (data.message?.includes('Installing') && data.packages) {
-              setCodeApplicationState({ stage: 'installing', packages: data.packages });
-            } else if (
-              data.message?.includes('Creating files') ||
-              data.message?.includes('Applying')
-            ) {
-              setCodeApplicationState({ stage: 'applying', filesGenerated: [] });
-            }
-            break;
-          case 'package-progress':
-          case 'success':
-            if (data.installedPackages) {
-              setCodeApplicationState((prev) => ({
-                ...prev,
-                installedPackages: data.installedPackages,
-              }));
-            }
-            break;
-          case 'command':
-            if (data.command && !data.command.includes('npm install')) {
-              addGenerationMessage(data.command, 'command', { commandType: 'input' });
-            }
-            break;
-          case 'command-progress':
-            addGenerationMessage(`${data.action} command: ${data.command}`, 'command', {
-              commandType: 'input',
-            });
-            break;
-          case 'command-output':
-            addGenerationMessage(data.output, 'command', {
-              commandType: data.stream === 'stderr' ? 'error' : 'output',
-            });
-            break;
-          case 'command-complete':
-            addGenerationMessage(
-              data.success
-                ? 'Command completed successfully'
-                : `Command failed with exit code ${data.exitCode}`,
-              'system',
-            );
-            break;
-          case 'complete':
-            finalData = data;
-            setCodeApplicationState({ stage: 'complete' });
-            setTimeout(() => {
-              setCodeApplicationState({ stage: null });
-            }, 3000);
-            break;
-          case 'error':
-            addGenerationMessage(
-              `Error: ${data.message || data.error || 'Unknown error'}`,
-              'system',
-            );
-            break;
-          case 'warning':
-          case 'info':
-            if (data.message) {
-              addGenerationMessage(data.message, 'system');
-            }
-            break;
-          default:
-            break;
-        }
-      } catch {
-        // Ignore parse errors for partial SSE chunks
-      }
-    }
-  }
-
-  if (finalData) {
-    patchGenerationState({ lastGeneratedCode: input.code });
-    await setJobStatus('ready');
-  }
-
-  return { finalData };
+  return { finalData: null };
 }
 
 export function markGenerationError(message: string) {

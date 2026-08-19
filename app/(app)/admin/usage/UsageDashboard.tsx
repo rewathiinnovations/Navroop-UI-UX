@@ -1,7 +1,6 @@
 'use client';
 
 import {
-  AlertOctagon,
   Brain,
   Bug,
   ChevronDown,
@@ -59,23 +58,6 @@ type SsrfRejects = {
   byUser: Record<string, number>;
 };
 
-type TeardownLeak = {
-  sandboxId: string | null;
-  projectId: string | null;
-  driver: string | null;
-  reason: string;
-  source: string;
-  at: string;
-};
-
-type TeardownLeaks = {
-  total: number;
-  open: TeardownLeak[];
-};
-
-/** The card is a warning, not an inventory — past this the list stops informing. */
-const LEAK_LIST_LIMIT = 8;
-
 function currentMonthInputs(now = new Date()) {
   const year = now.getUTCFullYear();
   const month = now.getUTCMonth();
@@ -107,7 +89,6 @@ export default function UsageDashboard() {
   const [loadingProjects, setLoadingProjects] = useState(false);
   const [qualityIssues, setQualityIssues] = useState<RecurringIssue[]>([]);
   const [ssrfRejects, setSsrfRejects] = useState<SsrfRejects>({ total: 0, byUser: {} });
-  const [teardownLeaks, setTeardownLeaks] = useState<TeardownLeaks>({ total: 0, open: [] });
   const [skills, setSkills] = useState<PublicSkill[]>([]);
   const [memoryExtractionEnabled, setMemoryExtractionEnabled] = useState(true);
   const [savingExtraction, setSavingExtraction] = useState(false);
@@ -149,14 +130,6 @@ export default function UsageDashboard() {
               setSsrfRejects({
                 total: Number(qualityData.ssrfPrivateRejects.total) || 0,
                 byUser: qualityData.ssrfPrivateRejects.byUser || {},
-              });
-            }
-            if (qualityData.sandboxTeardownLeaks) {
-              setTeardownLeaks({
-                total: Number(qualityData.sandboxTeardownLeaks.total) || 0,
-                open: Array.isArray(qualityData.sandboxTeardownLeaks.open)
-                  ? qualityData.sandboxTeardownLeaks.open
-                  : [],
               });
             }
           }
@@ -267,38 +240,6 @@ export default function UsageDashboard() {
           hint="Estimate — not live billing"
         />
       </div>
-
-      {teardownLeaks.open.length > 0 && (
-        <AdminCard
-          icon={<AlertOctagon className="size-14" aria-hidden />}
-          title="Sandboxes that could not be stopped"
-          description={`A kill was asked and the provider did not confirm the VM is gone. These may still be billed. ${teardownLeaks.total} recorded; ${teardownLeaks.open.length} still open. The idle reaper retries them unless the provider circuit is open.`}
-        >
-          <ul className="space-y-8">
-            {/* Newest entries are appended, so the recent ones live at the end. */}
-            {teardownLeaks.open
-              .slice(-LEAK_LIST_LIMIT)
-              .reverse()
-              .map((leak) => (
-                <li
-                  key={`${leak.projectId || 'none'}:${leak.sandboxId || leak.at}`}
-                  className="flex flex-col gap-2 text-[13px] sm:flex-row sm:items-baseline sm:justify-between"
-                >
-                  <span className="text-[var(--studio-fg)]">
-                    {leak.driver || 'sandbox'} {leak.sandboxId || 'unknown id'} ({leak.source})
-                  </span>
-                  <span className="text-[var(--studio-faint)]">{leak.reason}</span>
-                </li>
-              ))}
-            {teardownLeaks.open.length > LEAK_LIST_LIMIT && (
-              <li className="text-[13px] text-[var(--studio-faint)]">
-                …and {teardownLeaks.open.length - LEAK_LIST_LIMIT} more still open. The count above
-                is the full picture; this list shows the most recent.
-              </li>
-            )}
-          </ul>
-        </AdminCard>
-      )}
 
       {ssrfRejects.total > 0 && (
         <AdminCard

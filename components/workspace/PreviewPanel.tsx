@@ -18,7 +18,13 @@ import { useElementSelection } from './useElementSelection';
 import VisualEditsToolbar from './VisualEditsToolbar';
 import type { InstructionMode } from '@/lib/visual-edits/format-instruction';
 import type { PreviewDeviceKey } from '@/lib/preview/devices';
-import type { PlanTrigger, ProjectPhase, SendMessageOptions, VisualEditTool, WorkspaceView } from './types';
+import type {
+  PlanTrigger,
+  ProjectPhase,
+  SendMessageOptions,
+  VisualEditTool,
+  WorkspaceView,
+} from './types';
 import type { ProjectSandboxState, WorkspaceBootStep } from './useProjectSandbox';
 import { previewPaneKind } from '@/lib/preview/after-generation';
 import {
@@ -38,7 +44,8 @@ const BOOT_STEPS: { id: WorkspaceBootStep; label: string }[] = [
 ];
 
 function stepIndex(step: WorkspaceBootStep | null) {
-  if (step === 'restore' || step === 'checkpoint' || step === 'probe' || step === 'create') return 0;
+  if (step === 'restore' || step === 'checkpoint' || step === 'probe' || step === 'create')
+    return 0;
   if (step === 'install') return 1;
   if (step === 'dev' || step === 'ready') return 2;
   return 0;
@@ -65,6 +72,7 @@ export default function PreviewPanel({
   children,
   iframeRef,
   sandboxUrl,
+  hasFiles = false,
   selectedPage = '/',
   expanded = false,
   previewDevice = 'desktop',
@@ -89,6 +97,8 @@ export default function PreviewPanel({
   children: ReactNode;
   iframeRef?: RefObject<HTMLIFrameElement | null>;
   sandboxUrl?: string | null;
+  /** The project has code to render. Decides whether the pane is ready. */
+  hasFiles?: boolean;
   selectedPage?: string;
   expanded?: boolean;
   previewDevice?: PreviewDeviceKey;
@@ -133,14 +143,22 @@ export default function PreviewPanel({
 
     const sync = () => {
       injectInspectorIntoIframe(iframe);
-      setInspectorActive(iframe, inspectEnabled, previewOriginFromUrl(iframe.src) || previewOriginFromUrl(sandboxUrl));
+      setInspectorActive(
+        iframe,
+        inspectEnabled,
+        previewOriginFromUrl(iframe.src) || previewOriginFromUrl(sandboxUrl),
+      );
     };
 
     iframe.addEventListener('load', sync);
     sync();
     return () => {
       iframe.removeEventListener('load', sync);
-      setInspectorActive(iframe, false, previewOriginFromUrl(iframe.src) || previewOriginFromUrl(sandboxUrl));
+      setInspectorActive(
+        iframe,
+        false,
+        previewOriginFromUrl(iframe.src) || previewOriginFromUrl(sandboxUrl),
+      );
     };
   }, [iframeRef, inspectEnabled, sandboxUrl, selectedPage, view]);
 
@@ -173,11 +191,10 @@ export default function PreviewPanel({
   const pane = previewPaneKind({
     phase,
     planTrigger,
+    hasFiles,
     previewUrl: sandboxUrl,
     preparing: preparingPreview,
     previewBuildFailed,
-    liveMode: previewKind === 'live',
-    sandboxStatus: sandboxState?.status ?? null,
   });
   const showEmptyPlan = pane === 'planning';
   const showTools =
@@ -198,13 +215,18 @@ export default function PreviewPanel({
       )}
     >
       {liveNotice ? (
-        <div className="border-b border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-8 text-[12px] text-[var(--studio-muted)]" role="status">
+        <div
+          className="border-b border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-8 text-[12px] text-[var(--studio-muted)]"
+          role="status"
+        >
           {liveNotice}
         </div>
       ) : null}
       {previewing && (
         <div className="flex items-center justify-between gap-12 border-b border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-8">
-          <p className="text-[13px] font-medium text-[var(--studio-fg)]">Viewing an older version</p>
+          <p className="text-[13px] font-medium text-[var(--studio-fg)]">
+            Viewing an older version
+          </p>
           <button
             type="button"
             onClick={onExitPreview}
@@ -257,105 +279,104 @@ export default function PreviewPanel({
                 : undefined
             }
           >
-          {view === 'seo' || view === 'assets' || view === 'brain' || view === 'domains' || !showEmptyPlan ? (
-            pane === 'sandbox-boot' || pane === 'sandbox-failed' ? (
-              sandboxState ? (
-                <SandboxColdStart
-                  state={sandboxState}
-                  onRetry={onRetrySandbox}
-                />
-              ) : (
+            {view === 'seo' ||
+            view === 'assets' ||
+            view === 'brain' ||
+            view === 'domains' ||
+            !showEmptyPlan ? (
+              pane === 'empty' ? (
                 <EmptyPreview onStartLive={onStartLive} />
+              ) : (
+                <>
+                  {children}
+                  {view === 'preview' && preparingPreview ? (
+                    <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-center pt-16">
+                      <p className="rounded-full bg-[var(--studio-fg)] px-12 py-6 text-[12px] font-medium text-[var(--studio-bg)] shadow-sm">
+                        {PREPARING_PREVIEW}
+                      </p>
+                    </div>
+                  ) : null}
+                  {view === 'preview' && previewBuildFailed ? (
+                    <PreviewBuildFailed
+                      log={previewBuildLog}
+                      onRetry={onRetryPreview}
+                      onStartLive={onStartLive}
+                    />
+                  ) : null}
+                </>
               )
-            ) : pane === 'empty' ? (
-              <EmptyPreview onStartLive={onStartLive} />
             ) : (
-              <>
-                {children}
-                {view === 'preview' && preparingPreview ? (
-                  <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-center pt-16">
-                    <p className="rounded-full bg-[var(--studio-fg)] px-12 py-6 text-[12px] font-medium text-[var(--studio-bg)] shadow-sm">
-                      {PREPARING_PREVIEW}
+              <div className="flex h-full w-full items-center justify-center px-24 text-center">
+                {phase === 'COMPLETE' ? (
+                  // The site exists (COMPLETE means lastCode/checkpoint) — the
+                  // missing thing is only the preview snapshot. Saying "nothing
+                  // built yet" here told users their finished build was lost.
+                  <div className="max-w-[320px]">
+                    <p className="text-[14px] leading-6 text-[var(--studio-muted)]">
+                      The site is built, but no preview snapshot has been captured yet. View it in
+                      Live mode, or send a change in chat to rebuild and capture a preview.
+                    </p>
+                    {onStartLive ? (
+                      <button
+                        type="button"
+                        onClick={onStartLive}
+                        className="mt-14 inline-flex min-h-[38px] items-center rounded-full border border-[var(--studio-line-strong)] px-14 text-[13px] font-medium text-[var(--studio-fg)] transition-colors duration-200 hover:bg-[var(--studio-surface-hover)]"
+                      >
+                        Turn on Live mode
+                      </button>
+                    ) : null}
+                  </div>
+                ) : (
+                  // Planning: nothing to render yet, but "nothing" shouldn't
+                  // look dead — a breathing brand orb says the site is coming.
+                  <div className="relative flex max-w-[340px] flex-col items-center">
+                    <div className="relative mb-24 size-[120px]">
+                      <span
+                        aria-hidden
+                        className="studio-orb absolute inset-0 rounded-full opacity-90 blur-2xl [background-image:var(--studio-cta-gradient)]"
+                      />
+                      <span
+                        aria-hidden
+                        className="absolute inset-[18px] rounded-full border border-white/40 bg-[var(--studio-surface)]/60 backdrop-blur-md"
+                      />
+                      <span
+                        aria-hidden
+                        className="absolute inset-[34px] rounded-full [background-image:var(--studio-cta-gradient)]"
+                      />
+                    </div>
+                    <p className="text-[17px] font-medium tracking-[-0.02em] text-[var(--studio-fg)]">
+                      Something cool is on the way
+                    </p>
+                    <p className="mt-6 text-[13px] leading-6 text-[var(--studio-muted)]">
+                      Your plan is taking shape in the chat. Approve it and this panel becomes your
+                      live site.
                     </p>
                   </div>
-                ) : null}
-                {view === 'preview' && previewBuildFailed ? (
-                  <PreviewBuildFailed log={previewBuildLog} onRetry={onRetryPreview} onStartLive={onStartLive} />
-                ) : null}
-              </>
-            )
-          ) : (
-            <div className="flex h-full w-full items-center justify-center px-24 text-center">
-              {phase === 'COMPLETE' ? (
-                // The site exists (COMPLETE means lastCode/checkpoint) — the
-                // missing thing is only the preview snapshot. Saying "nothing
-                // built yet" here told users their finished build was lost.
-                <div className="max-w-[320px]">
-                  <p className="text-[14px] leading-6 text-[var(--studio-muted)]">
-                    The site is built, but no preview snapshot has been captured yet. View it in
-                    Live mode, or send a change in chat to rebuild and capture a preview.
-                  </p>
-                  {onStartLive ? (
-                    <button
-                      type="button"
-                      onClick={onStartLive}
-                      className="mt-14 inline-flex min-h-[38px] items-center rounded-full border border-[var(--studio-line-strong)] px-14 text-[13px] font-medium text-[var(--studio-fg)] transition-colors duration-200 hover:bg-[var(--studio-surface-hover)]"
-                    >
-                      Turn on Live mode
-                    </button>
-                  ) : null}
-                </div>
-              ) : (
-                // Planning: nothing to render yet, but "nothing" shouldn't
-                // look dead — a breathing brand orb says the site is coming.
-                <div className="relative flex max-w-[340px] flex-col items-center">
-                  <div className="relative mb-24 size-[120px]">
-                    <span
-                      aria-hidden
-                      className="studio-orb absolute inset-0 rounded-full opacity-90 blur-2xl [background-image:var(--studio-cta-gradient)]"
-                    />
-                    <span
-                      aria-hidden
-                      className="absolute inset-[18px] rounded-full border border-white/40 bg-[var(--studio-surface)]/60 backdrop-blur-md"
-                    />
-                    <span
-                      aria-hidden
-                      className="absolute inset-[34px] rounded-full [background-image:var(--studio-cta-gradient)]"
-                    />
-                  </div>
-                  <p className="text-[17px] font-medium tracking-[-0.02em] text-[var(--studio-fg)]">
-                    Something cool is on the way
-                  </p>
-                  <p className="mt-6 text-[13px] leading-6 text-[var(--studio-muted)]">
-                    Your plan is taking shape in the chat. Approve it and this panel becomes your
-                    live site.
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
-          {showTools && (
-            <VisualEditsToolbar
-              activeTool={tool}
-              onChange={(next) => {
-                setTool(next);
-                clearSelection();
-              }}
-            />
-          )}
-          {inspectEnabled && selection && (
-            <ElementEditPopover
-              mode={mode}
-              payload={selection.payload}
-              pageRect={selection.pageRect}
-              sending={sending}
-              onCancel={clearSelection}
-              onSubmit={(instruction) => {
-                onSend?.(instruction, { mode: 'build', source });
-                clearSelection();
-              }}
-            />
-          )}
+                )}
+              </div>
+            )}
+            {showTools && (
+              <VisualEditsToolbar
+                activeTool={tool}
+                onChange={(next) => {
+                  setTool(next);
+                  clearSelection();
+                }}
+              />
+            )}
+            {inspectEnabled && selection && (
+              <ElementEditPopover
+                mode={mode}
+                payload={selection.payload}
+                pageRect={selection.pageRect}
+                sending={sending}
+                onCancel={clearSelection}
+                onSubmit={(instruction) => {
+                  onSend?.(instruction, { mode: 'build', source });
+                  clearSelection();
+                }}
+              />
+            )}
           </div>
         </div>
       </div>
@@ -382,9 +403,7 @@ function SandboxColdStart({
           {failed ? 'Sandbox failed to start' : 'Restarting the project...'}
         </p>
         <p className="mt-6 text-[13px] leading-6 text-[var(--studio-muted)]">
-          {failed
-            ? `${stepLabel(state.failedStep)} failed.`
-            : 'This can take 30–60 seconds'}
+          {failed ? `${stepLabel(state.failedStep)} failed.` : 'This can take 30–60 seconds'}
         </p>
         {!failed ? (
           <ol className="mt-20 w-full space-y-8 text-left">
@@ -415,7 +434,9 @@ function SandboxColdStart({
         ) : (
           <div className="mt-16 flex flex-col items-center gap-8">
             {state.requestId ? (
-              <p className="text-[11px] text-[var(--studio-faint)]">Request {state.requestId.slice(0, 8)}</p>
+              <p className="text-[11px] text-[var(--studio-faint)]">
+                Request {state.requestId.slice(0, 8)}
+              </p>
             ) : null}
             <button
               type="button"
@@ -463,7 +484,9 @@ function PreviewBuildFailed({
   return (
     <div className="absolute inset-x-16 bottom-16 z-20 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] p-16 shadow-sm">
       <p className="text-[13px] font-medium text-[var(--studio-fg)]">{PREVIEW_BUILD_FAILED}</p>
-      <p className="mt-6 text-[12px] leading-5 text-[var(--studio-muted)]">{PREVIEW_NOT_READY_NOTICE}</p>
+      <p className="mt-6 text-[12px] leading-5 text-[var(--studio-muted)]">
+        {PREVIEW_NOT_READY_NOTICE}
+      </p>
       <div className="mt-10 flex flex-wrap items-center gap-8">
         <button
           type="button"

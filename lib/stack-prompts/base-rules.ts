@@ -28,7 +28,7 @@ DESIGN (look designed, not assembled):
 IMAGES:
 - Never emit hotlinked random URLs, via.placeholder.com, unsplash.com/hotlink, or empty src. Every image must be a real URL from PROJECT ASSETS.
 - Always set explicit width and height attributes (prevents CLS).
-- NEXTJS: use next/image. ASTRO: use astro:assets. Other stacks: <img loading="lazy" decoding="async">. Above-the-fold hero images use loading="eager" fetchpriority="high" instead.
+- NEXTJS: use next/image. REACT and STATIC_HTML: <img loading="lazy" decoding="async">. Above-the-fold hero images use loading="eager" fetchpriority="high" instead.
 - Alt text comes from the asset's stored altText — never invent alt at generation time. Decorative images may use alt="".
 - Stock images (kind=stock) must include photographer attribution in the markup (Unsplash license), e.g. a caption "Photo by Name on Unsplash".
 - Every project needs og:image 1200x630 matching the design direction. If none exists in PROJECT ASSETS, request one.
