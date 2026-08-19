@@ -158,6 +158,7 @@ export default function DashboardPage() {
                 key={id}
                 type="button"
                 onClick={() => setTab(id)}
+                aria-current={tab === id ? 'true' : undefined}
                 className={`inline-flex min-h-[44px] items-center px-8 text-[14px] transition-colors duration-200 ${
                   tab === id
                     ? 'border-b-2 border-[var(--studio-fg)] text-[var(--studio-fg)]'
