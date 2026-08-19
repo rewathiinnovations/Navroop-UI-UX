@@ -60,7 +60,7 @@ export default function DeploymentsList({ initial }: { initial: PublicDeployment
           Deployments
         </h1>
         <p className="mt-8 text-[14px] text-[var(--studio-muted)]">
-          Preview and live Coolify sites. Sandbox URLs are not listed here.
+          Preview and live Coolify sites.
         </p>
 
         <div className="mt-24 overflow-x-auto rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)]">

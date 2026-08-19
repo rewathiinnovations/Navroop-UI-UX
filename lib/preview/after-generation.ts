@@ -1,8 +1,7 @@
 import { LIVE_MODE_START_FAILED, PREVIEW_NOT_READY_NOTICE } from './labels';
 
 export type PreviewAfterGenerationResult =
-  | { ok: true }
-  | { ok: false; skipped?: boolean; error?: string; reason?: string };
+  { ok: true } | { ok: false; skipped?: boolean; error?: string; reason?: string };
 
 export type PreviewCaptureScope = {
   projectId: string;
@@ -117,30 +116,28 @@ export function noticeForLiveModeStart(ok: boolean): string | null {
   return ok ? null : LIVE_MODE_START_FAILED;
 }
 
-export type PreviewPaneKind =
-  | 'planning'
-  | 'preparing'
-  | 'ready'
-  | 'sandbox-boot'
-  | 'sandbox-failed'
-  | 'preview-failed'
-  | 'empty';
+export type PreviewPaneKind = 'planning' | 'preparing' | 'ready' | 'preview-failed' | 'empty';
 
+/**
+ * Which pane the preview area shows.
+ *
+ * `hasFiles` is what decides "ready" now. This used to key off a sandbox
+ * preview URL, so with the VMs gone every finished project fell through to the
+ * empty state and the panel claimed there was nothing to show while the site
+ * sat in the database.
+ */
 export function previewPaneKind(input: {
   phase?: string | null;
   planTrigger?: string | null;
+  hasFiles?: boolean;
   previewUrl?: string | null;
   preparing?: boolean;
   previewBuildFailed?: boolean;
-  liveMode?: boolean;
-  sandboxStatus?: string | null;
 }): PreviewPaneKind {
   const planning = input.phase === 'PLANNING' && input.planTrigger !== 'followup';
   if (planning) return 'planning';
-  if (input.liveMode && input.sandboxStatus === 'BOOTING') return 'sandbox-boot';
-  if (input.liveMode && input.sandboxStatus === 'FAILED') return 'sandbox-failed';
   if (input.previewBuildFailed) return 'preview-failed';
   if (input.preparing) return 'preparing';
-  if (input.previewUrl) return 'ready';
+  if (input.hasFiles || input.previewUrl) return 'ready';
   return 'empty';
 }

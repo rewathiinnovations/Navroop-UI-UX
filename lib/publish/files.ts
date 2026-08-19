@@ -1,36 +1,11 @@
 import { prisma } from '@/lib/db';
 import { captureFileSnapshot, readSnapshot, SnapshotReadError } from '@/lib/checkpoints/snapshot';
 import type { JobErrorCode } from '@/lib/jobs/types';
-import { getStack, getStackListExtensions, type StackId } from '@/lib/stacks';
-import { log } from '@/lib/logger';
 
 export function publishJobErrorCode(error: unknown): JobErrorCode {
   if (error instanceof SnapshotReadError) return 'snapshot_unreadable';
   return 'provider_error';
 }
-
-function publishListFailedMessage(detail: string): string {
-  return (
-    `We could not list the files in the live workspace (${detail}). ` +
-    'Publish was not started from an older snapshot. Try again, or ask an admin to check the sandbox provider on /admin/sandbox-providers.'
-  );
-}
-
-function publishFileUnreadableMessage(path: string, detail: string): string {
-  return (
-    `We could not read ${path} from the live workspace (${detail}). ` +
-    'Publish was not started with an incomplete site. Try again, or ask an admin to check the sandbox provider on /admin/sandbox-providers.'
-  );
-}
-
-function publishReconnectUncertainMessage(detail: string): string {
-  return (
-    `We could not tell whether the live workspace is still running (${detail}). ` +
-    'Publish was not started from an older snapshot. Try again, or ask an admin to check the sandbox provider on /admin/sandbox-providers.'
-  );
-}
-
-const SKIP = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.vercel']);
 
 function toMap(entries: Array<{ path: string; content: string }>) {
   const files: Record<string, string> = {};
@@ -40,24 +15,6 @@ function toMap(entries: Array<{ path: string; content: string }>) {
     files[path] = entry.content;
   }
   return files;
-}
-
-function isPublishablePath(path: string, stack: StackId) {
-  const normalized = path.replace(/\\/g, '/').replace(/^\.?\//, '');
-  const parts = normalized.split('/');
-  if (parts.some((part) => SKIP.has(part))) return false;
-  const ext = normalized.includes('.') ? `.${normalized.split('.').pop()}` : '';
-  const allowed = new Set([
-    ...getStackListExtensions(stack),
-    '.json',
-    '.md',
-    '.svg',
-    '.txt',
-    '.mjs',
-    '.cjs',
-  ]);
-  if (getStack(stack).configFiles.some((name) => normalized.endsWith(name))) return true;
-  return allowed.has(ext.toLowerCase());
 }
 
 /**

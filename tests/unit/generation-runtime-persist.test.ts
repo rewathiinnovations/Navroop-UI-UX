@@ -49,26 +49,31 @@ function persistResponse(body: unknown, init?: { status?: number; json?: boolean
   });
 }
 
-function stubApplyAndPersist(options: {
+function stubPersist(options: {
   persistBody?: unknown;
   persistInit?: { status?: number; json?: boolean };
   persistImpl?: (url: string, init?: RequestInit) => Response | Promise<Response>;
 }) {
   vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
-    if (url.includes('/api/apply-ai-code-stream')) {
-      return Promise.resolve(sseResponse([{ type: 'complete', results: { filesCreated: ['src/App.jsx'] } }]));
-    }
     if (url.includes('/api/projects/')) {
       if (options.persistImpl) {
         return Promise.resolve(options.persistImpl(url, init));
       }
-      return Promise.resolve(persistResponse(options.persistBody ?? { project: { id: 'proj-1' } }, options.persistInit));
+      return Promise.resolve(
+        persistResponse(options.persistBody ?? { project: { id: 'proj-1' } }, options.persistInit),
+      );
     }
     return Promise.resolve(new Response('not found', { status: 404 }));
   });
 }
 
+/**
+ * Settling a generation persists it and surfaces any preview notice. It used
+ * to stream through /api/apply-ai-code-stream, which wrote files into a
+ * sandbox; the files are already saved by the generate route now, so the
+ * notice has to survive on the persist response alone.
+ */
 describe('generation-runtime persist previewNotice', () => {
   let unsubscribe: () => void;
 
@@ -84,14 +89,14 @@ describe('generation-runtime persist previewNotice', () => {
     vi.unstubAllGlobals();
   });
 
-  it('puts persistProjectGeneration previewNotice into chat after apply persists ready', async () => {
-    stubApplyAndPersist({
+  it('puts persistProjectGeneration previewNotice into chat once settled', async () => {
+    stubPersist({
       persistBody: { project: { id: 'proj-1' }, previewNotice: PREVIEW_NOT_READY_NOTICE },
     });
 
     const result = await startApply({ code: FILE_BLOCK, isEdit: false });
 
-    expect(result.finalData).not.toBeNull();
+    expect(result).toEqual({ finalData: null });
     expect(getGenerationState().status).toBe('ready');
     const notices = getGenerationState().messages.filter(
       (message) => message.type === 'system' && message.content === PREVIEW_NOT_READY_NOTICE,
@@ -101,25 +106,25 @@ describe('generation-runtime persist previewNotice', () => {
   });
 
   it('does not treat a missing notice as a failed persist or a failed build', async () => {
-    stubApplyAndPersist({
+    stubPersist({
       persistBody: { project: { id: 'proj-1' }, previewNotice: null },
     });
 
     const result = await startApply({ code: FILE_BLOCK, isEdit: false });
 
-    expect(result.finalData).not.toBeNull();
+    expect(result).toEqual({ finalData: null });
     expect(getGenerationState().status).toBe('ready');
     expect(getGenerationState().messages).toEqual([]);
   });
 
   it('keeps the save when the persist body cannot be read for a notice', async () => {
-    stubApplyAndPersist({
+    stubPersist({
       persistInit: { json: false },
     });
 
     const result = await startApply({ code: FILE_BLOCK, isEdit: false });
 
-    expect(result.finalData).not.toBeNull();
+    expect(result).toEqual({ finalData: null });
     expect(getGenerationState().status).toBe('ready');
     expect(getGenerationState().lastError).toBeNull();
   });
@@ -128,7 +133,7 @@ describe('generation-runtime persist previewNotice', () => {
     addGenerationMessage('Applied 1 files successfully!', 'system');
     surfacePreviewNotice(PREVIEW_NOT_READY_NOTICE);
 
-    stubApplyAndPersist({
+    stubPersist({
       persistBody: { project: { id: 'proj-1' }, previewNotice: PREVIEW_NOT_READY_NOTICE },
     });
 
@@ -142,7 +147,7 @@ describe('generation-runtime persist previewNotice', () => {
   });
 
   it('control: persist without previewNotice and an unreadable ready body still leave no preview chat line', async () => {
-    stubApplyAndPersist({ persistBody: { project: { id: 'proj-1' } } });
+    stubPersist({ persistBody: { project: { id: 'proj-1' } } });
     await startApply({ code: FILE_BLOCK, isEdit: false });
     expect(
       getGenerationState().messages.some((message) => message.content === PREVIEW_NOT_READY_NOTICE),
