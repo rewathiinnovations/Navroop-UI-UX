@@ -42,7 +42,12 @@ export {
   START_OVER_LABEL,
   TRY_AGAIN_LABEL,
 } from './copy';
-export { dispatchRecoveryRetry, recoveryRetryIntent, resolveImportRetrySource, resolvePlanRetryPrompt } from './recovery-retry';
+export {
+  dispatchRecoveryRetry,
+  recoveryRetryIntent,
+  resolveImportRetrySource,
+  resolvePlanRetryPrompt,
+} from './recovery-retry';
 export { getActiveJob, getJob, getLatestJob, getLatestJobByKind } from './store';
 export { isPublishRunning, toPublicJob } from './types';
 export {
@@ -52,7 +57,6 @@ export {
   isChatRecoveryStatus,
   isJobInFlight,
   showsChatRecovery,
-  isSandboxChatLocked,
 } from './chat-ui';
 export type {
   GenerationJobRow,

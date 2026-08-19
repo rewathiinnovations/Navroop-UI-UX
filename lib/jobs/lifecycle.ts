@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/db';
 import { log } from '@/lib/logger';
-import { consumeCredits, type CreditAction } from '@/lib/plans/limits';
+import { consumeCredits, CreditLimitError, type CreditAction } from '@/lib/plans/limits';
+import { QUEUE_MAX_WAIT_MS } from '@/lib/ai/queue';
 import { acquireLock, releaseLock } from '@/lib/projects/lock';
 import { WORKSPACE_ROW_ID } from '@/lib/storage/usage';
 import { getInstanceId } from '@/lib/runtime/instance';
@@ -28,7 +29,13 @@ import {
   type JobUpdateFields,
 } from './store';
 import { compensateAbandonedPublish } from './compensate-publish';
-import { isGenerationKind, type GenerationJobRow, type JobKind, type JobStatus } from './types';
+import {
+  isGenerationKind,
+  type GenerationJobRow,
+  type JobErrorCode,
+  type JobKind,
+  type JobStatus,
+} from './types';
 
 export type CreateJobInput = {
   projectId: string;
@@ -208,6 +215,30 @@ function creditActionForKind(kind: JobKind): CreditAction {
   return 'generation';
 }
 
+/**
+ * The job error code for a failed credit charge.
+ *
+ * Three outcomes hide behind one throw out of `consumeCredits`, and they need three
+ * different sentences. `credits_exhausted` is in `NO_RETRY_CODES`, so it removes the
+ * Try-again button, and its next-step line reads "Add credits, or wait for the monthly
+ * reset" — correct only when the workspace really is out.
+ *
+ * A `member_cap` refusal is not that: the workspace may have thousands of credits left and
+ * the remedy is an admin raising one person's cap. Reporting it as `credits_exhausted`
+ * replaced the sentence `consumeCredits` raised ("Your personal limit is used up — ask an
+ * admin to raise it") with advice to buy credits nobody needed, and suppressed the retry
+ * that raising the cap makes valid.
+ *
+ * And a throw that is not a `CreditLimitError` is not a refusal at all — a Prisma P2028
+ * transaction timeout, a dropped connection, or a throw escaping the post-commit 80% alert
+ * (see the note at lib/plans/limits.ts:253). Those told the person their credits were used
+ * up and offered no way forward for a build that never started.
+ */
+function creditFailureCode(error: unknown): JobErrorCode {
+  if (!(error instanceof CreditLimitError)) return 'credit_charge_failed';
+  return error.reason === 'member_cap' ? 'member_cap_reached' : 'credits_exhausted';
+}
+
 export async function markJobRunning(
   jobId: string,
   input: {
@@ -220,12 +251,28 @@ export async function markJobRunning(
   if (!job) throw new Error('Generation job not found');
   const now = new Date();
   const ownerInstance = input.ownerInstance ?? getInstanceId();
-  await updateJobFields(jobId, {
+  // Conditional write, the same discipline every terminal transition uses. The caller
+  // reads its QUEUED row before waiting for a provider slot, and the reaper is entitled
+  // to abandon that row while it waits — so an unguarded UPDATE here flipped an
+  // ABANDONED job back to RUNNING and /admin/jobs showed a RUNNING job carrying
+  // errorCode 'server_restarted' and a finishedAt. A settled job is finished: throw
+  // rather than resurrect it, so the caller stops instead of streaming into a dead row.
+  const started = await updateJobIfActive(jobId, {
     status: 'RUNNING',
     ownerInstance,
     startedAt: job.startedAt ?? now,
     heartbeatAt: now,
   });
+  if (!started) {
+    const current = await getJob(jobId);
+    log.info('jobs.start_write_lost_race', {
+      jobId,
+      projectId: job.projectId,
+      attempted: 'RUNNING',
+      currentStatus: current?.status ?? null,
+    });
+    throw new Error('This build was already settled and cannot be restarted');
+  }
   await setProjectActiveJob(job.projectId, job.id);
   await applyPhaseForStart(job.projectId, job.kind);
   if (input.acquireProjectLock !== false) {
@@ -251,9 +298,11 @@ export async function markJobRunning(
       });
     } catch (error) {
       // The job is already RUNNING and the lock is already held. Settle both here,
-      // otherwise the project stays locked until the reaper notices.
+      // otherwise the project stays locked until the reaper notices. The recorded message
+      // is the one the debit raised: `member_cap_reached` is in `RECORDED_CAUSE_CODES`, so
+      // that sentence is what the person reads instead of a generic cause line.
       await failJob(jobId, {
-        errorCode: 'credits_exhausted',
+        errorCode: creditFailureCode(error),
         errorMessage: error instanceof Error ? error.message : 'Credits could not be charged',
       });
       throw error;
@@ -553,17 +602,38 @@ export async function cancelJob(jobId: string, message = 'Start over') {
     'CANCELLED',
   );
   if (!settled) return getJob(jobId);
-  const phase = await resolveResumablePhase(job.projectId, job.filesWritten);
-  await setProjectResumablePhase(job.projectId, phase, 'idle');
+  if (isGenerationKind(job.kind)) {
+    const phase = await resolveResumablePhase(job.projectId, job.filesWritten);
+    await setProjectResumablePhase(job.projectId, phase, 'idle');
+  } else {
+    await setProjectActiveJob(job.projectId, null);
+  }
   await releaseLockQuietly(job.projectId, job.userId);
+  if (job.kind === 'PUBLISH') {
+    // No caller can reach this with a PUBLISH job today: `cancelJob`'s only caller is
+    // `startOverJob`, and `resolveRecoveryTarget` gates that on `showsChatRecovery`, which
+    // admits PLAN/BUILD/FOLLOWUP/IMPORT only. Kept as the same branch `abandonActiveJob`
+    // and `failJob` carry, so a future cancel-publish affordance cannot leak a half-created
+    // Coolify app, DNS record and GitHub repo with nothing pointing at them.
+    // compensateAbandonedPublish is single-shot via resourceIds.compensation.
+    await compensatePublishQuietly(job.id);
+  }
   return settled;
 }
 
 export type ReconcileOptions = {
   now?: Date;
-  currentInstance?: string;
   timeoutMs?: number;
+  /** Reaper window for RUNNING rows, measured against heartbeatAt. */
   staleMs?: number;
+  /**
+   * Reaper window for QUEUED rows of the kinds that wait in the provider queue. A queued
+   * build has no heartbeat until it starts, so it is measured from createdAt and has to
+   * outlast the provider queue wait. Defaults to QUEUE_MAX_WAIT_MS plus the heartbeat
+   * window. Only the kinds in QUEUE_WAITING_JOB_KINDS (see ./store) get it; every other
+   * kind is judged by `staleMs`, because nothing parks it in the queue.
+   */
+  queuedStaleMs?: number;
   /** After the active-status read, before the abandon write. Tests only. */
   beforeAbandon?: () => Promise<void>;
   /**
@@ -580,10 +650,11 @@ function matchesReconcileProject(projectId: string, projectIds?: readonly string
 
 export async function reconcileAbandonedJobs(options: ReconcileOptions = {}) {
   const now = options.now ?? new Date();
-  const currentInstance = options.currentInstance ?? getInstanceId();
   const staleMs = options.staleMs ?? HEARTBEAT_STALE_MS;
+  const queuedStaleMs = options.queuedStaleMs ?? QUEUE_MAX_WAIT_MS + staleMs;
   const timeoutMs = options.timeoutMs ?? JOB_TIMEOUT_MS;
   const staleBefore = new Date(now.getTime() - staleMs);
+  const queuedStaleBefore = new Date(now.getTime() - queuedStaleMs);
   const timeoutBefore = new Date(now.getTime() - timeoutMs);
 
   const abandoned: Array<{
@@ -618,25 +689,18 @@ export async function reconcileAbandonedJobs(options: ReconcileOptions = {}) {
     });
   }
 
-  const staleJobs = await listReconcileCandidates(staleBefore);
+  // No owner fencing: a stale heartbeat *is* the ownership test. A live instance rewrites
+  // heartbeatAt every HEARTBEAT_INTERVAL_MS, so its in-flight rows never become
+  // candidates and a rolling deploy cannot reap the surviving replica's work; a row whose
+  // heartbeat stopped is unowned whichever instance last held it. Skipping rows by
+  // ownerInstance would also break the only path that recovers a crashed instance's jobs:
+  // getInstanceId() is per-process, so the dead instance's id matches nobody, and the two
+  // `ownerInstance === currentInstance` guards that used to sit in this loop could never
+  // fire anyway — every candidate has a stale or NULL heartbeat by the query's own WHERE.
+  const staleJobs = await listReconcileCandidates(staleBefore, queuedStaleBefore);
   for (const job of staleJobs) {
     if (seen.has(job.id)) continue;
     if (!matchesReconcileProject(job.projectId, options.projectIds)) continue;
-    if (
-      job.ownerInstance === currentInstance &&
-      job.heartbeatAt &&
-      job.heartbeatAt >= staleBefore
-    ) {
-      continue;
-    }
-    if (
-      job.ownerInstance === currentInstance &&
-      job.status === 'RUNNING' &&
-      job.heartbeatAt &&
-      job.heartbeatAt >= staleBefore
-    ) {
-      continue;
-    }
     seen.add(job.id);
     const { wrote } = await abandonActiveJob(
       job.id,

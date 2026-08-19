@@ -76,6 +76,15 @@ export type JobErrorCode =
   | 'no_files_generated'
   | 'tool_call_validation_failed'
   | 'credits_exhausted'
+  // Distinct from `credits_exhausted` on purpose: the workspace may still have thousands
+  // of credits left and the remedy is an admin raising the member's cap, not buying
+  // credits or waiting for the monthly reset. A shared code sent that user to the wrong
+  // remedy and suppressed Try-again.
+  | 'member_cap_reached'
+  // Neither refusal: the debit itself failed to run (Prisma P2028 transaction timeout,
+  // connection reset). Both were reported as `credits_exhausted` until this code existed,
+  // so a database blip told the user their credits were gone and offered no retry.
+  | 'credit_charge_failed'
   | 'plan_failed'
   | 'settle_write_failed'
   | 'sandbox_unavailable'

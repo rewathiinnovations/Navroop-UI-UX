@@ -1,5 +1,6 @@
 import { nanoid } from 'nanoid';
 import { prisma } from '@/lib/db';
+import { getInstanceId } from '@/lib/runtime/instance';
 import { WORKSPACE_ROW_ID } from '@/lib/storage/usage';
 import {
   parseJobSteps,
@@ -109,7 +110,10 @@ export async function getActiveJob(projectId: string): Promise<GenerationJobRow 
   return rows[0] ? mapJob(rows[0]) : null;
 }
 
-export async function getLatestJobByKind(projectId: string, kind: JobKind): Promise<GenerationJobRow | null> {
+export async function getLatestJobByKind(
+  projectId: string,
+  kind: JobKind,
+): Promise<GenerationJobRow | null> {
   const rows = await selectJobs(
     `WHERE "projectId" = $1
        AND kind = $2::"JobKind"
@@ -193,15 +197,20 @@ export async function insertJobRaw(input: {
   const id = input.id ?? nanoid();
   const workspaceId = input.workspaceId ?? WORKSPACE_ROW_ID;
   const status = input.status ?? 'QUEUED';
+  // Stamp the creating instance. A QUEUED row used to carry no owner at all, so the
+  // shutdown drain — `abandonInstanceJobs`, fenced to `"ownerInstance" = $1` — could not
+  // see a job that was waiting for a provider slot when its process was told to go away,
+  // and nothing settled it until the queued staleness window expired.
+  // `markJobRunning` overwrites this with whichever instance actually starts the work.
   await prisma.$executeRaw`
     INSERT INTO "GenerationJob" (
-      id, "projectId", "workspaceId", "userId", kind, status,
+      id, "projectId", "workspaceId", "userId", kind, status, "ownerInstance",
       attempt, "maxAttempts", "inputPrompt", "planVersion",
       "idempotencyKey", "requestId", "creditsChargedAt",
       "filesWritten", "createdAt", "updatedAt"
     ) VALUES (
       ${id}, ${input.projectId}, ${workspaceId}, ${input.userId},
-      ${input.kind}::"JobKind", ${status}::"JobStatus",
+      ${input.kind}::"JobKind", ${status}::"JobStatus", ${getInstanceId()},
       ${input.attempt ?? 1}, ${input.maxAttempts ?? 2},
       ${input.inputPrompt ?? null}, ${input.planVersion ?? null},
       ${input.idempotencyKey ?? null}, ${input.requestId ?? null},
@@ -345,12 +354,142 @@ export async function releaseJobCreditCharge(id: string, at: Date): Promise<void
   `;
 }
 
-export async function listReconcileCandidates(staleBefore: Date) {
-  // heartbeatAt is NULL until markJobRunning. NULL is not stale — use createdAt.
+/**
+ * The marker that says "a keep is in flight on this row".
+ *
+ * Written by `claimKeptPartialJob` into `lastStep`, which is a free-text progress field, so
+ * the claim costs no schema change. `settleKeptPartialJob` overwrites it with
+ * `kept_partial` once the files are safely stored.
+ */
+const KEEP_CLAIM_MARKER = 'keeping';
+
+/**
+ * How long a keep claim is honoured before another attempt may take it over.
+ *
+ * The claim exists to exclude a double click, which arrives within milliseconds. A minute
+ * is far past that, and it means a process that died between claiming and storing the files
+ * cannot lock the partial build out of being kept for good.
+ */
+const KEEP_CLAIM_TTL_MS = 60_000;
+
+/**
+ * Phase 1 of "keep what was built": take the row without settling it.
+ *
+ * The settle used to come first, on the reasoning that a double click would otherwise save
+ * `lastCode` twice and leave two checkpoints. It does exclude the double click — but
+ * `createCheckpoint` writes a snapshot to object storage and can throw, and by then the row
+ * was already SUCCEEDED, so it no longer matched `status IN ('ABANDONED','FAILED')`: every
+ * further attempt got "already settled", `Project.lastCode` was never written, and the
+ * partial files survived only in `Job.partialFiles` where no screen can reach them. A
+ * storage blip destroyed the build the button exists to rescue.
+ *
+ * So the exclusive claim is non-terminal. The job stays ABANDONED/FAILED — and therefore
+ * still keepable — until the files are stored.
+ */
+export async function claimKeptPartialJob(
+  id: string,
+  staleClaimBefore = new Date(Date.now() - KEEP_CLAIM_TTL_MS),
+): Promise<boolean> {
+  const rows = await prisma.$queryRaw<Array<{ id: string }>>`
+    UPDATE "GenerationJob"
+    SET "lastStep" = ${KEEP_CLAIM_MARKER},
+        "updatedAt" = NOW()
+    WHERE id = ${id}
+      AND status IN ('ABANDONED', 'FAILED')
+      AND ("lastStep" IS DISTINCT FROM ${KEEP_CLAIM_MARKER} OR "updatedAt" < ${staleClaimBefore})
+    RETURNING id
+  `;
+  return rows.length > 0;
+}
+
+/**
+ * Hands a claim back when storing the files failed, so the person can click again.
+ *
+ * Restores whatever `lastStep` the abandoned run had reached, because that string is what
+ * /admin/jobs and the recovery copy read to say how far the build got.
+ */
+export async function releaseKeptPartialClaim(id: string, lastStep: string | null): Promise<void> {
+  await prisma.$executeRaw`
+    UPDATE "GenerationJob"
+    SET "lastStep" = ${lastStep},
+        "updatedAt" = NOW()
+    WHERE id = ${id}
+      AND "lastStep" = ${KEEP_CLAIM_MARKER}
+  `;
+}
+
+/**
+ * Phase 2 of "keep what was built": settle the row now that the files are stored.
+ *
+ * The recovery-status guard is in the same statement as the write, the same way
+ * `updateJobIfActive` guards a terminal settle. The recovery panel is reachable while the
+ * generation is still streaming — the client's 90-second heartbeat watchdog opens it
+ * without asking the job — and the unguarded `UPDATE ... SET status = 'SUCCEEDED'` behind
+ * it settled builds that were still writing files. The real output then landed on a job
+ * that was already SUCCEEDED, so `succeedJob` was a no-op and the person kept a
+ * half-written site that claimed to be finished.
+ *
+ * Zero rows means the job is not in a recovery state (still running, or already kept).
+ */
+export async function settleKeptPartialJob(id: string): Promise<boolean> {
+  const rows = await prisma.$queryRaw<Array<{ id: string }>>`
+    UPDATE "GenerationJob"
+    SET status = 'SUCCEEDED'::"JobStatus",
+        "finishedAt" = NOW(),
+        "lastStep" = 'kept_partial',
+        "updatedAt" = NOW()
+    WHERE id = ${id}
+      AND status IN ('ABANDONED', 'FAILED')
+    RETURNING id
+  `;
+  return rows.length > 0;
+}
+
+/**
+ * The job kinds that legitimately sit QUEUED with no heartbeat.
+ *
+ * Only the generation stream route parks work in the provider queue:
+ * `app/api/generate-ai-code-stream/route.ts:313` is the one `acquire()` call site in the
+ * tree, and the job it waits on is `isEdit ? 'FOLLOWUP' : 'BUILD'`. Every other kind —
+ * PUBLISH, AUDIT, PLAN, IMPORT and the `withRecordedJob` bookkeeping kinds — calls
+ * `markJobRunning` in the statement after `createOrReuseJob`, so a QUEUED row of those
+ * kinds means whatever was going to start it is gone.
+ *
+ * This list is the only gate on that distinction: a kind that starts queueing has to be
+ * added here, and it cannot silently inherit the short window from somewhere else.
+ */
+export const QUEUE_WAITING_JOB_KINDS: readonly JobKind[] = ['BUILD', 'FOLLOWUP'];
+
+/**
+ * Reaper candidates, measured against two windows because a QUEUED row carries no
+ * heartbeat: `markJobRunning` writes the first one.
+ *
+ * A build parked in the provider queue waits up to QUEUE_MAX_WAIT_MS for a slot, so
+ * judging it by the 60-second heartbeat window abandoned live builds one minute into a
+ * legitimate ten-minute wait: the chat flipped to "the server restarted" on a build that
+ * had not started, the project left BUILDING, and the route — still holding the QUEUED
+ * row it read minutes earlier — flipped the ABANDONED row back to RUNNING.
+ *
+ * The long window is keyed on kind, not on status alone. Giving it to every QUEUED row
+ * meant a kind that never queues — a publish, an audit, an import — sat QUEUED with the
+ * project stuck in BUILDING and the chat input locked for eleven minutes after its process
+ * died, where the old rule freed it in one. Those kinds are judged by `staleBefore` too.
+ */
+export async function listReconcileCandidates(
+  staleBefore: Date,
+  queuedStaleBefore: Date,
+  queueWaitingKinds: readonly JobKind[] = QUEUE_WAITING_JOB_KINDS,
+) {
   const rows = await selectJobs(
-    `WHERE status IN ('QUEUED', 'RUNNING')
-       AND COALESCE("heartbeatAt", "createdAt") < $1`,
+    `WHERE (status = 'RUNNING' AND COALESCE("heartbeatAt", "createdAt") < $1)
+        OR (
+          status = 'QUEUED'
+          AND COALESCE("heartbeatAt", "createdAt")
+              < CASE WHEN kind::text = ANY($3::text[]) THEN $2 ELSE $1 END
+        )`,
     staleBefore,
+    queuedStaleBefore,
+    [...queueWaitingKinds],
   );
   return rows.map(mapJob);
 }

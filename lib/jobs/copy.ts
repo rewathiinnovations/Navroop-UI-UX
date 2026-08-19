@@ -1,6 +1,7 @@
 import { NO_PROVIDER_CONFIGURED_MESSAGE } from '../ai/providers';
 import { IMPORT_NO_FILES_MESSAGE } from '../import/copy';
 import { BLOCKED_ACCESS_MESSAGE } from '../import/error-messages';
+import { CREDIT_DENIAL_MESSAGES } from '../plans/messages';
 import { URL_GUARD_MESSAGES } from '../security/url-guard-messages';
 import type { JobErrorCode } from './types';
 
@@ -64,6 +65,13 @@ const CAUSE_LINES: Record<JobErrorCode, string> = {
     "The AI wrote files that don't fit this project's framework, so they were not applied",
   tool_call_validation_failed: 'The AI replied in a form we could not use — try again',
   credits_exhausted: "This month's credits are used up",
+  // Only reached when the recorded sentence is missing; normally `member_cap_reached` is in
+  // `RECORDED_CAUSE_CODES` and the debit's own message (which may name a different cap than
+  // the one this generic line assumes) is what the user reads.
+  member_cap_reached: CREDIT_DENIAL_MESSAGES.member_cap,
+  // Stays out of `RECORDED_CAUSE_CODES` on purpose: the recorded message here is a raw
+  // Prisma string ("Transaction API error: P2028 ...") and is not something to show a user.
+  credit_charge_failed: 'We could not record the credit for this build — try again',
   plan_failed: 'The plan for this build could not be written',
   // The build itself may well have finished — what failed was recording how it ended, so
   // the safe advice is "reload, then check whether your changes are there".
@@ -102,6 +110,11 @@ const CAUSE_LINES: Record<JobErrorCode, string> = {
 const RECORDED_CAUSE_CODES = new Set<string>([
   'provider_not_configured',
   'provider_quota_exhausted',
+  // The member-cap refusal is raised by `consumeCredits` with the one sentence that names
+  // the remedy ("ask an admin to raise it"). Before this code existed the refusal came
+  // through as `credits_exhausted`, which replaced that sentence with "This month's credits
+  // are used up" and told a workspace with credits to spare to buy more.
+  'member_cap_reached',
 ]);
 
 /** True when the job recorded a sentence more specific than the curated cause line. */
@@ -158,6 +171,13 @@ const IMPORT_NO_RETRY_MESSAGES = new Set<string>([
   URL_GUARD_MESSAGES.redirect,
 ]);
 
+/**
+ * Only codes where the same request would fail the same way. Two credit codes are
+ * deliberately absent, both of which used to arrive here as `credits_exhausted` and get
+ * suppressed: `member_cap_reached`, because a member cap is a number an admin can raise
+ * inside the same period, so retrying is the whole remedy; and `credit_charge_failed`,
+ * because nothing ran and the database blip that caused it is transient.
+ */
 const NO_RETRY_CODES = new Set<string>([
   'credits_exhausted',
   'provider_not_configured',
@@ -187,6 +207,9 @@ export function recoveryNextStepLine(input: {
 }) {
   if (input.errorCode === 'credits_exhausted') {
     return "This month's credits are used up. Add credits, or wait for the monthly reset.";
+  }
+  if (input.errorCode === 'member_cap_reached') {
+    return 'Ask an admin to raise your personal limit, then try again — the workspace still has credits.';
   }
   if (input.errorCode === 'provider_not_configured') {
     // The cause line above already shows the recorded vendor sentence when there is one, and

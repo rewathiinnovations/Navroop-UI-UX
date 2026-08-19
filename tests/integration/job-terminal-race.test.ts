@@ -1,12 +1,7 @@
 import '../setup/env';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { testPrismaClient } from '../setup/db';
-import {
-  abandonJob,
-  failJob,
-  reconcileAbandonedJobs,
-  succeedJob,
-} from '@/lib/jobs/lifecycle';
+import { abandonJob, failJob, reconcileAbandonedJobs, succeedJob } from '@/lib/jobs/lifecycle';
 import { ensureJobSettled } from '@/lib/jobs/settle';
 import { getJob, insertJobRaw, listReconcileCandidates, updateJobFields } from '@/lib/jobs/store';
 import { HEARTBEAT_STALE_MS } from '@/lib/jobs/poll';
@@ -110,7 +105,8 @@ afterAll(async () => {
 describe('terminal job writes are atomic', () => {
   it('a reaper-candidate job that succeeds before the abandon write stays SUCCEEDED', async () => {
     const job = await startStaleRunningJob('proj_race_abandon');
-    const candidates = await listReconcileCandidates(staleBefore());
+    // Both windows: these jobs are RUNNING, so only the first one decides.
+    const candidates = await listReconcileCandidates(staleBefore(), staleBefore());
     expect(candidates.map((row) => row.id)).toContain(job.id);
 
     const abandoned = await abandonJob(
@@ -142,9 +138,13 @@ describe('terminal job writes are atomic', () => {
   it('succeedJob does not overwrite FAILED when the write loses the race', async () => {
     const job = await startRunningJob('proj_race_succeed');
 
-    const succeeded = await succeedJob(job.id, { lastStep: 'live' }, {
-      beforeWrite: () => failJob(job.id, { errorCode: 'provider_error', errorMessage: 'won' }),
-    });
+    const succeeded = await succeedJob(
+      job.id,
+      { lastStep: 'live' },
+      {
+        beforeWrite: () => failJob(job.id, { errorCode: 'provider_error', errorMessage: 'won' }),
+      },
+    );
 
     expect(succeeded?.status).toBe('FAILED');
     expect((await getJob(job.id))?.status).toBe('FAILED');
@@ -183,7 +183,7 @@ describe('terminal job writes are atomic', () => {
 
   it('the reaper does not report a candidate that succeeded before abandon wrote', async () => {
     const job = await startStaleRunningJob('proj_race_reaper');
-    const candidates = await listReconcileCandidates(staleBefore());
+    const candidates = await listReconcileCandidates(staleBefore(), staleBefore());
     expect(candidates.map((row) => row.id)).toContain(job.id);
 
     const result = await reconcileAbandonedJobs({
@@ -196,7 +196,7 @@ describe('terminal job writes are atomic', () => {
 
   it('the reaper does not report a candidate another abandon already settled', async () => {
     const job = await startStaleRunningJob('proj_race_reaper_abandon');
-    const candidates = await listReconcileCandidates(staleBefore());
+    const candidates = await listReconcileCandidates(staleBefore(), staleBefore());
     expect(candidates.map((row) => row.id)).toContain(job.id);
 
     const result = await reconcileAbandonedJobs({

@@ -29,10 +29,6 @@ export function showsChatRecovery(kind?: string | null) {
   return kind === 'PLAN' || kind === 'BUILD' || kind === 'FOLLOWUP' || kind === 'IMPORT';
 }
 
-export function isSandboxChatLocked(status?: string | null) {
-  return status === 'BOOTING';
-}
-
 export function isChatBuilding(input: {
   phase?: string | null;
   jobStatus?: string | null;
@@ -58,10 +54,9 @@ export function isChatLocked(input: {
   phase?: string | null;
   jobStatus?: string | null;
   recoveryActive?: boolean;
-  sandboxLocked?: boolean;
   projectLocked?: boolean;
 }) {
-  if (input.sandboxLocked || input.projectLocked || input.disabled) return true;
+  if (input.projectLocked || input.disabled) return true;
   if (isChatBuilding(input)) return true;
   if (input.recoveryActive) return false;
   if (input.jobStatus && TERMINAL.includes(input.jobStatus as JobStatus)) return false;

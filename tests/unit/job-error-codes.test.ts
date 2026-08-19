@@ -6,9 +6,12 @@ import {
   RECOVERY_HEADING,
   isKnownJobErrorCode,
   knownJobErrorCodes,
+  offersRecoveryRetry,
   recoveryCauseLine,
   recoveryHeading,
+  recoveryNextStepLine,
 } from '../../lib/jobs/copy';
+import { creditDenialMessage } from '../../lib/plans/messages';
 import type { JobErrorCode } from '../../lib/jobs/types';
 
 /**
@@ -35,6 +38,8 @@ const EXPECTED_CODES = [
   'no_files_generated',
   'tool_call_validation_failed',
   'credits_exhausted',
+  'member_cap_reached',
+  'credit_charge_failed',
   'plan_failed',
   'settle_write_failed',
   'sandbox_unavailable',
@@ -60,8 +65,20 @@ const ERROR_CODE_ASSIGNMENT = /errorCode\s*:/g;
  * `sandbox_unavailable` reached two apply paths without this scan noticing.
  */
 const SETTLE_CALL = /\b(?:fail|abandon)[A-Za-z]*Jobs?\s*\(/g;
-/** A quoted snake_case literal — the shape every error code uses. */
-const SNAKE_CASE_LITERAL = /['"]([a-z][a-z0-9_]*)['"]/g;
+/**
+ * A helper whose declared return type is `JobErrorCode`: the codes sit in its body, next to
+ * no `errorCode:` and inside no settle call. `creditFailureCode` in lib/jobs/lifecycle.ts
+ * maps three different throws onto three codes exactly that way, and with only the two
+ * forms above the scan found `credits_exhausted` written nowhere in the tree while it was
+ * being written from that one function.
+ */
+const CODE_RETURNING_FUNCTION = /\)\s*:\s*JobErrorCode\b[^{\n;]*\{/g;
+/**
+ * A quoted snake_case literal — the shape every error code uses — with the comparison
+ * operator in front of it, when there is one, in group 1. A compared literal is something
+ * the code *reads*, not a code it writes.
+ */
+const SNAKE_CASE_LITERAL = /(===?|!==?|\bcase\b)?\s*['"]([a-z][a-z0-9_]*)['"]/g;
 /** Enough to cover a multi-line settle call without running away on an unbalanced quote. */
 const MAX_CALL_SPAN = 1_000;
 
@@ -87,15 +104,18 @@ function sourceFiles(dir: string): string[] {
   return files;
 }
 
-/** The source range of a call's arguments, from just past `(` to its matching `)`. */
-function argumentSpan(source: string, openIndex: number): string {
+/**
+ * The source range a bracket pair encloses, from just past the opener to its match — a
+ * call's arguments with `(`/`)`, a function body with `{`/`}`.
+ */
+function balancedSpan(source: string, openIndex: number, open: string, close: string): string {
   let depth = 1;
   let cursor = openIndex;
   const limit = Math.min(source.length, openIndex + MAX_CALL_SPAN);
   while (cursor < limit && depth > 0) {
     const character = source[cursor];
-    if (character === '(') depth += 1;
-    else if (character === ')') depth -= 1;
+    if (character === open) depth += 1;
+    else if (character === close) depth -= 1;
     cursor += 1;
   }
   return source.slice(openIndex, cursor);
@@ -118,7 +138,12 @@ function codeBearingRegions(source: string): Array<{ text: string; offset: numbe
   // the call spans.
   for (const match of source.matchAll(SETTLE_CALL)) {
     const start = match.index + match[0].length;
-    regions.push({ text: argumentSpan(source, start), offset: start });
+    regions.push({ text: balancedSpan(source, start, '(', ')'), offset: start });
+  }
+  // Form three: the body of a helper that returns a code, from just past its opening brace.
+  for (const match of source.matchAll(CODE_RETURNING_FUNCTION)) {
+    const start = match.index + match[0].length;
+    regions.push({ text: balancedSpan(source, start, '{', '}'), offset: start });
   }
   return regions;
 }
@@ -132,11 +157,16 @@ function scanWrittenErrorCodes(): Map<string, string[]> {
       const relative = path.relative(REPO_ROOT, file).replace(/\\/g, '/');
       for (const region of codeBearingRegions(source)) {
         for (const match of region.text.matchAll(SNAKE_CASE_LITERAL)) {
+          // A literal being compared is an input, not a code being written: form three's
+          // body reads `error.reason === 'member_cap'`, and `member_cap` is a
+          // `CreditLimitReason` that never reaches `GenerationJob.errorCode`.
+          if (match[1]) continue;
+          const code = match[2];
           const at = region.offset + match.index;
           const line = source.slice(0, at).split('\n').length;
           const where = `${relative}:${line}`;
-          const seen = found.get(match[1]) ?? [];
-          if (!seen.includes(where)) found.set(match[1], [...seen, where]);
+          const seen = found.get(code) ?? [];
+          if (!seen.includes(where)) found.set(code, [...seen, where]);
         }
       }
     }
@@ -246,5 +276,58 @@ describe('job error code copy', () => {
   it('control: the scan finds a code passed positionally, not just via errorCode:', () => {
     const locations = scanWrittenErrorCodes().get('settle_write_failed') ?? [];
     expect(locations.length, 'positional settle-call scan found nothing').toBeGreaterThanOrEqual(1);
+  });
+
+  // Control for form three: the codes the credit paths write are chosen inside a helper
+  // that returns `JobErrorCode`, so they sit next to no `errorCode:` and inside no settle
+  // call. Without that form the scan reported `credits_exhausted` as written nowhere.
+  it('control: the scan finds codes returned from a JobErrorCode helper', () => {
+    const written = scanWrittenErrorCodes();
+    for (const code of ['credits_exhausted', 'member_cap_reached', 'credit_charge_failed']) {
+      expect([...written.keys()], `helper-body scan did not find ${code}`).toContain(code);
+    }
+    // And the `CreditLimitReason` it compares against is not mistaken for a job code.
+    expect([...written.keys()], 'a compared reason was read as a written code').not.toContain(
+      'member_cap',
+    );
+  });
+
+  // A member-cap refusal used to arrive as `credits_exhausted`: the panel replaced the one
+  // sentence naming the remedy with "This month's credits are used up" — telling a workspace
+  // with thousands of credits left to buy more — and `NO_RETRY_CODES` removed Try-again, the
+  // one action that works once an admin raises the cap.
+  it('a member-cap refusal shows the recorded remedy and offers a retry', () => {
+    const recorded = creditDenialMessage('member_cap');
+    expect(recoveryCauseLine('member_cap_reached', recorded)).toBe(recorded);
+    expect(recorded).toMatch(/ask an admin/i);
+    expect(recoveryCauseLine('member_cap_reached', recorded).toLowerCase()).not.toContain(
+      "this month's credits",
+    );
+    expect(offersRecoveryRetry({ kind: 'BUILD', errorCode: 'member_cap_reached' })).toBe(true);
+    expect(recoveryNextStepLine({ kind: 'BUILD', errorCode: 'member_cap_reached' })).toMatch(
+      /admin/i,
+    );
+    expect(
+      recoveryNextStepLine({ kind: 'BUILD', errorCode: 'member_cap_reached' }).toLowerCase(),
+    ).not.toMatch(/add credits/);
+  });
+
+  // Contrast, so the test above is not just asserting "the credit codes are all retryable":
+  // a genuinely exhausted workspace keeps its non-retryable buy-credits copy.
+  it('control: a workspace-exhausted refusal still suppresses retry and says add credits', () => {
+    expect(recoveryCauseLine('credits_exhausted')).toBe("This month's credits are used up");
+    expect(offersRecoveryRetry({ kind: 'BUILD', errorCode: 'credits_exhausted' })).toBe(false);
+    expect(recoveryNextStepLine({ kind: 'BUILD', errorCode: 'credits_exhausted' })).toMatch(
+      /add credits/i,
+    );
+  });
+
+  // The debit itself failing is not a refusal: nothing ran, so the copy must not claim the
+  // credits are gone and must leave Try-again available.
+  it('a failed credit charge is retryable and does not claim the credits are gone', () => {
+    expect(offersRecoveryRetry({ kind: 'BUILD', errorCode: 'credit_charge_failed' })).toBe(true);
+    const cause = recoveryCauseLine('credit_charge_failed');
+    expect(cause).toMatch(/try again/i);
+    expect(cause.toLowerCase()).not.toContain('used up');
   });
 });
