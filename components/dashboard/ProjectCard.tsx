@@ -16,6 +16,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/shadcn/dropdown-menu';
+import ConfirmAction from '@/components/admin/ConfirmAction';
 import { cn } from '@/utils/cn';
 import styles from './project-card.module.css';
 import { fetchJson, notify, toMessage } from '@/lib/notify';
@@ -66,6 +67,7 @@ export default function ProjectCard({
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(project.name);
   const [busy, setBusy] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   const href = `/project/${project.id}`;
   const ownerName = project.owner?.name?.trim() || 'Member';
@@ -125,8 +127,6 @@ export default function ProjectCard({
   };
 
   const remove = async () => {
-    setMenuOpen(false);
-    if (!confirm('Delete this project? It will be permanently deleted after 30 days.')) return;
     setBusy(true);
     try {
       await fetchJson(`/api/projects/${project.id}`, { method: 'DELETE' });
@@ -281,13 +281,28 @@ export default function ProjectCard({
               menuItemClass,
               'text-[var(--studio-danger)] focus:text-[var(--studio-danger)]',
             )}
-            onSelect={() => void remove()}
+            onSelect={(event) => {
+              // Keep the menu closed after this fires, but don't let the dialog's
+              // own outside-click handler race the menu's close animation.
+              event.preventDefault();
+              setMenuOpen(false);
+              setDeleteOpen(true);
+            }}
           >
             <Trash2 className="size-14" aria-hidden />
             Delete
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+      <ConfirmAction
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        title={`Delete “${project.name}”?`}
+        body="It will be permanently deleted after 30 days. You can restore it from Settings before then."
+        confirmLabel="Delete"
+        busyLabel="Deleting…"
+        onConfirm={() => remove()}
+      />
     </div>
   );
 
