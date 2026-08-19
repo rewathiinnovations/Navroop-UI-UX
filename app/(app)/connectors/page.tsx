@@ -3,7 +3,8 @@ import { auth } from '@/auth';
 import StudioShell from '@/components/app/studio/StudioShell';
 import ConnectorsGitHubCard from '@/components/connectors/ConnectorsGitHubCard';
 import { loginModalHref } from '@/lib/auth/public-login';
-import { getGitHubConnectionStatus } from '@/lib/github/actions';
+import { prisma } from '@/lib/db';
+import { getGitHubConnectionStatusForUser } from '@/lib/github/connection';
 
 export default async function ConnectorsPage({
   searchParams,
@@ -15,7 +16,7 @@ export default async function ConnectorsPage({
     redirect(loginModalHref('/connectors'));
   }
 
-  const status = await getGitHubConnectionStatus(session.user.id);
+  const status = await getGitHubConnectionStatusForUser(prisma, session.user.id);
   const params = await searchParams;
   const banner =
     params.github === 'connected'

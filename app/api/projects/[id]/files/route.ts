@@ -22,12 +22,18 @@ async function getFiles(params: Promise<{ id: string }>) {
   const { id } = await params;
   const project = await prisma.project.findFirst({
     where: { id, deletedAt: null },
-    select: { id: true, ownerId: true, stack: true, lastCode: true, contentVersion: true },
+    select: { id: true, stack: true, lastCode: true, contentVersion: true },
   });
   if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
-  if (project.ownerId !== user.id && user.role !== 'ADMIN') {
-    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
-  }
+
+  // Any signed-in member may read these. Navroop is a single-workspace product:
+  // `listProjects` shows every member every project, the sidebar offers "Shared
+  // with me", and the workspace page renders for anyone signed in. An owner-only
+  // gate here meant a member could open a teammate's finished project and be told
+  // "Nothing to preview yet" — an 85KB site rendered as an empty studio, because
+  // the Code tab and the in-browser preview both read this route. Writes stay
+  // owner-gated (`canMutate`); reading what the project list already advertises
+  // is not the boundary worth defending.
 
   const files = getCurrentProjectFiles({ lastCode: project.lastCode });
   // `success` and `structure` keep the shape the Code tab already reads, which

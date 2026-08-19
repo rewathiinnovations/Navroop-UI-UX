@@ -6,6 +6,19 @@ import { getPreviewStatus } from '@/lib/preview/status';
 import { signedPreviewUrl } from '@/lib/preview/url';
 import { issuePreviewToken } from '@/lib/preview/token';
 
+/**
+ * Both verbs are readers, and any signed-in member may use them.
+ *
+ * They were briefly owner/ADMIN-only, which closed a real hole — before that,
+ * `POST action:'token'` minted a signed preview URL for ANY project id, and the
+ * signature is the only thing `/preview-static` checks, so an authenticated user
+ * could hand out anonymous access to a project they had nothing to do with.
+ * But owner-only was the wrong boundary: the project list shows every member
+ * every project and the workspace page renders for anyone signed in, so a member
+ * opening a teammate's finished site got "Nothing to preview yet" over 85KB of
+ * stored code. What actually matters is that a token is only ever minted for a
+ * project the caller can already read, and is scoped to that project id.
+ */
 async function loadProject(id: string) {
   return prisma.project.findFirst({
     where: { id, deletedAt: null },
