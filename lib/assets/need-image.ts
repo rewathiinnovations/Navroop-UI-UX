@@ -48,3 +48,42 @@ export function replaceNeedImageTokens(
   }
   return next;
 }
+
+/**
+ * Stand-in for an image nothing could fulfil.
+ *
+ * A soft neutral panel, inline so the site stays self-contained and deploys
+ * without a network fetch. Deliberately plain rather than a loud "missing
+ * image" badge: the site should still read as finished, and the person can
+ * drop a real picture in from the Assets panel.
+ */
+export function placeholderImageDataUri(aspect: NeedImageAspect): string {
+  const [w, h] =
+    aspect === '1:1'
+      ? [1200, 1200]
+      : aspect === '4:5'
+        ? [1200, 1500]
+        : aspect === '1200x630'
+          ? [1200, 630]
+          : [1600, 900];
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">` +
+    `<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">` +
+    `<stop offset="0" stop-color="#e8e3dc"/><stop offset="1" stop-color="#cfc7bd"/>` +
+    `</linearGradient></defs><rect width="${w}" height="${h}" fill="url(#g)"/></svg>`;
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+}
+
+/**
+ * Every token that survived fulfilment, mapped to the placeholder.
+ *
+ * Without this the literal `NEED_IMAGE: …` string stays in the `src` and the
+ * generated site ships with broken images — which is exactly what happened
+ * once the fulfilment step stopped being called.
+ */
+export function placeholderReplacements(text: string): Array<{ token: string; url: string }> {
+  return parseNeedImageDirectives(text).map((directive) => ({
+    token: directive.token,
+    url: placeholderImageDataUri(directive.aspect),
+  }));
+}

@@ -44,7 +44,11 @@ export function useProjectPlan({
       const jobRes = await fetch(`/api/projects/${projectId}/job`);
       if (jobRes.ok) {
         const data = (await jobRes.json()) as { job?: { status?: string } | null };
-        if (data.job?.status === 'ABANDONED' || data.job?.status === 'FAILED' || data.job?.status === 'CANCELLED') {
+        if (
+          data.job?.status === 'ABANDONED' ||
+          data.job?.status === 'FAILED' ||
+          data.job?.status === 'CANCELLED'
+        ) {
           setPhase((current) => (current === 'BUILDING' ? 'COMPLETE' : current));
         }
       }
@@ -73,7 +77,8 @@ export function useProjectPlan({
     return () => window.clearTimeout(timer);
   }, [watchPlan]);
 
-  const shouldPoll = Boolean(projectId) && (phase === 'PLANNING' || phase === 'BUILDING' || watchPlan);
+  const shouldPoll =
+    Boolean(projectId) && (phase === 'PLANNING' || phase === 'BUILDING' || watchPlan);
 
   useEffect(() => {
     if (!shouldPoll) return;
@@ -81,6 +86,22 @@ export function useProjectPlan({
       void refresh();
     }, POLL_MS);
     return () => window.clearInterval(timer);
+  }, [refresh, shouldPoll]);
+
+  // Background tabs throttle this interval to a minute or more, so a plan that
+  // finished while the person was elsewhere would keep showing "Drafting your
+  // plan…" until they reloaded. Re-read as soon as they look back.
+  useEffect(() => {
+    if (!shouldPoll) return;
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void refresh();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
+    };
   }, [refresh, shouldPoll]);
 
   const refine = useCallback(
@@ -93,7 +114,10 @@ export function useProjectPlan({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ feedback }),
         });
-        const data = (await response.json().catch(() => null)) as { plan?: unknown; error?: string } | null;
+        const data = (await response.json().catch(() => null)) as {
+          plan?: unknown;
+          error?: string;
+        } | null;
         if (!response.ok) {
           return { ok: false as const, error: data?.error || 'Could not update the plan' };
         }
@@ -115,19 +139,25 @@ export function useProjectPlan({
     try {
       if (!approveKeyRef.current) {
         approveKeyRef.current =
-          typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `approve-${Date.now()}`;
+          typeof crypto !== 'undefined' && crypto.randomUUID
+            ? crypto.randomUUID()
+            : `approve-${Date.now()}`;
       }
       const response = await fetch(`/api/projects/${projectId}/plan/approve`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ idempotencyKey: approveKeyRef.current }),
       });
-      const data = (await response.json().catch(() => null)) as { plan?: unknown; error?: string } | null;
+      const data = (await response.json().catch(() => null)) as {
+        plan?: unknown;
+        error?: string;
+      } | null;
       if (!response.ok) {
         setApproving(false);
         return { ok: false as const, error: data?.error || 'Could not approve the plan' };
       }
-      const next = toWorkspacePlan(data?.plan) ?? (plan ? { ...plan, status: 'APPROVED' as const } : null);
+      const next =
+        toWorkspacePlan(data?.plan) ?? (plan ? { ...plan, status: 'APPROVED' as const } : null);
       setPlan(next);
       setPhase('BUILDING');
       return {
