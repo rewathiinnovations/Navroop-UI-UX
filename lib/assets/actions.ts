@@ -9,6 +9,7 @@ import { searchStockPhoto } from '@/lib/assets/stock-photo';
 import { deleteObject } from '@/lib/storage';
 import { adjustStorageBytes, WORKSPACE_ROW_ID } from '@/lib/storage/usage';
 import { asCreditActionErr } from '@/lib/plans/http';
+import { trackFailure } from '@/lib/observability/track';
 import { checkCredits, consumeCredits } from '@/lib/plans/limits';
 
 export type ActionErr = { ok: false; error: string; status: number };
@@ -113,7 +114,25 @@ export async function generateProjectImage(
       prompt,
       aspectRatio,
     });
-    await consumeCredits(WORKSPACE_ROW_ID, user.id, 'image', projectId);
+    // Past this line the provider has been paid and the ProjectAsset row plus its
+    // stored file exist. The debit therefore gets its own catch: when both shared
+    // one, a CreditLimitError raised because a concurrent request took the last
+    // credit between the pre-flight above and here returned `ok: false` while the
+    // asset stayed behind — the user was told the generation failed, and real
+    // provider spend was never billed to anyone. The work is kept, and the miss is
+    // reported through `trackFailure` so it reaches Sentry: `creditsUsed` and the
+    // CreditLedger under-count together, so /admin/usage still reconciles and a
+    // stdout-only line was the operator's only clue that money went out unbilled.
+    try {
+      await consumeCredits(WORKSPACE_ROW_ID, user.id, 'image', projectId);
+    } catch (error) {
+      trackFailure('credits.image_debit_failed', error, {
+        action: 'image',
+        projectId,
+        userId: user.id,
+        assetId: asset.id,
+      });
+    }
     return { ok: true as const, data: toPublic(asset) };
   } catch (error) {
     return { ok: false as const, error: (error as Error).message, status: 400 as const };

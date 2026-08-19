@@ -3,6 +3,7 @@ import { generateObject } from 'ai';
 import { z } from 'zod';
 import { appConfig } from '@/config/app.config';
 import { getProviderForModel } from '@/lib/ai/provider-manager';
+import { log } from '@/lib/logger';
 
 export type SkillMatchCandidate = {
   id: string;
@@ -116,7 +117,11 @@ function capMatches(ranked: MatchedSkill[]): MatchedSkill[] {
     .slice(0, MAX_MATCHES);
 }
 
-function keywordMatch(message: string, context: string, skills: SkillMatchCandidate[]): MatchedSkill[] {
+function keywordMatch(
+  message: string,
+  context: string,
+  skills: SkillMatchCandidate[],
+): MatchedSkill[] {
   return capMatches(
     skills.map((skill) => ({
       id: skill.id,
@@ -128,7 +133,7 @@ function keywordMatch(message: string, context: string, skills: SkillMatchCandid
 }
 
 export const defaultSkillRanker: SkillRanker = async ({ userMessage, projectContext, skills }) => {
-  const { client, actualModel } = getProviderForModel(appConfig.ai.defaultModel);
+  const { client, actualModel } = await getProviderForModel(appConfig.ai.defaultModel);
   const catalog = skills
     .map((skill) => `- id: ${skill.id}\n  name: ${skill.name}\n  description: ${skill.description}`)
     .join('\n');
@@ -196,7 +201,15 @@ export async function selectSkills(
 
     cache?.set(cacheKey, matched);
     return matched;
-  } catch {
+  } catch (error) {
+    // Selection is best-effort by contract — a request with no matched skills is a
+    // valid request. The bare `catch {}` this replaces hid the failures that are
+    // *not* "nothing matched": a provider 429/500 inside `defaultSkillRanker`, a
+    // rankSchema parse miss, a `listEnabled` DB error. Degrade to no skills, but
+    // leave evidence.
+    log.warn('skills.selection_failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
     return [];
   }
 }

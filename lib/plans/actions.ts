@@ -26,16 +26,13 @@ function toPublicPlan(plan: {
   storageBytesLimit: bigint;
   allowCustomDomain: boolean;
   allowGithubSync: boolean;
-  maxTokensPerJob?: number;
-  maxFilesPerJob?: number;
-  maxOutputBytesPerJob?: number;
+  maxTokensPerJob: number;
+  maxFilesPerJob: number;
+  maxOutputBytesPerJob: number;
 }): PublicPlan {
   return {
     ...plan,
     storageBytesLimit: plan.storageBytesLimit.toString(),
-    maxTokensPerJob: plan.maxTokensPerJob ?? 120000,
-    maxFilesPerJob: plan.maxFilesPerJob ?? 60,
-    maxOutputBytesPerJob: plan.maxOutputBytesPerJob ?? 2000000,
   };
 }
 
@@ -47,27 +44,14 @@ async function adminGate() {
   return { user: result.user, err: null };
 }
 
-async function hydratePlanCaps() {
-  const all = await prisma.$queryRaw<
-    Array<{
-      id: string;
-      maxTokensPerJob: number;
-      maxFilesPerJob: number;
-      maxOutputBytesPerJob: number;
-    }>
-  >`SELECT id, "maxTokensPerJob", "maxFilesPerJob", "maxOutputBytesPerJob" FROM "Plan"`;
-  return new Map(all.map((row) => [row.id, row]));
-}
-
 export async function listPlans(): Promise<ActionOk<{ plans: PublicPlan[] }> | ActionErr> {
   const { err } = await adminGate();
   if (err) return err;
   const plans = await prisma.plan.findMany({ orderBy: { createdAt: 'asc' } });
-  const caps = await hydratePlanCaps();
   return {
     ok: true,
     data: {
-      plans: plans.map((plan) => toPublicPlan({ ...plan, ...caps.get(plan.id) })),
+      plans: plans.map(toPublicPlan),
     },
   };
 }
@@ -108,25 +92,20 @@ export async function createPlan(input: {
       allowGithubSync: input.allowGithubSync === true,
       isActive: input.isActive !== false,
       isDefault: false,
+      // These three used to be written by a follow-up `$executeRaw` because the
+      // generated client predated the columns. The raw statement carried a
+      // trailing comma before its WHERE, so every create inserted the row and
+      // then threw `syntax error at or near "WHERE"`: the admin got a 500 and a
+      // plan that only appeared after a refresh. They are ordinary Prisma
+      // fields, so they belong in the same insert as everything else.
+      ...(input.maxTokensPerJob !== undefined ? { maxTokensPerJob: input.maxTokensPerJob } : {}),
+      ...(input.maxFilesPerJob !== undefined ? { maxFilesPerJob: input.maxFilesPerJob } : {}),
+      ...(input.maxOutputBytesPerJob !== undefined
+        ? { maxOutputBytesPerJob: input.maxOutputBytesPerJob }
+        : {}),
     },
   });
-  await prisma.$executeRaw`
-    UPDATE "Plan"
-    SET
-      "maxTokensPerJob" = ${input.maxTokensPerJob ?? 120000},
-      "maxFilesPerJob" = ${input.maxFilesPerJob ?? 60},
-      "maxOutputBytesPerJob" = ${input.maxOutputBytesPerJob ?? 2000000},
-    WHERE id = ${created.id}
-  `;
-  return {
-    ok: true,
-    data: toPublicPlan({
-      ...created,
-      maxTokensPerJob: input.maxTokensPerJob ?? 120000,
-      maxFilesPerJob: input.maxFilesPerJob ?? 60,
-      maxOutputBytesPerJob: input.maxOutputBytesPerJob ?? 2000000,
-    }),
-  };
+  return { ok: true, data: toPublicPlan(created) };
 }
 
 export async function updatePlan(
@@ -187,28 +166,18 @@ export async function updatePlan(
         ? { allowCustomDomain: input.allowCustomDomain }
         : {}),
       ...(input.allowGithubSync !== undefined ? { allowGithubSync: input.allowGithubSync } : {}),
+      ...(input.maxTokensPerJob !== undefined ? { maxTokensPerJob: input.maxTokensPerJob } : {}),
+      ...(input.maxFilesPerJob !== undefined ? { maxFilesPerJob: input.maxFilesPerJob } : {}),
+      ...(input.maxOutputBytesPerJob !== undefined
+        ? { maxOutputBytesPerJob: input.maxOutputBytesPerJob }
+        : {}),
     },
   });
-  if (
-    input.maxTokensPerJob !== undefined ||
-    input.maxFilesPerJob !== undefined ||
-    input.maxOutputBytesPerJob !== undefined
-  ) {
-    await prisma.$executeRaw`
-      UPDATE "Plan"
-      SET
-        "maxTokensPerJob" = COALESCE(${input.maxTokensPerJob ?? null}, "maxTokensPerJob"),
-        "maxFilesPerJob" = COALESCE(${input.maxFilesPerJob ?? null}, "maxFilesPerJob"),
-        "maxOutputBytesPerJob" = COALESCE(${input.maxOutputBytesPerJob ?? null}, "maxOutputBytesPerJob")
-      WHERE id = ${id}
-    `;
-  }
-  const publicPlan = toPublicPlan({
-    ...updated,
-    maxTokensPerJob: input.maxTokensPerJob,
-    maxFilesPerJob: input.maxFilesPerJob,
-    maxOutputBytesPerJob: input.maxOutputBytesPerJob,
-  });
+  // `updated` is the source of truth for the response. Echoing `input` here instead
+  // reported the hardcoded defaults for whichever job cap the admin had not touched,
+  // and PlansAdmin writes the response straight into local state — so editing Credits
+  // silently told the operator that Tokens/job was 120000 when the row said 200000.
+  const publicPlan = toPublicPlan(updated);
   await writeAudit({
     actorId: user.id,
     actorEmail: user.email,

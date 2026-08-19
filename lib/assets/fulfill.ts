@@ -7,6 +7,7 @@ import {
   type NeedImageAspect,
 } from '@/lib/assets/need-image';
 import { searchStockPhoto } from '@/lib/assets/stock-photo';
+import { trackFailure } from '@/lib/observability/track';
 import { checkCredits, consumeCredits } from '@/lib/plans/limits';
 import { WORKSPACE_ROW_ID } from '@/lib/storage/usage';
 
@@ -39,8 +40,25 @@ export async function fulfillNeedImages(input: {
           prompt: directive.description,
           aspectRatio: directive.aspect as NeedImageAspect,
         });
-        await consumeCredits(WORKSPACE_ROW_ID, input.userId, 'image', input.projectId);
+        // The image exists and the provider has been paid, so the token counts as
+        // fulfilled whatever the debit does next. While the debit sat inside the
+        // directive's own try, a concurrent request taking the last credit sent the
+        // whole directive to the catch below: the generated image was thrown away
+        // for a placeholder *and* the spend was never billed.
         replacements.push({ token: directive.token, url: asset.url });
+        try {
+          await consumeCredits(WORKSPACE_ROW_ID, input.userId, 'image', input.projectId);
+        } catch (error) {
+          // `trackFailure` rather than a log line: this is provider spend nobody was
+          // billed for, and it leaves no trace an operator can find otherwise —
+          // `creditsUsed` and the CreditLedger under-count together, so /admin/usage
+          // still balances and nothing looks wrong.
+          trackFailure('credits.image_debit_failed', error, {
+            action: 'image',
+            projectId: input.projectId,
+            userId: input.userId,
+          });
+        }
         continue;
       }
       const asset = await searchStockPhoto({

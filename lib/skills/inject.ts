@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import { log } from '@/lib/logger';
 import { selectSkills, type MatchedSkill } from './match';
 
 export type InjectedSkills = {
@@ -60,7 +61,15 @@ export async function injectMatchedSkills(
       names: ordered.map((skill) => skill.name),
       skills: matched.slice(0, ordered.length),
     };
-  } catch {
+  } catch (error) {
+    // Skills must never fail a generation, so this stays non-throwing. It used to
+    // be a bare `catch {}`, which meant a ranker 429, a Zod parse miss or a blip
+    // on `skill.findMany` made the whole feature vanish: no skill block, no
+    // `skills` progress event, `usageCount` flat on /admin/usage, and nothing to
+    // look at when an admin reported "my skill never applies".
+    log.warn('skills.injection_failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
     return empty;
   }
 }

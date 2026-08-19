@@ -24,12 +24,10 @@ const PER_MILLION: Record<string, Rate> = {
   default: { input: 0.15, output: 0.6 },
 };
 
-/** Estimated USD per sandbox minute (admin cost, not a user credit). */
-export const SANDBOX_MINUTE_USD = 0.001;
-
 function ratesFor(provider?: string | null, model?: string | null): Rate {
   const key = (provider || model || '').toLowerCase();
-  if (key.includes('groq') || key.includes('kimi') || key.includes('moonshot')) return PER_MILLION.groq;
+  if (key.includes('groq') || key.includes('kimi') || key.includes('moonshot'))
+    return PER_MILLION.groq;
   if (key.includes('anthropic') || key.includes('claude')) return PER_MILLION.anthropic;
   if (key.includes('google') || key.includes('gemini')) return PER_MILLION.google;
   if (key.includes('openai') || key.includes('gpt')) return PER_MILLION.openai;
@@ -45,10 +43,6 @@ export function estimateTokenCostUsd(input: TokenCostInput) {
   const tokensIn = Math.max(0, input.tokensIn ?? 0);
   const tokensOut = Math.max(0, input.tokensOut ?? 0);
   return roundUsd((tokensIn * rate.input + tokensOut * rate.output) / 1_000_000);
-}
-
-export function estimateSandboxCostUsd(minutes: number) {
-  return roundUsd(Math.max(0, minutes) * SANDBOX_MINUTE_USD);
 }
 
 export function calculateEventCost(

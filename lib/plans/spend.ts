@@ -1,6 +1,5 @@
 import { prisma } from '@/lib/db';
 import { notifyAdminsSpend80, notifyAdminsSpendLimit } from './alerts';
-import { estimateSandboxCostUsd } from '@/lib/consumption/cost';
 
 export const PAUSE_REASON_AUTOMATIC = 'Automatic pause';
 export const PAUSE_REASON_MANUAL = 'Manual pause';
@@ -53,7 +52,8 @@ export async function readWorkspaceSpend(workspaceId: string): Promise<Workspace
   if (!row) return null;
   return {
     spendUsd: Number(row.spendUsd ?? 0),
-    monthlySpendLimitUsd: row.monthlySpendLimitUsd == null ? null : Number(row.monthlySpendLimitUsd),
+    monthlySpendLimitUsd:
+      row.monthlySpendLimitUsd == null ? null : Number(row.monthlySpendLimitUsd),
     spendAlert80Sent: Boolean(row.spendAlert80Sent),
     generationPaused: Boolean(row.generationPaused),
     pauseReason: row.pauseReason,
@@ -136,8 +136,4 @@ export async function accrueSpend(workspaceId: string, usd: number) {
     generationPaused: row.generationPaused,
     pauseReason: row.pauseReason,
   };
-}
-
-export async function accrueSandboxSpend(workspaceId: string, minutes: number) {
-  return accrueSpend(workspaceId, estimateSandboxCostUsd(minutes));
 }
