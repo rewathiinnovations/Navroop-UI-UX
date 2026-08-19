@@ -16,6 +16,8 @@ export type PreviewAssembly =
   | { kind: 'empty'; reason: string };
 
 const ENTRY_PATH = '__preview/entry.tsx';
+/** Sits beside the real layout so its relative imports still resolve. */
+const PREVIEW_LAYOUT_BASENAME = '__preview-layout.tsx';
 
 /** Root component candidates per stack, most specific first. */
 const ROOT_CANDIDATES: Record<string, string[]> = {
@@ -56,15 +58,14 @@ export function assemblePreview(stack: string, rawFiles: Record<string, string>)
   }
 
   const globalCss = findGlobalCss(files);
-  const entry = buildEntryModule(
-    root,
-    globalCss,
-    stack === 'NEXTJS' ? findNextLayout(files) : null,
-  );
+  const layout = stack === 'NEXTJS' ? nextLayoutModule(files) : null;
+  const bundleFiles = { ...files };
+  if (layout?.source) bundleFiles[layout.importPath] = layout.source;
+  const entry = buildEntryModule(root, globalCss, layout?.importPath ?? null);
   return {
     kind: 'bundle',
     entry: ENTRY_PATH,
-    files: { ...files, [ENTRY_PATH]: entry },
+    files: { ...bundleFiles, [ENTRY_PATH]: entry },
     aliases,
   };
 }
@@ -97,12 +98,45 @@ function findGlobalCss(files: Record<string, string>) {
   );
 }
 
-function findNextLayout(files: Record<string, string>) {
-  // The App Router layout usually renders <html>/<body>, which React cannot
-  // mount inside an existing document. Only use it when it does not.
+/**
+ * The App Router's layout is where Next.js wants the nav and the footer, and it
+ * is where the model correctly puts them. This used to drop that file whenever it
+ * rendered `<html>` — which every idiomatic layout does — so generated sites
+ * previewed with no header and no footer while `components/Nav.tsx` and
+ * `components/Footer.tsx` sat in the file tree looking ungenerated.
+ *
+ * So the layout is mounted, with its document tags swapped for plain elements:
+ * React is mounting into an existing document, where a second `<html>`/`<body>`
+ * cannot go. The swap is textual, so a layout holding the literal string "<body"
+ * inside a template literal would also be rewritten — acceptable against every
+ * layout losing its chrome, and the original file is never modified.
+ */
+function nextLayoutModule(
+  files: Record<string, string>,
+): { importPath: string; source?: string } | null {
   const path = ['app/layout.tsx', 'app/layout.jsx'].find((candidate) => candidate in files);
   if (!path) return null;
-  return /<html[\s>]/i.test(files[path]) ? null : path;
+  const source = files[path];
+  // An async server component evaluates to a promise, which React cannot render
+  // on the client. Skipping is still better than a preview that throws.
+  if (/export\s+default\s+async\s+function/.test(source)) return null;
+  if (!/<html[\s>]/i.test(source)) return { importPath: path };
+  // The copy sits in the layout's own directory, not under `__preview/`: it keeps
+  // the original's relative imports working. Moving it broke `./globals.css` on the
+  // first try, which the pane reported as a missing file the model never wrote.
+  const adaptedPath = path.replace(/layout\.(tsx|jsx)$/, PREVIEW_LAYOUT_BASENAME);
+  return { importPath: adaptedPath, source: adaptDocumentTags(source) };
+}
+
+/** `<html>`/`<body>` become divs; `<head>` keeps loading its links while hidden. */
+function adaptDocumentTags(source: string): string {
+  return source
+    .replace(/<html(\s|>)/gi, '<div$1')
+    .replace(/<\/html>/gi, '</div>')
+    .replace(/<body(\s|>)/gi, '<div$1')
+    .replace(/<\/body>/gi, '</div>')
+    .replace(/<head(\s|>)/gi, '<div hidden$1')
+    .replace(/<\/head>/gi, '</div>');
 }
 
 /**
@@ -134,21 +168,18 @@ export function useParams() { return {}; }
 export function redirect() {}
 export function notFound() {}
 `;
+  // Every font the project imports, generated from the project itself: Google
+  // ships hundreds of families and a fixed list is a guaranteed miss. Mounting the
+  // layout is what first exercised these imports, and the first real site asked for
+  // `Open_Sans`, which the hardcoded list did not have — so the whole preview
+  // failed to compile on a font name.
+  const fontExports = nextFontImportNames(files)
+    .map((name) => `export const ${name} = font;`)
+    .join('\n');
   files['__preview/next-font.ts'] =
     `type FontResult = { className: string; variable: string; style: { fontFamily: string } };
 const font = (): FontResult => ({ className: '', variable: '', style: { fontFamily: 'inherit' } });
-export const Inter = font;
-export const Roboto = font;
-export const Poppins = font;
-export const Montserrat = font;
-export const Playfair_Display = font;
-export const Space_Grotesk = font;
-export const DM_Sans = font;
-export const Lora = font;
-export const Manrope = font;
-export const Outfit = font;
-export const Geist = font;
-export const Geist_Mono = font;
+${fontExports}
 export default font;
 `;
   files['__preview/next-head.tsx'] = `export default function Head() { return null; }
@@ -162,6 +193,29 @@ export default font;
     'next/font/local': '__preview/next-font.ts',
     'next/head': '__preview/next-head.tsx',
   };
+}
+
+/**
+ * The font families a project imports from `next/font/*`, so the shim can export
+ * exactly those. Aliases (`Open_Sans as sans`) are read from the left-hand name,
+ * which is what the module has to export.
+ */
+function nextFontImportNames(files: Record<string, string>): string[] {
+  const names = new Set<string>();
+  for (const content of Object.values(files)) {
+    const re = /import\s*\{([^}]*)\}\s*from\s*['"]next\/font\/(?:google|local)['"]/g;
+    let match: RegExpExecArray | null;
+    while ((match = re.exec(content)) !== null) {
+      for (const part of match[1].split(',')) {
+        const name = part
+          .trim()
+          .split(/\s+as\s+/)[0]
+          .trim();
+        if (/^[A-Za-z_$][\w$]*$/.test(name)) names.add(name);
+      }
+    }
+  }
+  return [...names];
 }
 
 /** Inline same-project css/js referenced by a static page so it renders standalone. */
