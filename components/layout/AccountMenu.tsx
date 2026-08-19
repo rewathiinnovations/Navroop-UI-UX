@@ -5,8 +5,6 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useTheme } from 'next-themes';
 import {
-  BookOpen,
-  Box,
   Gauge,
   KeyRound,
   LayoutTemplate,
@@ -230,13 +228,6 @@ export default function AccountMenu() {
           </div>
 
           <div className="p-6 border-t border-[var(--studio-line)]">
-            <MenuLink
-              href="#"
-              icon={<BookOpen className="size-16" />}
-              onClick={() => setOpen(false)}
-            >
-              Documentation
-            </MenuLink>
             <button
               type="button"
               role="menuitem"
