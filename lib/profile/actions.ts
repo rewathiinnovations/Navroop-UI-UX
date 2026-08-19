@@ -3,6 +3,9 @@
 import { unstable_update } from '@/auth';
 import { prisma } from '@/lib/db';
 import { hashPassword, requireSessionUser, toPublicUser, verifyPassword } from '@/lib/auth';
+import { passwordChangeWrites } from '@/lib/auth/session-invalidation';
+import { sendEmail } from '@/lib/email/client';
+import { passwordChangedEmail } from '@/lib/email/templates/password-changed';
 import {
   changePasswordSchema,
   parseWithZod,
@@ -90,10 +93,19 @@ export async function changePassword(currentPassword: string, newPassword: strin
     return { ok: false as const, error: WRONG_CURRENT_PASSWORD, status: 400 as const };
   }
 
-  await prisma.user.update({
-    where: { id: user.id },
-    data: { passwordHash: await hashPassword(parsed.data.newPassword) },
-  });
+  await prisma.$transaction(
+    passwordChangeWrites(user.id, await hashPassword(parsed.data.newPassword), new Date()),
+  );
 
-  return { ok: true as const, data: { success: true } };
+  // Same courtesy as the reset path: the account holder hears about it even if the change
+  // was not theirs. Only the transport error is logged, never the password or the hash.
+  const sent = await sendEmail({ to: user.email, ...passwordChangedEmail() });
+  if ('ok' in sent && sent.ok === false) {
+    console.error('[profile] passwordChanged email failed:', sent.error);
+  }
+
+  // Every other session is now dead, and so is the caller's own JWT — it was minted before
+  // the stamp. The client has the new password in hand and re-signs in on the spot
+  // (app/(app)/settings/profile/page.tsx); this flag is what tells it to.
+  return { ok: true as const, data: { success: true, reauthenticate: true } };
 }

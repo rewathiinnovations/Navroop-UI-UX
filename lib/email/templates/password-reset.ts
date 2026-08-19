@@ -27,5 +27,13 @@ export function passwordResetEmail(resetUrl: string) {
 <p style="margin:16px 0 0 0;">If you did not request this, ignore this email.</p>`,
   );
 
-  return { subject, html, text };
+  /**
+   * `security`, like the observability alerts, so `allowEmail` does not drop it into the
+   * 20-per-hour per-recipient workspace bucket. An admin who also receives spend alerts, DNS
+   * notices and backup failures at this address can cross that ceiling, and then the only
+   * trace of the missing reset link is a server-side `console.error` — the UI still says a
+   * link has been sent. Abuse is already capped upstream by `allowPasswordResetRequest`
+   * (3/email/hr, 10/IP/hr), so the workspace bucket adds nothing here but silent loss.
+   */
+  return { subject, html, text, emailClass: 'security' as const };
 }

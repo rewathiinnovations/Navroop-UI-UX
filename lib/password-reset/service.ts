@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import { passwordChangeWrites } from '@/lib/auth/session-invalidation';
 import { sendEmail, type SendEmailInput, type SendEmailResult } from '@/lib/email/client';
 import { passwordChangedEmail } from '@/lib/email/templates/password-changed';
 import { passwordResetEmail } from '@/lib/email/templates/password-reset';
@@ -44,7 +45,7 @@ async function issueAndEmail(user: { id: string; email: string }, now: Date, sen
       expiresAt: new Date(now.getTime() + RESET_TOKEN_TTL_MS),
     },
   });
-  const mail = passwordResetEmail(resetPasswordUrl(raw));
+  const mail = passwordResetEmail(await resetPasswordUrl(raw));
   const result = await send({ to: user.email, ...mail });
   if ('ok' in result && result.ok === false) {
     console.error('[password-reset] email failed:', result.error);
@@ -63,7 +64,9 @@ export async function requestPasswordReset(
   input: { email: string; ip: string },
   deps?: { send?: EmailSend; now?: Date },
 ): Promise<ForgotResult> {
-  const email = String(input.email || '').trim().toLowerCase();
+  const email = String(input.email || '')
+    .trim()
+    .toLowerCase();
   const ip = String(input.ip || 'unknown');
   const now = deps?.now ?? new Date();
   const send = deps?.send ?? sendEmail;
@@ -134,10 +137,7 @@ export async function resetPasswordWithToken(
   const passwordHash = await hashPassword(input.password);
 
   await prisma.$transaction([
-    prisma.user.update({
-      where: { id: peeked.userId },
-      data: { passwordHash, passwordChangedAt: now },
-    }),
+    ...passwordChangeWrites(peeked.userId, passwordHash, now),
     prisma.passwordResetToken.update({
       where: { id: peeked.id },
       data: { usedAt: now },
@@ -146,7 +146,6 @@ export async function resetPasswordWithToken(
       where: { userId: peeked.userId, id: { not: peeked.id }, usedAt: null },
       data: { usedAt: now },
     }),
-    prisma.session.deleteMany({ where: { userId: peeked.userId } }),
   ]);
 
   const user = await prisma.user.findUnique({

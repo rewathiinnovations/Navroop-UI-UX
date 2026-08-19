@@ -1,7 +1,8 @@
 'use client';
 
 import { FormEvent, useEffect, useState } from 'react';
-import { useSession } from 'next-auth/react';
+import { signIn, signOut, useSession } from 'next-auth/react';
+import { useRouter } from 'next/navigation';
 import { CircleAlert } from 'lucide-react';
 import StudioShell from '@/components/app/studio/StudioShell';
 import StudioButton from '@/components/app/studio/StudioButton';
@@ -10,6 +11,7 @@ import PageTabs from '@/components/app/studio/PageTabs';
 import { useAuth } from '@/components/app/auth/AuthProvider';
 import { changePassword, updateProfile, uploadAvatar } from '@/lib/profile/actions';
 import { notify } from '@/lib/notify';
+import { loginModalHref } from '@/lib/auth/public-login';
 import StorageUsage from '@/components/settings/StorageUsage';
 
 function initials(name: string) {
@@ -25,6 +27,7 @@ function initials(name: string) {
 
 export default function ProfileSettingsPage() {
   const { user } = useAuth();
+  const router = useRouter();
   const { update } = useSession();
   const [name, setName] = useState('');
   const [avatarUrl, setAvatarUrl] = useState('');
@@ -84,10 +87,30 @@ export default function ProfileSettingsPage() {
         notify.error(result.error, { key: 'password-change' });
         return;
       }
+      // The change invalidates every JWT issued before it, including this tab's, so the
+      // session has to be re-minted here or the next request would bounce the user to the
+      // login modal — punishing the person who did the safe thing. The password is the one
+      // just typed into this form; it is sent over the same channel the change went out on
+      // and never stored or logged.
+      const reauth = await signIn('credentials', {
+        email: user?.email ?? '',
+        password: newPassword,
+        redirect: false,
+      });
       setCurrentPassword('');
       setNewPassword('');
       setConfirmPassword('');
-      notify.success('Password updated.', { key: 'password-change' });
+      if (reauth?.error) {
+        notify.success('Password updated — sign in again with the new password.', {
+          key: 'password-change',
+        });
+        await signOut({ redirect: false });
+        router.push(loginModalHref('/settings/profile'));
+        return;
+      }
+      notify.success('Password updated — other devices have been signed out.', {
+        key: 'password-change',
+      });
     } catch (cause) {
       notify.error(cause, { fallback: 'Could not update the password', key: 'password-change' });
     } finally {

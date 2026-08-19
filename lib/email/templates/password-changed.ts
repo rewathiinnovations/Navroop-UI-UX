@@ -17,5 +17,9 @@ export function passwordChangedEmail() {
 <p style="margin:0;">If you did not do this, request a new reset link right away.</p>`,
   );
 
-  return { subject, html, text };
+  // `security` for the same reason as the reset link: this is the mail that tells someone a
+  // password they did not change has been changed. Dropping it into the 20-per-hour
+  // per-recipient workspace bucket means the one warning of a takeover is the one that never
+  // arrives.
+  return { subject, html, text, emailClass: 'security' as const };
 }
