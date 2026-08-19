@@ -44,8 +44,14 @@ function notFound(): ActionErr {
   return { ok: false, error: 'Project not found', status: 404 };
 }
 
+/**
+ * A sentence rather than the bare "Forbidden" the HTTP layer would use: every caller of
+ * these four actions goes through lib/checkpoints/client.ts, which throws `data.error`
+ * verbatim, and the workspace posts that string straight into the user's chat thread.
+ * The rest of this file's errors read the same way for the same reason.
+ */
 function forbidden(): ActionErr {
-  return { ok: false, error: 'Forbidden', status: 403 };
+  return { ok: false, error: 'This project belongs to someone else', status: 403 };
 }
 
 function canRestore(user: SessionUser, ownerId: string) {
@@ -321,12 +327,20 @@ async function loadSnapshotFiles(
   }
 }
 
+/**
+ * Despite the name this is a *write*: it replaces `Project.lastCode`, so it needs the
+ * same two guards as `restoreCheckpoint` below. Both were missing. Without the owner
+ * check any signed-in member could roll another member's project back to an arbitrary
+ * checkpoint; without the lock the write raced a running generation and bumped
+ * `contentVersion` underneath the generating client.
+ */
 export async function previewCheckpoint(projectId: string, checkpointId: string) {
   const { user, err } = await requireActor();
   if (!user) return err;
 
   const project = await loadProjectForWrite(projectId);
   if (!project) return notFound();
+  if (!canRestore(user, project.ownerId)) return forbidden();
 
   const checkpoint = await prisma.checkpoint.findFirst({
     where: { id: checkpointId, projectId },
@@ -336,8 +350,14 @@ export async function previewCheckpoint(projectId: string, checkpointId: string)
 
   const loaded = await loadSnapshotFiles(checkpoint);
   if (!loaded.ok) return loaded.err;
-  if (loaded.files.length === 0) return prunedError();
-  await writeCheckpointFiles(projectId, loaded.files);
+  const files = loaded.files;
+  if (files.length === 0) return prunedError();
+
+  const locked = await withProjectLock(projectId, user.id, 'generation', () =>
+    writeCheckpointFiles(projectId, files),
+  );
+  if (!locked.ok) return lockConflictAction(locked);
+
   return { ok: true as const, data: toPublic(checkpoint) };
 }
 
@@ -347,6 +367,7 @@ export async function exitCheckpointPreview(projectId: string) {
 
   const project = await loadProjectForWrite(projectId);
   if (!project) return notFound();
+  if (!canRestore(user, project.ownerId)) return forbidden();
 
   const latest = await prisma.checkpoint.findFirst({
     where: { projectId },
@@ -358,8 +379,14 @@ export async function exitCheckpointPreview(projectId: string) {
 
   const loaded = await loadSnapshotFiles(latest);
   if (!loaded.ok) return loaded.err;
-  if (latest.snapshotPruned || loaded.files.length === 0) return prunedError();
-  await writeCheckpointFiles(projectId, loaded.files);
+  const files = loaded.files;
+  if (latest.snapshotPruned || files.length === 0) return prunedError();
+
+  const locked = await withProjectLock(projectId, user.id, 'generation', () =>
+    writeCheckpointFiles(projectId, files),
+  );
+  if (!locked.ok) return lockConflictAction(locked);
+
   return { ok: true as const, data: toPublic(latest) };
 }
 
@@ -409,11 +436,11 @@ export async function toggleCheckpointBookmark(projectId: string, checkpointId: 
   const { user, err } = await requireActor();
   if (!user) return err;
 
-  const project = await prisma.project.findFirst({
-    where: { id: projectId, deletedAt: null },
-    select: { id: true },
-  });
+  // Bookmarks live on the owner's checkpoint history, so the same gate applies here as
+  // on the content writes above — a member must not curate another member's timeline.
+  const project = await loadProjectForWrite(projectId);
   if (!project) return notFound();
+  if (!canRestore(user, project.ownerId)) return forbidden();
 
   const checkpoint = await prisma.checkpoint.findFirst({
     where: { id: checkpointId, projectId },

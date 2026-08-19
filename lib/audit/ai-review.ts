@@ -60,13 +60,18 @@ export function parseAiReviewJson(raw: string): CodeFinding[] {
     const candidate = fenced?.[1]?.trim() ?? raw.trim();
     const start = candidate.indexOf('{');
     const end = candidate.lastIndexOf('}');
-    parsed = JSON.parse(start >= 0 && end > start ? candidate.slice(start, end + 1) : candidate) as AiReviewJson;
+    parsed = JSON.parse(
+      start >= 0 && end > start ? candidate.slice(start, end + 1) : candidate,
+    ) as AiReviewJson;
   } catch {
     return [];
   }
   return (parsed.findings || []).flatMap((row, index) => {
     if (!row?.title) return [];
-    const status = row.status === 'high' || row.status === 'medium' || row.status === 'low' ? row.status : 'medium';
+    const status =
+      row.status === 'high' || row.status === 'medium' || row.status === 'low'
+        ? row.status
+        : 'medium';
     return [
       finding({
         id: `ai-review:${row.filePath || 'file'}:${index}:${row.title}`,
@@ -96,11 +101,9 @@ export async function runAiReview(input: {
   const files = selectFilesForAiReview(input.files, input.staticFindings);
   if (files.length === 0) return [];
   try {
-    const { client, actualModel } = getProviderForModel(appConfig.ai.defaultModel);
+    const { client, actualModel } = await getProviderForModel(appConfig.ai.defaultModel);
     const stablePrefix = buildStablePromptPrefix(input.stack, input.directionId);
-    const listing = files
-      .map((file) => `--- ${file.path} ---\n${file.content}`)
-      .join('\n\n');
+    const listing = files.map((file) => `--- ${file.path} ---\n${file.content}`).join('\n\n');
     const volatile = [
       'Review only what static analysis cannot fully evaluate: composition, unnecessary re-renders, unbounded state growth, missing async/loading/error states, and hardcoded design tokens.',
       'Return JSON only: { "findings": [{ "title", "detail", "filePath", "line?", "status": "high"|"medium"|"low" }] }.',

@@ -1,4 +1,5 @@
 import type { Checkpoint } from '@/components/workspace/types';
+import { emitLockConflict, parseLockConflict } from '@/lib/projects/lock-client';
 
 type CheckpointPayload = {
   id: string;
@@ -41,51 +42,89 @@ export async function fetchCheckpoints(projectId: string): Promise<Checkpoint[]>
   return (data?.checkpoints ?? []).map(toCheckpoint);
 }
 
-export async function previewCheckpoint(projectId: string, checkpointId: string) {
-  const response = await fetch(`/api/projects/${projectId}/checkpoints/${checkpointId}/preview`, {
-    method: 'POST',
-  });
-  const data = await readJson(response);
-  if (!response.ok) {
-    throw new Error(data?.error || 'Could not preview this version');
+/**
+ * Carries the lock verdict alongside the message so callers do not have to sniff
+ * the sentence to recognise a conflict. `restoreCheckpoint` was the only call that
+ * handled a 409, and the workspace read `'is working on this project'` out of its
+ * message to keep the LockBar up; preview and exit now take the same server lock as
+ * restore, so the verdict is produced once, here.
+ *
+ * `toggleCheckpointBookmark` is the asymmetric one: owner-gated, but deliberately
+ * unlocked. It flips `Checkpoint.isBookmarked` and touches neither `Project.lastCode`
+ * nor `contentVersion`, so there is no content write to serialise against a running
+ * generation — it can never return a lock 409, and `locked` stays false for it.
+ */
+export class CheckpointRequestError extends Error {
+  readonly status: number;
+  readonly locked: boolean;
+
+  constructor(message: string, status: number, locked: boolean) {
+    super(message);
+    this.name = 'CheckpointRequestError';
+    this.status = status;
+    this.locked = locked;
   }
+}
+
+/** True only for a 409 that named a real lock holder — the case the LockBar shows. */
+export function isLockConflictError(error: unknown): boolean {
+  return error instanceof CheckpointRequestError && error.locked;
+}
+
+/**
+ * The single request path for every checkpoint write. A 409 raises the LockBar via
+ * `emitLockConflict` before throwing, so the next checkpoint call added here cannot
+ * forget it — four copies of that branch is how three of them came to be missing.
+ *
+ * `data.error` is thrown verbatim: the server owns the user-facing sentence (see
+ * `forbidden()` in ./actions.ts for the 403 wording). `fallback` covers only a body
+ * that carried no message at all, so no status word can reach the chat thread.
+ */
+async function checkpointRequest(url: string, fallback: string) {
+  const response = await fetch(url, { method: 'POST' });
+  const data = await readJson(response);
+  if (response.ok) return data;
+
+  let locked = false;
+  if (response.status === 409) {
+    // A pruned snapshot is also a 409 but names no holder, so it stays a chat line.
+    const conflict = parseLockConflict(409, data);
+    if (conflict) {
+      emitLockConflict(conflict);
+      locked = true;
+    }
+  }
+  throw new CheckpointRequestError(data?.error || fallback, response.status, locked);
+}
+
+export async function previewCheckpoint(projectId: string, checkpointId: string) {
+  const data = await checkpointRequest(
+    `/api/projects/${projectId}/checkpoints/${checkpointId}/preview`,
+    'Could not preview this version',
+  );
   return data?.checkpoint ? toCheckpoint(data.checkpoint) : null;
 }
 
 export async function exitCheckpointPreview(projectId: string) {
-  const response = await fetch(`/api/projects/${projectId}/checkpoints/exit`, {
-    method: 'POST',
-  });
-  const data = await readJson(response);
-  if (!response.ok) {
-    throw new Error(data?.error || 'Could not return to the current version');
-  }
+  const data = await checkpointRequest(
+    `/api/projects/${projectId}/checkpoints/exit`,
+    'Could not return to the current version',
+  );
   return data?.checkpoint ? toCheckpoint(data.checkpoint) : null;
 }
 
 export async function toggleCheckpointBookmark(projectId: string, checkpointId: string) {
-  const response = await fetch(`/api/projects/${projectId}/checkpoints/${checkpointId}/bookmark`, {
-    method: 'POST',
-  });
-  const data = await readJson(response);
-  if (!response.ok) {
-    throw new Error(data?.error || 'Could not bookmark this version');
-  }
+  const data = await checkpointRequest(
+    `/api/projects/${projectId}/checkpoints/${checkpointId}/bookmark`,
+    'Could not bookmark this version',
+  );
   return data?.checkpoint ? toCheckpoint(data.checkpoint) : null;
 }
 
 export async function restoreCheckpoint(projectId: string, checkpointId: string) {
-  const response = await fetch(`/api/projects/${projectId}/checkpoints/${checkpointId}/restore`, {
-    method: 'POST',
-  });
-  const data = await readJson(response);
-  if (!response.ok) {
-    if (response.status === 409) {
-      const { emitLockConflict, parseLockConflict } = await import('@/lib/projects/lock-client');
-      const conflict = parseLockConflict(409, data);
-      if (conflict) emitLockConflict(conflict);
-    }
-    throw new Error(data?.error || 'Could not restore this version');
-  }
+  const data = await checkpointRequest(
+    `/api/projects/${projectId}/checkpoints/${checkpointId}/restore`,
+    'Could not restore this version',
+  );
   return data?.checkpoint ? toCheckpoint(data.checkpoint) : null;
 }

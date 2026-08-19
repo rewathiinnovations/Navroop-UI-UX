@@ -51,10 +51,18 @@ vi.mock('@/lib/projects/plan', () => ({ peekActor: actor.peek }));
  *  already supplies the actor, so `getSessionUser` is never reached. */
 vi.mock('@/lib/auth', () => ({ getSessionUser: async () => null }));
 
-/** Restoring writes the snapshot back to Project.lastCode. */
+/**
+ * Restoring writes the snapshot back to Project.lastCode. The stub takes the lock for
+ * granted but must keep the real `{ ok, value }` envelope: preview and exit now go
+ * through the lock too, and a bare `run()` here would make them read `.ok` off the
+ * work's own return value.
+ */
 vi.mock('@/lib/projects/lock', () => ({
   bumpContentVersion: vi.fn(),
-  withProjectLock: async (_id: string, _actor: string, _kind: string, run: () => unknown) => run(),
+  withProjectLock: async (_id: string, _actor: string, _kind: string, run: () => unknown) => ({
+    ok: true as const,
+    value: await run(),
+  }),
 }));
 
 const { NoSuchKey, S3ServiceException } = await import('@aws-sdk/client-s3');

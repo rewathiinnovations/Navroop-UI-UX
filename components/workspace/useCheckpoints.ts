@@ -4,11 +4,28 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   exitCheckpointPreview,
   fetchCheckpoints,
+  isLockConflictError,
   previewCheckpoint,
   restoreCheckpoint,
   toggleCheckpointBookmark,
 } from '@/lib/checkpoints/client';
 import type { Checkpoint } from './types';
+
+/**
+ * `locked` tells ProjectWorkspace to stay quiet: the client already raised the
+ * LockBar for this conflict, so repeating it as a chat line says it twice. Preview,
+ * exit and restore take the project lock server-side, so any of the three can report
+ * it; the bookmark toggle takes no lock — it writes only `Checkpoint.isBookmarked` —
+ * so `locked` is always false there. All four still go through this one helper so the
+ * branch cannot be forgotten when a fifth call is added.
+ */
+function failed(error: unknown, fallback: string) {
+  return {
+    ok: false as const,
+    error: error instanceof Error ? error.message : fallback,
+    locked: isLockConflictError(error),
+  };
+}
 
 export function useCheckpoints({
   projectId,
@@ -55,10 +72,7 @@ export function useCheckpoints({
         onRefresh?.();
         return { ok: true as const };
       } catch (error) {
-        return {
-          ok: false as const,
-          error: error instanceof Error ? error.message : 'Could not preview this version',
-        };
+        return failed(error, 'Could not preview this version');
       } finally {
         setBusy(false);
       }
@@ -75,10 +89,7 @@ export function useCheckpoints({
       onRefresh?.();
       return { ok: true as const };
     } catch (error) {
-      return {
-        ok: false as const,
-        error: error instanceof Error ? error.message : 'Could not return to the current version',
-      };
+      return failed(error, 'Could not return to the current version');
     } finally {
       setBusy(false);
     }
@@ -96,12 +107,7 @@ export function useCheckpoints({
         onRefresh?.();
         return { ok: true as const };
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Could not restore this version';
-        return {
-          ok: false as const,
-          error: message,
-          locked: message.includes('is working on this project'),
-        };
+        return failed(error, 'Could not restore this version');
       } finally {
         setBusy(false);
       }
@@ -122,10 +128,7 @@ export function useCheckpoints({
         }
         return { ok: true as const };
       } catch (error) {
-        return {
-          ok: false as const,
-          error: error instanceof Error ? error.message : 'Could not bookmark this version',
-        };
+        return failed(error, 'Could not bookmark this version');
       } finally {
         setBusy(false);
       }

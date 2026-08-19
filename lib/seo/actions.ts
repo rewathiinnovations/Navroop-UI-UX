@@ -15,7 +15,7 @@ import { recordSeoScore } from '@/lib/signals/collect';
 import { asCreditActionErr } from '@/lib/plans/http';
 import { checkCredits } from '@/lib/plans/limits';
 import { WORKSPACE_ROW_ID } from '@/lib/storage/usage';
-import { acquireLock, beginLockHeartbeat, releaseLock } from '@/lib/projects/lock';
+import { holdProjectLock } from '@/lib/projects/lock';
 import { lockConflictAction } from '@/lib/projects/lock-http';
 
 type ActionErr = { ok: false; error: string; status: number; details?: unknown };
@@ -144,79 +144,78 @@ export async function runSeoAudit(projectId: string): Promise<ActionResult<{ sca
   if (!project) return notFound();
   if (!canMutate(user, project.ownerId)) return forbidden();
 
-  const lock = await acquireLock(projectId, user.id, 'audit');
-  if (!lock.ok) return lockConflictAction(lock);
+  const hold = await holdProjectLock(projectId, user.id, 'audit');
+  if (!hold.ok) return lockConflictAction(hold);
 
-  if (!inflight.has(projectId)) {
-    const credits = await checkCredits(WORKSPACE_ROW_ID, user.id, 'audit');
-    if (!credits.ok) {
-      await releaseLock(projectId, user.id);
-      return asCreditActionErr(credits);
+  // See lib/audit/actions.ts: an audit already running for this project owns the hold and
+  // gives it back itself, so ours is either that hold re-entered — release does nothing —
+  // or a fresh take of a dead hold, which we must not strand on the way out.
+  if (inflight.has(projectId)) {
+    await hold.release();
+    return { ok: true, data: { scanning: true } };
+  }
+
+  const credits = await checkCredits(WORKSPACE_ROW_ID, user.id, 'audit');
+  if (!credits.ok) {
+    await hold.release();
+    return asCreditActionErr(credits);
+  }
+  const actorId = user.id;
+  // See lib/audit/actions.ts: a throw before the promise chain owns cleanup would leave
+  // the lock held with its renew timer still pushing the expiry out, so the TTL never
+  // rescues the project. `hold.release()` stops that timer and is idempotent.
+  try {
+    const { beginJobHeartbeat, createOrReuseJob, failJob, markJobRunning, succeedJob } =
+      await import('@/lib/jobs/lifecycle');
+    const auditJob = await createOrReuseJob({
+      projectId,
+      workspaceId: WORKSPACE_ROW_ID,
+      userId: actorId,
+      kind: 'AUDIT',
+    });
+    if (auditJob.status === 'QUEUED') {
+      await markJobRunning(auditJob.id, { chargeCredits: true, acquireProjectLock: false });
     }
-    const actorId = user.id;
-    const heartbeat = beginLockHeartbeat(projectId, actorId);
-    // See lib/audit/actions.ts: a throw before the promise chain owns cleanup would
-    // leave the lock held with its renew timer still pushing the expiry out, so the
-    // TTL never rescues the project.
-    try {
-      const { beginJobHeartbeat, createOrReuseJob, failJob, markJobRunning, succeedJob } =
-        await import('@/lib/jobs/lifecycle');
-      const auditJob = await createOrReuseJob({
-        projectId,
-        workspaceId: WORKSPACE_ROW_ID,
-        userId: actorId,
-        kind: 'AUDIT',
-      });
-      if (auditJob.status === 'QUEUED') {
-        await markJobRunning(auditJob.id, { chargeCredits: true, acquireProjectLock: false });
-      }
-      const { updateJobFields } = await import('@/lib/jobs/store');
-      await updateJobFields(auditJob.id, {
-        currentStep: 'audit',
-        steps: [
-          {
-            key: 'audit',
-            label: 'Scanning the project',
-            status: 'running',
-            startedAt: new Date().toISOString(),
-          },
-        ],
-      });
-      const jobBeat = beginJobHeartbeat(auditJob.id);
-      const job = performSeoAudit(projectId)
-        .then(async (didRun) => {
-          if (didRun) await succeedJob(auditJob.id);
-          else
-            await failJob(auditJob.id, {
-              errorCode: 'provider_error',
-              errorMessage: 'Audit did not run',
-            });
-        })
-        .catch(async (error) => {
-          console.warn('[seo] audit failed', error);
+    const { updateJobFields } = await import('@/lib/jobs/store');
+    await updateJobFields(auditJob.id, {
+      currentStep: 'audit',
+      steps: [
+        {
+          key: 'audit',
+          label: 'Scanning the project',
+          status: 'running',
+          startedAt: new Date().toISOString(),
+        },
+      ],
+    });
+    const jobBeat = beginJobHeartbeat(auditJob.id);
+    const job = performSeoAudit(projectId)
+      .then(async (didRun) => {
+        if (didRun) await succeedJob(auditJob.id);
+        else
           await failJob(auditJob.id, {
             errorCode: 'provider_error',
-            errorMessage: error instanceof Error ? error.message : 'Audit failed',
-          }).catch((failError) => {
-            console.warn('[seo] failJob after audit failure failed', failError);
+            errorMessage: 'Audit did not run',
           });
-        })
-        .finally(async () => {
-          jobBeat.stop();
-          heartbeat.stop();
-          inflight.delete(projectId);
-          await releaseLock(projectId, actorId).catch((error) => {
-            console.warn('[seo] releaseLock after audit failed', error);
-          });
+      })
+      .catch(async (error) => {
+        console.warn('[seo] audit failed', error);
+        await failJob(auditJob.id, {
+          errorCode: 'provider_error',
+          errorMessage: error instanceof Error ? error.message : 'Audit failed',
+        }).catch((failError) => {
+          console.warn('[seo] failJob after audit failure failed', failError);
         });
-      inflight.set(projectId, job);
-    } catch (error) {
-      heartbeat.stop();
-      await releaseLock(projectId, actorId).catch((releaseError) => {
-        console.warn('[seo] releaseLock after audit setup failed', releaseError);
+      })
+      .finally(async () => {
+        jobBeat.stop();
+        inflight.delete(projectId);
+        await hold.release();
       });
-      throw error;
-    }
+    inflight.set(projectId, job);
+  } catch (error) {
+    await hold.release();
+    throw error;
   }
 
   return { ok: true, data: { scanning: true } };
