@@ -13,8 +13,14 @@ config({ path: resolve(process.cwd(), '.env') });
 config({ path: resolve(process.cwd(), '.env.local'), override: true });
 
 const result = await runDbBackup();
+if ('objectKey' in result) {
+  console.log(`Backup stored ${result.objectKey} (${result.sizeBytes} bytes)`);
+}
 if (!result.ok) {
-  console.error(result.error);
+  // `ok: false` now covers two very different endings: no backup at all, and a durable backup
+  // whose retention pass failed — the dump is safe in the bucket, the expired ones were not
+  // deleted. The second carries `detail` and no `error`, so printing `result.error` alone told
+  // the operator "undefined" and exited 1 on a run that had actually stored their backup.
+  console.error('detail' in result ? result.detail : result.error);
   process.exit(1);
 }
-console.log(`Backup stored ${result.objectKey} (${result.sizeBytes} bytes)`);

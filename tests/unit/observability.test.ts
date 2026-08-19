@@ -1,4 +1,9 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import type * as tls from 'node:tls';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { checkSiteCertificate } from '../../lib/observability/certs';
+import { checkSiteUptime } from '../../lib/observability/uptime';
 import { runHealthChecks } from '../../lib/health/check';
 import { allowEmail, clearEmailRateLimits } from '../../lib/email/rate-limit';
 import { sendEmail } from '../../lib/email/client';
@@ -11,6 +16,7 @@ import { runObservabilityQuotaCheck } from '../../lib/observability/quota';
 import { runObservabilityStartup } from '../../lib/observability/startup';
 import {
   buildErrorTrackingPanel,
+  loadSystemChecks,
   sendObservabilityTestEvent,
 } from '../../lib/observability/admin';
 import {
@@ -59,8 +65,17 @@ function memoryStore() {
       crons.push(created);
       return created;
     },
-    async listCronRuns() {
-      return crons.slice();
+    async listCronRuns(name: string) {
+      return crons.filter((row) => row.name === name);
+    },
+    /** Mirrors the store's DISTINCT ON: the newest row per name, nothing truncated. */
+    async listLatestCronRunPerName() {
+      const latest = new Map<string, CronRunRow>();
+      for (const row of crons) {
+        const seen = latest.get(row.name);
+        if (!seen || seen.createdAt.getTime() < row.createdAt.getTime()) latest.set(row.name, row);
+      }
+      return [...latest.values()];
     },
   };
 }
@@ -298,7 +313,8 @@ describe('observability startup and health', () => {
       dataDir: {
         ...status,
         checked: true,
-        error: 'The data directory is not writable: /data. Likely cause: the volume is not mounted.',
+        error:
+          'The data directory is not writable: /data. Likely cause: the volume is not mounted.',
       },
     });
     const ok = await runHealthChecks({
@@ -395,23 +411,37 @@ describe('noise suppression', () => {
   });
 
   it('does not capture 402 or 409 as Sentry events', () => {
-    expect(shouldCaptureException(Object.assign(new Error('Payment required'), { status: 402 }))).toBe(false);
-    expect(shouldCaptureException(Object.assign(new Error('Conflict'), { status: 409 }))).toBe(false);
+    expect(
+      shouldCaptureException(Object.assign(new Error('Payment required'), { status: 402 })),
+    ).toBe(false);
+    expect(shouldCaptureException(Object.assign(new Error('Conflict'), { status: 409 }))).toBe(
+      false,
+    );
     expect(observabilityBeforeSend({ extra: { status: 402 } }, {})).toBeNull();
     expect(observabilityBeforeSend({ extra: { status: 409 } }, {})).toBeNull();
     expect(observabilityBeforeSend({ extra: { status: 404 } }, {})).toBeNull();
 
     const captured: unknown[] = [];
-    trackFailure('paywall', Object.assign(new Error('Payment required'), { status: 402 }), { action: 'generate' }, {
-      captureException: (error) => {
-        captured.push(error);
+    trackFailure(
+      'paywall',
+      Object.assign(new Error('Payment required'), { status: 402 }),
+      { action: 'generate' },
+      {
+        captureException: (error) => {
+          captured.push(error);
+        },
       },
-    });
-    trackFailure('lock', Object.assign(new Error('Conflict'), { status: 409 }), { action: 'generate' }, {
-      captureException: (error) => {
-        captured.push(error);
+    );
+    trackFailure(
+      'lock',
+      Object.assign(new Error('Conflict'), { status: 409 }),
+      { action: 'generate' },
+      {
+        captureException: (error) => {
+          captured.push(error);
+        },
       },
-    });
+    );
     expect(captured).toHaveLength(0);
   });
 });
@@ -419,23 +449,94 @@ describe('noise suppression', () => {
 describe('cron runs and staleness', () => {
   it('writes CronRun on success and on failure', async () => {
     const store = memoryStore();
-    const ok = await withCronRun('check-uptime', async () => ({ ping: 'ok' }), {
+    const ok = await withCronRun('check-uptime', async () => ({ ok: true as const, ping: 'ok' }), {
       now: () => new Date('2026-08-17T12:00:00.000Z'),
       store,
     });
-    expect(ok).toEqual({ ping: 'ok' });
+    expect(ok).toEqual({ ok: true, ping: 'ok' });
     await expect(
-      withCronRun('check-uptime', async () => {
-        throw new Error('health down');
-      }, {
-        now: () => new Date('2026-08-17T12:01:00.000Z'),
-        store,
-      }),
+      withCronRun(
+        'check-uptime',
+        async () => {
+          throw new Error('health down');
+        },
+        {
+          now: () => new Date('2026-08-17T12:01:00.000Z'),
+          store,
+        },
+      ),
     ).rejects.toThrow('health down');
     expect(store.crons).toHaveLength(2);
     expect(store.crons[0]).toMatchObject({ name: 'check-uptime', ok: true });
     expect(store.crons[1]).toMatchObject({ name: 'check-uptime', ok: false });
     expect(String(store.crons[1].detail)).toMatch(/health down/);
+  });
+
+  /**
+   * `withCronRun` used to sniff for an `ok` field and record success when it found none, so
+   * every cron that aggregated per-item failures into a counter reported a healthy run.
+   * `CronOutcome` makes that a compile error; these hold the runtime half of the contract.
+   */
+  it('does not read a run with failed items as healthy, and says which items failed', async () => {
+    const store = memoryStore();
+    const result = await withCronRun(
+      'check-integrations',
+      async () => ({
+        ok: false as const,
+        detail: 'GITHUB_DEPLOY: 401; CLOUDFLARE: 401',
+        checked: 4,
+      }),
+      { now: () => new Date('2026-08-17T12:00:00.000Z'), store },
+    );
+    expect(result.checked).toBe(4);
+    expect(store.crons).toHaveLength(1);
+    expect(store.crons[0]).toMatchObject({
+      name: 'check-integrations',
+      ok: false,
+      detail: 'GITHUB_DEPLOY: 401; CLOUDFLARE: 401',
+    });
+  });
+
+  it('reads aggregated per-item errors into the receipt instead of dumping the report', async () => {
+    const store = memoryStore();
+    await withCronRun(
+      'sweep-tmp',
+      async () => ({
+        ok: false as const,
+        errors: ['volume identity: EACCES', 'low-space alert: SMTP down'],
+        swept: 3,
+      }),
+      { now: () => new Date('2026-08-17T12:00:00.000Z'), store },
+    );
+    expect(store.crons[0].detail).toBe('volume identity: EACCES; low-space alert: SMTP down');
+  });
+
+  it('records a body that reports no outcome as failed rather than assuming success', async () => {
+    // The runtime backstop for a value that arrives through an `any` — a mock, a JSON round
+    // trip. Guessing success is the bug this contract exists to remove, so it guesses failure.
+    const store = memoryStore();
+    const untyped = async () => ({ reaped: 2 }) as unknown as { ok: boolean };
+    await withCronRun('reap-jobs', untyped, {
+      now: () => new Date('2026-08-17T12:00:00.000Z'),
+      store,
+    });
+    expect(store.crons[0]).toMatchObject({ name: 'reap-jobs', ok: false });
+  });
+
+  it('keeps a healthy run readable: a success detail reaches the CronRun row', async () => {
+    const store = memoryStore();
+    await withCronRun(
+      'check-certs',
+      async () => ({
+        ok: true as const,
+        detail: 'certificate valid until 2026-11-01T00:00:00.000Z',
+      }),
+      { now: () => new Date('2026-08-17T12:00:00.000Z'), store },
+    );
+    expect(store.crons[0]).toMatchObject({
+      ok: true,
+      detail: 'certificate valid until 2026-11-01T00:00:00.000Z',
+    });
   });
 
   it('marks site uptime stale after 30 minutes and the daily email names it', async () => {
@@ -475,6 +576,178 @@ describe('cron runs and staleness', () => {
       },
     });
     expect(emails[0].text).toMatch(/uptime/i);
+  });
+});
+
+/**
+ * /admin/health and the daily digest used to read an unfiltered `listCronRuns()` whose SQL was
+ * a single `LIMIT 400` across every cron name. `reap-jobs` (every minute) and `check-domains`
+ * (every 2 minutes) alone write ~2160 rows a day, so the window held under three hours of
+ * history while `CRON_STALE_MS` budgets `backup-db` 48 hours and `verify-storage` eight days:
+ * every daily and weekly cron read as `never-run`, and every admin got a mail saying the
+ * backup had never run three hours after it succeeded. Which is how an operator learns to
+ * ignore the mail.
+ */
+describe('the system check window is per cron name', () => {
+  it('still sees a backup that ran three hours behind 500 reap-jobs rows', async () => {
+    const store = memoryStore();
+    const now = new Date('2026-08-17T12:00:00.000Z');
+    await store.createCronRun({
+      name: 'backup-db',
+      ok: true,
+      durationMs: 9_000,
+      detail: null,
+      createdAt: new Date(now.getTime() - 3 * 60 * 60 * 1000),
+    });
+    for (let i = 0; i < 500; i += 1) {
+      await store.createCronRun({
+        name: 'reap-jobs',
+        ok: true,
+        durationMs: 1,
+        detail: null,
+        createdAt: new Date(now.getTime() - i * 1_000),
+      });
+    }
+
+    const rows = await loadSystemChecks({ store, now });
+    const backup = rows.find((row) => row.name === 'backup-db');
+    expect(backup?.stale).toBe(false);
+    expect(backup?.detail).not.toBe('never-run');
+    expect(backup?.lastRunAt).toBe(new Date(now.getTime() - 3 * 60 * 60 * 1000).toISOString());
+
+    // Control: the read this replaced, over the same rows. 400 newest of any name is all
+    // reap-jobs, so the backup vanishes and "absent" is indistinguishable from "never ran".
+    const truncated = store.crons
+      .slice()
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .slice(0, 400);
+    expect(truncated.some((row) => row.name === 'backup-db')).toBe(false);
+    const oldRows = evaluateSystemChecks(truncated, now);
+    expect(oldRows.find((row) => row.name === 'backup-db')?.detail).toBe('never-run');
+  });
+
+  it('does not mail admins that a fresh backup has never run', async () => {
+    const store = memoryStore();
+    const now = new Date('2026-08-17T12:00:00.000Z');
+    for (const name of Object.keys(CRON_STALE_MS)) {
+      await store.createCronRun({
+        name,
+        ok: true,
+        durationMs: 5,
+        detail: null,
+        createdAt: new Date(now.getTime() - 60_000),
+      });
+    }
+    const emails: Array<{ text: string }> = [];
+    const result = await sendSystemChecksDigest({
+      now,
+      runs: await store.listLatestCronRunPerName(),
+      sendAdminEmail: async (mail) => {
+        emails.push(mail);
+      },
+    });
+    expect(result.sent).toBe(false);
+    expect(result.ok).toBe(true);
+    expect(emails).toEqual([]);
+  });
+
+  it('keeps both health surfaces off the truncatable read', () => {
+    // A source guard, because the failure is invisible to a fake store: `listCronRuns()` with
+    // no argument used to return a global slice, and swapping either call site back would
+    // reintroduce the bug with every unit test still green.
+    for (const file of ['lib/observability/admin.ts', 'lib/observability/system-checks.ts']) {
+      const source = readFileSync(join(process.cwd(), file), 'utf8');
+      expect(source, `${file} must read the newest run per name`).toContain(
+        'listLatestCronRunPerName()',
+      );
+      expect(source, `${file} must not read the truncatable window`).not.toMatch(
+        /listCronRuns\(\s*\)/,
+      );
+    }
+  });
+});
+
+/**
+ * The two monitors whose entire output *is* the verdict, so for them `ok: false` on the
+ * `CronRun` row is correct rather than alert fatigue. Both were untested, and both now owe the
+ * receipt a `detail` — without one the digest line read "site uptime (check-uptime) failed"
+ * with no code and no URL, and `withCronRun` fell back to dumping the whole result as JSON.
+ */
+describe('uptime probe', () => {
+  it('reports a healthy probe with the code and the URL it used', async () => {
+    const result = await checkSiteUptime({
+      url: 'https://navroop.test',
+      fetchFn: async () => new Response('{}', { status: 200 }),
+    });
+    expect(result.ok).toBe(true);
+    expect(result.detail).toBe('HTTP 200 https://navroop.test/api/health');
+  });
+
+  it('fails the run on a 503 without throwing, because 503 is an answer', async () => {
+    const result = await checkSiteUptime({
+      url: 'https://navroop.test',
+      fetchFn: async () => new Response('{}', { status: 503 }),
+    });
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('HTTP 503');
+  });
+
+  it('throws on a code that is not the app answering', async () => {
+    await expect(
+      checkSiteUptime({
+        url: 'https://navroop.test',
+        fetchFn: async () => new Response('nope', { status: 502 }),
+      }),
+    ).rejects.toThrow(/502/);
+  });
+});
+
+describe('certificate check', () => {
+  function fakeConnect(validTo: string) {
+    return ((_options: unknown, onConnect: () => void) => {
+      const socket = {
+        getPeerCertificate: () => ({ valid_to: validTo }),
+        end: () => undefined,
+        destroy: () => undefined,
+        on: () => socket,
+      };
+      setImmediate(onConnect);
+      return socket;
+    }) as unknown as typeof tls.connect;
+  }
+
+  it('fails while there is still time to renew', async () => {
+    const soon = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toUTCString();
+    const result = await checkSiteCertificate({
+      url: 'https://navroop.test',
+      connect: fakeConnect(soon),
+    });
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('certificate expires');
+  });
+
+  it('passes on a certificate with months left, and says until when', async () => {
+    const later = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toUTCString();
+    const result = await checkSiteCertificate({
+      url: 'https://navroop.test',
+      connect: fakeConnect(later),
+    });
+    expect(result.ok).toBe(true);
+    expect(result.detail).toContain('certificate valid until');
+  });
+
+  it('skips a non-TLS address instead of reporting a failure', async () => {
+    // What an installation with no Application URL configured now looks like: `appPublicUrl`
+    // falls back to localhost:3000, and a skip must not read as an expiring certificate.
+    const result = await checkSiteCertificate({ url: 'http://localhost:3000' });
+    expect(result.ok).toBe(true);
+    expect(result.detail).toContain('certificate check skipped');
+  });
+
+  it('reports an unusable configured address as a failure, naming it', async () => {
+    const result = await checkSiteCertificate({ url: 'not a url' });
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('not a valid URL');
   });
 });
 

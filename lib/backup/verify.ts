@@ -1,5 +1,5 @@
 import { prisma } from '@/lib/db';
-import { exists, listKeys } from '@/lib/storage';
+import { exists, get, listKeys } from '@/lib/storage';
 import { WORKSPACE_ROW_ID } from '@/lib/storage/usage';
 import { finishBackupRun, startBackupRun } from './runs';
 
@@ -8,6 +8,7 @@ export async function runStorageVerify() {
   try {
     const checkpoints = await prisma.checkpoint.findMany({
       where: { snapshotKey: { not: null }, snapshotPruned: false },
+      orderBy: { createdAt: 'desc' },
       select: { id: true, snapshotKey: true, snapshotBytes: true },
     });
 
@@ -30,7 +31,33 @@ export async function runStorageVerify() {
       if (!ok) missing.push(key);
     }
 
-    const known = new Set(checkpoints.map((row) => row.snapshotKey).filter((key): key is string => Boolean(key)));
+    // HeadObject only proves an entry exists in the bucket index. It answers 200 for an object
+    // whose bytes cannot be fetched: a credential that grants HeadObject but not GetObject, an
+    // object transitioned to an archive class, or a zero-length object left behind by a failed
+    // upload. This job exists to answer "would a restore work", so once per run it actually
+    // reads one snapshot — the newest, because that is the one a restore reaches for first.
+    // It proves the bucket serves bytes; it does not validate snapshot contents.
+    const unreadable: string[] = [];
+    const probeKey = checkpoints[0]?.snapshotKey ?? null;
+    if (probeKey && !missing.includes(probeKey)) {
+      let body: Buffer | null;
+      try {
+        body = await get(probeKey);
+      } catch (error) {
+        // Same rule as the HEAD above: a refused read is a storage failure, and presenting it
+        // as data loss on /admin/backups invites a restore as the response to a credentials
+        // problem.
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `Could not read snapshot storage (${probeKey}): ${detail}. This is a storage failure, not missing data.`,
+        );
+      }
+      if (!body || body.length === 0) unreadable.push(probeKey);
+    }
+
+    const known = new Set(
+      checkpoints.map((row) => row.snapshotKey).filter((key): key is string => Boolean(key)),
+    );
     const stored = await listKeys('snapshots/');
     const orphans = stored.filter((key) => !known.has(key));
 
@@ -44,21 +71,28 @@ export async function runStorageVerify() {
       update: { storageBytes },
     });
 
+    const ok = missing.length === 0 && unreadable.length === 0;
     const detail = JSON.stringify({
       checked: checkpoints.length,
       missing,
+      unreadable,
+      readProbe: probeKey,
       orphans,
       storageBytes,
     });
     await finishBackupRun({
       id: run.id,
-      status: missing.length > 0 ? 'failed' : 'success',
+      status: ok ? 'success' : 'failed',
       detail,
       startedAt: run.startedAt,
     });
     return {
-      ok: missing.length === 0,
+      ok,
+      detail: ok
+        ? null
+        : `${missing.length} of ${checkpoints.length} snapshots are missing and ${unreadable.length} could not be read`,
       missing,
+      unreadable,
       orphans,
       storageBytes,
       runId: run.id,
@@ -74,6 +108,14 @@ export async function runStorageVerify() {
       // /admin/backups reads BackupRun — a lost failure row looks like "still running".
       console.error('[backup] could not record the failed verify run', writeError);
     });
-    return { ok: false, error: message, runId: run.id, missing: [] as string[], orphans: [] as string[] };
+    return {
+      ok: false,
+      detail: message,
+      error: message,
+      runId: run.id,
+      missing: [] as string[],
+      unreadable: [] as string[],
+      orphans: [] as string[],
+    };
   }
 }

@@ -80,21 +80,30 @@ export function createPrismaObservabilityStore(db: RawDb): ObservabilityStore {
       `;
       return created;
     },
+    // Deliberately one name at a time. The unfiltered variant was a single `LIMIT 400` across
+    // every cron name, and `reap-jobs` plus `check-domains` alone write ~2160 rows a day, so
+    // the window held under three hours of history while `CRON_STALE_MS` budgets up to eight
+    // days: every daily and weekly job read as "never-run". Health surfaces use
+    // `listLatestCronRunPerName` instead, which cannot be truncated.
     async listCronRuns(name) {
-      const rows = name
-        ? ((await db.$queryRaw`
-            SELECT "id", "name", "ok", "durationMs", "detail", "createdAt"
-            FROM "CronRun"
-            WHERE "name" = ${name}
-            ORDER BY "createdAt" DESC
-            LIMIT 50
-          `) as RawCron[])
-        : ((await db.$queryRaw`
-            SELECT "id", "name", "ok", "durationMs", "detail", "createdAt"
-            FROM "CronRun"
-            ORDER BY "createdAt" DESC
-            LIMIT 400
-          `) as RawCron[]);
+      const rows = (await db.$queryRaw`
+        SELECT "id", "name", "ok", "durationMs", "detail", "createdAt"
+        FROM "CronRun"
+        WHERE "name" = ${name}
+        ORDER BY "createdAt" DESC
+        LIMIT 50
+      `) as RawCron[];
+      return rows.map((row) => ({
+        ...row,
+        createdAt: new Date(row.createdAt),
+      }));
+    },
+    async listLatestCronRunPerName() {
+      const rows = (await db.$queryRaw`
+        SELECT DISTINCT ON ("name") "id", "name", "ok", "durationMs", "detail", "createdAt"
+        FROM "CronRun"
+        ORDER BY "name", "createdAt" DESC
+      `) as RawCron[];
       return rows.map((row) => ({
         ...row,
         createdAt: new Date(row.createdAt),
@@ -133,6 +142,9 @@ function createLazyPrismaStore(): ObservabilityStore {
     },
     async listCronRuns(name) {
       return (await ensure()).listCronRuns(name);
+    },
+    async listLatestCronRunPerName() {
+      return (await ensure()).listLatestCronRunPerName();
     },
   };
 }

@@ -48,11 +48,13 @@ export function buildErrorTrackingPanel(input: {
   };
 }
 
-export async function loadErrorTrackingPanel(deps: {
-  store?: Pick<ObservabilityStore, 'listChecks'>;
-  sentryApi?: SentryApi;
-  credentials?: { authToken?: string; orgSlug?: string; projectSlug?: string } | null;
-} = {}): Promise<ErrorTrackingPanel> {
+export async function loadErrorTrackingPanel(
+  deps: {
+    store?: Pick<ObservabilityStore, 'listChecks'>;
+    sentryApi?: SentryApi;
+    credentials?: { authToken?: string; orgSlug?: string; projectSlug?: string } | null;
+  } = {},
+): Promise<ErrorTrackingPanel> {
   const store = deps.store ?? getObservabilityStore();
   const dsn = sentryDsn();
   const heartbeats = await store.listChecks('heartbeat');
@@ -97,16 +99,20 @@ export async function loadErrorTrackingPanel(deps: {
   });
 }
 
-export async function loadSystemChecks(deps: { store?: Pick<ObservabilityStore, 'listCronRuns'>; now?: Date } = {}) {
+export async function loadSystemChecks(
+  deps: { store?: Pick<ObservabilityStore, 'listLatestCronRunPerName'>; now?: Date } = {},
+) {
   const store = deps.store ?? getObservabilityStore();
-  const runs = await store.listCronRuns();
+  const runs = await store.listLatestCronRunPerName();
   return evaluateSystemChecks(runs, deps.now ?? new Date());
 }
 
 export type TestEventDeps = {
   captureMessage?: (message: string, context?: Record<string, unknown>) => string | undefined;
   flush?: (timeoutMs: number) => Promise<boolean>;
-  findIssueByFingerprint?: (fingerprint: string) => Promise<{ id: string; lastSeen: string } | null>;
+  findIssueByFingerprint?: (
+    fingerprint: string,
+  ) => Promise<{ id: string; lastSeen: string } | null>;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
 };

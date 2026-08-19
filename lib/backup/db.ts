@@ -13,17 +13,26 @@ import { randomBytes } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { assertFreeSpaceForLargeOp, withTmpDir } from '../runtime/data-dir';
-import {
-  assertDistinctBuckets,
-  assertProductionBackupDriver,
-  backupDriver,
-} from './assert';
+import { assertDistinctBuckets, assertProductionBackupDriver, backupDriver } from './assert';
 import { clearBackupAlert, notifyBackupAlert, notifyStaleBackupIfNeeded } from './alerts';
-import { backupObjectPrefix, deleteBackupObject, listBackupObjects, uploadBackupFile } from './client';
+import {
+  backupObjectPrefix,
+  deleteBackupObject,
+  listBackupObjects,
+  uploadBackupFile,
+} from './client';
 import { retentionDecisions } from './retention';
-import { RESTORE_TEST_NOTICE } from './copy';
-import { finishBackupRun, latestRestoreTest, latestSuccessfulDbBackup, startBackupRun } from './runs';
-import { isBackupStale, isRestoreTestOverdue } from './stale';
+import { finishBackupRun, latestSuccessfulDbBackup, startBackupRun } from './runs';
+import { isBackupStale } from './stale';
+
+// The 90-day restore-test advisory is not raised from here. `runDbBackup` used to call
+// `notifyBackupAlert('restore_test', …)` on every successful run, and because a `restore_test`
+// BackupRun only exists after someone runs `scripts/restore-db.ts` against a separate
+// RESTORE_DATABASE_URL — which a normal deploy does not set — `isRestoreTestOverdue(null)` was
+// permanently true. Every nightly backup therefore raised a red banner immediately after
+// clearing the previous one and emailed every admin a backup-failure-styled mail, forever,
+// with nothing an operator could do in the product to stop it. It is an advisory, and
+// `getBackupAdmin` already carries it as `restoreOverdue`/`restoreNotice` on /admin/backups.
 
 // Ideally backup creds are write+list only; put a lifecycle policy on the bucket.
 // Script retention still runs so dailies/weeklies/monthlies are enforced even without lifecycle.
@@ -68,40 +77,21 @@ export async function runDbBackup() {
   const filename = dumpFilename();
   const objectKey = `${backupObjectPrefix()}${filename}`;
 
+  let sizeBytes: number;
   try {
-    return await withTmpDir(async (tempDir) => {
+    sizeBytes = await withTmpDir(async (tempDir) => {
       const localPath = join(tempDir, filename);
       const databaseUrl = process.env.DATABASE_URL?.trim();
       if (!databaseUrl) throw new Error('DATABASE_URL is required');
 
-      await runCommand('pg_dump', ['--format=custom', '--compress=9', '--file', localPath, databaseUrl], process.env);
+      await runCommand(
+        'pg_dump',
+        ['--format=custom', '--compress=9', '--file', localPath, databaseUrl],
+        process.env,
+      );
       const info = await stat(localPath);
       await uploadBackupFile(localPath, objectKey, info.size);
-
-      const objects = await listBackupObjects();
-      const decisions = retentionDecisions(objects);
-      for (const key of decisions.delete) {
-        await deleteBackupObject(key);
-      }
-
-      await finishBackupRun({
-        id: run.id,
-        status: 'success',
-        objectKey,
-        sizeBytes: info.size,
-        startedAt: run.startedAt,
-      });
-
-      const last = await latestSuccessfulDbBackup();
-      const stale = isBackupStale(last?.startedAt ?? null);
-      if (stale) await notifyStaleBackupIfNeeded(true);
-      else await clearBackupAlert();
-      const lastRestore = await latestRestoreTest();
-      if (isRestoreTestOverdue(lastRestore?.startedAt ?? null)) {
-        await notifyBackupAlert('restore_test', RESTORE_TEST_NOTICE);
-      }
-
-      return { ok: true as const, objectKey, sizeBytes: info.size, runId: run.id };
+      return info.size;
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Backup failed';
@@ -118,6 +108,64 @@ export async function runDbBackup() {
     await notifyBackupAlert('failed', message);
     return { ok: false as const, error: message, runId: run.id };
   }
+
+  // The receipt is written the moment the object is durable and its size is HeadObject-proven.
+  // It used to be written *after* retention, inside the same try: one 403 or timeout while
+  // deleting an already-expired object threw to the catch above, stored this run `failed`,
+  // emailed every admin, and left `latestSuccessfulDbBackup()` on yesterday's run — so within
+  // 48 hours the stale-backup alert fired too and the operator was told they had no backup
+  // while a good one sat in the bucket. Retention is housekeeping and may not invalidate it.
+  await finishBackupRun({
+    id: run.id,
+    status: 'success',
+    objectKey,
+    sizeBytes,
+    startedAt: run.startedAt,
+  });
+
+  let retentionError: string | null = null;
+  try {
+    const objects = await listBackupObjects();
+    const decisions = retentionDecisions(objects);
+    for (const key of decisions.delete) {
+      await deleteBackupObject(key);
+    }
+  } catch (error) {
+    retentionError = error instanceof Error ? error.message : String(error);
+    console.error('[backup] retention pass failed; expired objects are still in the bucket', {
+      error: retentionError,
+    });
+    // The backup stays `success` — it is durable — but the run still owes the operator this,
+    // because nothing else in the product notices a bucket that has stopped shedding
+    // expired dumps. It rides on the BackupRun detail and on `ok` below.
+    await finishBackupRun({
+      id: run.id,
+      status: 'success',
+      objectKey,
+      sizeBytes,
+      detail: `retention pass failed: ${retentionError}`,
+      startedAt: run.startedAt,
+    }).catch((writeError) => {
+      console.error('[backup] could not record the retention failure', writeError);
+    });
+  }
+
+  const last = await latestSuccessfulDbBackup();
+  if (isBackupStale(last?.startedAt ?? null)) await notifyStaleBackupIfNeeded(true);
+  else await clearBackupAlert();
+
+  return {
+    // A failed retention pass is not a lost backup, so no admin mail and no `failed` BackupRun
+    // — but it is unbounded bucket growth only an operator can clear, so the cron run says so.
+    ok: retentionError === null,
+    detail: retentionError
+      ? `backup stored ${objectKey} (${sizeBytes} bytes), but the retention pass failed: ${retentionError}`
+      : null,
+    objectKey,
+    sizeBytes,
+    retentionError,
+    runId: run.id,
+  };
 }
 
 export function describeBackupDriver() {

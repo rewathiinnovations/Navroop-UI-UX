@@ -27,7 +27,8 @@ export async function sendObservabilityHeartbeat(deps: HeartbeatDeps = {}) {
   const environment = deps.environment ?? sentryEnvironment();
   const releaseSha = deps.releaseSha ?? currentRelease().sha;
   const instanceId = deps.instanceId ?? getInstanceId();
-  const captureMessage = deps.captureMessage ?? ((message, context) => Sentry.captureMessage(message, context as never));
+  const captureMessage =
+    deps.captureMessage ?? ((message, context) => Sentry.captureMessage(message, context as never));
   const flush = deps.flush ?? ((timeoutMs) => Sentry.flush(timeoutMs));
 
   const eventId = captureMessage('Navroop observability heartbeat', {
@@ -49,15 +50,17 @@ export async function sendObservabilityHeartbeat(deps: HeartbeatDeps = {}) {
     flushError = error instanceof Error ? error.message : String(error);
   }
 
+  const detail = flushOk
+    ? 'flush reported success'
+    : flushError
+      ? `flush threw: ${flushError}`
+      : 'flush reported failure';
+
   await store.createCheck({
     kind: 'heartbeat',
     ok: flushOk,
     eventId: eventId ?? null,
-    detail: flushOk
-      ? 'flush reported success'
-      : flushError
-        ? `flush threw: ${flushError}`
-        : 'flush reported failure',
+    detail,
     createdAt: now,
   });
 
@@ -71,6 +74,12 @@ export async function sendObservabilityHeartbeat(deps: HeartbeatDeps = {}) {
   }
 
   return {
+    // Getting one event into Sentry is this cron's entire job, so a flush that failed is work
+    // left undone rather than an observation about something else. Without an `ok` here the
+    // run recorded `CronRun{ok: true}` while error reporting was dark, and the only escalation
+    // waited for two consecutive failures.
+    ok: flushOk,
+    detail,
     eventId: eventId ?? null,
     flushOk,
     fingerprint: HEARTBEAT_FINGERPRINT,

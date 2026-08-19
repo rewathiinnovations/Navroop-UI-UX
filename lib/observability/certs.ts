@@ -1,10 +1,13 @@
 import tls from 'node:tls';
+import { appPublicUrl } from '../settings/app-url';
 
-export async function checkSiteCertificate(deps: { url?: string; connect?: typeof tls.connect } = {}) {
-  const raw = deps.url ?? process.env.APP_URL ?? process.env.NEXTAUTH_URL ?? '';
-  if (!raw) {
-    return { ok: true, detail: 'APP_URL not set — certificate check skipped' };
-  }
+export async function checkSiteCertificate(
+  deps: { url?: string; connect?: typeof tls.connect } = {},
+) {
+  // The address an operator edits in /admin/config, not the build-time environment variable.
+  // This read `process.env.APP_URL` directly, so changing Application URL flipped the badge on
+  // the settings page and left the certificate check watching the old host until a redeploy.
+  const raw = deps.url ?? (await appPublicUrl());
   let host: string;
   let port = 443;
   try {
@@ -12,7 +15,10 @@ export async function checkSiteCertificate(deps: { url?: string; connect?: typeo
     host = parsed.hostname;
     port = parsed.port ? Number(parsed.port) : parsed.protocol === 'http:' ? 80 : 443;
   } catch {
-    return { ok: false, detail: 'APP_URL is not a valid URL' };
+    // `appPublicUrl` always returns a value and falls back to localhost, so an unset
+    // Application URL now lands on the non-TLS skip below rather than here. This branch is for
+    // a saved setting that is not a URL at all, which is operator input and must say so.
+    return { ok: false, detail: `the configured application URL is not a valid URL: ${raw}` };
   }
   if (port !== 443) {
     return { ok: true, detail: `non-TLS port ${port} — certificate check skipped` };

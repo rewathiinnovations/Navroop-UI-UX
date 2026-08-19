@@ -11,11 +11,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
  * missing object is still named in `missing`, because that signal is the reason the job
  * exists and must not be softened.
  *
+ * The run also reads one snapshot back. HeadObject only proves an entry exists in the bucket
+ * index — it answers 200 for a credential that grants HeadObject but not GetObject, for an
+ * object moved to an archive class, and for a zero-length object left by a failed upload — and
+ * this job's whole claim is "a restore would work".
+ *
  * Goes red if: a failed HEAD is counted as missing data again (the `missing` and detail
- * expectations fail); or a genuinely absent snapshot stops being reported (the last case).
+ * expectations fail); a genuinely absent snapshot stops being reported; or presence alone is
+ * accepted as proof the bytes are there.
  */
 
-const storage = vi.hoisted(() => ({ exists: vi.fn(), listKeys: vi.fn() }));
+const storage = vi.hoisted(() => ({ exists: vi.fn(), listKeys: vi.fn(), get: vi.fn() }));
 const runs = vi.hoisted(() => ({ start: vi.fn(), finish: vi.fn() }));
 const db = vi.hoisted(() => ({
   checkpointFindMany: vi.fn(),
@@ -23,7 +29,11 @@ const db = vi.hoisted(() => ({
   workspaceUpsert: vi.fn(),
 }));
 
-vi.mock('@/lib/storage', () => ({ exists: storage.exists, listKeys: storage.listKeys }));
+vi.mock('@/lib/storage', () => ({
+  exists: storage.exists,
+  listKeys: storage.listKeys,
+  get: storage.get,
+}));
 
 vi.mock('@/lib/backup/runs', () => ({
   startBackupRun: runs.start,
@@ -61,6 +71,7 @@ function finishedWith(): { status?: string; detail?: string | null } {
 beforeEach(() => {
   storage.exists.mockReset();
   storage.listKeys.mockReset();
+  storage.get.mockReset();
   runs.start.mockReset();
   runs.finish.mockReset();
   db.checkpointFindMany.mockReset();
@@ -70,6 +81,8 @@ beforeEach(() => {
   runs.start.mockResolvedValue({ id: 'bck_test', startedAt: new Date('2026-08-18T02:00:00.000Z') });
   runs.finish.mockResolvedValue({});
   storage.listKeys.mockResolvedValue(KEYS);
+  // The default is a healthy bucket: present, and the bytes come back.
+  storage.get.mockResolvedValue(Buffer.from('{"files":[]}'));
   db.checkpointFindMany.mockResolvedValue(
     KEYS.map((snapshotKey, index) => ({ id: `cp_${index}`, snapshotKey, snapshotBytes: 1_024 })),
   );
@@ -135,13 +148,70 @@ describe('runStorageVerify when storage answers', () => {
     expect(finishedWith().status).toBe('failed');
   });
 
-  it('succeeds when every snapshot is present', async () => {
+  it('succeeds when every snapshot is present and the bytes come back', async () => {
     storage.exists.mockResolvedValue(true);
 
     const result = await runStorageVerify();
 
     expect(result.ok).toBe(true);
     expect(result.missing).toEqual([]);
+    expect(result.unreadable).toEqual([]);
     expect(finishedWith().status).toBe('success');
+    // Presence alone is not the claim being made: one object is actually read.
+    expect(storage.get).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('runStorageVerify when an object is present but not readable', () => {
+  it('fails the run and names the object rather than reporting a healthy backup', async () => {
+    storage.exists.mockResolvedValue(true);
+    // HeadObject says 200, GetObject finds no body: a zero-length object from a failed upload,
+    // or a key that lists but cannot be served.
+    storage.get.mockResolvedValue(null);
+
+    const result = await runStorageVerify();
+
+    expect(result.ok).toBe(false);
+    expect(result.unreadable).toEqual([KEYS[0]]);
+    // Not `missing`: the object is there. Saying it is gone would invite a restore.
+    expect(result.missing).toEqual([]);
+    expect(finishedWith().status).toBe('failed');
+    expect(String(finishedWith().detail)).toContain('unreadable');
+  });
+
+  it('treats a zero-length object as unreadable, because a snapshot never is', async () => {
+    storage.exists.mockResolvedValue(true);
+    storage.get.mockResolvedValue(Buffer.alloc(0));
+
+    const result = await runStorageVerify();
+
+    expect(result.ok).toBe(false);
+    expect(result.unreadable).toEqual([KEYS[0]]);
+  });
+
+  it('reports a refused read as a storage failure, not as missing data', async () => {
+    storage.exists.mockResolvedValue(true);
+    storage.get.mockRejectedValue(accessDenied());
+
+    const result = await runStorageVerify();
+
+    expect(result.ok).toBe(false);
+    expect(result.missing).toEqual([]);
+    expect(result.unreadable).toEqual([]);
+    const finished = finishedWith();
+    expect(finished.status).toBe('failed');
+    expect(finished.detail).toContain('storage failure, not missing data');
+    expect(finished.detail).toContain('Access Denied');
+  });
+
+  it('does not read an object it already knows is gone', async () => {
+    // One HEAD came back false, so the probe key is the one thing already proven absent;
+    // GETting it would only turn a clear "missing" into a confusing "unreadable".
+    storage.exists.mockImplementation(async (key: string) => key !== KEYS[0]);
+
+    const result = await runStorageVerify();
+
+    expect(result.missing).toEqual([KEYS[0]]);
+    expect(storage.get).not.toHaveBeenCalled();
   });
 });

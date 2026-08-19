@@ -19,10 +19,20 @@ export type CronRunRow = {
 };
 
 export type ObservabilityStore = {
-  createCheck: (row: Omit<ObservabilityCheckRow, 'id'> & { id?: string }) => Promise<ObservabilityCheckRow>;
+  createCheck: (
+    row: Omit<ObservabilityCheckRow, 'id'> & { id?: string },
+  ) => Promise<ObservabilityCheckRow>;
   listChecks: (kind?: string) => Promise<ObservabilityCheckRow[]>;
   createCronRun: (row: Omit<CronRunRow, 'id'> & { id?: string }) => Promise<CronRunRow>;
-  listCronRuns: (name?: string) => Promise<CronRunRow[]>;
+  /** One cron's recent history, newest first. A name is required: see the store comment. */
+  listCronRuns: (name: string) => Promise<CronRunRow[]>;
+  /**
+   * The newest run of every distinct name. `/admin/health` and the digest need exactly this
+   * and nothing else: reading them off an unfiltered `listCronRuns()` meant a global row
+   * limit, and the per-minute crons pushed every daily and weekly job out of the window
+   * within hours, so `backup-db` read as "never-run" three hours after it succeeded.
+   */
+  listLatestCronRunPerName: () => Promise<CronRunRow[]>;
 };
 
 export type ObservabilityEmail = {

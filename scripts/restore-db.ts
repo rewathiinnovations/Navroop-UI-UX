@@ -29,7 +29,15 @@ if (!key) {
   process.exit(0);
 }
 
-const result = await restoreDbBackup(key);
+// `restoreDbBackup` calls `assertRestoreTarget` before it touches anything, so an unset or
+// production-pointing RESTORE_DATABASE_URL throws out here rather than returning `ok: false`.
+// Catching it keeps the refusal readable: an operator aiming a restore at the wrong database
+// should see the rule, not a stack trace.
+const result = await restoreDbBackup(key).catch((error: unknown) => ({
+  ok: false as const,
+  error: error instanceof Error ? error.message : String(error),
+  counts: {} as Record<string, number>,
+}));
 if (!result.ok) {
   console.error(result.error);
   process.exit(1);
