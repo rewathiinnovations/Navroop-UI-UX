@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/auth';
 import { consumeGithubCsrf } from '@/lib/integrations/csrf';
 import { convertGithubManifest } from '@/lib/integrations/github';
-import { appUrl } from '@/lib/integrations/github-manifest';
+import { appPublicUrl } from '@/lib/settings/app-url';
 import { saveSettings } from '@/lib/settings/resolve';
 
 /**
@@ -15,8 +15,11 @@ export async function GET(request: NextRequest) {
   const { user, error, status } = await requireAdmin();
   if (!user) return NextResponse.json({ error }, { status });
 
+  // Resolved once: the saved `github.oauth.callbackUrl` and the redirect back
+  // to /admin/config must name the same origin GitHub was handed.
+  const origin = await appPublicUrl();
   const back = (query: string) =>
-    NextResponse.redirect(new URL(`/admin/config?${query}#connectors`, appUrl()));
+    NextResponse.redirect(new URL(`/admin/config?${query}#connectors`, origin));
 
   const code = request.nextUrl.searchParams.get('code');
   const state = request.nextUrl.searchParams.get('state');
@@ -33,7 +36,7 @@ export async function GET(request: NextRequest) {
       [
         { key: 'github.oauth.clientId', value: converted.client_id },
         { key: 'github.oauth.clientSecret', value: converted.client_secret },
-        { key: 'github.oauth.callbackUrl', value: `${appUrl()}/api/github/callback` },
+        { key: 'github.oauth.callbackUrl', value: `${origin}/api/github/callback` },
       ],
       { id: user.id, email: user.email },
     );

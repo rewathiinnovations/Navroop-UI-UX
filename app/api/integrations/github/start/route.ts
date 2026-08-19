@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/auth';
 import { createGithubCsrf } from '@/lib/integrations/csrf';
-import { appUrl, githubManifest, githubNewAppUrl } from '@/lib/integrations/github-manifest';
+import { githubManifest, githubNewAppUrl } from '@/lib/integrations/github-manifest';
+import { appPublicUrl } from '@/lib/settings/app-url';
 
 function escapeAttr(value: string) {
   return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
@@ -16,7 +17,7 @@ export async function GET(request: NextRequest) {
   const workspaceName = process.env.NEXT_PUBLIC_WORKSPACE_NAME?.trim() || 'Navroop';
   const manifest = githubManifest({
     workspaceName,
-    appUrl: appUrl(),
+    appUrl: await appPublicUrl(),
     org: csrf.org,
   });
   const action = githubNewAppUrl(csrf.org || null, csrf.state);

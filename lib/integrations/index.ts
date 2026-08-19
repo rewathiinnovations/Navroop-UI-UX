@@ -1,4 +1,9 @@
-export { INTEGRATION_KINDS, INTEGRATION_STATUSES, KIND_LABELS, PUBLISH_INTEGRATION_KINDS } from './types';
+export {
+  INTEGRATION_KINDS,
+  INTEGRATION_STATUSES,
+  KIND_LABELS,
+  PUBLISH_INTEGRATION_KINDS,
+} from './types';
 export type {
   CloudflareConfig,
   CloudflareSecrets,
@@ -27,5 +32,5 @@ export {
 
 export { decryptSecretsBlob, encryptSecretsBlob } from './secrets';
 export { chooseCloudflareZone, cloudflarePermissionMessage } from './cloudflare';
-export { appUrl, githubManifest, githubNewAppUrl } from './github-manifest';
+export { githubManifest, githubNewAppUrl } from './github-manifest';
 export { hostForSlug } from '@/lib/publish/slug';

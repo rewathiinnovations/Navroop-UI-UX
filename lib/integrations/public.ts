@@ -6,9 +6,12 @@ import type { DecryptedIntegration } from './store';
 import { listIntegrations } from './store';
 import { getIntegrationHealthAlert } from './health';
 import { sentryOAuthRedirectUrl, sentryOAuthSettingsUrl, sentryRestartBanner } from './sentry';
-import { appUrl } from './github-manifest';
+import { appPublicUrl } from '@/lib/settings/app-url';
 
-export function publicIntegration(row: DecryptedIntegration | null, kind: DecryptedIntegration['kind']) {
+export function publicIntegration(
+  row: DecryptedIntegration | null,
+  kind: DecryptedIntegration['kind'],
+) {
   if (!row) {
     return {
       kind,
@@ -52,7 +55,7 @@ export function publicIntegration(row: DecryptedIntegration | null, kind: Decryp
     detail = org && project ? `${org} / ${project}` : project;
   }
   const boot = getBootRuntimeConfig();
-  const configuredProjectId = kind === 'SENTRY' ? row.config.projectId ?? null : null;
+  const configuredProjectId = kind === 'SENTRY' ? (row.config.projectId ?? null) : null;
   const banner =
     kind === 'SENTRY'
       ? sentryRestartBanner({
@@ -65,7 +68,9 @@ export function publicIntegration(row: DecryptedIntegration | null, kind: Decryp
     name: KIND_LABELS[kind],
     status: row.status,
     statusLabel:
-      kind === 'SENTRY' && row.status === 'CONNECTED' && (row.config.limited || !row.secrets.authToken)
+      kind === 'SENTRY' &&
+      row.status === 'CONNECTED' &&
+      (row.config.limited || !row.secrets.authToken)
         ? 'Connected — limited'
         : statusLabel(row.status),
     detail,
@@ -97,10 +102,12 @@ export async function listPublicIntegrations(workspaceId = DEFAULT_WORKSPACE_ID)
   const rows = await listIntegrations(workspaceId);
   const byKind = new Map(rows.map((row) => [row.kind, row]));
   return {
-    integrations: INTEGRATION_KINDS.map((kind) => publicIntegration(byKind.get(kind) ?? null, kind)),
+    integrations: INTEGRATION_KINDS.map((kind) =>
+      publicIntegration(byKind.get(kind) ?? null, kind),
+    ),
     alert: await getIntegrationHealthAlert(),
     sentry: {
-      redirectUrl: sentryOAuthRedirectUrl(appUrl()),
+      redirectUrl: sentryOAuthRedirectUrl(await appPublicUrl()),
       settingsUrl: sentryOAuthSettingsUrl(),
       scopes: ['project:read', 'project:write', 'org:read', 'event:admin'] as const,
     },

@@ -3,20 +3,21 @@ import { requireAdmin } from '@/lib/auth';
 import { consumeGithubCsrf } from '@/lib/integrations/csrf';
 import { convertGithubManifest } from '@/lib/integrations/github';
 import { upsertIntegration } from '@/lib/integrations/store';
-import { appUrl } from '@/lib/integrations/github-manifest';
+import { appPublicUrl } from '@/lib/settings/app-url';
 
 export async function GET(request: NextRequest) {
   const { user, error, status } = await requireAdmin();
   if (!user) return NextResponse.json({ error }, { status });
 
+  const origin = await appPublicUrl();
   const code = request.nextUrl.searchParams.get('code');
   const state = request.nextUrl.searchParams.get('state');
   const csrf = await consumeGithubCsrf(state);
   if (!csrf || csrf.userId !== user.id) {
-    return NextResponse.redirect(new URL('/admin/integrations?github=error&reason=state', appUrl()));
+    return NextResponse.redirect(new URL('/admin/integrations?github=error&reason=state', origin));
   }
   if (!code) {
-    return NextResponse.redirect(new URL('/admin/integrations?github=error&reason=code', appUrl()));
+    return NextResponse.redirect(new URL('/admin/integrations?github=error&reason=code', origin));
   }
 
   try {
@@ -49,6 +50,6 @@ export async function GET(request: NextRequest) {
       lastError: message,
       connectedById: user.id,
     });
-    return NextResponse.redirect(new URL('/admin/integrations?github=error', appUrl()));
+    return NextResponse.redirect(new URL('/admin/integrations?github=error', origin));
   }
 }

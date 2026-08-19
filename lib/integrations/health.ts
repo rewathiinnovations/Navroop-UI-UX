@@ -33,7 +33,10 @@ async function cloudflareCheck(workspaceId: string) {
     headers: { Authorization: `Bearer ${token}` },
     signal: AbortSignal.timeout(20_000),
   });
-  const body = (await response.json().catch(() => null)) as { success?: boolean; errors?: Array<{ message?: string }> } | null;
+  const body = (await response.json().catch(() => null)) as {
+    success?: boolean;
+    errors?: Array<{ message?: string }>;
+  } | null;
   if (!response.ok || body?.success === false) {
     throw new Error(body?.errors?.[0]?.message || `Cloudflare ${response.status}`);
   }
@@ -74,23 +77,40 @@ export async function checkIntegration(kind: IntegrationKind, workspaceId = DEFA
   }
   try {
     await CHECKS[kind](workspaceId);
-    const limited = kind === 'SENTRY' && !row.secrets.authToken?.trim();
     await prisma.integration.update({
-      where: { workspaceId_kind: { workspaceId, kind: kind as 'GITHUB_DEPLOY' | 'CLOUDFLARE' | 'COOLIFY' } },
+      where: {
+        workspaceId_kind: { workspaceId, kind: kind as 'GITHUB_DEPLOY' | 'CLOUDFLARE' | 'COOLIFY' },
+      },
       data: {
-        lastCheckedAt: new Date(),
-        lastError: limited ? 'Connected — limited. Add an auth token to enable quota monitoring.' : null,
+        // Always null on the success path. A Sentry connection without an auth token used to
+        // get the advisory "Connected — limited…" written into `lastError`, and
+        // IntegrationsAdmin renders any non-null `lastError` as a red ✗ — so a healthy card
+        // showed a green CONNECTED pill and a red failure line at the same time. The limited
+        // state already has its own channel: `publicIntegration` reports
+        // `statusLabel: 'Connected — limited'` with `limited: true`.
+        lastError: null,
         status: row.status === 'ERROR' ? 'CONNECTED' : row.status,
+        lastCheckedAt: new Date(),
       },
     });
     invalidateIntegrationCache(workspaceId, kind);
-    trackSuccess('integrations.health.ok', { action: 'integrations', workspaceId, durationMs: Date.now() - startedAt });
+    trackSuccess('integrations.health.ok', {
+      action: 'integrations',
+      workspaceId,
+      durationMs: Date.now() - startedAt,
+    });
     return { ok: true as const, kind };
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Check failed';
-    trackFailure('integrations.health.fail', error, { action: 'integrations', workspaceId, durationMs: Date.now() - startedAt });
+    trackFailure('integrations.health.fail', error, {
+      action: 'integrations',
+      workspaceId,
+      durationMs: Date.now() - startedAt,
+    });
     await prisma.integration.update({
-      where: { workspaceId_kind: { workspaceId, kind: kind as 'GITHUB_DEPLOY' | 'CLOUDFLARE' | 'COOLIFY' } },
+      where: {
+        workspaceId_kind: { workspaceId, kind: kind as 'GITHUB_DEPLOY' | 'CLOUDFLARE' | 'COOLIFY' },
+      },
       data: { lastCheckedAt: new Date(), lastError: message, status: 'ERROR' },
     });
     invalidateIntegrationCache(workspaceId, kind);
@@ -106,23 +126,26 @@ export async function checkAllIntegrations(workspaceId = DEFAULT_WORKSPACE_ID) {
   }
   const failures = results.filter((row) => !row.ok && row.error !== 'Not connected');
   if (failures.length > 0) {
+    const value = JSON.stringify({
+      at: new Date().toISOString(),
+      failures: failures.map((row) => ({ kind: row.kind, error: row.error })),
+    });
     await prisma.appSetting.upsert({
       where: { key: ALERT_KEY },
-      create: {
-        key: ALERT_KEY,
-        value: JSON.stringify({
-          at: new Date().toISOString(),
-          failures: failures.map((row) => ({ kind: row.kind, error: row.error })),
-        }),
-      },
-      update: {
-        value: JSON.stringify({
-          at: new Date().toISOString(),
-          failures: failures.map((row) => ({ kind: row.kind, error: row.error })),
-        }),
-      },
+      create: { key: ALERT_KEY, value },
+      update: { value },
     });
-    return { results, failures, alertCleared: false as const };
+    // `ok: false` so the run reads as failed. Without it the cron answered 200 and wrote
+    // `CronRun{ok: true}` with GitHub, Cloudflare, Coolify and Sentry all returning 401: the
+    // only signal was an in-app banner someone had to be looking at, and Coolify's own cron
+    // failure reporting stayed green.
+    return {
+      ok: false as const,
+      detail: failures.map((row) => `${row.kind}: ${row.error}`).join('; '),
+      results,
+      failures,
+      alertCleared: false as const,
+    };
   }
 
   // deleteMany, not delete: there is usually no alert row to clear, and that must not read
@@ -130,13 +153,23 @@ export async function checkAllIntegrations(workspaceId = DEFAULT_WORKSPACE_ID) {
   // otherwise healthy system, so it is logged rather than swallowed.
   try {
     await prisma.appSetting.deleteMany({ where: { key: ALERT_KEY } });
-    return { results, failures, alertCleared: true as const };
+    return { ok: true as const, detail: null, results, failures, alertCleared: true as const };
   } catch (error) {
     log.error('integrations.health.alert_clear_failed', {
-      message: 'The integrations health alert row could not be cleared, so the banner will stay up.',
+      message:
+        'The integrations health alert row could not be cleared, so the banner will stay up.',
       error: error instanceof Error ? error.message : String(error),
     });
-    return { results, failures, alertCleared: false as const };
+    // Still `ok: true`: every check passed, and failing the run that just proved the
+    // integrations healthy would report the wrong problem. The reason rides in `detail`.
+    return {
+      ok: true as const,
+      detail:
+        'every integration check passed, but the health alert row could not be cleared — the banner will stay up',
+      results,
+      failures,
+      alertCleared: false as const,
+    };
   }
 }
 

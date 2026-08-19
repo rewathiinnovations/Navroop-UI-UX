@@ -6,7 +6,7 @@ import { persistSentryConnection } from './sentry-persist';
 import { getIntegration, upsertIntegration } from './store';
 import type { DecryptedIntegration } from './store';
 import { consumeRow } from './single-use';
-import { appUrl } from './github-manifest';
+import { appPublicUrl } from '@/lib/settings/app-url';
 
 const CSRF_KEY = 'integration.sentry.oauth';
 const TOKEN_URL = 'https://sentry.io/oauth/token/';
@@ -63,8 +63,13 @@ export async function consumeSentryOauthState(state: string | null | undefined) 
   return payload;
 }
 
-export function sentryAuthorizeUrl(input: { clientId: string; state: string; challenge: string; redirectUrl?: string }) {
-  const redirect = input.redirectUrl ?? sentryOAuthRedirectUrl(appUrl());
+export async function sentryAuthorizeUrl(input: {
+  clientId: string;
+  state: string;
+  challenge: string;
+  redirectUrl?: string;
+}) {
+  const redirect = input.redirectUrl ?? sentryOAuthRedirectUrl(await appPublicUrl());
   const params = new URLSearchParams({
     client_id: input.clientId,
     response_type: 'code',
@@ -137,7 +142,7 @@ export async function exchangeSentryCode(input: {
       client_id: input.clientId,
       client_secret: input.clientSecret,
       code: input.code,
-      redirect_uri: input.redirectUrl ?? sentryOAuthRedirectUrl(appUrl()),
+      redirect_uri: input.redirectUrl ?? sentryOAuthRedirectUrl(await appPublicUrl()),
       code_verifier: input.verifier,
     }),
     signal: AbortSignal.timeout(30_000),
@@ -152,7 +157,9 @@ export async function exchangeSentryCode(input: {
   if (!response.ok || !body?.access_token) {
     return { ok: false as const, error: body?.error || 'Sentry OAuth exchange failed' };
   }
-  const scopes = String(body.scope || '').split(/[\s,]+/).filter(Boolean);
+  const scopes = String(body.scope || '')
+    .split(/[\s,]+/)
+    .filter(Boolean);
   for (const required of SENTRY_OAUTH_SCOPES) {
     if (!scopes.includes(required) && scopes.length > 0) {
       return { ok: false as const, error: `Auth token is missing the ${required} scope` };
@@ -162,7 +169,9 @@ export async function exchangeSentryCode(input: {
     ok: true as const,
     accessToken: body.access_token,
     refreshToken: body.refresh_token,
-    expiresAt: body.expires_in ? new Date(Date.now() + body.expires_in * 1000).toISOString() : undefined,
+    expiresAt: body.expires_in
+      ? new Date(Date.now() + body.expires_in * 1000).toISOString()
+      : undefined,
   };
 }
 
@@ -195,7 +204,9 @@ export async function refreshSentryToken(input: {
     ok: true as const,
     accessToken: body.access_token,
     refreshToken: body.refresh_token ?? input.refreshToken,
-    expiresAt: body.expires_in ? new Date(Date.now() + body.expires_in * 1000).toISOString() : undefined,
+    expiresAt: body.expires_in
+      ? new Date(Date.now() + body.expires_in * 1000).toISOString()
+      : undefined,
   };
 }
 
@@ -237,37 +248,51 @@ export async function ensureSentryAccessToken(row: DecryptedIntegration) {
 export async function listSentryOrgs(token: string) {
   const result = await sentryFetch('/organizations/', token);
   if (!result.ok) return { ok: false as const, error: 'Could not list Sentry organizations' };
-  const orgs = (Array.isArray(result.body) ? result.body : []).map((row: { slug?: string; name?: string }) => ({
-    slug: String(row.slug || ''),
-    name: String(row.name || row.slug || ''),
-  }));
+  const orgs = (Array.isArray(result.body) ? result.body : []).map(
+    (row: { slug?: string; name?: string }) => ({
+      slug: String(row.slug || ''),
+      name: String(row.name || row.slug || ''),
+    }),
+  );
   return { ok: true as const, orgs };
 }
 
 export async function listSentryProjects(token: string, orgSlug: string) {
-  const result = await sentryFetch(`/organizations/${encodeURIComponent(orgSlug)}/projects/`, token);
+  const result = await sentryFetch(
+    `/organizations/${encodeURIComponent(orgSlug)}/projects/`,
+    token,
+  );
   if (!result.ok) return { ok: false as const, error: 'Could not list Sentry projects' };
-  const projects = (Array.isArray(result.body) ? result.body : []).map((row: { id?: string; slug?: string; name?: string }) => ({
-    id: String(row.id || ''),
-    slug: String(row.slug || ''),
-    name: String(row.name || row.slug || ''),
-  }));
+  const projects = (Array.isArray(result.body) ? result.body : []).map(
+    (row: { id?: string; slug?: string; name?: string }) => ({
+      id: String(row.id || ''),
+      slug: String(row.slug || ''),
+      name: String(row.name || row.slug || ''),
+    }),
+  );
   return { ok: true as const, projects };
 }
 
 export async function createSentryProject(token: string, orgSlug: string, name: string) {
   const teams = await sentryFetch(`/organizations/${encodeURIComponent(orgSlug)}/teams/`, token);
-  const teamSlug =
-    (Array.isArray(teams.body) ? teams.body[0]?.slug : undefined) || orgSlug;
-  const created = await sentryFetch(`/teams/${encodeURIComponent(orgSlug)}/${encodeURIComponent(teamSlug)}/projects/`, token, {
-    method: 'POST',
-    body: JSON.stringify({ name, platform: 'javascript-nextjs' }),
-  });
+  const teamSlug = (Array.isArray(teams.body) ? teams.body[0]?.slug : undefined) || orgSlug;
+  const created = await sentryFetch(
+    `/teams/${encodeURIComponent(orgSlug)}/${encodeURIComponent(teamSlug)}/projects/`,
+    token,
+    {
+      method: 'POST',
+      body: JSON.stringify({ name, platform: 'javascript-nextjs' }),
+    },
+  );
   if (!created.ok) return { ok: false as const, error: 'Could not create a Sentry project' };
   const body = created.body as { id?: string; slug?: string; name?: string };
   return {
     ok: true as const,
-    project: { id: String(body.id || ''), slug: String(body.slug || ''), name: String(body.name || name) },
+    project: {
+      id: String(body.id || ''),
+      slug: String(body.slug || ''),
+      name: String(body.name || name),
+    },
   };
 }
 
@@ -290,7 +315,8 @@ export async function finishSentryOauthSelect(input: {
   connectedById?: string;
 }) {
   const row = await getIntegration(DEFAULT_WORKSPACE_ID, 'SENTRY');
-  if (!row?.secrets.authToken) return { ok: false as const, error: 'Sentry OAuth is not in progress' };
+  if (!row?.secrets.authToken)
+    return { ok: false as const, error: 'Sentry OAuth is not in progress' };
   const token = row.secrets.authToken;
   let projectSlug = input.projectSlug?.trim() || '';
   let projectId = row.config.projectId || '';
@@ -329,7 +355,12 @@ export async function finishSentryOauthSelect(input: {
   await upsertIntegration({
     kind: 'SENTRY',
     status: 'CONNECTED',
-    config: { oauthClientId: row.config.oauthClientId, orgSlug: input.orgSlug, projectSlug, projectId: parsed.projectId },
+    config: {
+      oauthClientId: row.config.oauthClientId,
+      orgSlug: input.orgSlug,
+      projectSlug,
+      projectId: parsed.projectId,
+    },
   });
   return { ok: true as const, orgSlug: input.orgSlug, projectSlug, projectId: parsed.projectId };
 }

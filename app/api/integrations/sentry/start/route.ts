@@ -7,7 +7,10 @@ import { createSentryOauthState, sentryAuthorizeUrl } from '@/lib/integrations/s
 export async function POST(request: Request) {
   const { user, error, status } = await requireAdmin();
   if (!user) return NextResponse.json({ error }, { status });
-  const body = (await request.json().catch(() => ({}))) as { clientId?: string; clientSecret?: string };
+  const body = (await request.json().catch(() => ({}))) as {
+    clientId?: string;
+    clientSecret?: string;
+  };
   const clientId = body.clientId?.trim() || '';
   const clientSecret = body.clientSecret?.trim() || '';
   if (!clientId || !clientSecret) {
@@ -22,5 +25,7 @@ export async function POST(request: Request) {
     secrets: { clientSecret },
     connectedById: user.id,
   });
-  return NextResponse.json({ url: sentryAuthorizeUrl({ clientId, state: oauth.state, challenge: oauth.challenge }) });
+  return NextResponse.json({
+    url: await sentryAuthorizeUrl({ clientId, state: oauth.state, challenge: oauth.challenge }),
+  });
 }

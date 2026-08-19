@@ -7,6 +7,7 @@
  * well-formed. Reporting a presence check as if it proved the key works is how
  * an operator ends up debugging a broken key in production.
  */
+import { DEEPSEEK_DEFAULT_BASE_URL } from '@/lib/ai/providers';
 import { getSetting, getSettings } from './resolve';
 import type { SettingGroupId } from './registry';
 
@@ -116,85 +117,98 @@ async function testConnectors(): Promise<GroupTestResult['checks']> {
   return checks;
 }
 
+/**
+ * DeepSeek is the only provider in the registry. This used to probe
+ * `ai.anthropic.apiKey`, `ai.openai.apiKey`, `ai.groq.apiKey`,
+ * `ai.google.apiKey` and `ai.gateway.apiKey` — every one of them deleted from
+ * SETTINGS, and `getSetting` answers null for an unknown key rather than
+ * throwing, so all five branches were skipped and the "no provider" fallback
+ * fired on installs where generation was working. The one diagnostic for the
+ * most important credential in the product reported a permanent false
+ * negative.
+ */
 async function testAi(): Promise<GroupTestResult['checks']> {
+  const values = await getSettings(['ai.deepseek.apiKey', 'ai.deepseek.baseUrl']);
+  const key = values['ai.deepseek.apiKey'];
+  if (!key) {
+    return [
+      {
+        label: 'DeepSeek',
+        ok: false,
+        depth: 'local',
+        message:
+          'No AI provider key is set. Generation cannot run until at least one is configured.',
+      },
+    ];
+  }
+
+  // Only the credential is checked: `ai.primaryModel` resolves to a registry
+  // fallback and could never report anything but "set".
+  const base = (values['ai.deepseek.baseUrl'] || DEEPSEEK_DEFAULT_BASE_URL).replace(/\/+$/, '');
+  return [
+    { label: 'DeepSeek', ...(await probe(`${base}/models`, { authorization: `Bearer ${key}` })) },
+  ];
+}
+
+/**
+ * Both remaining keys are dialled with the credential and header scheme their
+ * consumer uses — `lib/import/firecrawl.ts` and `lib/assets/stock-photo.ts` —
+ * so a green line means the saved value was accepted, not merely typed in.
+ *
+ * There used to be an E2B line here. The entry it read was deleted from
+ * SETTINGS along with the sandbox subsystem, and until then the button
+ * confirmed "E2B key is set" for a billable credential nothing would ever
+ * read. Morph is still in the registry, marked not in use; it is reported only
+ * when a key is saved, to say exactly that.
+ */
+async function testTooling(): Promise<GroupTestResult['checks']> {
+  const values = await getSettings([
+    'tooling.firecrawl.apiKey',
+    'tooling.morph.apiKey',
+    'tooling.unsplash.accessKey',
+  ]);
   const checks: GroupTestResult['checks'] = [];
 
-  const anthropic = await getSetting('ai.anthropic.apiKey');
-  if (anthropic) {
-    const base = (await getSetting('ai.anthropic.baseUrl')) || 'https://api.anthropic.com';
-    checks.push({
-      label: 'Anthropic',
-      ...(await probe(`${base.replace(/\/+$/, '')}/v1/models`, {
-        'x-api-key': anthropic,
-        'anthropic-version': '2023-06-01',
-      })),
-    });
-  }
+  const firecrawl = values['tooling.firecrawl.apiKey'];
+  checks.push({
+    label: 'Firecrawl',
+    ...(firecrawl
+      ? await probe('https://api.firecrawl.dev/v1/team/credit-usage', {
+          authorization: `Bearer ${firecrawl}`,
+        })
+      : {
+          ok: false,
+          depth: 'local' as const,
+          message: 'Firecrawl key is not set. Importing an existing website by URL will fail.',
+        }),
+  });
 
-  const openai = await getSetting('ai.openai.apiKey');
-  if (openai) {
-    const base = (await getSetting('ai.openai.baseUrl')) || 'https://api.openai.com/v1';
-    checks.push({
-      label: 'OpenAI',
-      ...(await probe(`${base.replace(/\/+$/, '')}/models`, {
-        authorization: `Bearer ${openai}`,
-      })),
-    });
-  }
+  const unsplash = values['tooling.unsplash.accessKey'];
+  checks.push({
+    label: 'Unsplash',
+    ...(unsplash
+      ? await probe('https://api.unsplash.com/photos?per_page=1', {
+          authorization: `Client-ID ${unsplash}`,
+        })
+      : {
+          ok: true,
+          depth: 'local' as const,
+          message:
+            'No access key. Generated sites use placeholder imagery, which is a supported setup.',
+        }),
+  });
 
-  const groq = await getSetting('ai.groq.apiKey');
-  if (groq) {
-    const base = (await getSetting('ai.groq.baseUrl')) || 'https://api.groq.com/openai/v1';
+  if (values['tooling.morph.apiKey']) {
     checks.push({
-      label: 'Groq',
-      ...(await probe(`${base.replace(/\/+$/, '')}/models`, {
-        authorization: `Bearer ${groq}`,
-      })),
-    });
-  }
-
-  const google = await getSetting('ai.google.apiKey');
-  if (google) {
-    const base =
-      (await getSetting('ai.google.baseUrl')) || 'https://generativelanguage.googleapis.com';
-    checks.push({
-      label: 'Google Gemini',
-      ...(await probe(`${base.replace(/\/+$/, '')}/v1beta/models`, {
-        'x-goog-api-key': google,
-      })),
-    });
-  }
-
-  const gateway = await getSetting('ai.gateway.apiKey');
-  if (gateway) {
-    checks.push({ label: 'AI Gateway', ...present(gateway, 'AI Gateway key') });
-  }
-
-  if (checks.length === 0) {
-    checks.push({
-      label: 'Providers',
-      ok: false,
+      label: 'Morph',
+      ok: true,
       depth: 'local',
-      message: 'No AI provider key is set. Generation cannot run until at least one is configured.',
+      message:
+        'A key is saved, but nothing applies Morph edit blocks today, so it is never used. Clearing it changes nothing.',
     });
   }
 
   return checks;
-}
-
-async function testTooling(): Promise<GroupTestResult['checks']> {
-  const values = await getSettings([
-    'tooling.firecrawl.apiKey',
-    'tooling.e2b.apiKey',
-    'tooling.morph.apiKey',
-    'tooling.unsplash.accessKey',
-  ]);
-  return [
-    { label: 'Firecrawl', ...present(values['tooling.firecrawl.apiKey'], 'Firecrawl key') },
-    { label: 'E2B', ...present(values['tooling.e2b.apiKey'], 'E2B key') },
-    { label: 'Morph', ...present(values['tooling.morph.apiKey'], 'Morph key') },
-    { label: 'Unsplash', ...present(values['tooling.unsplash.accessKey'], 'Unsplash key') },
-  ];
 }
 
 async function testEmail(): Promise<GroupTestResult['checks']> {
@@ -270,19 +284,70 @@ async function testBackups(): Promise<GroupTestResult['checks']> {
   ];
 }
 
+/**
+ * The health endpoint of the configured address, and the answer has to look
+ * like this app's own health report.
+ *
+ * A wrong Application URL is invisible from the server: password-reset links
+ * and the GitHub App callback are built from it, both land somewhere else, and
+ * the only symptom reaches us as "the reset email is broken". Parsing the URL
+ * would call every one of those installs healthy.
+ */
+async function probeSelf(url: string): Promise<CheckResult> {
+  const target = `${url.replace(/\/+$/, '')}/api/health`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    const response = await fetch(target, { redirect: 'manual', signal: controller.signal });
+    const body = (await response.json().catch(() => null)) as {
+      checks?: Record<string, unknown>;
+    } | null;
+    if (!body || typeof body.checks?.db !== 'string') {
+      return {
+        ok: false,
+        depth: 'live',
+        message: `${target} answered ${response.status}, but not with this installation's health report. The address points at something else.`,
+      };
+    }
+    return {
+      ok: true,
+      depth: 'live',
+      message:
+        response.status === 200
+          ? 'This installation answered at that address.'
+          : `This installation answered at that address and reports itself unhealthy (${response.status}). The address is right — see /admin/health for the failing check.`,
+    };
+  } catch (cause) {
+    const aborted = cause instanceof Error && cause.name === 'AbortError';
+    return {
+      ok: false,
+      depth: 'live',
+      message: aborted
+        ? `Timed out reaching ${target}. Either the address is wrong or this server cannot route back to its own public name.`
+        : `Could not reach ${target}: ${cause instanceof Error ? cause.message : 'unknown error'}`,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function testApp(): Promise<GroupTestResult['checks']> {
   const values = await getSettings(['app.url', 'app.cronSecret']);
-  return [
-    { label: 'Application URL', ...validUrl(values['app.url'], 'Application URL') },
-    {
-      label: 'Scheduled tasks',
-      ok: true,
-      depth: 'local',
-      message: values['app.cronSecret']
-        ? 'A secret is set, so an external scheduler can trigger nightly jobs.'
-        : 'No secret set. Nightly jobs cannot be triggered from outside this server.',
-    },
-  ];
+  const url = values['app.url'];
+  const format = validUrl(url, 'Application URL');
+  const checks: GroupTestResult['checks'] = [{ label: 'Application URL', ...format }];
+  if (url && format.ok) {
+    checks.push({ label: 'Reachable', ...(await probeSelf(url)) });
+  }
+  checks.push({
+    label: 'Scheduled tasks',
+    ok: true,
+    depth: 'local',
+    message: values['app.cronSecret']
+      ? 'A secret is set, so an external scheduler can trigger nightly jobs.'
+      : 'No secret set. Nightly jobs cannot be triggered from outside this server.',
+  });
+  return checks;
 }
 
 const RUNNERS: Record<SettingGroupId, () => Promise<GroupTestResult['checks']>> = {

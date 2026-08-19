@@ -1,14 +1,13 @@
 import type { GithubManifest } from './types';
 
-export function appUrl() {
-  return (
-    process.env.APP_URL ||
-    process.env.NEXTAUTH_URL ||
-    process.env.AUTH_URL ||
-    process.env.NEXT_PUBLIC_APP_URL ||
-    'http://localhost:3000'
-  ).replace(/\/+$/, '');
-}
+/**
+ * The public origin is not read here any more. `appUrl()` used to live in this
+ * file reading `process.env.APP_URL`, so the manifest sent to GitHub and the
+ * `github.oauth.callbackUrl` saved by the one-click setup kept the old origin
+ * after an operator changed Application URL on /admin/config — the app then
+ * installed and never called back. Callers pass `await appPublicUrl()` from
+ * `@/lib/settings/app-url`, which resolves the setting before the environment.
+ */
 
 export function githubManifest(input: {
   workspaceName: string;

@@ -18,12 +18,12 @@ export const SETTING_GROUPS = [
   {
     id: 'ai',
     label: 'AI providers',
-    blurb: 'Keys used to generate and edit code. At least one is required for generation to run.',
+    blurb: 'The DeepSeek credential used to plan and write code. Generation cannot run without it.',
   },
   {
     id: 'tooling',
     label: 'Content & tooling',
-    blurb: 'Services used for site imports, sandboxes, fast edits, and stock imagery.',
+    blurb: 'Services used for site imports and stock imagery.',
   },
   {
     id: 'email',
@@ -137,7 +137,10 @@ export const SETTINGS: readonly SettingEntry[] = [
     help: 'How many generation requests may run at once. Raise it only if your DeepSeek quota allows.',
     kind: 'number',
     env: 'AI_PROVIDER_CONCURRENCY',
-    fallback: '4',
+    // Must stay in step with the queue's own default in lib/ai/queue.ts. This
+    // read '4' while the queue ran at 2, so the screen advertised headroom the
+    // runtime never had.
+    fallback: '2',
   },
 
   // ------------------------------------------------------------------ tooling
@@ -150,18 +153,10 @@ export const SETTINGS: readonly SettingEntry[] = [
     env: 'FIRECRAWL_API_KEY',
   },
   {
-    key: 'tooling.e2b.apiKey',
-    group: 'tooling',
-    label: 'E2B API key',
-    help: 'Used by the E2B sandbox provider to run generated code. Not needed if you only use other providers.',
-    kind: 'secret',
-    env: 'E2B_API_KEY',
-  },
-  {
     key: 'tooling.morph.apiKey',
     group: 'tooling',
     label: 'Morph API key',
-    help: 'Optional. Applies AI edits to existing files faster; edits still work without it.',
+    help: 'Not in use. Nothing applies Morph edit blocks today, so a key here changes nothing — saving one used to make every follow-up edit report success and leave the files untouched.',
     kind: 'secret',
     env: 'MORPH_API_KEY',
   },
@@ -326,9 +321,14 @@ export const SETTINGS: readonly SettingEntry[] = [
     key: 'app.url',
     group: 'app',
     label: 'Application URL',
-    help: 'The public address of this installation. Used in emails, OAuth redirects, and certificate checks.',
+    help: 'The public address of this installation. Used in password-reset links, the GitHub App callback, and the certificate and uptime checks. Preview pages read the APP_URL environment variable instead, so they only follow a change here after a redeploy.',
     kind: 'url',
     env: 'APP_URL',
+    // The aliases every consumer already accepted. Listing them here is what
+    // makes /admin/config say "Set from environment" on an install that only
+    // ever set NEXTAUTH_URL, instead of showing the field as unconfigured.
+    envAliases: ['NEXTAUTH_URL', 'AUTH_URL', 'NEXT_PUBLIC_APP_URL'],
+    placeholder: 'https://navroop.example.com',
   },
   {
     key: 'app.cronSecret',

@@ -54,6 +54,20 @@ type PublicIntegration = {
   oauthClientId?: string | null;
 };
 
+/**
+ * What the two check endpoints put in the body. Both answer 200 on failure, so
+ * these fields — not the status code — are what the toast reads.
+ */
+type CheckPayload = {
+  error?: string;
+  integrations?: PublicIntegration[];
+  alert?: { at: string; failures: Array<{ kind: string; error: string }> } | null;
+  /** Single-kind check, or the Sentry round-trip (`received`/`message`). */
+  result?: { ok?: boolean; error?: string; received?: boolean; message?: string };
+  results?: Array<{ ok: boolean; kind: string; error?: string }>;
+  failures?: Array<{ kind: string; error?: string }>;
+};
+
 type Zone = { id: string; name: string };
 type CoolifyServer = { uuid: string; name: string; ip: string };
 type CoolifyProject = { uuid: string; name: string };
@@ -137,6 +151,13 @@ export default function IntegrationsAdmin({
     if ('alert' in data) setAlert(data.alert ?? null);
   };
 
+  /**
+   * The HTTP status only says the run happened. `POST /api/admin/integrations/check`
+   * answers 200 with the failures in the body, and the Sentry round-trip answers 200
+   * with `outcome: 'send_failed'` — so settling on `response.ok` put "All integrations
+   * checked." over a revoked Cloudflare token and a green toast over a Sentry ingest
+   * 401. The result decides the tone, and the toast names what failed.
+   */
   const check = async (kind?: PublicIntegration['kind']) => {
     setBusy(kind ? `check:${kind}` : 'check');
     setSentryVerify(null);
@@ -149,22 +170,47 @@ export default function IntegrationsAdmin({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(kind && kind !== 'SENTRY' ? { kind } : {}),
       });
-      const data = await response.json();
+      const data = (await response.json()) as CheckPayload;
       if (!response.ok) {
         notify.settle(toastId, 'error', data.error || 'Check failed');
         return;
       }
       applyPayload(data);
-      if (kind === 'SENTRY' && data.result?.message) setSentryVerify(data.result.message);
-      notify.settle(
-        toastId,
-        'success',
-        kind === 'SENTRY' && data.result?.message
-          ? data.result.message
-          : kind
-            ? `${kind} checked.`
-            : 'All integrations checked.',
-      );
+      if (kind === 'SENTRY') {
+        if (data.result?.message) setSentryVerify(data.result.message);
+        const received = data.result?.received === true;
+        notify.settle(
+          toastId,
+          received ? 'success' : 'warning',
+          data.result?.message ||
+            (received
+              ? 'Sentry received the test event.'
+              : 'Sentry did not confirm the test event.'),
+        );
+        return;
+      }
+      if (kind) {
+        const failed = data.result?.ok !== true;
+        notify.settle(
+          toastId,
+          failed ? 'warning' : 'success',
+          failed ? `${kind}: ${data.result?.error || 'check failed'}` : `${kind} checked.`,
+        );
+        return;
+      }
+      const failures = data.failures ?? [];
+      if (failures.length > 0) {
+        const total = data.results?.length ?? failures.length;
+        notify.settle(
+          toastId,
+          'warning',
+          `${failures.length} of ${total} integrations failed — ${failures
+            .map((row) => `${row.kind}: ${row.error}`)
+            .join('; ')}`,
+        );
+        return;
+      }
+      notify.settle(toastId, 'success', 'All integrations checked.');
     } catch (cause) {
       notify.settle(toastId, 'error', toMessage(cause, 'Check failed'));
     } finally {

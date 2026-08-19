@@ -1,11 +1,8 @@
 import { NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/auth';
 import { createGithubCsrf } from '@/lib/integrations/csrf';
-import {
-  appUrl,
-  githubConnectorsManifest,
-  githubNewAppUrl,
-} from '@/lib/integrations/github-manifest';
+import { githubConnectorsManifest, githubNewAppUrl } from '@/lib/integrations/github-manifest';
+import { appPublicUrl } from '@/lib/settings/app-url';
 
 /**
  * One-click setup for the connectors GitHub app.
@@ -26,7 +23,7 @@ export async function GET() {
 
   const csrf = await createGithubCsrf('', user.id);
   const workspaceName = process.env.NEXT_PUBLIC_WORKSPACE_NAME?.trim() || 'Navroop';
-  const manifest = githubConnectorsManifest({ workspaceName, appUrl: appUrl() });
+  const manifest = githubConnectorsManifest({ workspaceName, appUrl: await appPublicUrl() });
   const action = githubNewAppUrl(null, csrf.state);
   const html = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Create GitHub app</title></head>
