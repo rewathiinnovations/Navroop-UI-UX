@@ -41,7 +41,8 @@ export function mergeSectionsToCap(sections: ImportSection[], cap = MAX_IMPORT_S
         smallestHeight = height;
       }
     }
-    const neighbor = smallest === 0 ? 1 : smallest === next.length - 1 ? smallest - 1 : smallest + 1;
+    const neighbor =
+      smallest === 0 ? 1 : smallest === next.length - 1 ? smallest - 1 : smallest + 1;
     const leftIndex = Math.min(smallest, neighbor);
     const rightIndex = Math.max(smallest, neighbor);
     const merged = mergePair(next[leftIndex], next[rightIndex]);
@@ -67,7 +68,10 @@ export async function segmentPage(input: SegmentPageInput): Promise<ImportSectio
   return mergeSectionsToCap(raw, MAX_IMPORT_SECTIONS);
 }
 
-async function defaultSegmentComplete(input: { image: Buffer; text: string }): Promise<ImportSection[]> {
+async function defaultSegmentComplete(input: {
+  image: Buffer;
+  text: string;
+}): Promise<ImportSection[]> {
   const { generateObject } = await import('ai');
   const { z } = await import('zod');
   const { getProviderForModel } = await import('../ai/provider-manager.ts');
@@ -87,7 +91,7 @@ async function defaultSegmentComplete(input: { image: Buffer; text: string }): P
       .min(1),
   });
 
-  const { client, actualModel } = getProviderForModel(appConfig.ai.defaultModel);
+  const { client, actualModel } = await getProviderForModel(appConfig.ai.defaultModel);
   const result = await generateObject({
     model: client(actualModel),
     schema,

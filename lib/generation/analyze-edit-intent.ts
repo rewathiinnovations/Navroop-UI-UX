@@ -11,6 +11,7 @@
 import { generateObject } from 'ai';
 import { z } from 'zod';
 import { getProviderForModel } from '@/lib/ai/provider-manager';
+import { ProviderNotConfiguredError } from '@/lib/ai/providers';
 
 const searchPlanSchema = z.object({
   editType: z
@@ -74,8 +75,8 @@ export type AnalyzeEditIntentResult =
 
 type ManifestLike = { files?: Record<string, unknown> };
 
-function selectModel(model: string) {
-  const { client, actualModel } = getProviderForModel(model);
+async function selectModel(model: string) {
+  const { client, actualModel } = await getProviderForModel(model);
   return client(actualModel);
 }
 
@@ -129,7 +130,7 @@ export async function analyzeEditIntent(
 
   try {
     const result = await generateObject({
-      model: selectModel(model),
+      model: await selectModel(model),
       schema: searchPlanSchema,
       messages: [
         {
@@ -182,6 +183,13 @@ Create a search plan to find the exact code that needs to be modified. Include s
     return { ok: true, searchPlan: result.object };
   } catch (error) {
     console.error('[analyze-edit-intent] Error:', error);
+    if (error instanceof ProviderNotConfiguredError) {
+      // The step failure this becomes ("Plan the edit") is the first place an
+      // operator with a DB-only key used to see anything at all, and a 500
+      // reading like a provider outage sent them to the wrong page. 503 plus
+      // the configuration sentence names what to fix.
+      return { ok: false, status: 503, error: error.message };
+    }
     return { ok: false, status: 500, error: (error as Error).message };
   }
 }

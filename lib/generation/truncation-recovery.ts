@@ -1,3 +1,4 @@
+import { extractCodeBlocks } from './parse-blocks';
 import { surfaceStreamFailure, type StreamFailureSource } from '@/lib/ai/empty-completion';
 import { jobErrorCodeForProviderFailure, providerFailureMessage } from '@/lib/ai/failover';
 import type { ProviderName } from '@/lib/ai/providers';
@@ -50,11 +51,81 @@ export async function collectRecoveredStreamText(
   return text;
 }
 
+export type TruncatedFile = {
+  /**
+   * The key `extractCodeBlocks` produced: leading `./` already stripped and the `-2`
+   * suffix applied when two blocks claim one path. Recovery hands this straight to
+   * `replaceBlockInReply`, which compares against that same key — so a `./`-prefixed
+   * or deduplicated fence path is found rather than missed.
+   */
+  path: string;
+  /** The sentence the run reports for this file — shown in chat, logged, kept on the job. */
+  warning: string;
+};
+
+/**
+ * Which files the reply cut off, keyed to the fenced `{path=…}` contract.
+ *
+ * These checks used to scan for `<file path="…">` XML tags — a shape the prompt has never
+ * asked for, since `COMPLETION_RULES` mandates fenced blocks — so they matched nothing on
+ * real output: `enableTruncationRecovery` was dead code and a reply cut off mid-file
+ * shipped as a successful build. The fence is the contract, and a block whose closing
+ * fence never arrived is the strongest signal a reply was cut off.
+ *
+ * An ellipsis on its own is deliberately not a signal, and neither is a short file that
+ * exports something: spread operators, `...rest` props and "Loading…" copy made both
+ * constant false positives, and a false positive here spends a second model call.
+ */
+export function detectTruncatedFiles(reply: string): TruncatedFile[] {
+  const truncated: TruncatedFile[] = [];
+  for (const block of extractCodeBlocks(reply)) {
+    // A snippet the model never named cannot be re-asked for by path.
+    if (!block.declaredPath) continue;
+    const content = block.code.trim();
+    const isScript = /\.(?:jsx?|tsx?)$/.test(block.path);
+    const isDeclaration = /\.d\.[cm]?ts$/.test(block.path);
+    const openBraces = (content.match(/\{/g) || []).length;
+    const closeBraces = (content.match(/\}/g) || []).length;
+    const endsAbruptly = content.endsWith('...') || content.endsWith(',') || content.endsWith('(');
+    const hasEllipsis =
+      content.includes('...') && !content.includes('...rest') && !content.includes('...props');
+    // Models also just forget the final fence on an otherwise finished file, and a false
+    // positive here spends a second model call. Balanced braces plus a closing token is
+    // what a file that got to the end looks like.
+    const looksFinished = openBraces === closeBraces && /[}\])>;]$/.test(content);
+
+    let warning: string | null = null;
+    if (block.truncated && !looksFinished) {
+      warning = `File ${block.path} was cut off before its closing fence`;
+    } else if (content.endsWith('<') || content.endsWith('</')) {
+      warning = `File ${block.path} appears to have incomplete HTML tags`;
+    } else if (isScript && Math.abs(openBraces - closeBraces) > 3) {
+      warning = `File ${block.path} has severely unmatched braces (${openBraces} open, ${closeBraces} closed)`;
+    } else if (
+      isScript &&
+      !isDeclaration &&
+      !looksFinished &&
+      content.length < 50 &&
+      !content.includes('export')
+    ) {
+      // `!looksFinished` is what makes this branch safe. Without it, correct closed
+      // files were flagged and then overwritten by whatever the recovery model invented
+      // for them: `src/vite-env.d.ts` holding one `/// <reference …/>` line,
+      // `src/setupTests.ts` holding one import, `src/types/global.d.ts` holding one
+      // `declare module`. All three are under 50 chars and export nothing, and all
+      // three are finished. Declaration files are exempt outright — they are
+      // legitimately tiny and may end on a comment, which no closing token matches.
+      warning = `File ${block.path} appears severely truncated`;
+    } else if (hasEllipsis && endsAbruptly) {
+      warning = `File ${block.path} ends on an ellipsis mid-statement`;
+    }
+    if (warning) truncated.push({ path: block.path, warning });
+  }
+  return truncated;
+}
+
 /** The sentence shown when recovery failed: what happened, then why. */
-export function truncationRecoveryFailureMessage(
-  error: unknown,
-  provider?: ProviderName | null,
-) {
+export function truncationRecoveryFailureMessage(error: unknown, provider?: ProviderName | null) {
   return `${TRUNCATION_INCOMPLETE_KEPT} ${providerFailureMessage(error, provider)}`;
 }
 

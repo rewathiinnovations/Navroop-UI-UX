@@ -13,10 +13,6 @@ export class EmptyCompletionError extends Error {
   }
 }
 
-export function producedNoChanges(fileCount: number, morphEditBlocks: number) {
-  return fileCount === 0 && morphEditBlocks === 0;
-}
-
 export type StreamFailureSource = {
   text?: PromiseLike<string>;
   streamError?: unknown;

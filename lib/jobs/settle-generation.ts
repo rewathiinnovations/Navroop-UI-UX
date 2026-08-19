@@ -1,14 +1,53 @@
 import { prisma } from '@/lib/db';
 import { filesFromReply } from '@/lib/generation/parse-blocks';
+import { sanitizeGenerationPath } from '@/lib/generation/parse-files';
 import { placeholderReplacements, replaceNeedImageTokens } from '@/lib/assets/need-image';
 import { getCurrentProjectFiles } from '@/lib/github/current-files';
+import { log } from '@/lib/logger';
 import { toLastCode } from '@/lib/projects/last-code';
 import { bumpContentVersion } from '@/lib/projects/lock';
 import { failJob, succeedJob } from './lifecycle';
 import { getJob } from './store';
 
+/**
+ * `filesFromReply` documents that it does not validate paths, and this is where
+ * they become project file keys — read by the Code tab, the ZIP export and the
+ * GitHub push, which turns a path into a tree entry. A fence path of
+ * `../../secret.env`, `..\..\x` or `C:/x` must not survive.
+ *
+ * Dropped one at a time, not fatal: the generate route drops the same entries from its
+ * own list (`sanitizeGenerationPath(...)` then `continue`), so dropping here is what keeps
+ * the `complete` frame's file count and what is actually stored in agreement. The caller
+ * does treat "all of them rejected" as fatal, because that leaves nothing to store — see
+ * {@link STREAM_REJECTED_PATHS_MESSAGE}.
+ *
+ * Exported so the rejection can be asserted without a database.
+ */
+export function safeGeneratedFiles(files: Record<string, string>) {
+  const safe: Record<string, string> = {};
+  const rejected: string[] = [];
+  for (const [path, content] of Object.entries(files)) {
+    const checked = sanitizeGenerationPath(path);
+    if (!checked.ok) {
+      rejected.push(path);
+      continue;
+    }
+    safe[checked.path] = content;
+  }
+  return { safe, rejected };
+}
+
 export const STREAM_NO_FILES_MESSAGE =
   'The AI finished without producing any files we could save. Try again.';
+
+/**
+ * Same outcome as {@link STREAM_NO_FILES_MESSAGE} from where the user stands — nothing was
+ * saved — but it says why, because "try again" reads as a fluke otherwise. The refused
+ * paths themselves stay in the log: they are model-supplied strings and listing
+ * `../../.env` back in the transcript helps nobody.
+ */
+export const STREAM_REJECTED_PATHS_MESSAGE =
+  'The AI finished without producing any files we could save — every file it named had an unsafe path. Try again.';
 
 /**
  * Last line of defence: no file is stored with a raw `NEED_IMAGE: …` sitting
@@ -162,7 +201,35 @@ export async function settleStreamedGeneration(
   // which is what getCurrentProjectFiles reads. Convert here rather than
   // storing the raw reply, or the prose around the fences becomes part of the
   // site and the preview has nothing it can parse.
-  const streamedFiles = filesFromReply(input.streamedCode || '');
+  const { safe: streamedFiles, rejected } = safeGeneratedFiles(
+    filesFromReply(input.streamedCode || ''),
+  );
+  if (rejected.length > 0) {
+    log.warn('generation.settle_rejected_paths', {
+      jobId: job.id,
+      projectId: job.projectId,
+      count: rejected.length,
+      paths: rejected.slice(0, 10),
+    });
+    // Every path refused means nothing gets written — and on a project that already has a
+    // site `hasSite` is already true, so the run used to skip the write block, skip the
+    // no-files failure below, and reach succeedJob. Chat then reported the change as made
+    // while lastCode had not moved, with only this log line recording it. A reply whose
+    // paths were all refused produced no file we could save, which is that same failure.
+    if (Object.keys(streamedFiles).length === 0) {
+      await failJob(job.id, {
+        errorCode: 'no_files_generated',
+        errorMessage: STREAM_REJECTED_PATHS_MESSAGE,
+        ...usage,
+      });
+      return {
+        outcome: 'failed',
+        errorCode: 'no_files_generated',
+        errorMessage: STREAM_REJECTED_PATHS_MESSAGE,
+      };
+    }
+  }
+
   if (Object.keys(streamedFiles).length > 0) {
     const resolvedFiles = await resolveImages({
       projectId: job.projectId,

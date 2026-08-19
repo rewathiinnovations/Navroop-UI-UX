@@ -52,6 +52,23 @@ describe('extractCodeBlocks', () => {
     expect(filesFromReply(reply)).toEqual({ 'src/App.tsx': 'export default function App() {' });
   });
 
+  it('keeps the files after one the model forgot to close', () => {
+    // The next opener's own fence used to be read as the unclosed block's close, which
+    // left `css{path=…}` behind as body text — so every file after the first was lost.
+    const reply = [
+      `${fence}tsx{path=src/App.tsx}`,
+      'export default function App() {',
+      `${fence}css{path=src/index.css}`,
+      'body { margin: 0; }',
+      fence,
+    ].join('\n');
+    expect(filesFromReply(reply)).toEqual({
+      'src/App.tsx': 'export default function App() {',
+      'src/index.css': 'body { margin: 0; }',
+    });
+    expect(extractCodeBlocks(reply).map((block) => block.truncated)).toEqual([true, false]);
+  });
+
   it('never collapses two blocks that claim the same path', () => {
     const reply = [
       `${fence}tsx{path=src/App.tsx}`,
@@ -82,11 +99,53 @@ describe('extractCodeBlocks', () => {
     const reply = `${fence}tsx{path=./src/App.tsx}\nconst a = 1;\n${fence}`;
     expect(Object.keys(filesFromReply(reply))).toEqual(['src/App.tsx']);
   });
+
+  it('parses a reply whose newlines are CRLF', () => {
+    // Providers streaming CRLF are not exotic, and the scan matches `\n```' — the `\r`
+    // sits at the end of the body, so nothing may depend on the raw body being trimmed.
+    const reply = [
+      'Here it is.',
+      '',
+      `${fence}tsx{path=src/App.tsx}`,
+      'const a = 1;',
+      fence,
+      '',
+      `${fence}css{path=src/index.css}`,
+      'body { margin: 0; }',
+      fence,
+    ].join('\r\n');
+    const files = filesFromReply(reply);
+    expect(Object.keys(files)).toEqual(['src/App.tsx', 'src/index.css']);
+    expect(files['src/App.tsx'].trim()).toBe('const a = 1;');
+    expect(files['src/index.css'].trim()).toBe('body { margin: 0; }');
+    expect(files['src/index.css']).not.toContain(fence);
+  });
 });
 
 describe('explanationFromReply', () => {
   it('returns the prose without the file blocks', () => {
     const reply = `Built a landing page.\n\n${fence}tsx{path=src/App.tsx}\nconst a = 1;\n${fence}\n\nLet me know.`;
     expect(explanationFromReply(reply)).toBe('Built a landing page.\n\nLet me know.');
+  });
+
+  it('strips both files when the model forgot a closing fence', () => {
+    // The old inline pattern read the second opener's fence as the first block's close,
+    // so the second file's code was left sitting in the transcript as prose. Whoever
+    // wires chat to this next inherits `extractCodeBlocks`' own scan instead.
+    const reply = [
+      'Built it.',
+      '',
+      `${fence}tsx{path=src/App.tsx}`,
+      'export default function App() {',
+      `${fence}css{path=src/index.css}`,
+      'body { margin: 0; }',
+      fence,
+      '',
+      'Let me know.',
+    ].join('\n');
+    const explanation = explanationFromReply(reply);
+    expect(explanation).toBe('Built it.\n\nLet me know.');
+    expect(explanation).not.toContain('{path=');
+    expect(explanation).not.toContain('margin');
   });
 });

@@ -1,3 +1,4 @@
+import type { ParseFilesErrorCode } from './parse-files';
 import type { CodeApplicationState } from '@/components/CodeApplicationProgress';
 
 export type GenerationStatus = 'idle' | 'generating' | 'applying' | 'ready' | 'error';
@@ -75,6 +76,17 @@ export interface ChatMessage {
   };
 }
 
+/**
+ * A `{path=…}` block whose path could not be used, and why. Surfaced in state
+ * rather than only logged because the audit of this area found several silent
+ * drops: the file simply never appeared and nothing said why.
+ */
+export type DroppedGenerationPath = {
+  /** The path exactly as the model wrote it, so the notice matches the reply. */
+  path: string;
+  reason: ParseFilesErrorCode;
+};
+
 export interface GenerationFile {
   path: string;
   content: string;
@@ -93,8 +105,18 @@ export interface GenerationProgressState {
   isThinking: boolean;
   thinkingText?: string;
   thinkingDuration?: number;
+  /**
+   * Legacy mirror of the block still streaming. `files` now carries the same
+   * block as its trailing `completed: false` entry; prefer that.
+   */
   currentFile?: { path: string; content: string; type: string };
+  /**
+   * Files seen in the stream so far. At most one entry has `completed: false`
+   * and it is the last element — see `applyStreamedCode`.
+   */
   files: GenerationFile[];
+  /** Paths dropped by `sanitizeGenerationPath`, first-seen order, deduped. */
+  droppedPaths: DroppedGenerationPath[];
   lastProcessedPosition: number;
   isEdit?: boolean;
 }
@@ -163,6 +185,7 @@ export const EMPTY_GENERATION_PROGRESS: GenerationProgressState = {
   isStreaming: false,
   isThinking: false,
   files: [],
+  droppedPaths: [],
   lastProcessedPosition: 0,
 };
 

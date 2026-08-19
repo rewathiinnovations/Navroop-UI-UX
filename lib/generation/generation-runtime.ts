@@ -14,6 +14,7 @@ import {
   type StartApplyInput,
   type StartGenerationInput,
 } from './types';
+import { sanitizeGenerationPath } from './parse-files';
 import { emitLockConflict, parseLockConflict } from '@/lib/projects/lock-client';
 import { PROJECT_FILES_CHANGED_EVENT } from '@/lib/preview/events';
 
@@ -180,7 +181,106 @@ function fileTypeFromPath(filePath: string) {
   return 'text';
 }
 
-function applyStreamedCode(prev: GenerationProgressState, text: string): GenerationProgressState {
+/**
+ * An opening fence carrying a `{path=…}` tag.
+ *
+ * `\r?\n` is not decorative: the old opener demanded `}\n`, so a provider that
+ * sent CRLF put a `\r` between them and *every* block failed to match — the
+ * whole build rendered as prose with no files at all.
+ *
+ * Kept flagless and cloned per use so no scan inherits another's `lastIndex`,
+ * the same discipline `parse-blocks` uses for its own block scan.
+ */
+const FENCE_OPEN_RE = /```[^\n`]*\{path=([^}\n]+)\}\r?\n/;
+/** Where a body ends: the first line-leading fence after it. */
+const FENCE_END = '\n```';
+/** Sticky: is the fence at this offset the *next* file's opener rather than a close? */
+const OPENER_AT_RE = /[^\n`]*\{path=/y;
+/**
+ * A closing fence that has not fully arrived yet.
+ *
+ * Held back rather than shown: the last chunks of a file are `\n`, then `` \n` ``,
+ * then `` \n`` ``, and only then the fence that ends it. Without this the open
+ * body ends in stray backticks that disappear when the third one lands — content
+ * that shrinks, which is exactly what the rail promises never happens. A body
+ * line that genuinely starts with a backtick is delayed by one chunk, never lost.
+ */
+const PARTIAL_CLOSE_RE = /\n`{0,2}$/;
+
+/** One `{path=…}` block seen in the accumulated stream text. */
+export type StreamedFence = {
+  /**
+   * Exactly as the model wrote it — never the sanitized spelling. It is the
+   * identity that merges a partial entry with its own closed form, so rewriting
+   * it would leave two rail entries for one file.
+   */
+  path: string;
+  /** Body, trimmed the way the closed-fence path has always trimmed it. */
+  body: string;
+  /** False only for a block still being written at the end of the text. */
+  closed: boolean;
+};
+
+/**
+ * The blocks visible in accumulated stream text — closed ones plus, at the end,
+ * the one still being written. Pure, so the streaming rail is testable without
+ * a stream or a component.
+ *
+ * A body ends at the first line-leading fence after it, exactly as the previous
+ * closed-fence regex ended it, so a finished block's body is byte-for-byte what
+ * it was before. Only the end of the text produces `closed: false`.
+ */
+export function scanStreamedFences(text: string): StreamedFence[] {
+  const opener = new RegExp(FENCE_OPEN_RE, 'g');
+  const probe = new RegExp(OPENER_AT_RE);
+  const fences: StreamedFence[] = [];
+  let open: StreamedFence | null = null;
+  let match: RegExpExecArray | null;
+
+  while ((match = opener.exec(text)) !== null) {
+    const bodyStart = match.index + match[0].length;
+    const endIndex = text.indexOf(FENCE_END, bodyStart);
+    if (endIndex === -1) {
+      // Nothing follows the body yet, so this is the block being written. A later
+      // opener replaces the candidate: only the last block can still be open.
+      const body = text.slice(bodyStart).replace(PARTIAL_CLOSE_RE, '');
+      open = { path: match[1], body: body.trim(), closed: false };
+      continue;
+    }
+    open = null;
+    fences.push({ path: match[1], body: text.slice(bodyStart, endIndex).trim(), closed: true });
+
+    // A model that forgets to close a file leaves the *next* file's opener where
+    // the closing fence should be. Resuming past those three backticks left
+    // `tsx{path=…}` behind, which no longer matched an opener, so every file
+    // after the unclosed one vanished — the same fault `parse-blocks` documents
+    // for its BLOCK_RE. Resume on the newline instead and re-match the opener.
+    probe.lastIndex = endIndex + FENCE_END.length;
+    opener.lastIndex = probe.test(text) ? endIndex + 1 : endIndex + FENCE_END.length;
+  }
+
+  if (open) fences.push(open);
+  return fences;
+}
+
+/**
+ * Accumulated stream text → the streaming file rail.
+ *
+ * Contract the panel and the preview rely on:
+ * - At most one entry has `completed: false`, and it is the last element.
+ * - `completed` only ever goes `false → true`; content only grows.
+ * - Once closed, an entry is byte-identical to what the old closed-fence-only
+ *   pass produced, so `hasExistingSite`, "Keep what was built" and the
+ *   `complete` frame see no change.
+ * - A path is gated by the same `sanitizeGenerationPath` the persist path uses,
+ *   and a rejected one lands in `droppedPaths` instead of disappearing.
+ *
+ * Exported for tests: it is a pure function of `prev` and the new text.
+ */
+export function applyStreamedCode(
+  prev: GenerationProgressState,
+  text: string,
+): GenerationProgressState {
   const newStreamedCode = prev.streamedCode + text;
   const updatedState: GenerationProgressState = {
     ...prev,
@@ -191,64 +291,110 @@ function applyStreamedCode(prev: GenerationProgressState, text: string): Generat
     files: [...prev.files],
   };
 
-  // Completed fenced blocks: ```lang{path=…} … ```
-  const fileRegex = new RegExp('```[^\\n`]*\\{path=([^}\\n]+)\\}\\n([^]*?)\\n```', 'g');
-  const processedFiles = new Set(prev.files.map((file) => file.path));
-  let match: RegExpExecArray | null;
-
-  while ((match = fileRegex.exec(newStreamedCode)) !== null) {
-    const filePath = match[1];
-    const fileContent = match[2];
-    if (processedFiles.has(filePath)) continue;
-
-    const fileType = fileTypeFromPath(filePath);
-    const existingFileIndex = updatedState.files.findIndex((file) => file.path === filePath);
-    const nextFile: GenerationFile = {
-      path: filePath,
-      content: fileContent.trim(),
-      type: fileType,
-      completed: true,
-      edited: existingFileIndex >= 0,
-    };
-
-    if (existingFileIndex >= 0) {
-      updatedState.files = [
-        ...updatedState.files.slice(0, existingFileIndex),
-        { ...updatedState.files[existingFileIndex], ...nextFile },
-        ...updatedState.files.slice(existingFileIndex + 1),
-      ];
-    } else {
-      updatedState.files = [...updatedState.files, nextFile];
-    }
-
-    if (!prev.isEdit) {
-      updatedState.status = `Completed ${filePath}`;
-    }
-    processedFiles.add(filePath);
-  }
-
-  // The block still streaming: an opener with no closing fence after it.
-  const lastFileMatch = newStreamedCode.match(
-    new RegExp('```[^\\n`]*\\{path=([^}\\n]+)\\}\\n([^]*?)$'),
+  const completedPaths = new Set(
+    prev.files.filter((file) => file.completed).map((file) => file.path),
   );
-  if (lastFileMatch && !/\n```/.test(lastFileMatch[2])) {
-    const filePath = lastFileMatch[1];
-    const partialContent = lastFileMatch[2];
-    if (!processedFiles.has(filePath)) {
-      updatedState.currentFile = {
-        path: filePath,
-        content: partialContent,
-        type: fileTypeFromPath(filePath),
-      };
-      if (!prev.isEdit) {
-        updatedState.status = `Generating ${filePath}`;
+  let droppedPaths = prev.droppedPaths;
+  let openFile: GenerationFile | null = null;
+  let closedPath: string | null = null;
+
+  for (const fence of scanStreamedFences(newStreamedCode)) {
+    // A finished file cannot change, so skip the work of rebuilding it on every
+    // chunk. This also decides `edited` below: the check ran first here before
+    // this change too, which made the old `existingFileIndex >= 0` test — the
+    // only thing that ever set `edited` — unreachable. Kept false so a closed
+    // entry's shape is unchanged; a real edit marker would have to come from the
+    // project's stored file map, which this function never sees.
+    if (completedPaths.has(fence.path)) continue;
+
+    const safe = sanitizeGenerationPath(fence.path);
+    if (!safe.ok) {
+      // The persist path drops this same entry server-side. Announcing it is the
+      // point: a traversal or absolute path used to leave the rail one file short
+      // with nothing anywhere saying why.
+      if (!droppedPaths.some((dropped) => dropped.path === fence.path)) {
+        droppedPaths = [...droppedPaths, { path: fence.path, reason: safe.code }];
       }
+      continue;
     }
-  } else {
-    updatedState.currentFile = undefined;
+
+    const nextFile: GenerationFile = {
+      path: fence.path,
+      content: fence.body,
+      type: fileTypeFromPath(fence.path),
+      completed: fence.closed,
+      edited: false,
+    };
+    // The only entry this can find is the partial emitted for the same block on
+    // an earlier chunk, which is last — so replacing keeps the open entry last.
+    const existingIndex = updatedState.files.findIndex((file) => file.path === fence.path);
+    if (existingIndex >= 0) {
+      updatedState.files[existingIndex] = nextFile;
+    } else {
+      updatedState.files.push(nextFile);
+    }
+
+    if (fence.closed) {
+      completedPaths.add(fence.path);
+      closedPath = fence.path;
+    } else {
+      openFile = nextFile;
+    }
   }
+
+  // One derivation of the status line, from the same fences the rail is built
+  // from, so it cannot contradict what the panel renders. "Generating code..."
+  // is now only the pre-first-file fallback: the old `if (!prev.isEdit)` guard
+  // meant that generic string survived an entire edit stream, while the panel
+  // was naming the file it could see being written.
+  if (openFile) {
+    updatedState.status = `Generating ${openFile.path}`;
+  } else if (closedPath) {
+    updatedState.status = `Completed ${closedPath}`;
+  }
+
+  updatedState.droppedPaths = droppedPaths;
+  updatedState.currentFile = openFile
+    ? { path: openFile.path, content: openFile.content, type: openFile.type }
+    : undefined;
 
   return updatedState;
+}
+
+/** What the streaming panel and the status line read, so neither re-derives it. */
+export type StreamingFilesSummary = {
+  /** The file being written, or null when no block is open. */
+  activePath: string | null;
+  filesWritten: number;
+  /**
+   * Files seen so far, not a forecast: the stream announces no file count up
+   * front, so "4 of 9" can only ever mean "4 of the 9 seen so far".
+   */
+  filesTotal: number;
+};
+
+/** O(1) because only the last entry may be incomplete — see `applyStreamedCode`. */
+export function summarizeStreamingFiles(files: readonly GenerationFile[]): StreamingFilesSummary {
+  const last = files[files.length - 1];
+  const activePath = last && !last.completed ? last.path : null;
+  return {
+    activePath,
+    filesWritten: activePath === null ? files.length : files.length - 1,
+    filesTotal: files.length,
+  };
+}
+
+/**
+ * Closes out the block that was still streaming when the reply ended. The stream
+ * is over, so that content is final; leaving it `completed: false` would show a
+ * file as "writing" for good. The server keeps the same block — `parse-blocks`
+ * ends a block at end-of-input and flags it `truncated` rather than dropping it
+ * — so finalizing here is what keeps the rail and what gets stored in agreement.
+ */
+export function finalizeStreamedFiles(files: GenerationFile[]): GenerationFile[] {
+  const last = files[files.length - 1];
+  if (!last || last.completed) return files;
+  return [...files.slice(0, -1), { ...last, completed: true }];
 }
 
 async function deliverPersistPreviewNotice(response: Response, status?: GenerationStatus) {
@@ -264,7 +410,6 @@ async function deliverPersistPreviewNotice(response: Response, status?: Generati
 async function persistProgress(partial: {
   status?: GenerationStatus;
   progressMessage?: string | null;
-  lastCode?: string | null;
   sandboxId?: string | null;
   previewUrl?: string | null;
 }) {
@@ -314,10 +459,16 @@ function setJobStatus(status: GenerationStatus, lastError: string | null = null)
     return Promise.resolve();
   }
   stopHeartbeat();
+  // No `lastCode` here. The browser used to PATCH the model's raw markdown
+  // reply into it, overwriting the normalized `<file path=…>` blocks
+  // settleStreamedGeneration had just written server-side. getCurrentProjectFiles
+  // finds no file block in markdown and falls back to one bogus `src/App.jsx`
+  // holding the whole chat answer, so every finished generation destroyed the
+  // multi-file site it had just built. The server owns the site; the client
+  // only reports status here.
   return persistProgress({
     status,
     progressMessage: lastError || state.generationProgress.status || status,
-    lastCode: state.lastGeneratedCode,
     sandboxId: state.sandboxData?.sandboxId || null,
     previewUrl: state.sandboxData?.url || null,
   });
@@ -453,7 +604,11 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
     currentFile: undefined,
     lastProcessedPosition: 0,
     isEdit: input.isEdit,
-    files: input.isEdit ? prev.files : prev.files || [],
+    droppedPaths: [],
+    // A stream that died mid-file left its `completed: false` entry behind.
+    // Carrying that into the next run would show a file as being written by a
+    // stream that never opened it. Finished files still carry over.
+    files: (prev.files || []).filter((file) => file.completed),
   }));
   setJobStatus('generating');
 
@@ -620,28 +775,41 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
               packagesToInstall;
           }
           patchGenerationState({ lastGeneratedCode: generatedCode || null });
-          // Completed fenced blocks: ```lang{path=…} … ```
-          const fileRegex = new RegExp('```[^\\n`]*\\{path=([^}\\n]+)\\}\\n([^]*?)\\n```', 'g');
-          const parsedFiles: GenerationFile[] = [];
-          let fileMatch: RegExpExecArray | null;
-          while (generatedCode && (fileMatch = fileRegex.exec(generatedCode)) !== null) {
-            parsedFiles.push({
-              path: fileMatch[1],
-              content: fileMatch[2].trim(),
-              type: fileTypeFromPath(fileMatch[1]),
-              completed: true,
-            });
-          }
-          setGenerationProgressState((prev) => ({
-            ...prev,
-            status: `Generated ${parsedFiles.length > 0 ? parsedFiles.length : prev.files.length} file${(parsedFiles.length > 0 ? parsedFiles.length : prev.files.length) !== 1 ? 's' : ''}!`,
-            isGenerating: false,
-            isStreaming: false,
-            isThinking: false,
-            thinkingText: undefined,
-            thinkingDuration: undefined,
-            files: prev.files.length > 0 ? prev.files : parsedFiles,
-          }));
+          // Fallback rail for a reply whose blocks never reached the live pass (a
+          // reused completion, or a provider that sent no `raw` frames). The same
+          // scan the rail uses, so both agree where a block ends, and gated by the
+          // same path check, so neither can name a file the persist path refuses.
+          const parsedFiles: GenerationFile[] = generatedCode
+            ? scanStreamedFences(generatedCode).flatMap((fence) =>
+                sanitizeGenerationPath(fence.path).ok
+                  ? [
+                      {
+                        path: fence.path,
+                        content: fence.body,
+                        type: fileTypeFromPath(fence.path),
+                        completed: true,
+                      },
+                    ]
+                  : [],
+              )
+            : [];
+          setGenerationProgressState((prev) => {
+            // The stream is over, so a block still marked open is just the last
+            // file the reply got to. Close it out; the count then describes what
+            // the rail actually shows, which the old two-way expression did not.
+            const files = prev.files.length > 0 ? finalizeStreamedFiles(prev.files) : parsedFiles;
+            return {
+              ...prev,
+              status: `Generated ${files.length} file${files.length !== 1 ? 's' : ''}!`,
+              isGenerating: false,
+              isStreaming: false,
+              isThinking: false,
+              thinkingText: undefined,
+              thinkingDuration: undefined,
+              currentFile: undefined,
+              files,
+            };
+          });
         } else if (data.type === 'error') {
           throw new Error(data.error || 'Generation failed');
         } else if (data.type === 'warning' || data.type === 'info') {
@@ -698,8 +866,10 @@ async function runApplyStream(input: StartApplyInput): Promise<ApplyResult> {
   setJobStatus('applying');
   setCodeApplicationState({ stage: 'applying', filesGenerated: [] });
 
+  // In-memory only: the chat and "save project" read this for the prompt text.
+  // It is never PATCHed back as `lastCode` — see setJobStatus.
   patchGenerationState({ lastGeneratedCode: input.code });
-  // Terminal status: persists the code and surfaces any preview notice.
+  // Terminal status: reports the run finished and surfaces any preview notice.
   await setJobStatus('ready');
 
   setCodeApplicationState({ stage: 'complete' });

@@ -15,27 +15,20 @@ import type {
   ConversationEdit,
 } from '@/types/conversation';
 import { appConfig } from '@/config/app.config';
-import { isMorphConfigured } from '@/lib/morph-fast-apply';
 import { buildUiUxProMaxBrief } from '@/lib/ui-ux-pro-max/build-design-brief';
 import { getSessionUser } from '@/lib/auth';
 import { looksLikeUrl } from '@/lib/projects/prompt';
 import { attachGenerationInputTokens, logGenerationEvent } from '@/lib/usage-costs';
 import { buildCachedMessages } from '@/lib/generation/prompt-cache';
-import { filesFromReply } from '@/lib/generation/parse-blocks';
+import { filesFromReply, replaceBlockInReply } from '@/lib/generation/parse-blocks';
 
 /** Markdown code fence, kept in a constant so prompt strings stay readable. */
 const FENCE = '```';
-/** An opening fence carrying a {path=...} tag. */
-const FENCE_OPEN_RE = /```[^\n`]*\{path=([^}\n]+)\}/;
-/** A closing fence at the start of a line. */
-const FENCE_CLOSE_RE = /\n```/;
+import { conversationStateFor } from '@/lib/generation/conversation-state';
+import { StreamedFileTracker } from '@/lib/generation/stream-file-tracker';
 import { selectFileContext } from '@/lib/generation/selective-context';
 import { resolveInputTokens } from '@/lib/generation/token-estimate';
-import {
-  buildStablePromptPrefix,
-  buildVolatilePromptSuffix,
-  getStackPrompt,
-} from '@/lib/stack-prompts';
+import { buildStablePromptPrefix, buildVolatilePromptSuffix } from '@/lib/stack-prompts';
 import { resolveRequestGenerationProfile } from '@/lib/stack-resolve';
 import { packageNameFromImport, shouldSkipPackageInstall, stackShapeMismatch } from '@/lib/stacks';
 import { loadAssetManifest } from '@/lib/assets/load-manifest';
@@ -51,7 +44,7 @@ import { getCurrentProjectFiles } from '@/lib/github/current-files';
 import { analyzeEditIntent } from '@/lib/generation/analyze-edit-intent';
 import { log, logError } from '@/lib/logger';
 import { trackFailure, trackStart, trackSuccess } from '@/lib/observability/track';
-import { acquireLock, beginLockHeartbeat, releaseLock } from '@/lib/projects/lock';
+import { holdProjectLock } from '@/lib/projects/lock';
 import { lockConflictJson } from '@/lib/projects/lock-http';
 import { beginJobHeartbeat, createOrReuseJob, failJob, markJobRunning } from '@/lib/jobs/lifecycle';
 import { settleStreamedGeneration } from '@/lib/jobs/settle-generation';
@@ -71,6 +64,7 @@ import {
   getProviderApiKey,
   maxOutputTokensForEntry,
   modelIdForEntry,
+  providerConcurrency,
   providerDisplayName,
   ProviderNotConfiguredError,
   requireUsableProviderChain,
@@ -79,14 +73,11 @@ import {
 } from '@/lib/ai/providers';
 import { loadEffectiveProviderEnv } from '@/lib/ai/effective-env';
 import { clientForEntry } from '@/lib/ai/client-for-entry';
-import {
-  bindStreamErrorCapture,
-  EmptyCompletionError,
-  producedNoChanges,
-} from '@/lib/ai/empty-completion';
+import { bindStreamErrorCapture, EmptyCompletionError } from '@/lib/ai/empty-completion';
 import { sanitizeGenerationPath } from '@/lib/generation/parse-files';
 import {
   collectRecoveredStreamText,
+  detectTruncatedFiles,
   truncationRecoveryOutcome,
   type TruncationRecoveryOutcome,
 } from '@/lib/generation/truncation-recovery';
@@ -258,21 +249,16 @@ async function generateAiCodeStream(request: NextRequest) {
       (typeof requestProjectId === 'string' && requestProjectId) ||
       (typeof context?.projectId === 'string' && context.projectId) ||
       '';
-    let lockHeld = false;
-    let lockHeartbeat: { stop: () => void } | null = null;
-    releaseGenerationLock = async () => {
-      lockHeartbeat?.stop();
-      lockHeartbeat = null;
-      if (lockHeld && lockProjectId) {
-        lockHeld = false;
-        await releaseLock(lockProjectId, sessionUser.id);
-      }
-    };
+    // `holdProjectLock` rather than the hand-rolled acquire + heartbeat + release triple.
+    // `acquireLock` is re-entrant for the same user, so when this user already held a live
+    // lock on the project — their own audit or publish, or a hold leaked by an earlier run —
+    // the old code took `ok: true`, started a second timer renewing a hold it did not own,
+    // and then released the *other* feature's lock in its cleanup (security review NAV-03).
+    // The hold knows whether it owns anything, so `release()` is a no-op on re-entry.
     if (lockProjectId) {
-      const lock = await acquireLock(lockProjectId, sessionUser.id, 'generation');
-      if (!lock.ok) return lockConflictJson(lock);
-      lockHeld = true;
-      lockHeartbeat = beginLockHeartbeat(lockProjectId, sessionUser.id);
+      const hold = await holdProjectLock(lockProjectId, sessionUser.id, 'generation');
+      if (!hold.ok) return lockConflictJson(hold);
+      releaseGenerationLock = hold.release;
     }
 
     const idempotencyKey =
@@ -316,6 +302,11 @@ async function generateAiCodeStream(request: NextRequest) {
       await releaseGenerationLock?.();
       return jsonError(message, 'PROVIDER_NOT_CONFIGURED', 503);
     }
+
+    // `providerEnv` carries the admin `ai.concurrency` value, so applying it
+    // here is what makes the limit on /admin/config take effect on the next
+    // build instead of at the next container restart.
+    getDefaultProviderQueue().setConcurrency(providerConcurrency(providerEnv));
 
     const model = requestedModel ?? modelIdForEntry(providerChain[0]);
     const primaryProvider = providerChain[0];
@@ -401,39 +392,28 @@ async function generateAiCodeStream(request: NextRequest) {
       }
     }
 
-    // Initialize conversation state if not exists.
+    // Resolve this run's conversation state.
     //
-    // The state is a server-global. Without project scoping it carried the
-    // previous project's "RECENTLY CREATED/EDITED FILES (DO NOT RECREATE)"
-    // list — Next.js app/ files — into a fresh REACT project's first build,
-    // and the model updated that phantom tree instead of following the
-    // stack prompt. A request for a different project starts clean.
+    // Without project scoping the shared state carried the previous project's
+    // "RECENTLY CREATED/EDITED FILES (DO NOT RECREATE)" list — Next.js app/
+    // files — into a fresh REACT project's first build, and the model updated
+    // that phantom tree instead of following the stack prompt. Everything below
+    // reads `conversation`, never the global, so an overlapping request for
+    // another project cannot swap this run's history out mid-stream.
     const conversationProjectId =
       (typeof requestProjectId === 'string' && requestProjectId) ||
       (typeof context?.projectId === 'string' && context.projectId) ||
       null;
-    if (global.conversationState && global.conversationState.projectId !== conversationProjectId) {
-      log.info('generation.conversation_state_reset', {
-        requestId: getRequestId(),
-        fromProjectId: global.conversationState.projectId ?? null,
-        toProjectId: conversationProjectId,
-      });
-      global.conversationState = null;
-    }
-    if (!global.conversationState) {
-      global.conversationState = {
-        conversationId: `conv-${Date.now()}`,
-        projectId: conversationProjectId,
-        startedAt: Date.now(),
-        lastUpdated: Date.now(),
-        context: {
-          messages: [],
-          edits: [],
-          projectEvolution: { majorChanges: [] },
-          userPreferences: {},
-        },
-      };
-    }
+    const conversation = conversationStateFor(conversationProjectId, sessionUser.id);
+    log.info('generation.conversation_state', {
+      requestId: getRequestId(),
+      projectId: conversationProjectId,
+      conversationId: conversation.conversationId,
+      messages: conversation.context.messages.length,
+    });
+    // The publish to `global.conversationState` happens after the trims below, and what
+    // it publishes is a shallow view rather than this run's own state object. See the
+    // comment there.
 
     // Add user message to conversation history
     const userMessage: ConversationMessage = {
@@ -445,22 +425,39 @@ async function generateAiCodeStream(request: NextRequest) {
         sandboxId: context?.sandboxId,
       },
     };
-    global.conversationState.context.messages.push(userMessage);
+    conversation.context.messages.push(userMessage);
 
     // Clean up old messages to prevent unbounded growth
-    if (global.conversationState.context.messages.length > 20) {
+    if (conversation.context.messages.length > 20) {
       // Keep only the last 15 messages
-      global.conversationState.context.messages =
-        global.conversationState.context.messages.slice(-15);
+      conversation.context.messages = conversation.context.messages.slice(-15);
       console.log(
         '[generate-ai-code-stream] Trimmed conversation history to prevent context overflow',
       );
     }
 
     // Clean up old edits
-    if (global.conversationState.context.edits.length > 10) {
-      global.conversationState.context.edits = global.conversationState.context.edits.slice(-8);
+    if (conversation.context.edits.length > 10) {
+      conversation.context.edits = conversation.context.edits.slice(-8);
     }
+
+    // `global.conversationState` still has three server-side readers — checkpoint labels
+    // (`lib/checkpoints/actions.ts`), memory extraction (`lib/memory/extract.ts`) and the
+    // follow-up prompt context (`lib/projects/plan.ts`) — so not publishing at all made a
+    // checkpoint saved right after a build lose the prompt it was named for. What is
+    // published is a shallow view, never this run's registry entry: /api/conversation-state
+    // `clear-old` (the workspace POSTs it on every mount) does
+    // `context.messages = context.messages.slice(-5)`, and applied to the live object that
+    // truncated project A's history mid-run because someone else opened a tab. Every
+    // container the endpoint reassigns a property on is copied here; the arrays themselves
+    // are shared, so an edit this run pushes later is still visible to those readers.
+    global.conversationState = {
+      ...conversation,
+      context: {
+        ...conversation.context,
+        projectEvolution: { ...conversation.context.projectEvolution },
+      },
+    };
 
     // Debug: Show a sample of actual file content
     if (context?.currentFiles && Object.keys(context.currentFiles).length > 0) {
@@ -719,21 +716,18 @@ User request: "${prompt}"`;
 
         // Build conversation context for system prompt
         let conversationContext = '';
-        if (global.conversationState && global.conversationState.context.messages.length > 1) {
+        if (conversation.context.messages.length > 1) {
           console.log('[generate-ai-code-stream] Building conversation context');
           console.log(
             '[generate-ai-code-stream] Total messages:',
-            global.conversationState.context.messages.length,
+            conversation.context.messages.length,
           );
-          console.log(
-            '[generate-ai-code-stream] Total edits:',
-            global.conversationState.context.edits.length,
-          );
+          console.log('[generate-ai-code-stream] Total edits:', conversation.context.edits.length);
 
           conversationContext = `\n\n## Conversation History (Recent)\n`;
 
           // Include only the last 3 edits to save context
-          const recentEdits = global.conversationState.context.edits.slice(-3);
+          const recentEdits = conversation.context.edits.slice(-3);
           if (recentEdits.length > 0) {
             console.log(
               '[generate-ai-code-stream] Including',
@@ -747,7 +741,7 @@ User request: "${prompt}"`;
           }
 
           // Include recently created files - CRITICAL for preventing duplicates
-          const recentMsgs = global.conversationState.context.messages.slice(-5);
+          const recentMsgs = conversation.context.messages.slice(-5);
           const recentlyCreatedFiles: string[] = [];
           recentMsgs.forEach((msg) => {
             if (msg.metadata?.editedFiles) {
@@ -780,8 +774,7 @@ User request: "${prompt}"`;
           }
 
           // Include only last 2 major changes
-          const majorChanges =
-            global.conversationState.context.projectEvolution.majorChanges.slice(-2);
+          const majorChanges = conversation.context.projectEvolution.majorChanges.slice(-2);
           if (majorChanges.length > 0) {
             conversationContext += `\n### Recent Changes:\n`;
             majorChanges.forEach((change) => {
@@ -790,7 +783,7 @@ User request: "${prompt}"`;
           }
 
           // Keep user preferences - they're concise
-          const userPrefs = analyzeUserPreferences(global.conversationState.context.messages);
+          const userPrefs = analyzeUserPreferences(conversation.context.messages);
           if (userPrefs.commonPatterns.length > 0) {
             conversationContext += `\n### User Preferences:\n`;
             conversationContext += `- Edit style: ${userPrefs.preferredEditStyle}\n`;
@@ -845,59 +838,42 @@ User request: "${prompt}"`;
           (typeof context?.projectId === 'string' && context.projectId) ||
           '';
         const assetManifest = await loadAssetManifest(assetProjectId || null);
-        let volatileSuffix = buildVolatilePromptSuffix({
+        // The model call sends `stablePrefix` as the system message and this as the
+        // volatile user turn (see buildCachedMessages), so the composed getStackPrompt
+        // string had no reader here once the Morph branch that appended to it was gone.
+        const volatileSuffix = buildVolatilePromptSuffix({
           conversationContext,
           uiUxBrief,
           isEdit,
           editContext: promptEditContext,
           assetManifest,
         });
-        // Keep getStackPrompt as the composed builder used by plan + this route.
-        let systemPrompt = getStackPrompt(
-          projectStack,
-          projectDirection,
-          {
-            conversationContext,
-            uiUxBrief,
-            isEdit,
-            editContext: promptEditContext,
-            assetManifest,
-          },
-          { memoryBlock },
-        );
 
-        // Gate on the admin setting, not MORPH_API_KEY — the applier reads the setting, so
-        // an env-only check left the feature off whenever the key was entered in /admin/config.
-        const morphFastApplyEnabled = Boolean(isEdit && (await isMorphConfigured()));
-        if (morphFastApplyEnabled) {
-          const morphRules = `
+        // No Morph fast-apply branch here. It told the model to answer in `<edit>` blocks
+        // instead of fenced files, and nothing has applied those since the apply route was
+        // deleted: `parseMorphEdits` / `applyMorphEditToFile` have no production caller. So
+        // with a Morph key saved in Admin -> Configuration, every follow-up edit reported
+        // SUCCEEDED with an explanation in chat and left the project's files untouched.
+        // Until an applier exists, the one output contract is the fenced `{path=…}` block
+        // that `filesFromReply` parses.
 
-MORPH FAST APPLY MODE (EDIT-ONLY):
-- Output edits as <edit> blocks, not full <file> blocks, for files that already exist.
-- target_file must be the file's real path in this project, exactly as listed above.
-- Format for each edit:
-  <edit target_file="path/to/the/file">
-    <instructions>Describe the minimal change, single sentence.</instructions>
-    <update>Provide the SMALLEST code snippet necessary to perform the change.</update>
-  </edit>
-- Only use <file> blocks when you must CREATE a brand-new file.
-- Prefer ONE edit block for a simple change; multiple edits only if absolutely needed for separate files.
-- Keep updates minimal and precise; do not rewrite entire files.
-`;
-          volatileSuffix += morphRules;
-          systemPrompt += morphRules;
-        }
-
-        // Build full prompt with context
+        // Build full prompt with context.
+        //
+        // Entered when there is a project even if the client sent no `context` at all.
+        // Gating the whole block on `context` was a second way a request could talk its
+        // way out of the file load below: omit the object and the project's stored code
+        // was never read, so the model was asked to satisfy the prompt with no sight of
+        // the site it was about to overwrite. Request-supplied fields stay optional; the
+        // project id is what decides whether this runs.
         let fullPrompt = prompt;
-        if (context) {
+        if (context || conversationProjectId) {
           const contextParts = [];
 
-          if (context.sandboxId) {
+          if (context?.sandboxId) {
             contextParts.push(`Current sandbox ID: ${context.sandboxId}`);
           }
 
-          if (context.structure) {
+          if (context?.structure) {
             contextParts.push(`Current file structure:\n${context.structure}`);
           }
 
@@ -910,11 +886,18 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
           // Loading per project also settles the hazard the cache had: it was
           // never scoped, so a REACT initial build once inherited the previous
           // NEXTJS project's app/ tree as "EXISTING APPLICATION" context and
-          // edited that instead of following the stack prompt. An initial
-          // build generates from scratch by definition, so only an edit reads
-          // files at all.
+          // edited that instead of following the stack prompt.
+          //
+          // Loaded whenever there is a project, NOT only when the client says
+          // `isEdit`. `isEdit` is a client hint, and a client that got it wrong
+          // (or forged it) used to skip this read, land in FIRST GENERATION MODE
+          // below, and have the model rewrite a project that already had stored
+          // code from scratch. The row is the authority on whether a site
+          // exists: with files loaded, `else if (!hasBackendFiles)` can no
+          // longer reach first-generation mode, and a genuinely new project
+          // still finds nothing here and still gets it.
           let backendFiles: Record<string, string> = {};
-          if (isEdit && conversationProjectId) {
+          if (conversationProjectId) {
             const projectFilesRow = await prisma.project.findFirst({
               where: { id: conversationProjectId, deletedAt: null },
               select: { lastCode: true },
@@ -944,7 +927,7 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
             // manifest only ever came from a sandbox sync — the assertions on
             // it (`global.sandboxState!.fileCache!.manifest!`) would throw the
             // moment real files arrived here.
-            const recentPaths = (global.conversationState?.context.edits ?? [])
+            const recentPaths = conversation.context.edits
               .flatMap((edit) => edit.targetFiles || [])
               .slice(-12);
             const selected = selectFileContext({
@@ -960,12 +943,12 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
             contextParts.push(
               '\nEdit only the files required. Path-only entries are listed for orientation — do not regenerate them.',
             );
-          } else if (context.currentFiles && Object.keys(context.currentFiles).length > 0) {
+          } else if (context?.currentFiles && Object.keys(context.currentFiles).length > 0) {
             console.log(
               '[generate-ai-code-stream] Warning: Backend cache empty, using selective frontend files',
             );
             contextParts.push('\nEXISTING APPLICATION - DO NOT REGENERATE FROM SCRATCH');
-            const recentPaths = (global.conversationState?.context.edits ?? [])
+            const recentPaths = conversation.context.edits
               .flatMap((edit) => edit.targetFiles || [])
               .slice(-12);
             const selected = selectFileContext({
@@ -1020,7 +1003,7 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
           }
 
           // Add conversation context (scraped websites, etc)
-          if (context.conversationContext) {
+          if (context?.conversationContext) {
             if (context.conversationContext.scrapedWebsites?.length > 0) {
               contextParts.push('\nScraped Websites in Context:');
               context.conversationContext.scrapedWebsites.forEach((site: any) => {
@@ -1043,19 +1026,6 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
           }
 
           if (contextParts.length > 0) {
-            if (morphFastApplyEnabled) {
-              contextParts.push('\nOUTPUT FORMAT (REQUIRED IN MORPH MODE):');
-              contextParts.push('<edit target_file="src/components/Component.jsx">');
-              contextParts.push('<instructions>Minimal, precise instruction.</instructions>');
-              contextParts.push('<update>// Smallest necessary snippet</update>');
-              contextParts.push('</edit>');
-              contextParts.push(
-                '\nIf you need to create a NEW file, then and only then output a full file:',
-              );
-              contextParts.push(`${FENCE}tsx{path=src/components/NewComponent.tsx}`);
-              contextParts.push('// Full file content when creating new files');
-              contextParts.push(FENCE);
-            }
             fullPrompt = `CONTEXT:\n${contextParts.join('\n')}\n\nUSER REQUEST:\n${prompt}`;
           }
         }
@@ -1113,8 +1083,6 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
         let result: Awaited<ReturnType<typeof streamText>> | undefined;
         let generatedCode = '';
         let files: { path: string; content: string }[] = [];
-        let currentFile = '';
-        let currentFilePath = '';
         let componentCount = 0;
         let providersTried: string[] = [];
         try {
@@ -1144,9 +1112,7 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
               servedModel = entry.model;
               generatedCode = '';
               files = [];
-              currentFile = '';
-              currentFilePath = '';
-              let isInFile = false;
+              const streamedFiles = new StreamedFileTracker();
               let isInTag = false;
               let conversationalBuffer = '';
               let tagBuffer = '';
@@ -1163,7 +1129,7 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
                 // browser are already skipped while it is gone.
                 const text = textPart || '';
                 generatedCode += text;
-                currentFile += text;
+                const closedFiles = streamedFiles.push(text);
                 const capAbort = capTracker.addChunk(text);
                 if (capAbort) {
                   for (const file of capTracker.partialFiles) {
@@ -1242,54 +1208,58 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
                 // Keep unmatched portion in buffer for next iteration
                 tagBuffer = searchText.substring(Math.max(0, lastIndex - 50)); // Keep last 50 chars
 
-                // Track fenced file blocks as they stream: an opener with a
-                // {path=...} tag starts a file, and the next opener or the
-                // closing fence ends it.
-                const openMatch = text.match(FENCE_OPEN_RE);
-                if (openMatch) {
-                  currentFilePath = openMatch[1].trim().replace(/^\.?\//, '');
-                  isInFile = true;
-                  currentFile = '';
-                }
-
-                if (isInFile && currentFilePath && FENCE_CLOSE_RE.test(currentFile)) {
-                  isInFile = false;
-                  const body = currentFile.split(FENCE_CLOSE_RE)[0] ?? '';
+                // Files the tracker finished on this chunk. It owns the fence
+                // bookkeeping and the path check — see StreamedFileTracker for the
+                // two ways the accumulator that used to live here lost content.
+                for (const closedFile of closedFiles) {
                   if (jobProgress) {
-                    // Drop the remainder of the opener line before the body.
-                    const content = body.replace(/^[^\n]*\n/, '').trim();
-                    const fileAbort = capTracker.addFile(currentFilePath, content);
-                    jobProgress.addFile(currentFilePath, content);
+                    const fileAbort = capTracker.addFile(closedFile.path, closedFile.content);
+                    jobProgress.addFile(closedFile.path, closedFile.content);
                     if (fileAbort) {
                       await jobProgress.flush();
                       throw fileAbort;
                     }
                   }
                   // Send component progress update
-                  if (currentFilePath.includes('components/')) {
+                  if (closedFile.path.includes('components/')) {
                     componentCount++;
                     const componentName =
-                      currentFilePath.split('/').pop()?.replace('.jsx', '') || 'Component';
+                      closedFile.path.split('/').pop()?.replace('.jsx', '') || 'Component';
                     await sendProgress({
                       type: 'component',
                       name: componentName,
-                      path: currentFilePath,
+                      path: closedFile.path,
                       index: componentCount,
                     });
-                  } else if (currentFilePath.includes('App.jsx')) {
+                  } else if (closedFile.path.includes('App.jsx')) {
                     await sendProgress({
                       type: 'app',
                       message: 'Generated main App.jsx',
-                      path: currentFilePath,
+                      path: closedFile.path,
                     });
                   }
-
-                  currentFile = '';
-                  currentFilePath = '';
                 }
               }
 
               console.log('\n\n[generate-ai-code-stream] Streaming complete.');
+
+              // A dropped path is not silent. The log line is for us; the warning frame is
+              // for the user, who would otherwise see one fewer file than the model claimed
+              // to write with nothing anywhere saying why. The post-stream parse below drops
+              // the same entries (`sanitizeGenerationPath(...)` then `continue`), so this is
+              // the one place the drop is announced.
+              if (streamedFiles.rejectedPaths.length > 0) {
+                const rejectedPaths = [...streamedFiles.rejectedPaths];
+                log.warn('generation.unsafe_stream_paths', {
+                  jobId: generationJob?.id ?? null,
+                  paths: rejectedPaths,
+                });
+                await sendProgress({
+                  type: 'warning',
+                  message: `Skipped ${rejectedPaths.length} file${rejectedPaths.length === 1 ? '' : 's'} whose path was unsafe.`,
+                  warnings: rejectedPaths,
+                });
+              }
 
               if (clientDisconnected) {
                 // Note it and carry on. Returning here returned `files` before
@@ -1410,7 +1380,6 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
                 }
               }
 
-              const morphEditBlocks = (generatedCode.match(/<edit\s+target_file="/g) || []).length;
               const summary = summarizeGenerationOutput(generatedCode);
               log.info('generation.stream_complete', {
                 jobId: generationJob?.id ?? null,
@@ -1424,11 +1393,13 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
               return {
                 generatedCode,
                 files,
-                morphEditBlocks,
                 stop: clientDisconnected,
               };
             },
-            (out) => out.stop || !producedNoChanges(out.files.length, out.morphEditBlocks),
+            // A parsed file is the only evidence a run changed anything: nothing applies
+            // Morph `<edit>` blocks, so counting them here retried the wrong attempts and
+            // let an edit that changed nothing pass as complete.
+            (out) => out.stop || out.files.length > 0,
             { circuit: getDefaultCircuit() },
           );
           servedProvider = failover.provider;
@@ -1492,53 +1463,12 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
           ? explanationMatch[1].trim()
           : 'Code generated successfully!';
 
-        // Validate generated code for truncation issues
-        const truncationWarnings: string[] = [];
-
-        // Skip ellipsis checking entirely - too many false positives with spread operators, loading text, etc.
-
-        // Check for unclosed file tags
-        const fileOpenCount = (generatedCode.match(/<file path="/g) || []).length;
-        const fileCloseCount = (generatedCode.match(/<\/file>/g) || []).length;
-        if (fileOpenCount !== fileCloseCount) {
-          truncationWarnings.push(
-            `Unclosed file tags detected: ${fileOpenCount} open, ${fileCloseCount} closed`,
-          );
-        }
-
-        // Check for files that seem truncated (very short or ending abruptly)
-        const truncationCheckRegex = /<file path="([^"]+)">([\s\S]*?)(?:<\/file>|$)/g;
-        let truncationMatch;
-        while ((truncationMatch = truncationCheckRegex.exec(generatedCode)) !== null) {
-          const filePath = truncationMatch[1];
-          const content = truncationMatch[2];
-
-          // Only check for really obvious HTML truncation - file ends with opening tag
-          if (content.trim().endsWith('<') || content.trim().endsWith('</')) {
-            truncationWarnings.push(`File ${filePath} appears to have incomplete HTML tags`);
-          }
-
-          // Skip "..." check - too many false positives with loading text, etc.
-
-          // Only check for SEVERE truncation issues
-          if (filePath.match(/\.(jsx?|tsx?)$/)) {
-            // Only check for severely unmatched brackets (more than 3 difference)
-            const openBraces = (content.match(/{/g) || []).length;
-            const closeBraces = (content.match(/}/g) || []).length;
-            const braceDiff = Math.abs(openBraces - closeBraces);
-            if (braceDiff > 3) {
-              // Only flag severe mismatches
-              truncationWarnings.push(
-                `File ${filePath} has severely unmatched braces (${openBraces} open, ${closeBraces} closed)`,
-              );
-            }
-
-            // Check if file is extremely short and looks incomplete
-            if (content.length < 20 && content.includes('function') && !content.includes('}')) {
-              truncationWarnings.push(`File ${filePath} appears severely truncated`);
-            }
-          }
-        }
+        // Validate generated code for truncation issues. Keyed to the fenced `{path=…}`
+        // contract the prompt actually specifies: this used to count `<file path="` tags,
+        // a shape no prompt asks for, so the warnings were always empty, the recovery
+        // below was unreachable and a reply cut off mid-file shipped as a finished build.
+        const truncatedFiles = detectTruncatedFiles(generatedCode);
+        const truncationWarnings: string[] = truncatedFiles.map((file) => file.warning);
 
         // Handle truncation with automatic retry (if enabled in config)
         if (truncationWarnings.length > 0 && appConfig.codeApplication.enableTruncationRecovery) {
@@ -1553,53 +1483,16 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
             warnings: truncationWarnings,
           });
 
-          // Try to fix truncated files automatically
-          const truncatedFiles: string[] = [];
-          const fileRegex = /<file path="([^"]+)">([\s\S]*?)(?:<\/file>|$)/g;
-          let match;
-
-          while ((match = fileRegex.exec(generatedCode)) !== null) {
-            const filePath = match[1];
-            const content = match[2];
-
-            // Check if this file appears truncated - be more selective
-            const hasEllipsis =
-              content.includes('...') &&
-              !content.includes('...rest') &&
-              !content.includes('...props') &&
-              !content.includes('spread');
-
-            const endsAbruptly =
-              content.trim().endsWith('...') ||
-              content.trim().endsWith(',') ||
-              content.trim().endsWith('(');
-
-            const hasUnclosedTags =
-              content.includes('</') && !content.match(/<\/[a-zA-Z0-9]+>/) && content.includes('<');
-
-            const tooShort = content.length < 50 && filePath.match(/\.(jsx?|tsx?)$/);
-
-            // Check for unmatched braces specifically
-            const openBraceCount = (content.match(/{/g) || []).length;
-            const closeBraceCount = (content.match(/}/g) || []).length;
-            const hasUnmatchedBraces = Math.abs(openBraceCount - closeBraceCount) > 1;
-
-            const isTruncated =
-              (hasEllipsis && endsAbruptly) ||
-              hasUnclosedTags ||
-              (tooShort && !content.includes('export')) ||
-              hasUnmatchedBraces;
-
-            if (isTruncated) {
-              truncatedFiles.push(filePath);
-            }
-          }
+          // One scan decides both the warnings and what recovery re-asks for. They used to
+          // be two scans with different thresholds, so a warning could fire with no file
+          // selected — recovery then did nothing and the warnings survived as "incomplete".
+          const truncatedPaths = truncatedFiles.map((file) => file.path);
 
           // If we have truncated files, try to regenerate them
-          if (truncatedFiles.length > 0) {
+          if (truncatedPaths.length > 0) {
             console.log(
               '[generate-ai-code-stream] Attempting to regenerate truncated files:',
-              truncatedFiles,
+              truncatedPaths,
             );
 
             // The recovery call is a second generation, so reuse the provider entry that
@@ -1616,8 +1509,11 @@ MORPH FAST APPLY MODE (EDIT-ONLY):
               providerChain[0] ??
               null;
             let recoveryFailure: TruncationRecoveryOutcome | null = null;
+            /** Files whose completed content had no block to land on — kept as generated. */
+            const unrepairedWarnings: string[] = [];
 
-            for (const filePath of truncatedFiles) {
+            for (const truncatedFile of truncatedFiles) {
+              const filePath = truncatedFile.path;
               // One provider failure will repeat for every remaining file, so stop asking.
               if (recoveryFailure) break;
               await sendProgress({
@@ -1679,15 +1575,24 @@ Provide the complete file content without any truncation. Include all necessary 
                   throw new EmptyCompletionError(recoveryEntry.provider, recoveryEntry.model);
                 }
 
-                // Replace the truncated file in the generatedCode
-                const filePattern = new RegExp(
-                  `<file path="${filePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}">[\\s\\S]*?(?:</file>|$)`,
-                  'g',
-                );
-                generatedCode = generatedCode.replace(
-                  filePattern,
-                  `<file path="${filePath}">\n${cleanContent}\n</file>`,
-                );
+                // Put the repaired file back as a `{path=…}` fence. The rewrite used to emit
+                // `<file path="…">`, which `filesFromReply` does not parse, so the settle
+                // dropped the very file this second model call was paid for.
+                //
+                // A miss is not fatal and is emphatically not a provider failure. This used
+                // to throw, which meant the catch below classified a local path-matching bug
+                // as `provider_error`, abandoned every remaining truncated file untried, and
+                // told the user their build was incomplete because of a vendor outage. The
+                // block keeps whatever the first pass produced and the run names it.
+                const repaired = replaceBlockInReply(generatedCode, filePath, cleanContent);
+                if (!repaired) {
+                  console.warn(
+                    `[generate-ai-code-stream] No ${filePath} block to replace; keeping what was generated.`,
+                  );
+                  unrepairedWarnings.push(truncatedFile.warning);
+                  continue;
+                }
+                generatedCode = repaired;
 
                 console.log(`[generate-ai-code-stream] Successfully completed ${filePath}`);
               } catch (completionError) {
@@ -1716,13 +1621,35 @@ Provide the complete file content without any truncation. Include all necessary 
                 warnings: truncationWarnings,
               });
             } else {
-              // Clear the warnings only when every truncated file was actually rewritten.
+              // Only the files that were actually rewritten stop being reported. A partial
+              // repair used to be impossible to express: the branch cleared every warning
+              // and claimed all of them were completed.
               truncationWarnings.length = 0;
-              await sendProgress({
-                type: 'info',
-                message: `Completed ${truncatedFiles.length} truncated file${truncatedFiles.length === 1 ? '' : 's'}.`,
-              });
+              truncationWarnings.push(...unrepairedWarnings);
+              const repairedCount = truncatedFiles.length - unrepairedWarnings.length;
+              if (repairedCount > 0) {
+                await sendProgress({
+                  type: 'info',
+                  message: `Completed ${repairedCount} truncated file${repairedCount === 1 ? '' : 's'}.`,
+                });
+              }
+              if (unrepairedWarnings.length > 0) {
+                await sendProgress({
+                  type: 'warning',
+                  message: `Could not repair ${unrepairedWarnings.length} truncated file${unrepairedWarnings.length === 1 ? '' : 's'} — the completed content had no matching block in the reply, so what was generated was kept.`,
+                  warnings: truncationWarnings,
+                });
+              }
             }
+
+            // The `complete` frame and the job's `producedFiles` are counted from `files`,
+            // which was built from the pre-repair parse. Re-derive it from the reply the
+            // settle will actually store, or the two disagree the moment recovery changes
+            // what the reply contains.
+            files = Object.entries(filesFromReply(generatedCode)).flatMap(([path, content]) => {
+              const safe = sanitizeGenerationPath(path);
+              return safe.ok ? [{ path: safe.path, content }] : [];
+            });
           }
         }
 
@@ -1749,11 +1676,13 @@ Provide the complete file content without any truncation. Include all necessary 
           logError('generation.tokens_failed', tokenError);
         }
 
-        // A run that produced neither a <file> block nor a Morph <edit> block changed
-        // nothing. That used to end as a 200 with `files: 0` and a SUCCEEDED job, which told
-        // the user their request had been carried out when it had not.
-        const morphEditBlocks = (generatedCode.match(/<edit\s+target_file="/g) || []).length;
-        const hadNoChanges = producedNoChanges(files.length, morphEditBlocks);
+        // A run that produced no file block changed nothing. That used to end as a 200 with
+        // `files: 0` and a SUCCEEDED job, which told the user their request had been carried
+        // out when it had not. Morph `<edit>` blocks used to count as evidence of a change
+        // here; nothing has applied them since the apply route was deleted, so counting them
+        // only let an edit that changed nothing report success. The prompt no longer asks
+        // for them either, so a parsed file is the only evidence there is.
+        const hadNoChanges = files.length === 0;
         const noChangeReason = hadNoChanges
           ? describeNoChanges({
               isEdit,
@@ -1898,8 +1827,10 @@ Provide the complete file content without any truncation. Include all necessary 
           skillNames: injectedSkills.names,
         });
 
-        // Track edit in conversation history
-        if (isEdit && editContext && global.conversationState) {
+        // Track edit in conversation history. Writes land on the state this
+        // request resolved, never on whatever the process global points at by
+        // now — another project's request may have taken it over mid-stream.
+        if (isEdit && editContext) {
           const editRecord: ConversationEdit = {
             timestamp: Date.now(),
             userRequest: prompt,
@@ -1909,11 +1840,11 @@ Provide the complete file content without any truncation. Include all necessary 
             outcome: 'success', // Assuming success if we got here
           };
 
-          global.conversationState.context.edits.push(editRecord);
+          conversation.context.edits.push(editRecord);
 
           // Track major changes
           if (editContext.editIntent.type === 'ADD_FEATURE' || files.length > 3) {
-            global.conversationState.context.projectEvolution.majorChanges.push({
+            conversation.context.projectEvolution.majorChanges.push({
               timestamp: Date.now(),
               description: editContext.editIntent.description,
               filesAffected: editContext.primaryFiles,
@@ -1921,7 +1852,7 @@ Provide the complete file content without any truncation. Include all necessary 
           }
 
           // Update last updated timestamp
-          global.conversationState.lastUpdated = Date.now();
+          conversation.lastUpdated = Date.now();
 
           console.log(
             '[generate-ai-code-stream] Updated conversation history with edit:',
@@ -1987,9 +1918,10 @@ Provide the complete file content without any truncation. Include all necessary 
       } finally {
         // Order matters here, and it used to be wrong. `writer.close()` rejects when the
         // readable was cancelled, and it sat ahead of the lock release — so a client
-        // disconnect skipped the release, which is what stops `lockHeartbeat`, and the
-        // project lock then renewed itself every 60 seconds indefinitely. Cleanup that must
-        // happen runs first; the close is last and cannot skip anything.
+        // disconnect skipped `releaseGenerationLock`, which is what stops the hold's
+        // heartbeat, and the project lock then renewed itself every 60 seconds
+        // indefinitely. Cleanup that must happen runs first; the close is last and cannot
+        // skip anything.
         jobHeartbeat?.stop();
         providerSlot?.release();
         await jobProgress?.flush();

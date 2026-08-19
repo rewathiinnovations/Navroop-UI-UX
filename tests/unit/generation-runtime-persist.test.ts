@@ -4,6 +4,7 @@ import {
   clearGeneration,
   executeGenerationJob,
   getGenerationState,
+  markGenerationError,
   setGenerationProjectId,
   startApply,
   subscribeGenerationJobs,
@@ -152,5 +153,76 @@ describe('generation-runtime persist previewNotice', () => {
     expect(
       getGenerationState().messages.some((message) => message.content === PREVIEW_NOT_READY_NOTICE),
     ).toBe(false);
+  });
+});
+
+/**
+ * The browser must not write the site. `settleStreamedGeneration` already stored the
+ * normalized `<file path=…>` blocks server-side; this PATCH used to send the model's raw
+ * markdown reply as `lastCode` on top of it, and `getCurrentProjectFiles` — finding no file
+ * block in markdown — collapsed the whole chat answer into a single bogus `src/App.jsx`.
+ * Every finished generation destroyed the multi-file site it had just built.
+ */
+describe('generation-runtime never persists the raw reply as lastCode', () => {
+  const MARKDOWN_REPLY = [
+    'Built a small landing page.',
+    '',
+    '```tsx{path=src/App.tsx}',
+    'export default function App() { return null; }',
+    '```',
+    '',
+    'Let me know what to change.',
+  ].join('\n');
+
+  let unsubscribe: () => void;
+  let bodies: Array<Record<string, unknown>>;
+
+  beforeEach(() => {
+    clearGeneration();
+    unsubscribe = subscribeGenerationJobs(executeGenerationJob);
+    setGenerationProjectId('proj-1');
+    bodies = [];
+    stubPersist({
+      persistImpl: (_url, init) => {
+        bodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
+        return persistResponse({ project: { id: 'proj-1' } });
+      },
+    });
+  });
+
+  afterEach(() => {
+    unsubscribe();
+    clearGeneration();
+    vi.unstubAllGlobals();
+  });
+
+  it('settles without a lastCode field at all', async () => {
+    await startApply({ code: MARKDOWN_REPLY, isEdit: false });
+
+    expect(bodies.length).toBeGreaterThan(0);
+    for (const body of bodies) {
+      expect(body).not.toHaveProperty('lastCode');
+      expect(JSON.stringify(body)).not.toContain('Built a small landing page');
+    }
+    // Status still has to reach the server, or the job looks stuck.
+    expect(bodies.at(-1)?.status).toBe('ready');
+    expect(getGenerationState().status).toBe('ready');
+  });
+
+  it('keeps the reply in memory for the chat without sending it', async () => {
+    await startApply({ code: MARKDOWN_REPLY, isEdit: false });
+
+    expect(getGenerationState().lastGeneratedCode).toBe(MARKDOWN_REPLY);
+    expect(bodies.some((body) => 'lastCode' in body)).toBe(false);
+  });
+
+  it('does not send lastCode on the error path either', async () => {
+    markGenerationError('The provider rejected the key.');
+
+    await vi.waitFor(() => expect(bodies.length).toBeGreaterThan(0));
+    for (const body of bodies) {
+      expect(body).not.toHaveProperty('lastCode');
+    }
+    expect(bodies.at(-1)?.status).toBe('error');
   });
 });

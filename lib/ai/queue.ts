@@ -1,4 +1,5 @@
 import { backoffMs } from './failover';
+import { providerConcurrency } from './providers';
 
 export const QUEUE_TIMEOUT_MESSAGE = 'The build waited too long in the queue';
 export const QUEUE_MAX_WAIT_MS = 10 * 60_000;
@@ -7,9 +8,7 @@ export function queuePositionLabel(n: number) {
   return `In queue — ${n} builds ahead`;
 }
 
-export type QueueStartResult =
-  | { ok: true }
-  | { ok: false; errorMessage: string };
+export type QueueStartResult = { ok: true } | { ok: false; errorMessage: string };
 
 export type QueueAcquire = {
   position: number;
@@ -29,7 +28,7 @@ export function createProviderQueue(opts: {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }) {
-  const concurrency = Math.max(1, opts.concurrency);
+  let concurrency = Math.max(1, opts.concurrency);
   const maxWaitMs = opts.maxWaitMs ?? QUEUE_MAX_WAIT_MS;
   const now = opts.now ?? Date.now;
   const sleep =
@@ -62,7 +61,10 @@ export function createProviderQueue(opts: {
     waiters.set(id, list);
   }
 
-  function handleRateLimit(providerId: string, input: { retryAfterSeconds?: number; attempt?: number } = {}) {
+  function handleRateLimit(
+    providerId: string,
+    input: { retryAfterSeconds?: number; attempt?: number } = {},
+  ) {
     void providerId;
     if (input.retryAfterSeconds != null && Number.isFinite(input.retryAfterSeconds)) {
       const waitMs = Math.min(60_000, Math.max(0, input.retryAfterSeconds * 1000));
@@ -75,7 +77,8 @@ export function createProviderQueue(opts: {
     providerId: string,
     input: { jobId: string; onPosition?: (n: number) => void },
   ): QueueAcquire {
-    const queuedAhead = Math.max(0, runningCount(providerId) - concurrency) + (waiters.get(providerId)?.length ?? 0);
+    const queuedAhead =
+      Math.max(0, runningCount(providerId) - concurrency) + (waiters.get(providerId)?.length ?? 0);
     const needsQueue = runningCount(providerId) >= concurrency;
     const position = needsQueue ? queuedAhead + 1 : 0;
 
@@ -128,12 +131,29 @@ export function createProviderQueue(opts: {
     return { position, started, release };
   }
 
-  return { acquire, handleRateLimit, now };
+  /**
+   * The limit is settable because it is an admin setting, not a boot constant.
+   * `ai.concurrency` sat on /admin/config doing nothing: the process-wide queue
+   * below was built once at module load from AI_PROVIDER_CONCURRENCY, so an
+   * operator who bought quota and raised the number watched builds keep queuing
+   * behind the old limit until the container was redeployed.
+   *
+   * Raising it promotes whoever is already waiting rather than making them
+   * serve out a limit that no longer exists. Lowering it only stops new slots
+   * being handed out — running generations are never cancelled mid-build.
+   */
+  function setConcurrency(next: number) {
+    if (!Number.isFinite(next)) return;
+    const value = Math.max(1, Math.floor(next));
+    if (value === concurrency) return;
+    concurrency = value;
+    for (const id of waiters.keys()) promote(id);
+  }
+
+  return { acquire, handleRateLimit, now, setConcurrency };
 }
 
-const defaultQueue = createProviderQueue({
-  concurrency: Number.parseInt(process.env.AI_PROVIDER_CONCURRENCY || '2', 10) || 2,
-});
+const defaultQueue = createProviderQueue({ concurrency: providerConcurrency(process.env) });
 
 export function getDefaultProviderQueue() {
   return defaultQueue;
