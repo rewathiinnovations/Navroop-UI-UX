@@ -74,4 +74,71 @@ describe('GenerationCodeView', () => {
     expect(markup).toContain('1 file skipped');
     expect(markup).toContain('path escapes the project');
   });
+
+  it('retires the thinking banner once code has landed', () => {
+    // A photographed build showed "Analyzing your request…" above a rail of 33
+    // written files: the screen claimed to be thinking while the code streamed in.
+    const markup = renderToStaticMarkup(
+      createElement(GenerationCodeView, {
+        progress: progress({
+          isGenerating: true,
+          isThinking: false,
+          thinkingText: 'Analyzing your request...',
+          files: [{ path: 'app/page.tsx', content: '// page', type: 'component', completed: true }],
+        }),
+      }),
+    );
+
+    expect(markup).not.toContain('Analyzing your request');
+    expect(markup).toContain('app/page.tsx');
+  });
+
+  it('shows the thinking text only while there is nothing else to show', () => {
+    const markup = renderToStaticMarkup(
+      createElement(GenerationCodeView, {
+        progress: progress({
+          isGenerating: true,
+          isThinking: true,
+          thinkingText: 'Analyzing your request...',
+          files: [],
+        }),
+      }),
+    );
+
+    expect(markup).toContain('Analyzing your request');
+    expect(markup).toContain('AI is thinking');
+  });
+
+  it('never claims it thought for zero seconds', () => {
+    const markup = renderToStaticMarkup(
+      createElement(GenerationCodeView, {
+        progress: progress({
+          isGenerating: true,
+          isThinking: false,
+          thinkingText: 'Planning the layout',
+          thinkingDuration: undefined,
+          files: [],
+        }),
+      }),
+    );
+
+    expect(markup).not.toContain('Thought for 0 seconds');
+    expect(markup).toContain('Finished thinking');
+  });
+
+  it('does report a duration it actually knows', () => {
+    const markup = renderToStaticMarkup(
+      createElement(GenerationCodeView, {
+        progress: progress({
+          isGenerating: true,
+          isThinking: false,
+          thinkingText: 'Planning the layout',
+          thinkingDuration: 7,
+          files: [],
+        }),
+      }),
+    );
+
+    expect(markup).toContain('Thought for 7 seconds');
+  });
 });

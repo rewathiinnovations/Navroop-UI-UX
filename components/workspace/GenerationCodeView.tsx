@@ -18,7 +18,15 @@ import type { GenerationProgressState } from '@/lib/generation/types';
  * ever reached that markup.
  */
 export default function GenerationCodeView({ progress }: { progress: GenerationProgressState }) {
-  const showThinking = progress.isGenerating && (progress.isThinking || progress.thinkingText);
+  // The thinking banner belongs to the seconds before any code exists. It used to
+  // stay up for the whole build, so a run with 33 files written still said
+  // "Analyzing your request…" — the screen claiming to be thinking while the file
+  // rail filled up behind it. Once a file has landed, the code is the story.
+  const showThinking =
+    progress.isGenerating &&
+    progress.files.length === 0 &&
+    (progress.isThinking || Boolean(progress.thinkingText));
+  const thinkingSeconds = progress.thinkingDuration;
   const totalComponents = progress.components.length;
 
   return (
@@ -37,7 +45,11 @@ export default function GenerationCodeView({ progress }: { progress: GenerationP
             ) : (
               <>
                 <span aria-hidden>✓</span>
-                Thought for {progress.thinkingDuration ?? 0} seconds
+                {/* "Thought for 0 seconds" is what an unknown duration used to
+                    print, which reads as a bug rather than as no information. */}
+                {typeof thinkingSeconds === 'number' && thinkingSeconds > 0
+                  ? `Thought for ${thinkingSeconds} seconds`
+                  : 'Finished thinking'}
               </>
             )}
           </p>

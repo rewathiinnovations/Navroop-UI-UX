@@ -102,6 +102,13 @@ export type WorkspacePlan = {
   status: PlanStatus;
   trigger: PlanTrigger;
   sourceMessage: string;
+  /**
+   * When the plan was drafted, so the chat can show the card where it happened.
+   * Without it the card was always rendered after the message list, so every later
+   * message appeared above it and an approved plan looked like the newest thing in
+   * the conversation.
+   */
+  createdAt: string;
   content: WorkspacePlanContent;
 };
 
@@ -123,6 +130,16 @@ export function parsePlanContent(value: unknown): WorkspacePlanContent | null {
   return { summary: raw.summary, pages, keyFeatures };
 }
 
+/** Accepts the Prisma `Date`, a serialised ISO string, or neither. */
+function planTimestamp(value: unknown): string {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString();
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    if (!Number.isNaN(parsed)) return new Date(parsed).toISOString();
+  }
+  return new Date(0).toISOString();
+}
+
 /** Latest plan for the thread. SUPERSEDED rows are omitted (replaced in place). */
 export function toWorkspacePlan(value: unknown): WorkspacePlan | null {
   if (!value || typeof value !== 'object') return null;
@@ -138,6 +155,10 @@ export function toWorkspacePlan(value: unknown): WorkspacePlan | null {
     status: raw.status,
     trigger: raw.trigger === 'followup' ? 'followup' : 'initial',
     sourceMessage: typeof raw.sourceMessage === 'string' ? raw.sourceMessage : '',
+    // The row carries a Date; JSON gives a string. Neither is guaranteed here, and
+    // an unusable value must not hide the card, so it falls back to the epoch —
+    // which places it before every message, i.e. where a first plan belongs.
+    createdAt: planTimestamp(raw.createdAt),
     content,
   };
 }

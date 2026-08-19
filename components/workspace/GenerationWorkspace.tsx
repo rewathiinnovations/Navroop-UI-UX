@@ -349,19 +349,13 @@ function AISandboxPage({
                 setShouldAutoGenerate(true);
               }
             }
-            if (
-              isActiveGenerationStatus(project.generationStatus ?? project.status) &&
-              !isJobActive
-            ) {
-              addChatMessage(
-                project.progressMessage
-                  ? `Previous generation stopped: ${project.progressMessage}`
-                  : 'Previous generation was interrupted. Send a message to continue.',
-                'system',
-              );
-            } else {
-              addChatMessage(`Opened saved project: ${loadedTitle}`, 'system');
-            }
+            // No "previous generation stopped" heuristic here. It read the stale
+            // `generationStatus` column and pasted `progressMessage` after it, which
+            // produced "Previous generation stopped: Generation complete!" on a run
+            // that had finished — a row left active by a client that died before its
+            // terminal PATCH. Interruptions are the job row's story, and RecoveryPanel
+            // tells it from `Job.status` with a Keep/Retry/Start over choice.
+            addChatMessage(`Opened saved project: ${loadedTitle}`, 'system');
           } else if (projectRes.status === 401) {
             router.push(`/?auth=login&next=/project/${projectIdParam}`);
             return;
@@ -514,6 +508,28 @@ function AISandboxPage({
     }
   }, [generationJobStatus, isJobActive]);
 
+  /**
+   * Code while it is being written, preview the moment it is finished.
+   *
+   * The Code tab is where the build is legible — the file rail, the body filling
+   * in — but once the last file lands there is nothing left to watch there, and the
+   * thing the person actually asked for is the site. Leaving them on a static file
+   * list is what made a finished build feel like it had not finished.
+   *
+   * Only on the transition, and only from the code tab: someone who opened Quality
+   * or Assets mid-build, or who is reading code deliberately after it ended, keeps
+   * the view they chose.
+   */
+  const wasGeneratingRef = useRef(false);
+  useEffect(() => {
+    const generating = generationProgress.isGenerating;
+    const finished = wasGeneratingRef.current && !generating;
+    wasGeneratingRef.current = generating;
+    if (!finished) return;
+    if (generationProgress.files.length === 0) return;
+    setActiveTab((current) => (current === 'generation' ? 'preview' : current));
+  }, [generationProgress.isGenerating, generationProgress.files.length]);
+
   const updateStatus = (text: string, active: boolean) => {
     setStatus({ text, active });
   };
@@ -554,7 +570,10 @@ function AISandboxPage({
         prompt,
         style: selectedStyle || homeContextInput || null,
         model: aiModel,
-        sandboxId: overrides?.sandboxId || sandboxData?.sandboxId || null,
+        // No sandboxId. It was sent as `null` — present, not absent — so
+        // persistProjectGeneration spread a column `Project` no longer has into
+        // prisma.project.update, every PATCH answered 500, and the stream reader
+        // below died on the first progress frame while the server kept generating.
         previewUrl: overrides?.previewUrl || sandboxData?.url || null,
         screenshot: urlScreenshot,
         // No lastCode: the server owns it. This sent the model's raw markdown
