@@ -33,9 +33,17 @@ export function isChatBuilding(input: {
   phase?: string | null;
   jobStatus?: string | null;
   recoveryActive?: boolean;
+  /** A generation streaming in this tab right now. */
+  streaming?: boolean;
 }) {
   if (input.recoveryActive) return false;
-  return isJobInFlight(input.jobStatus);
+  if (isJobInFlight(input.jobStatus)) return true;
+  // A stream running in this tab is a build before any poll can say so. The
+  // polled status still carries the *previous* job's SUCCEEDED for the first
+  // seconds, so the chat fell through to a bare "Navroop is working…" — no file
+  // name, no elapsed clock — which is what read as nothing happening. Plan
+  // refinement is excluded: it streams, but it is not building a site.
+  return Boolean(input.streaming) && input.phase !== 'PLANNING';
 }
 
 export function chatPlaceholder(input: {

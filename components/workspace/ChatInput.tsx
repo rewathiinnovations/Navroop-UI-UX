@@ -39,7 +39,9 @@ export default function ChatInput({
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
   }, [value]);
 
-  const building = isChatBuilding({ phase, jobStatus, recoveryActive });
+  // `sending` is a stream in this tab; the placeholder must agree with the
+  // indicator above it rather than waiting for the first poll.
+  const building = isChatBuilding({ phase, jobStatus, recoveryActive, streaming: sending });
   const planning = phase === 'PLANNING';
   const showMode = !planning && !building;
   const busy = isChatLocked({

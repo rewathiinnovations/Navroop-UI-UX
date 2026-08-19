@@ -52,3 +52,24 @@ export function shouldStopClientPoll(input: {
   if (isHeartbeatStale(input.heartbeatAt, now, CLIENT_STALE_HEARTBEAT_MS)) return 'stale_heartbeat';
   return null;
 }
+
+/**
+ * A watchdog stop describes one job, and must be dropped the moment the client
+ * has evidence of newer work.
+ *
+ * The stop also switches polling off, so nothing could re-observe reality on its
+ * own: a stale verdict left the chat locked behind "Previous generation stopped"
+ * — no progress line, disabled input — while a healthy repair job (started from
+ * the preview's own Fix this button) ran to completion entirely unseen.
+ */
+export function watchdogStopIsStale(input: {
+  stop: ClientPollStopReason | null;
+  stoppedJobId: string | null;
+  jobId?: string | null;
+  /** A generation streaming in this tab right now. */
+  isJobActive?: boolean;
+}): boolean {
+  if (!input.stop) return false;
+  if (input.isJobActive) return true;
+  return Boolean(input.jobId) && input.jobId !== input.stoppedJobId;
+}

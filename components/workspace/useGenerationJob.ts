@@ -2,7 +2,12 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { isChatRecoveryStatus, isJobSettled } from '@/lib/jobs/chat-ui';
-import { CLIENT_POLL_CEILING_MS, nextPollIntervalMs, shouldStopClientPoll } from '@/lib/jobs/poll';
+import {
+  CLIENT_POLL_CEILING_MS,
+  nextPollIntervalMs,
+  shouldStopClientPoll,
+  watchdogStopIsStale,
+} from '@/lib/jobs/poll';
 import type { PublicGenerationJob } from '@/lib/jobs/types';
 
 /**
@@ -39,6 +44,16 @@ export function useGenerationJob({
   const [clientStop, setClientStop] = useState<'timeout' | 'stale_heartbeat' | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const startedAtRef = useRef<number | null>(null);
+  /**
+   * Which job the watchdog stop was measured against.
+   *
+   * A stop also switches polling off (`shouldPoll` below), so nothing in this
+   * hook could ever notice the *next* build: the chat sat behind "Previous
+   * generation stopped" with a locked input while a healthy repair job — one
+   * started from the preview's own Fix this button — ran to completion unseen.
+   * A verdict about one job must not outlive it.
+   */
+  const stoppedJobIdRef = useRef<string | null>(null);
 
   const refresh = useCallback(async () => {
     if (!projectId) return null;
@@ -54,6 +69,19 @@ export function useGenerationJob({
     if (!projectId) return;
     void refresh();
   }, [projectId, refresh]);
+
+  // New work clears the old verdict, which also turns polling back on.
+  useEffect(() => {
+    const stale = watchdogStopIsStale({
+      stop: clientStop,
+      stoppedJobId: stoppedJobIdRef.current,
+      jobId: job?.id,
+      isJobActive,
+    });
+    if (!stale) return;
+    stoppedJobIdRef.current = null;
+    setClientStop(null);
+  }, [clientStop, isJobActive, job?.id]);
 
   const shouldPoll =
     Boolean(projectId) &&
@@ -75,6 +103,7 @@ export function useGenerationJob({
       // watchdog about a job that already finished only invents a failure —
       // its heartbeat stopped when it ended, so it is stale by definition.
       if (isJobSettled(next?.status)) {
+        stoppedJobIdRef.current = null;
         setClientStop(null);
         return;
       }
@@ -94,6 +123,7 @@ export function useGenerationJob({
               heartbeatAt: next?.heartbeatAt ?? null,
             });
       if (stop) {
+        stoppedJobIdRef.current = next?.id ?? null;
         setClientStop(stop);
         return;
       }
@@ -143,6 +173,17 @@ export function useGenerationJob({
     ? isChatRecoveryStatus(job?.status)
     : clientStop !== null;
 
+  /**
+   * A settled row belongs to the turn that finished, and must not gate the next
+   * one. `ProjectWorkspace` computes the chat's "working" state as
+   * `sending && (!job || isJobInFlight(job.status))`, so the previous build's
+   * SUCCEEDED row silenced every progress signal on the following send: no
+   * indicator, no file name, no elapsed clock — the chat looked idle while the
+   * server ran QUEUED → RUNNING. A stream in this tab is newer than any row we
+   * last polled, so the row is unknown until a poll returns the new one.
+   */
+  const activeJob = isJobActive && isJobSettled(job?.status) ? null : job;
+
   const act = useCallback(
     async (action: 'keep' | 'retry' | 'start-over', body?: Record<string, unknown>) => {
       if (!projectId) return { ok: false as const, error: 'Project is not ready' };
@@ -186,7 +227,7 @@ export function useGenerationJob({
   );
 
   return {
-    job,
+    job: activeJob,
     recovery,
     clientStop,
     busy,

@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import {
   summarizeStreamingFiles,
@@ -39,22 +40,52 @@ export function streamingFilesLabel(
   return streamProgressLabel(summarizeStreamingFiles(files));
 }
 
+/**
+ * A build can spend minutes on time-to-first-token before a single file
+ * exists (one verified DeepSeek run: 4.5 minutes silent, then 21 files in 90
+ * seconds). A spinner over a frozen sentence reads as a hang, so the elapsed
+ * clock is the honest floor: it shows the build is alive without inventing
+ * progress it cannot know.
+ */
+function useElapsedLabel(startedAt?: string | null): string | null {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!startedAt) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [startedAt]);
+
+  if (!startedAt) return null;
+  const started = Date.parse(startedAt);
+  if (Number.isNaN(started)) return null;
+  const seconds = Math.max(0, Math.floor((now - started) / 1000));
+  if (seconds < 5) return null;
+  const minutes = Math.floor(seconds / 60);
+  return minutes > 0 ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
+}
+
 export default function BuildingIndicator({
   trigger,
   queueAhead,
   files,
+  startedAt,
 }: {
   trigger?: PlanTrigger | null;
   queueAhead?: number | null;
   /** `GenerationProgressState.files`; drives the "writing X" line. */
   files?: GenerationFile[] | null;
+  /** Job `startedAt`; drives the elapsed clock while no file exists yet. */
+  startedAt?: string | null;
 }) {
   const streaming = streamingFilesLabel(files);
-  const label =
+  const elapsed = useElapsedLabel(startedAt);
+  const base =
     queueAhead && queueAhead > 0
       ? `In queue — ${queueAhead} builds ahead`
       : (streaming ??
         (trigger === 'followup' ? 'Building your changes…' : 'Building your project…'));
+  const label = elapsed ? `${base} · ${elapsed}` : base;
 
   return (
     <div

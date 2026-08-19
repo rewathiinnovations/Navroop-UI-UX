@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Copy, Link2, MoreHorizontal, RotateCcw, ThumbsDown, ThumbsUp } from 'lucide-react';
 import { cn } from '@/utils/cn';
-import type { ChatMessage } from '@/lib/generation/types';
+import type { ChatMessage, GenerationFile } from '@/lib/generation/types';
 import type { JobResourceIds } from '@/lib/jobs/types';
 import { isChatBuilding } from '@/lib/jobs/chat-ui';
 import BuildingIndicator from './BuildingIndicator';
@@ -55,6 +55,8 @@ export default function ChatPanel({
   recovery,
   queueAhead,
   jobStatus,
+  streamFiles,
+  startedAt,
 }: {
   messages: ChatMessage[];
   projectId: string | null;
@@ -84,6 +86,14 @@ export default function ChatPanel({
     resourceIds?: JobResourceIds | null;
   } | null;
   queueAhead?: number | null;
+  /**
+   * The live generation's files, straight from `GenerationProgressState`. The
+   * chat is where the user waits, so it names the file being written rather
+   * than sitting on a frozen "Building your project…" for minutes.
+   */
+  streamFiles?: GenerationFile[] | null;
+  /** Job `startedAt`, so the wait shows elapsed time before the first file. */
+  startedAt?: string | null;
 }) {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const [feedback, setFeedback] = useState<Record<string, MessageFeedback>>({});
@@ -101,10 +111,33 @@ export default function ChatPanel({
     -1,
   );
 
+  /**
+   * Where the plan card belongs in the thread.
+   *
+   * It used to be rendered after the whole message list, so a follow-up question
+   * sent an hour later appeared *above* the plan and the approved plan read as the
+   * newest thing in the conversation. The card is a chat event like any other: it
+   * sits after the last message that predates it.
+   */
+  const planCard =
+    plan && plan.status !== 'SUPERSEDED' ? (
+      <PlanCard plan={plan} approving={approving} onApprove={onApprovePlan} />
+    ) : null;
+  const planDraftedAt = plan ? Date.parse(plan.createdAt) : Number.NaN;
+  const planAfterIndex = Number.isNaN(planDraftedAt)
+    ? messages.length - 1
+    : messages.reduce(
+        (found, message, index) => (message.timestamp.getTime() <= planDraftedAt ? index : found),
+        -1,
+      );
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {header}
       <div ref={scrollerRef} className="flex-1 overflow-y-auto px-16 py-16">
+        {/* A plan older than every message in the thread — a first plan on a
+            reopened project — belongs at the top, not appended to the bottom. */}
+        {planAfterIndex < 0 ? planCard : null}
         {messages.map((message, index) => {
           const key = messageKey(message, index);
           const showLatest = Boolean(latestCheckpoint) && index === lastGenerationIndex;
@@ -283,14 +316,12 @@ export default function ChatPanel({
                     </div>
                   </div>
                 )}
+              {index === planAfterIndex ? planCard : null}
             </div>
           );
         })}
         {latestCheckpoint && lastGenerationIndex < 0 && (
           <CheckpointCard checkpoint={latestCheckpoint} onPreviewCheckpoint={onPreviewCheckpoint} />
-        )}
-        {plan && plan.status !== 'SUPERSEDED' && (
-          <PlanCard plan={plan} approving={approving} onApprove={onApprovePlan} />
         )}
         {phase === 'PLANNING' && !plan && !recovery?.visible && !isGenerating && (
           // The project row exists but the plan is still streaming in (the
@@ -332,12 +363,27 @@ export default function ChatPanel({
             resourceIds={recovery.resourceIds}
           />
         ) : (
-          isChatBuilding({ phase, jobStatus, recoveryActive: recovery?.visible }) && (
-            <BuildingIndicator trigger={plan?.trigger} queueAhead={queueAhead} />
+          isChatBuilding({
+            phase,
+            jobStatus,
+            recoveryActive: recovery?.visible,
+            streaming: isGenerating,
+          }) && (
+            <BuildingIndicator
+              trigger={plan?.trigger}
+              queueAhead={queueAhead}
+              files={streamFiles}
+              startedAt={startedAt}
+            />
           )
         )}
         {isGenerating &&
-          !isChatBuilding({ phase, jobStatus, recoveryActive: recovery?.visible }) &&
+          !isChatBuilding({
+            phase,
+            jobStatus,
+            recoveryActive: recovery?.visible,
+            streaming: isGenerating,
+          }) &&
           !recovery?.visible && (
             <p className="text-[12px] text-[var(--studio-faint)]">Navroop is working…</p>
           )}
