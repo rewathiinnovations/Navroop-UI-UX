@@ -5,10 +5,11 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Github, X } from 'lucide-react';
 import StudioButton from '@/components/app/studio/StudioButton';
+import ConfirmAction from '@/components/admin/ConfirmAction';
 import { disconnectGitHub } from '@/lib/github/actions';
 
 const DISCONNECT_COPY =
-  "Disconnect GitHub? Projects you've already pushed will keep their repo link, but you won't be able to push further updates until you reconnect.";
+  "Projects you've already pushed will keep their repo link, but you won't be able to push further updates until you reconnect.";
 
 export default function ConnectorsGitHubCard({
   connected,
@@ -24,17 +25,6 @@ export default function ConnectorsGitHubCard({
   const router = useRouter();
   const [visibleBanner, setVisibleBanner] = useState(banner);
   const [confirmOpen, setConfirmOpen] = useState(false);
-  const [disconnecting, setDisconnecting] = useState(false);
-  const [disconnectError, setDisconnectError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!confirmOpen) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setConfirmOpen(false);
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [confirmOpen]);
 
   useEffect(() => {
     if (!banner) return;
@@ -49,19 +39,11 @@ export default function ConnectorsGitHubCard({
   }, [banner]);
 
   const onConfirmDisconnect = async () => {
-    setDisconnecting(true);
-    setDisconnectError(null);
-    try {
-      const result = await disconnectGitHub();
-      if (result.ok) {
-        setConfirmOpen(false);
-        router.refresh();
-        return;
-      }
-      setDisconnectError(result.error || 'Could not disconnect GitHub');
-    } finally {
-      setDisconnecting(false);
+    const result = await disconnectGitHub();
+    if (!result.ok) {
+      throw new Error(result.error || 'Could not disconnect GitHub');
     }
+    router.refresh();
   };
 
   return (
@@ -157,49 +139,15 @@ export default function ConnectorsGitHubCard({
         )}
       </section>
 
-      {confirmOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-20">
-          <button
-            type="button"
-            aria-label="Cancel disconnect"
-            className="absolute inset-0 bg-[var(--studio-fg)]/20"
-            onClick={() => setConfirmOpen(false)}
-          />
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="disconnect-github-title"
-            className="relative z-10 w-full max-w-[420px] rounded-16 border border-[var(--studio-line)] bg-[var(--studio-surface)] p-24 shadow-lg"
-          >
-            <p
-              id="disconnect-github-title"
-              className="text-[15px] leading-6 text-[var(--studio-fg)]"
-            >
-              {DISCONNECT_COPY}
-            </p>
-            {disconnectError && (
-              <p className="mt-12 text-[13px] text-[var(--studio-danger)]" role="alert">
-                {disconnectError}
-              </p>
-            )}
-            <div className="mt-20 flex justify-end gap-8">
-              <StudioButton type="button" variant="ghost" onClick={() => setConfirmOpen(false)}>
-                Cancel
-              </StudioButton>
-              <StudioButton
-                type="button"
-                variant="danger"
-                disabled={disconnecting}
-                onClick={() => {
-                  void onConfirmDisconnect();
-                }}
-              >
-                {disconnecting ? 'Disconnecting…' : 'Disconnect'}
-              </StudioButton>
-            </div>
-          </div>
-        </div>
-      )}
+      <ConfirmAction
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title="Disconnect GitHub?"
+        body={DISCONNECT_COPY}
+        confirmLabel="Disconnect"
+        busyLabel="Disconnecting…"
+        onConfirm={onConfirmDisconnect}
+      />
     </div>
   );
 }
