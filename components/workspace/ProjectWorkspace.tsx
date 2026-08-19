@@ -7,6 +7,8 @@ import ChatInput from './ChatInput';
 import ChatPanel from './ChatPanel';
 import PreviewPanel from './PreviewPanel';
 import { BrowserPreview } from './BrowserPreview';
+import type { GenerationFile } from '@/lib/generation/types';
+import StreamingCodePanel from './StreamingCodePanel';
 import { useProjectFiles } from './useProjectFiles';
 import AssetsPanel from './AssetsPanel';
 import BrainPanel from './BrainPanel';
@@ -16,7 +18,6 @@ import VersionHistoryPanel from './VersionHistoryPanel';
 import ProductTour from './ProductTour';
 import WorkspaceTopBar from './WorkspaceTopBar';
 import { useCheckpoints } from './useCheckpoints';
-import { useProjectSandbox } from './useProjectSandbox';
 import { useStaticPreview } from './useStaticPreview';
 import { useLivePreviewMode } from './useLivePreviewMode';
 import { useProjectPlan } from './useProjectPlan';
@@ -70,6 +71,8 @@ export default function ProjectWorkspace({
   initialPhase = null,
   initialPlan = null,
   isJobActive = false,
+  streamFiles = null,
+  streamedText = null,
   generationStatus = null,
   onStartApprovedBuild,
   onRetryImport,
@@ -103,6 +106,14 @@ export default function ProjectWorkspace({
   initialPhase?: ProjectPhase | null;
   initialPlan?: WorkspacePlan | null;
   isJobActive?: boolean;
+  /**
+   * The live generation's files, straight from `GenerationProgressState.files`.
+   * Carries at most one trailing `completed: false` entry, so the preview can
+   * layer only finished files and never hand esbuild a half-written module.
+   */
+  streamFiles?: GenerationFile[] | null;
+  /** Raw reply so far, shown only until the first file appears. */
+  streamedText?: string | null;
   generationStatus?: string | null;
   onStartApprovedBuild?: (promptContext: string) => void;
   onRetryImport?: (source: { sourceUrl: string; mode: ImportMode }) => void | Promise<void>;
@@ -111,6 +122,12 @@ export default function ProjectWorkspace({
 }) {
   const [chatCollapsed, setChatCollapsed] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  /**
+   * Which checkpoint the reader asked to see, so the matching header pill reads as
+   * selected. It is only ever trusted while `previewing` is true — the hook owns
+   * whether a preview is on at all, so this cannot outlive one.
+   */
+  const [previewedVersionId, setPreviewedVersionId] = useState<string | null>(null);
   const previewDevice = usePreviewDevice();
   const { phase, plan, refining, approving, refine, approve, watchForPlan } = useProjectPlan({
     projectId,
@@ -140,23 +157,29 @@ export default function ProjectWorkspace({
     selectedPage,
   });
   const livePreview = useLivePreviewMode({
-    projectId,
-    lockedOn: staticPreview.lockedLive || staticPreview.status === 'FAILED',
+    // `shouldEnterLiveMode` inside the hook is what refuses a FAILED build now.
+    // ORing `status === 'FAILED'` into `lockedOn` here is exactly what used to
+    // force live mode on for a failed build; the call site must not re-derive it.
+    lockedOn: staticPreview.lockedLive,
+    staticStatus: staticPreview.status,
   });
-  const sandbox = useProjectSandbox({
-    projectId,
-    phase,
-    iframeRef,
-    liveMode: livePreview.enabled,
-  });
-  const previewUrl = livePreview.enabled
-    ? sandbox.previewUrl || sandboxUrl
-    : staticPreview.previewUrl || sandbox.previewUrl || sandboxUrl;
+  // Live mode has no URL of its own any more — the sandbox VM that served one went
+  // away with `20260819010000_drop_sandbox_columns`, so both branches end at the
+  // snapshot URL the server hands down.
+  const previewUrl = livePreview.enabled ? sandboxUrl : staticPreview.previewUrl || sandboxUrl;
   const presence = useProjectPresence(projectId, {
     selfBusy: isJobActive || generationStatus === 'ready' || generationStatus === 'applying',
   });
   const generationJob = useGenerationJob({ projectId, phase, isJobActive });
   const projectFiles = useProjectFiles(projectId);
+
+  // Derived once and used by both the pane choice and `hasFiles`, because those two
+  // disagreeing is what produced the original symptom: `hasFiles` said 'empty', which
+  // made `previewPaneKind` short-circuit this panel's children, so whatever the pane
+  // would have rendered never mounted at all.
+  const hasStoredFiles = Object.keys(projectFiles.files).length > 0;
+  const hasFinishedStreamedFile = streamFiles?.some((file) => file.completed) ?? false;
+  const nothingRenderableYet = !hasStoredFiles && !hasFinishedStreamedFile;
 
   const handleSend = (text: string, options: SendMessageOptions) => {
     if (phase === 'PLANNING') {
@@ -178,6 +201,22 @@ export default function ProjectWorkspace({
       }
       if (result.promptContext) onStartApprovedBuild?.(result.promptContext);
     });
+  };
+
+  /**
+   * The one preview-a-checkpoint path, shared by the chat's version button and the
+   * header's version pills. `locked` stays silent because the client already raised
+   * the LockBar for that conflict, and saying it again as a chat line says it twice.
+   */
+  const handlePreviewCheckpoint = (id: string) => {
+    void previewCheckpoint(id).then((result) => {
+      if (result.ok) {
+        setPreviewedVersionId(id);
+        return;
+      }
+      if (!('locked' in result && result.locked)) onThreadMessage?.(result.error, 'system');
+    });
+    onPreviewCheckpoint?.(id);
   };
 
   const recoveryErrorCode =
@@ -304,6 +343,9 @@ export default function ProjectWorkspace({
         githubRepoUrl={githubRepoUrl}
         sourceUrl={sourceUrl}
         presenceViewers={presence.others}
+        checkpoints={checkpoints}
+        activeVersionId={previewing ? previewedVersionId : null}
+        onPreviewVersion={handlePreviewCheckpoint}
       />
       <StaleViewBanner
         visible={presence.stale}
@@ -339,12 +381,7 @@ export default function ProjectWorkspace({
                 (!generationJob.job || isJobInFlight(generationJob.job.status))
               }
               header={chatHeader}
-              onPreviewCheckpoint={(id) => {
-                void previewCheckpoint(id).then((result) => {
-                  if (!result.ok) onThreadMessage?.(result.error, 'system');
-                });
-                onPreviewCheckpoint?.(id);
-              }}
+              onPreviewCheckpoint={handlePreviewCheckpoint}
               latestCheckpoint={latestCheckpoint}
               phase={phase}
               jobStatus={generationJob.job?.status}
@@ -404,7 +441,6 @@ export default function ProjectWorkspace({
               sending={sending || refining || approving}
               phase={phase}
               jobStatus={generationJob.job?.status}
-              sandboxLocked={sandbox.chatLocked}
               projectLocked={presence.heldByOther}
               recoveryActive={generationJob.recovery && showsChatRecovery(generationJob.job?.kind)}
             />
@@ -415,7 +451,14 @@ export default function ProjectWorkspace({
           <PreviewPanel
             iframeRef={iframeRef}
             sandboxUrl={previewUrl}
-            hasFiles={Object.keys(projectFiles.files).length > 0}
+            // Streamed files count too, not just persisted ones, and so does a build
+            // that has not written one yet. `hasFiles` decides `previewPaneKind`, and
+            // 'empty' short-circuits this panel's children — so on a first build the
+            // pane stayed on "Nothing to preview yet" and the preview below was never
+            // mounted at all, no matter what it was handed. `isJobActive` covers the
+            // first seconds, when Code owes the reader the streaming panel's own
+            // "code appears here as it is written" state rather than EmptyPreview.
+            hasFiles={isJobActive || hasStoredFiles || hasFinishedStreamedFile}
             selectedPage={selectedPage}
             expanded={chatCollapsed}
             previewDevice={previewDevice.device}
@@ -428,12 +471,10 @@ export default function ProjectWorkspace({
             previewing={previewing}
             onExitPreview={() => {
               void exitPreview().then((result) => {
-                if (!result.ok) onThreadMessage?.(result.error, 'system');
+                if (!result.ok && !('locked' in result && result.locked)) {
+                  onThreadMessage?.(result.error, 'system');
+                }
               });
-            }}
-            sandboxState={sandbox}
-            onRetrySandbox={() => {
-              void sandbox.boot();
             }}
             previewKind={livePreview.enabled ? 'live' : 'static'}
             preparingPreview={staticPreview.preparing && !livePreview.enabled}
@@ -442,10 +483,6 @@ export default function ProjectWorkspace({
             onRetryPreview={() => {
               void staticPreview.retry();
             }}
-            onStartLive={() => {
-              void livePreview.startLive();
-            }}
-            liveNotice={livePreview.notice}
           >
             {view === 'seo' && projectId ? (
               <QualityPanel
@@ -460,11 +497,35 @@ export default function ProjectWorkspace({
               <BrainPanel projectId={projectId} />
             ) : view === 'domains' && projectId ? (
               <DomainsPanel projectId={projectId} />
-            ) : view === 'preview' && projectId && !isJobActive ? (
-              // Compiled and run in this browser from the project's stored
-              // files. `preview` still owns the generation view, which streams
-              // code into the file explorer while a build is running.
-              <BrowserPreview stack={projectFiles.stack} files={projectFiles.files} />
+            ) : view === 'preview' && projectId ? (
+              // Two things can occupy the preview pane during a build.
+              //
+              // If there is anything renderable — stored files from an earlier build,
+              // or a file this stream has already finished — the compiled preview
+              // stays up. It only layers `completed: true` files, so a half-written
+              // module never reaches esbuild, and a failed intermediate compile keeps
+              // the last good frame rather than blanking a working page.
+              //
+              // If there is nothing renderable yet — a first build, minutes before the
+              // model closes its first fence — the pane shows the code as it arrives
+              // instead of a spinner. It used to sit on "Waiting for the first files…"
+              // while the only view that could show the work was one tab away, which
+              // reads as a hang. Watching the file being typed is the point; the
+              // compiled page takes over the moment there is a page to compile.
+              nothingRenderableYet ? (
+                <StreamingCodePanel
+                  files={streamFiles ?? []}
+                  status={generationStatus}
+                  streamedText={streamedText}
+                  className="h-full"
+                />
+              ) : (
+                <BrowserPreview
+                  stack={projectFiles.stack}
+                  files={projectFiles.files}
+                  stream={isJobActive && streamFiles ? { files: streamFiles, active: true } : null}
+                />
+              )
             ) : (
               preview
             )}
@@ -491,7 +552,9 @@ export default function ProjectWorkspace({
           }}
           onBookmark={(id) => {
             void bookmark(id).then((result) => {
-              if (!result.ok) onThreadMessage?.(result.error, 'system');
+              if (!result.ok && !('locked' in result && result.locked)) {
+                onThreadMessage?.(result.error, 'system');
+              }
             });
           }}
         />
