@@ -32,10 +32,21 @@ describe('generation write guard', () => {
   });
 
   it('rejects an empty or doubled-slash path so it never reaches the sandbox', () => {
-    expect(() => assertWritableGenerationFile({ path: '', content: '{}' })).toThrow(/Unsafe file path/);
+    expect(() => assertWritableGenerationFile({ path: '', content: '{}' })).toThrow(
+      /Unsafe file path/,
+    );
     expect(() => assertWritableGenerationFile({ path: '//package.json', content: '{}' })).toThrow(
       /Unsafe file path/,
     );
+  });
+
+  it('rejects a binary payload and a file over the per-file cap — F-028 put this gate on the persist path', () => {
+    expect(() =>
+      assertWritableGenerationFile({ path: 'public/logo.png', content: '\u0000'.repeat(16) }),
+    ).toThrow(/Binary content is not allowed: public\/logo\.png/);
+    expect(() =>
+      assertWritableGenerationFile({ path: 'assets/big.css', content: 'x'.repeat(2_000_001) }),
+    ).toThrow(/File is too large: assets\/big\.css/);
   });
 
   it('accepts a real package.json object', () => {

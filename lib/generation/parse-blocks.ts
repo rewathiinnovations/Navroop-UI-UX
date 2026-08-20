@@ -282,6 +282,14 @@ export function replaceBlockInReply(
 export function filesFromReply(input: string): Record<string, string> {
   const out: Record<string, string> = {};
   for (const block of extractCodeBlocks(input)) {
+    // A fence with no declared path is prose, not a file. The prompt contract
+    // requires `{path=…}` on every fence (stack-prompts/shared.ts: "Never open
+    // a bare ```tsx fence"), the stream tracker only opens on `{path=…}`
+    // fences, and truncation recovery skips undeclared blocks for the same
+    // reason. Keeping them here turned a chatty answer with one illustrative
+    // snippet into a persisted `file.js` project file — in the Code tab, the
+    // ZIP export and the deploy push — while the run reported success (F-023).
+    if (!block.declaredPath) continue;
     // No `./` stripping here: `resolveBlockPath` normalized the declared path
     // before `dedupePath` numbered it, so this key is already the one
     // `detectTruncatedFiles` and `replaceBlockInReply` name.

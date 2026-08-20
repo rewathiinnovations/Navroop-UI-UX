@@ -273,6 +273,14 @@ const APPLY_FILE_FAILURE_PREFIXES = [
   'Failed to create ',
   'Morph apply failed for ',
   'Morph apply exception for ',
+  // Persist-guard refusals (lib/generation/write-guard.ts and the total cap in
+  // safeGeneratedFiles): a file the settle declined to store is a write miss,
+  // and must land on the same partial-apply warning — not on a clean success.
+  'Unsafe file path: ',
+  'Binary content is not allowed: ',
+  'File is too large: ',
+  'Generated output is too large',
+  'package.json is not valid JSON: ',
 ] as const;
 
 export function isApplyFileFailure(error: string): boolean {

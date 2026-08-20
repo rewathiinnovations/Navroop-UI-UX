@@ -428,6 +428,74 @@ describe('safeGeneratedFiles', () => {
     });
 
     expect(Object.keys(safe)).toEqual(['src/App.jsx', 'package.json']);
-    expect(rejected).toEqual(['../../secret.env', '..\\..\\x', 'C:/x', '/etc/passwd']);
+    expect(rejected.map((file) => file.path)).toEqual([
+      '../../secret.env',
+      '..\\..\\x',
+      'C:/x',
+      '/etc/passwd',
+    ]);
+    // All four are refused for the name, not the content — the settle copy keys off this.
+    expect(
+      rejected.every((file) => ['empty', 'absolute_path', 'path_traversal'].includes(file.code)),
+    ).toBe(true);
+  });
+
+  it('rejects a file over the per-file cap with the guard message and persists the rest of the batch', () => {
+    // F-028: the 2 MB per-file guard existed only in tests. A single enormous file was
+    // stored in Project.lastCode and re-read on every generation, Code tab load and export.
+    const { safe, rejected } = safeGeneratedFiles({
+      'app/page.tsx': 'export default function Page() { return null; }',
+      'assets/big.css': 'x'.repeat(2_000_001),
+    });
+
+    expect(Object.keys(safe)).toEqual(['app/page.tsx']);
+    expect(rejected).toEqual([
+      { path: 'assets/big.css', code: 'too_large', message: 'File is too large: assets/big.css' },
+    ]);
+  });
+
+  it('rejects a binary payload with the guard message', () => {
+    const { safe, rejected } = safeGeneratedFiles({
+      'public/logo.png': '\u0000'.repeat(16),
+      'src/App.jsx': 'export default function App(){return null}',
+    });
+
+    expect(Object.keys(safe)).toEqual(['src/App.jsx']);
+    expect(rejected).toEqual([
+      {
+        path: 'public/logo.png',
+        code: 'binary',
+        message: 'Binary content is not allowed: public/logo.png',
+      },
+    ]);
+  });
+
+  it('rejects a package.json that JSON.parse cannot read — the incident the write guard was written from', () => {
+    const { safe, rejected } = safeGeneratedFiles({
+      'package.json': '{"name": "app",,}',
+      'src/App.jsx': 'export default function App(){return null}',
+    });
+
+    expect(Object.keys(safe)).toEqual(['src/App.jsx']);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.path).toBe('package.json');
+    expect(rejected[0]?.code).toBe('invalid_json');
+    expect(rejected[0]?.message).toMatch(/^package\.json is not valid JSON: /);
+  });
+
+  it('stops accepting files once the batch passes the total cap, keeping what already fit', () => {
+    const big = 'x'.repeat(2_000_000);
+    const { safe, rejected } = safeGeneratedFiles({
+      'a.css': big,
+      'b.css': big,
+      'c.css': big,
+      'd.css': big,
+      'e.css': big,
+    });
+
+    expect(Object.keys(safe)).toEqual(['a.css', 'b.css', 'c.css', 'd.css']);
+    expect(rejected).toEqual([
+      { path: 'e.css', code: 'too_large', message: 'Generated output is too large' },
+    ]);
   });
 });

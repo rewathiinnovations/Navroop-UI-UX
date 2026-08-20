@@ -120,6 +120,28 @@ describe('extractCodeBlocks', () => {
     expect(files['src/index.css'].trim()).toBe('body { margin: 0; }');
     expect(files['src/index.css']).not.toContain(fence);
   });
+
+  it('does not turn a pathless fence into a file', () => {
+    // F-023: this reply used to come back as { 'file.js': … } — a chatty answer with one
+    // illustrative snippet became a persisted project file (visible in the Code tab, the
+    // ZIP export and the deploy push), and repeat questions accumulated file-2.js,
+    // file-3.js. The prompt contract mandates a path on every fence
+    // (lib/stack-prompts/shared.ts: "Never open a bare ```tsx fence"), so a fence with no
+    // declared path is prose, not a file.
+    const reply = [
+      'You can debounce the search input like this:',
+      '',
+      `${fence}js`,
+      'const debounced = debounce(fn, 300);',
+      fence,
+      '',
+      'Let me know if you want me to wire it in.',
+    ].join('\n');
+    expect(filesFromReply(reply)).toEqual({});
+    // The block itself is still scanned — display readers and the truncation walk see it —
+    // it just never becomes a file map entry.
+    expect(extractCodeBlocks(reply).map((block) => block.declaredPath)).toEqual([false]);
+  });
 });
 
 describe('explanationFromReply', () => {

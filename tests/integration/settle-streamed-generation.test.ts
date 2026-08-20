@@ -223,6 +223,69 @@ describe('settleStreamedGeneration — stream files are not a finished site', ()
     });
     expect(project.lastCode).toBe(existing);
   });
+
+  it('persists the rest of the batch when one file trips the per-file cap, and reports the guard message', async () => {
+    const job = await startBuild();
+    // F-028: the 2 MB per-file guard used to have no production caller, so this file
+    // landed in Project.lastCode and was re-read on every generation and export.
+    const streamedCode = [
+      'Here is the site.',
+      '```tsx{path=app/page.tsx}',
+      'export default function Page() { return null; }',
+      '```',
+      '```css{path=assets/big.css}',
+      'x'.repeat(2_000_001),
+      '```',
+    ].join('\n');
+
+    const settled = await settleStreamedGeneration({
+      jobId: job.id,
+      producedFiles: 2,
+      streamedCode,
+      provider: 'openai',
+      model: 'gpt-4o-mini',
+    });
+
+    expect(settled.outcome).toBe('succeeded');
+    expect(settled.rejectedFiles).toEqual([
+      { path: 'assets/big.css', code: 'too_large', message: 'File is too large: assets/big.css' },
+    ]);
+    const project = await prisma.project.findUniqueOrThrow({
+      where: { id: PROJECT },
+      select: { lastCode: true },
+    });
+    expect(project.lastCode).toContain('<file path="app/page.tsx">');
+    expect(project.lastCode).not.toContain('big.css');
+  });
+
+  it('fails a reply whose only file is binary, without blaming the path', async () => {
+    const job = await startBuild();
+    const streamedCode = [
+      'Here is the logo.',
+      '```bin{path=public/logo.png}',
+      '\u0000'.repeat(16),
+      '```',
+    ].join('\n');
+
+    const settled = await settleStreamedGeneration({
+      jobId: job.id,
+      producedFiles: 1,
+      streamedCode,
+      provider: 'openai',
+      model: 'gpt-4o-mini',
+    });
+
+    expect(settled.outcome).toBe('failed');
+    expect(settled.errorCode).toBe('no_files_generated');
+    // The refusal was about content, so the copy must not claim "unsafe path".
+    expect(settled.errorMessage).not.toMatch(/unsafe path/i);
+    expect(settled.errorMessage).toMatch(/rejected/i);
+    const project = await prisma.project.findUniqueOrThrow({
+      where: { id: PROJECT },
+      select: { lastCode: true },
+    });
+    expect(project.lastCode).toBeNull();
+  });
 });
 
 describe('settleStreamedGeneration — stack mismatch', () => {

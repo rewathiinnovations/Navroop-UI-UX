@@ -9,11 +9,7 @@ import {
   selectTargetFile,
 } from '@/lib/file-search-executor';
 import { FileManifest } from '@/types/file-manifest';
-import type {
-  ConversationState,
-  ConversationMessage,
-  ConversationEdit,
-} from '@/types/conversation';
+import type { ConversationMessage, ConversationEdit } from '@/types/conversation';
 import { appConfig } from '@/config/app.config';
 import { buildUiUxProMaxBrief } from '@/lib/ui-ux-pro-max/build-design-brief';
 import { getSessionUser } from '@/lib/auth';
@@ -54,6 +50,7 @@ import {
   succeedJob,
 } from '@/lib/jobs/lifecycle';
 import { settleStreamedGeneration, type StreamSettleResult } from '@/lib/jobs/settle-generation';
+import { applyOutcome } from '@/lib/jobs/copy';
 import { createProgressBatcher } from '@/lib/jobs/progress';
 import { ensureJobSettled } from '@/lib/jobs/settle';
 import { recordJobStepFailure } from '@/lib/jobs/step-failure';
@@ -230,7 +227,6 @@ async function recordProviderAttempts(jobId: string, attempts: ProviderAttempt[]
 
 declare global {
   var sandboxState: SandboxState;
-  var conversationState: ConversationState | null;
 }
 
 export async function POST(request: NextRequest) {
@@ -486,10 +482,6 @@ async function generateAiCodeStream(request: NextRequest) {
       conversationId: conversation.conversationId,
       messages: conversation.context.messages.length,
     });
-    // The publish to `global.conversationState` happens after the trims below, and what
-    // it publishes is a shallow view rather than this run's own state object. See the
-    // comment there.
-
     // Add user message to conversation history
     const userMessage: ConversationMessage = {
       id: `msg-${Date.now()}`,
@@ -516,23 +508,10 @@ async function generateAiCodeStream(request: NextRequest) {
       conversation.context.edits = conversation.context.edits.slice(-8);
     }
 
-    // `global.conversationState` still has three server-side readers — checkpoint labels
-    // (`lib/checkpoints/actions.ts`), memory extraction (`lib/memory/extract.ts`) and the
-    // follow-up prompt context (`lib/projects/plan.ts`) — so not publishing at all made a
-    // checkpoint saved right after a build lose the prompt it was named for. What is
-    // published is a shallow view, never this run's registry entry: /api/conversation-state
-    // `clear-old` (the workspace POSTs it on every mount) does
-    // `context.messages = context.messages.slice(-5)`, and applied to the live object that
-    // truncated project A's history mid-run because someone else opened a tab. Every
-    // container the endpoint reassigns a property on is copied here; the arrays themselves
-    // are shared, so an edit this run pushes later is still visible to those readers.
-    global.conversationState = {
-      ...conversation,
-      context: {
-        ...conversation.context,
-        projectEvolution: { ...conversation.context.projectEvolution },
-      },
-    };
+    // No process-global publish here. The old unkeyed `global.*` conversation slot was a
+    // single view overwritten on every request; its readers — checkpoint labels,
+    // memory extraction, the follow-up plan context — now peek the per-project registry
+    // (lib/generation/conversation-state.ts) with their own project id.
 
     // Debug: Show a sample of actual file content
     if (context?.currentFiles && Object.keys(context.currentFiles).length > 0) {
@@ -635,7 +614,12 @@ async function generateAiCodeStream(request: NextRequest) {
 
             // STEP 1: Get search plan from AI
             try {
-              const intent = await analyzeEditIntent({ prompt, manifest, model });
+              const intent = await analyzeEditIntent({
+                prompt,
+                manifest,
+                model,
+                userId: sessionUser.id,
+              });
 
               if (intent.ok) {
                 const searchPlan = intent.searchPlan;
@@ -885,7 +869,11 @@ User request: "${prompt}"`;
           memoryBlock,
         });
         // Skills are conditional and sit AFTER the cacheable prefix, never inside it.
-        const injectedSkills = await injectMatchedSkills(prompt, conversationContext || '');
+        const injectedSkills = await injectMatchedSkills(
+          prompt,
+          conversationContext || '',
+          sessionUser.id,
+        );
         if (injectedSkills.names.length > 0) {
           await sendProgress({ type: 'skills', names: injectedSkills.names });
         }
@@ -2119,6 +2107,31 @@ Provide the complete file content without any truncation. Include all necessary 
           await sendProgress({ type: 'conversation', text: persistMiss });
           await sendProgress({ type: 'error', error: persistMiss });
           return;
+        }
+
+        // A file the persist guard refused while the rest of the batch was stored — an
+        // oversized file, a binary payload, a broken package.json — is a write miss, not a
+        // silent drop. Frame it with the applyOutcome sentence the apply page uses for
+        // write failures, carrying the guard's own message, the way unsafe stream paths
+        // are announced above (F-028).
+        const persistRejections = streamSettle?.rejectedFiles ?? [];
+        if (persistRejections.length > 0) {
+          const rejectedPaths = new Set(persistRejections.map((file) => file.path));
+          const rejectionMessages = persistRejections.map((file) => file.message);
+          log.warn('generation.persist_rejected_files', {
+            jobId: generationJob?.id ?? null,
+            count: persistRejections.length,
+            paths: persistRejections.slice(0, 10).map((file) => file.path),
+          });
+          const framed = applyOutcome({
+            filesCreated: files.map((file) => file.path).filter((path) => !rejectedPaths.has(path)),
+            errors: rejectionMessages,
+          });
+          await sendProgress({
+            type: 'warning',
+            message: `${framed.warning ?? framed.message} (${rejectionMessages.join('; ')})`,
+            warnings: rejectionMessages,
+          });
         }
 
         trackSuccess('generation.success', {

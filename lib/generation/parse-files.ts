@@ -27,12 +27,15 @@ export type ParsedGenerationFile = {
   content: string;
 };
 
-const MAX_FILE_BYTES = 2_000_000;
-const MAX_TOTAL_BYTES = 8_000_000;
+/** Per-file cap, shared by the strict parser and the persist write guard. */
+export const MAX_FILE_BYTES = 2_000_000;
+/** Whole-reply cap, shared by the strict parser and the persist path. */
+export const MAX_TOTAL_BYTES = 8_000_000;
 const FILE_RE = /<file path="([^"]*)">([\s\S]*?)<\/file>/g;
 const OPEN_RE = /<file path="([^"]*)">/;
 
-function isBinary(content: string) {
+/** NUL bytes or a control-character-heavy sample: not a text file we can store. */
+export function isBinaryGenerationContent(content: string) {
   if (content.includes('\u0000')) return true;
   let control = 0;
   const sample = content.slice(0, 2048);
@@ -110,7 +113,7 @@ function parseGenerationFilesUnsafe(raw: string): ParsedGenerationFile[] {
       throw new ParseFilesError('duplicate_path', `Duplicate file path: ${safe.path}`, safe.path);
     }
     const content = match[2] ?? '';
-    if (isBinary(content)) {
+    if (isBinaryGenerationContent(content)) {
       throw new ParseFilesError('binary', `Binary content is not allowed: ${safe.path}`, safe.path);
     }
     const bytes = Buffer.byteLength(content, 'utf8');

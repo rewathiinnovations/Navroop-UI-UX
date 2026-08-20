@@ -1,6 +1,11 @@
 import { prisma } from '@/lib/db';
 import { filesFromReply } from '@/lib/generation/parse-blocks';
-import { sanitizeGenerationPath } from '@/lib/generation/parse-files';
+import {
+  MAX_TOTAL_BYTES,
+  ParseFilesError,
+  type ParseFilesErrorCode,
+} from '@/lib/generation/parse-files';
+import { assertWritableGenerationFile } from '@/lib/generation/write-guard';
 import {
   placeholderReplacements,
   replaceNeedImageTokens,
@@ -13,30 +18,66 @@ import { bumpContentVersion } from '@/lib/projects/lock';
 import { failJob, succeedJob } from './lifecycle';
 import { getJob } from './store';
 
+/** A file the persist path refused, with the guard's own message. */
+export type RejectedGeneratedFile = {
+  path: string;
+  code: ParseFilesErrorCode;
+  message: string;
+};
+
+/** Rejections about the name, not the content — the copy for "all refused" differs. */
+const PATH_REJECTION_CODES: Partial<Record<ParseFilesErrorCode, true>> = {
+  empty: true,
+  absolute_path: true,
+  path_traversal: true,
+};
+
 /**
- * `filesFromReply` documents that it does not validate paths, and this is where
- * they become project file keys — read by the Code tab, the ZIP export and the
+ * `filesFromReply` documents that it does not validate anything, and this is where
+ * its entries become project file keys — read by the Code tab, the ZIP export and the
  * GitHub push, which turns a path into a tree entry. A fence path of
- * `../../secret.env`, `..\..\x` or `C:/x` must not survive.
+ * `../../secret.env`, `..\..\x` or `C:/x` must not survive; nor must a binary
+ * payload, a file over the per-file cap, a batch over the total cap, or a
+ * package.json that JSON.parse cannot read — those guards existed with no
+ * production caller while a single 2 MB file sat in `Project.lastCode` and a
+ * broken package.json shipped to the deploy repo (F-028). The per-file checks
+ * are {@link assertWritableGenerationFile}; the cross-file total cap lives here.
  *
- * Dropped one at a time, not fatal: the generate route drops the same entries from its
- * own list (`sanitizeGenerationPath(...)` then `continue`), so dropping here is what keeps
- * the `complete` frame's file count and what is actually stored in agreement. The caller
- * does treat "all of them rejected" as fatal, because that leaves nothing to store — see
- * {@link STREAM_REJECTED_PATHS_MESSAGE}.
+ * Dropped one at a time, not fatal: the generate route drops unsafe paths from its
+ * own list the same way, so dropping here is what keeps the `complete` frame's file
+ * count and what is actually stored in agreement, and one oversized file must not
+ * cost the user the rest of a finished build. The caller does treat "all of them
+ * rejected" as fatal, because that leaves nothing to store — see
+ * {@link STREAM_REJECTED_PATHS_MESSAGE} and {@link STREAM_REJECTED_FILES_MESSAGE}.
  *
  * Exported so the rejection can be asserted without a database.
  */
 export function safeGeneratedFiles(files: Record<string, string>) {
   const safe: Record<string, string> = {};
-  const rejected: string[] = [];
+  const rejected: RejectedGeneratedFile[] = [];
+  let totalBytes = 0;
   for (const [path, content] of Object.entries(files)) {
-    const checked = sanitizeGenerationPath(path);
-    if (!checked.ok) {
-      rejected.push(path);
+    let checked: { path: string; content: string };
+    try {
+      checked = assertWritableGenerationFile({ path, content });
+    } catch (error) {
+      if (error instanceof ParseFilesError) {
+        rejected.push({ path, code: error.code, message: error.message });
+        continue;
+      }
+      throw error;
+    }
+    const bytes = Buffer.byteLength(checked.content, 'utf8');
+    if (totalBytes + bytes > MAX_TOTAL_BYTES) {
+      rejected.push({
+        path: checked.path,
+        code: 'too_large',
+        message: 'Generated output is too large',
+      });
       continue;
     }
-    safe[checked.path] = content;
+    totalBytes += bytes;
+    safe[checked.path] = checked.content;
   }
   return { safe, rejected };
 }
@@ -52,6 +93,14 @@ export const STREAM_NO_FILES_MESSAGE =
  */
 export const STREAM_REJECTED_PATHS_MESSAGE =
   'The AI finished without producing any files we could save — every file it named had an unsafe path. Try again.';
+
+/**
+ * The all-refused failure when at least one refusal was about content, not the
+ * name — a binary payload, a file over the cap, a broken package.json. Saying
+ * "unsafe path" for those would send the user chasing the wrong fault.
+ */
+export const STREAM_REJECTED_FILES_MESSAGE =
+  'The AI finished without producing any files we could save — every file it sent was rejected (too large, unreadable, or unsafe). Try again.';
 
 /**
  * Last line of defence: no file is stored with a raw `NEED_IMAGE: …` sitting
@@ -131,6 +180,14 @@ export type StreamSettleResult = {
   outcome: 'succeeded' | 'failed';
   errorCode?: string;
   errorMessage?: string;
+  /**
+   * Files the persist guard refused while the rest of the batch was stored —
+   * an oversized file, a binary payload, a broken package.json. Present only
+   * on a succeeded settle; a batch with nothing storable fails instead. The
+   * route reports these through the same warning frame applyOutcome uses for
+   * write misses, so a refused file is never a silent drop.
+   */
+  rejectedFiles?: RejectedGeneratedFile[];
 };
 
 /**
@@ -214,27 +271,34 @@ export async function settleStreamedGeneration(
     filesFromReply(input.streamedCode || ''),
   );
   if (rejected.length > 0) {
-    log.warn('generation.settle_rejected_paths', {
+    log.warn('generation.settle_rejected_files', {
       jobId: job.id,
       projectId: job.projectId,
       count: rejected.length,
-      paths: rejected.slice(0, 10),
+      paths: rejected.slice(0, 10).map((file) => file.path),
+      codes: rejected.slice(0, 10).map((file) => file.code),
     });
-    // Every path refused means nothing gets written — and on a project that already has a
+    // Everything refused means nothing gets written — and on a project that already has a
     // site `hasSite` is already true, so the run used to skip the write block, skip the
     // no-files failure below, and reach succeedJob. Chat then reported the change as made
     // while lastCode had not moved, with only this log line recording it. A reply whose
-    // paths were all refused produced no file we could save, which is that same failure.
+    // files were all refused produced no file we could save, which is that same failure.
+    // The copy distinguishes bad names from bad content, or a lone binary file would be
+    // reported as an "unsafe path" the user can never find.
     if (Object.keys(streamedFiles).length === 0) {
+      const allPathRefusals = rejected.every((file) => PATH_REJECTION_CODES[file.code]);
+      const errorMessage = allPathRefusals
+        ? STREAM_REJECTED_PATHS_MESSAGE
+        : STREAM_REJECTED_FILES_MESSAGE;
       await failJob(job.id, {
         errorCode: 'no_files_generated',
-        errorMessage: STREAM_REJECTED_PATHS_MESSAGE,
+        errorMessage,
         ...usage,
       });
       return {
         outcome: 'failed',
         errorCode: 'no_files_generated',
-        errorMessage: STREAM_REJECTED_PATHS_MESSAGE,
+        errorMessage,
       };
     }
   }
@@ -280,5 +344,5 @@ export async function settleStreamedGeneration(
   }
 
   await succeedJob(job.id, usage);
-  return { outcome: 'succeeded' };
+  return { outcome: 'succeeded', ...(rejected.length > 0 ? { rejectedFiles: rejected } : {}) };
 }

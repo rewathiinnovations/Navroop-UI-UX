@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   claimsFilesItDidNotSend,
   classifyReplyOutcome,
+  describeNoChanges,
   MISSING_FILES_CORRECTION,
 } from '../../lib/generation/no-changes';
 import { filesFromReply } from '../../lib/generation/parse-blocks';
@@ -210,5 +211,45 @@ describe('the parsed reply and the classification agree', () => {
     ].join('\n');
     expect(Object.keys(filesFromReply(corrected))).toEqual(['app/page.tsx']);
     expect(outcomeOf(corrected, true)).toBe('files');
+  });
+
+  it('reads prose with one illustrative pathless fence as an answer, not a build', () => {
+    // F-023: this reply used to parse to { 'file.js': … }, classify as 'files', report
+    // "Successfully applied 1 files" and permanently add file.js to the project. A fence
+    // with no declared path is prose; the correct outcome is 'answer', which changes
+    // nothing.
+    const reply = [
+      'You can debounce the search input like this:',
+      '',
+      '```js',
+      'const debounced = debounce(fn, 300);',
+      '```',
+      '',
+      'Let me know if you want me to wire it in.',
+    ].join('\n');
+    expect(filesFromReply(reply)).toEqual({});
+    expect(outcomeOf(reply)).toBe('answer');
+  });
+
+  it('reads a pathless fence full of file-shaped code as owed files, ending on the no-changes sentence', () => {
+    // The other half of F-023: a model that shipped a real file but dropped the {path=…}
+    // tag. Zero files parse, the FILE_SHAPE check reads the pasted source as owed files,
+    // and after the one corrective ask is spent the route reports describeNoChanges — not
+    // "Successfully applied 1 files" for a file that was never saved.
+    const reply = [
+      'I have updated the page.',
+      '',
+      '```tsx',
+      "import React from 'react';",
+      'export default function Page() { return null; }',
+      '```',
+    ].join('\n');
+    expect(filesFromReply(reply)).toEqual({});
+    expect(outcomeOf(reply)).toBe('ask_again');
+    expect(outcomeOf(reply, true)).toBe('no_files');
+    // The sentence the route reports for that outcome on a follow-up edit.
+    expect(describeNoChanges({ isEdit: true, hasProjectFiles: true, hasManifest: false })).toMatch(
+      /No changes were made: the AI did not return any files/,
+    );
   });
 });
