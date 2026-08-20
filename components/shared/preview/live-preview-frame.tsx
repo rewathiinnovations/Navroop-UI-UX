@@ -1,6 +1,6 @@
-"use client";
+'use client';
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from 'react';
 
 export default function LivePreviewFrame({
   sessionId,
@@ -20,7 +20,10 @@ export default function LivePreviewFrame({
   const idleMoveTimerRef = useRef<NodeJS.Timeout | null>(null);
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageSrc, setImageSrc] = useState<string | null>(null);
-  const [isConnecting, setIsConnecting] = useState(true);
+  // Written on connect/close/error and never read: this frame renders no
+  // connecting state. Elided rather than deleted so the writes still document
+  // where a spinner would hook in.
+  const [, setIsConnecting] = useState(true);
   const [cursorPosition, setCursorPosition] = useState<{
     x: number;
     y: number;
@@ -171,8 +174,8 @@ export default function LivePreviewFrame({
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
-      ws.addEventListener("open", () => {
-        console.log("Connected - Streaming frames...");
+      ws.addEventListener('open', () => {
+        console.log('Connected - Streaming frames...');
         setIsConnecting(false);
         // Clear any pending reconnection attempts
         if (reconnectTimeoutRef.current) {
@@ -181,13 +184,10 @@ export default function LivePreviewFrame({
         }
       });
 
-      ws.addEventListener("message", (event) => {
+      ws.addEventListener('message', (event) => {
         try {
           // Try to handle as raw base64 first
-          if (
-            typeof event.data === "string" &&
-            event.data.startsWith("data:image")
-          ) {
+          if (typeof event.data === 'string' && event.data.startsWith('data:image')) {
             setImageSrc(event.data);
             return;
           }
@@ -210,13 +210,11 @@ export default function LivePreviewFrame({
             // --- End Interrupt Idle State ---
 
             if (imgRef.current && containerRef.current) {
-              const rect = containerRef.current.getBoundingClientRect();
               const imageRect = imgRef.current.getBoundingClientRect();
 
               // Calculate the scale factor between the original coordinates and our container
               const scaleX = imageRect.width / 1920;
-              const scaleY =
-                imageRect.height > 2000 ? 0 : imageRect.height / 1080;
+              const scaleY = imageRect.height > 2000 ? 0 : imageRect.height / 1080;
 
               if (x === 0 && y === 0) {
                 x = 1800;
@@ -237,19 +235,19 @@ export default function LivePreviewFrame({
           }
 
           if (data.frame) {
-            const img = "data:image/jpeg;base64," + data.frame;
-            localStorage.setItem("browserImageData", img);
+            const img = 'data:image/jpeg;base64,' + data.frame;
+            localStorage.setItem('browserImageData', img);
             setImageSrc(img);
           }
-        } catch (e) {
+        } catch {
           // Try to use raw data as fallback if JSON parsing fails
-          if (typeof event.data === "string") {
+          if (typeof event.data === 'string') {
             setImageSrc(event.data);
           }
         }
       });
 
-      ws.addEventListener("close", (event) => {
+      ws.addEventListener('close', (event) => {
         console.log(`Disconnected (Code: ${event.code})`);
         wsRef.current = null;
 
@@ -263,11 +261,11 @@ export default function LivePreviewFrame({
         }
       });
 
-      ws.addEventListener("error", (error) => {
-        console.error("Connection error - Will attempt to reconnect");
+      ws.addEventListener('error', (error) => {
+        console.error('Connection error - Will attempt to reconnect', error);
       });
     } catch (error) {
-      console.error("Failed to create connection");
+      console.error('Failed to create connection', error);
       setIsConnecting(false);
     }
   }, [sessionId, isIdle]);
@@ -286,7 +284,7 @@ export default function LivePreviewFrame({
     } else {
       // Clean up any existing connection
       cleanupConnection();
-      console.log("Waiting for session ID...");
+      console.log('Waiting for session ID...');
 
       return () => {
         cleanupConnection();
@@ -295,10 +293,7 @@ export default function LivePreviewFrame({
   }, [sessionId, connect]); // Re-run effect when sessionId changes
 
   return (
-    <div
-      ref={containerRef}
-      className="relative w-full h-full flex items-center justify-center"
-    >
+    <div ref={containerRef} className="relative w-full h-full flex items-center justify-center">
       {/* Cursor */}
       {cursorPosition && cursorPosition.x !== 0 && cursorPosition.y !== 0 && (
         <div
@@ -306,23 +301,21 @@ export default function LivePreviewFrame({
           style={{
             left: `${cursorPosition.x}px`,
             top: `${cursorPosition.y}px`,
-            width: "50px",
-            height: "50px",
+            width: '50px',
+            height: '50px',
             backgroundImage: `url("/images/agent-cursor.svg")`,
-            backgroundSize: "contain",
-            backgroundRepeat: "no-repeat",
-            transform: "translate(-20%, -20%)",
+            backgroundSize: 'contain',
+            backgroundRepeat: 'no-repeat',
+            transform: 'translate(-20%, -20%)',
             zIndex: 10,
-            transition: isIdle ? "all 0.5s ease-out" : "all 0.1s linear",
+            transition: isIdle ? 'all 0.5s ease-out' : 'all 0.1s linear',
           }}
         />
       )}
 
       {/* Children fallback */}
       {children && !imageSrc ? (
-        <div className="h-full w-full flex items-center justify-center">
-          {children}
-        </div>
+        <div className="h-full w-full flex items-center justify-center">{children}</div>
       ) : null}
 
       {/* Preview image - Using regular img tag for dynamic WebSocket stream */}
@@ -337,10 +330,10 @@ export default function LivePreviewFrame({
             if (onScrapeComplete) onScrapeComplete();
           }}
           className={`w-auto h-auto max-w-full max-h-full object-contain transform-gpu ${
-            !imageLoaded ? "opacity-0 scale-95" : "opacity-100 scale-100"
+            !imageLoaded ? 'opacity-0 scale-95' : 'opacity-100 scale-100'
           } transition-all duration-300 ease-out`}
           style={{
-            backgroundColor: "#f0f0f0",
+            backgroundColor: '#f0f0f0',
           }}
         />
       )}

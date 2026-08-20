@@ -12,7 +12,6 @@ export type StaticPreviewState = {
   buildLog: string | null;
   error: string | null;
   lockedLive: boolean;
-  liveReason: string | null;
   preparing: boolean;
   originConfigured: boolean;
 };
@@ -24,7 +23,6 @@ const EMPTY: StaticPreviewState = {
   buildLog: null,
   error: null,
   lockedLive: false,
-  liveReason: null,
   preparing: false,
   // Assume configured until the server says otherwise, so the stronger
   // "connect a preview domain" hint never flashes while the first status
@@ -117,7 +115,6 @@ export function useStaticPreview({
       buildLog: data.buildLog ?? null,
       error: data.error ?? null,
       lockedLive: Boolean(data.lockedLive),
-      liveReason: data.liveReason ?? null,
       preparing: Boolean(data.preparing),
       originConfigured: data.originConfigured !== false,
     };

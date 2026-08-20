@@ -131,7 +131,6 @@ export async function handlePreviewRequest(input: {
 }): Promise<PreviewServeResult> {
   const headers = previewResponseHeaders({
     appOrigin: input.appOrigin,
-    cacheImmutable: false,
     contentType: 'text/plain; charset=utf-8',
   });
   const verified = verifyPreviewToken(input.token, {
@@ -179,7 +178,6 @@ export async function handlePreviewRequest(input: {
     status: 200,
     headers: previewResponseHeaders({
       appOrigin: input.appOrigin,
-      cacheImmutable: build.storagePrefix.includes(build.storagePrefix.split('/').pop() || ''),
       contentType: contentTypeForPath(relative),
     }),
     body: object,

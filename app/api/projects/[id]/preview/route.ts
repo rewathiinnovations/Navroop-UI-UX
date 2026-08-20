@@ -7,23 +7,27 @@ import { signedPreviewUrl } from '@/lib/preview/url';
 import { issuePreviewToken } from '@/lib/preview/token';
 
 /**
- * Both verbs are readers, and any signed-in member may use them.
+ * Both verbs are readers of the project, and any signed-in member may read: the
+ * project list shows every member every project, and `BrowserPreview` renders a
+ * teammate's site in the reader's own tab with no token at all.
  *
- * They were briefly owner/ADMIN-only, which closed a real hole — before that,
- * `POST action:'token'` minted a signed preview URL for ANY project id, and the
- * signature is the only thing `/preview-static` checks, so an authenticated user
- * could hand out anonymous access to a project they had nothing to do with.
- * But owner-only was the wrong boundary: the project list shows every member
- * every project and the workspace page renders for anyone signed in, so a member
- * opening a teammate's finished site got "Nothing to preview yet" over 85KB of
- * stored code. What actually matters is that a token is only ever minted for a
- * project the caller can already read, and is scoped to that project id.
+ * What is not a read is *minting* a preview token. The signed `/preview-static`
+ * URL it returns is the only thing that route checks, on a path that is public
+ * by allowlist — an anonymous, two-hour capability over the project's built
+ * site. That is owner/ADMIN only (F-148): a member who can read the project
+ * still cannot hand its site to the world. So `loadProject` fetches `ownerId`,
+ * `POST action:'token'` refuses a non-owner, and the status read omits the URL
+ * it may not mint rather than refusing the whole read.
  */
 async function loadProject(id: string) {
   return prisma.project.findFirst({
     where: { id, deletedAt: null },
-    select: { id: true },
+    select: { id: true, ownerId: true },
   });
+}
+
+function mayMintPreview(user: { id: string; role: string }, ownerId: string) {
+  return user.id === ownerId || user.role === 'ADMIN';
 }
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -38,7 +42,10 @@ async function getPreview(params: Promise<{ id: string }>) {
   const project = await loadProject(id);
   if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
 
-  const status = await getPreviewStatus(id, user.id);
+  const status = await getPreviewStatus(id, {
+    userId: user.id,
+    mayMint: mayMintPreview(user, project.ownerId),
+  });
   if (!status) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
   return NextResponse.json(status);
 }
@@ -63,6 +70,9 @@ async function postPreview(request: NextRequest, params: Promise<{ id: string }>
   const action = body.action || 'token';
 
   if (action === 'token') {
+    if (!mayMintPreview(user, project.ownerId)) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
     const token = issuePreviewToken({ projectId: id, userId: user.id });
     const previewUrl = await signedPreviewUrl({
       projectId: id,

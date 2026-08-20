@@ -18,6 +18,8 @@ vi.mock('@/lib/integrations/store', () => ({ peekRootDomain: integrations.peekRo
 vi.mock('@/lib/settings/resolve', () => ({ getSetting: settings.getSetting }));
 
 import { previewResponseHeaders } from '../../lib/preview/headers';
+import { handlePreviewRequest } from '../../lib/preview/serve';
+import { signPreviewToken } from '../../lib/preview/token';
 import { previewStaticBaseUrl, signedPreviewUrl } from '../../lib/preview/url';
 import { openPreviewWindow } from '../../lib/preview/devices';
 
@@ -105,6 +107,48 @@ describe('preview response headers', () => {
     expect(csp).toContain("img-src 'self' data: https:");
     expect(csp).not.toMatch(/default-src[^;]*https:/);
     expect(csp).not.toMatch(/script-src[^;]*'unsafe-eval'/);
+  });
+});
+
+describe('preview cache and framing headers', () => {
+  it('sends no X-Frame-Options: the only value that ever meant this is dead', () => {
+    // `ALLOW-FROM <origin>` was implemented by legacy IE/Edge only and is out of
+    // the spec, so every current browser ignores the whole header. Shipping it
+    // read as a second layer of framing protection that does not exist (F-150);
+    // `frame-ancestors` above is the control, and SAMEORIGIN would be a lie in
+    // the other direction — the preview host is deliberately NOT the app origin.
+    const headers = previewResponseHeaders({ appOrigin: APP_ORIGIN });
+    expect(headers['X-Frame-Options']).toBeUndefined();
+  });
+
+  it('never marks a served preview object immutable', async () => {
+    // F-149: the flag was `prefix.includes(prefix.split('/').pop())`, which is
+    // true of every string, so every 200 — index.html included — went out as
+    // `max-age=31536000, immutable`. Nothing in a preview build is
+    // content-addressed (lib/preview/bundle.ts writes a fixed `preview.js`), so
+    // the entry document would pin permanently the moment the token stopped
+    // varying the cache key.
+    const now = Date.now();
+    const token = signPreviewToken(
+      { projectId: 'proj-1', userId: 'user-1' },
+      { secret: 'preview-test', now, ttlMs: 60_000 },
+    );
+    const result = await handlePreviewRequest({
+      projectId: 'proj-1',
+      path: '/',
+      token,
+      appOrigin: APP_ORIGIN,
+      secret: 'preview-test',
+      now,
+      loadBuild: async () => ({
+        storagePrefix: 'previews/proj-1/build-1',
+        entryPath: 'index.html',
+        isSpa: false,
+      }),
+      getObject: async () => Buffer.from('<!doctype html>'),
+    });
+    expect(result.status).toBe(200);
+    expect(result.headers['Cache-Control']).toBe('private, no-store');
   });
 });
 

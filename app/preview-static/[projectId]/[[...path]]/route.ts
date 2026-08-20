@@ -3,7 +3,7 @@ import { get } from '@/lib/storage';
 import { previewBuildTable, getProjectPreviewFields } from '@/lib/preview/db';
 import { appOriginFromEnv } from '@/lib/preview/headers';
 import { handlePreviewRequest } from '@/lib/preview/serve';
-import { checkPreviewToken } from '@/lib/preview/token';
+import { checkPreviewToken, previewSecret } from '@/lib/preview/token';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,23 +19,33 @@ export async function GET(
   const token = request.nextUrl.searchParams.get('token');
   const relative = `/${(path ?? []).join('/')}`;
 
+  // Fail closed (F-318). This used to end in `|| ''`, so with none of the three
+  // secrets set the signature was verified against an HMAC keyed on the empty
+  // string — a key the attacker has too. Only the later `checkPreviewToken`
+  // inside `loadBuild` threw, i.e. ordering was the only thing standing between
+  // a forged token and an accepted signature.
+  let secret: string;
+  try {
+    secret = previewSecret();
+  } catch {
+    return new NextResponse('Preview is not configured', { status: 500 });
+  }
+
   const result = await handlePreviewRequest({
     projectId,
     path: relative,
     token,
     appOrigin: appOriginFromEnv(),
-    secret:
-      process.env.AUTH_SECRET ||
-      process.env.NEXTAUTH_SECRET ||
-      process.env.ENCRYPTION_KEY ||
-      '',
+    secret,
     now: Date.now(),
     loadBuild: async () => {
       const access = checkPreviewToken(token, projectId);
       if (!access.ok) return null;
       const project = await getProjectPreviewFields(projectId);
       if (!project?.activePreviewBuildId) return null;
-      const build = await previewBuildTable().findUnique({ where: { id: project.activePreviewBuildId } });
+      const build = await previewBuildTable().findUnique({
+        where: { id: project.activePreviewBuildId },
+      });
       if (!build?.storagePrefix || build.status !== 'READY') return null;
       return {
         storagePrefix: build.storagePrefix,

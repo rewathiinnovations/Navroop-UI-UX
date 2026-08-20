@@ -18,18 +18,29 @@ import type { BuildStaticPreviewDeps, BuildStaticPreviewResult } from './types';
 export const PREVIEW_MAX_BYTES = 200 * 1024 * 1024;
 export const PREVIEW_MAX_FILES = 5000;
 
+/**
+ * A failed build is not a build, so it never becomes — and never unseats — the
+ * project's active build. `fail()` used to null `activePreviewBuildId` (guarded
+ * by `fromBuildId`), which at best was a no-op and at worst cleared the last
+ * good build out from under a serving `/preview-static`, while the status read
+ * still advertised a URL derived from the newest READY build (F-147). The rule
+ * is now: only `markReady` touches the pointer.
+ *
+ * `storagePrefix` is recorded on the row even on failure so the pruner can find
+ * whatever a half-finished upload left behind (F-146) — the row is the only
+ * thing that names those objects.
+ */
 async function fail(
   deps: BuildStaticPreviewDeps,
-  projectId: string,
   buildId: string,
   error: string,
-  buildLog?: string | null,
+  input: { buildLog?: string | null; storagePrefix?: string | null } = {},
 ): Promise<BuildStaticPreviewResult> {
-  await deps.store.markFailed(buildId, { error, buildLog, mode: 'STATIC' });
-  await deps.store.setProjectPreview(projectId, {
-    previewMode: 'STATIC',
-    activePreviewBuildId: null,
-    fromBuildId: buildId,
+  await deps.store.markFailed(buildId, {
+    error,
+    buildLog: input.buildLog ?? null,
+    storagePrefix: input.storagePrefix ?? null,
+    mode: 'STATIC',
   });
   return { ok: false, buildId, error };
 }
@@ -47,7 +58,7 @@ export async function buildStaticPreview(
 
   const built = await buildStaticSite(deps.stack, deps.files);
   if (!built.ok) {
-    return fail(deps, projectId, created.id, 'Preview could not be built', built.error);
+    return fail(deps, created.id, 'Preview could not be built', { buildLog: built.error });
   }
 
   // Each path here is model output (Project.lastCode, via the static-HTML branch of
@@ -82,18 +93,30 @@ export async function buildStaticPreview(
 
   const totalBytes = files.reduce((sum, file) => sum + file.body.byteLength, 0);
   if (files.length > PREVIEW_MAX_FILES || totalBytes > PREVIEW_MAX_BYTES) {
-    return fail(deps, projectId, created.id, PREVIEW_TOO_LARGE, null);
+    return fail(deps, created.id, PREVIEW_TOO_LARGE);
   }
 
   const storagePrefix = `previews/${projectId}/${created.id}`;
-  for (const file of files) {
-    const gzip = shouldGzipPreviewPath(file.relative);
-    await deps.storage.upload({
-      key: `${storagePrefix}/${file.relative}`,
-      body: gzip ? gzipSync(file.body) : file.body,
-      contentType: contentTypeForPath(file.relative),
-      gzip,
+  try {
+    for (const file of files) {
+      const gzip = shouldGzipPreviewPath(file.relative);
+      await deps.storage.upload({
+        key: `${storagePrefix}/${file.relative}`,
+        body: gzip ? gzipSync(file.body) : file.body,
+        contentType: contentTypeForPath(file.relative),
+        gzip,
+      });
+    }
+  } catch (error) {
+    // A throw part-way through the upload used to propagate out of here, leaving
+    // the row BUILDING forever and its objects orphaned (F-146). Fail the row,
+    // naming the prefix so the pruner can reclaim whatever landed.
+    log.error('preview.build_upload_failed', {
+      projectId,
+      buildId: created.id,
+      error: error instanceof Error ? error.message : String(error),
     });
+    return fail(deps, created.id, 'Preview could not be stored', { storagePrefix });
   }
 
   await deps.store.markReady(created.id, {

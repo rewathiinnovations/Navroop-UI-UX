@@ -24,7 +24,14 @@ export type VerifyResult =
   | { ok: true; projectId: string; userId: string; exp: number }
   | { ok: false; reason: 'missing' | 'invalid' | 'expired' | 'mismatch' };
 
-function previewSecret(explicit?: string) {
+/**
+ * The one definition of "which secret signs preview tokens" (F-318). Exported so
+ * the `/preview-static` route cannot arrive at a different answer: it used to
+ * inline the same three-way `||` chain with a trailing `|| ''`, which verified the
+ * HMAC against a key an attacker also knows. A missing secret is an error here,
+ * never a key.
+ */
+export function previewSecret(explicit?: string) {
   const secret =
     explicit ||
     process.env.AUTH_SECRET ||
@@ -68,7 +75,9 @@ export function verifyPreviewToken(
   }
 
   try {
-    const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as PreviewTokenPayload;
+    const payload = JSON.parse(
+      Buffer.from(body, 'base64url').toString('utf8'),
+    ) as PreviewTokenPayload;
     if (!payload.projectId || !payload.userId || !payload.exp) {
       return { ok: false, reason: 'invalid' };
     }
@@ -80,10 +89,7 @@ export function verifyPreviewToken(
   }
 }
 
-export function issuePreviewToken(
-  input: { projectId: string; userId: string },
-  now = Date.now(),
-) {
+export function issuePreviewToken(input: { projectId: string; userId: string }, now = Date.now()) {
   return signPreviewToken(input, { secret: previewSecret(), now, ttlMs: PREVIEW_TOKEN_TTL_MS });
 }
 

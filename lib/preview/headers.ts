@@ -1,6 +1,5 @@
 export function previewResponseHeaders(input: {
   appOrigin: string;
-  cacheImmutable?: boolean;
   contentType?: string;
   contentEncoding?: string;
 }) {
@@ -19,16 +18,24 @@ export function previewResponseHeaders(input: {
       `font-src 'self' data: https:`,
       `frame-ancestors 'self' ${input.appOrigin}`,
     ].join('; '),
-    'X-Frame-Options': `ALLOW-FROM ${input.appOrigin}`,
+    // No `X-Frame-Options`. The only value that expressed this intent,
+    // `ALLOW-FROM <origin>`, was legacy-IE-only and is out of the spec, so every
+    // current browser ignores the header when it sees it (F-150) — it read as a
+    // second layer of protection that does not exist. `frame-ancestors` above is
+    // the control. `SAMEORIGIN` is not a fallback here: the preview host is
+    // deliberately not the app origin, so it would forbid the one framing the
+    // product needs.
     'X-Robots-Tag': 'noindex, nofollow',
     'Referrer-Policy': 'no-referrer',
     'X-Content-Type-Options': 'nosniff',
   };
-  if (input.cacheImmutable) {
-    headers['Cache-Control'] = 'public, max-age=31536000, immutable';
-  } else {
-    headers['Cache-Control'] = 'private, no-store';
-  }
+  // Always `no-store`. Nothing served from a preview build is content-addressed
+  // — `lib/preview/bundle.ts` writes a fixed `preview.js` — so there is no path
+  // that may be pinned, and `index.html` least of all. This used to be decided
+  // by `prefix.includes(prefix.split('/').pop())`, true of every string, which
+  // marked every 200 immutable for a year (F-149); it was masked only by the
+  // token query varying the cache key.
+  headers['Cache-Control'] = 'private, no-store';
   if (input.contentType) headers['Content-Type'] = input.contentType;
   if (input.contentEncoding) headers['Content-Encoding'] = input.contentEncoding;
   return headers;

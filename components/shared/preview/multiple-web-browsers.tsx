@@ -1,7 +1,7 @@
-"use client";
-import { useEffect, useState, useCallback } from "react";
-import { motion } from "framer-motion";
-import WebBrowser from "./web-browser";
+'use client';
+import { useEffect, useState, useCallback } from 'react';
+import { motion } from 'motion/react';
+import WebBrowser from './web-browser';
 
 let interval: NodeJS.Timeout;
 
@@ -54,7 +54,7 @@ export default function MultipleWebBrowsers({
             key={browser.id}
             className="absolute w-full rounded-xl overflow-hidden"
             style={{
-              transformOrigin: "top center",
+              transformOrigin: 'top center',
             }}
             animate={{
               top: index * -CARD_OFFSET,
@@ -62,10 +62,7 @@ export default function MultipleWebBrowsers({
               zIndex: activeBrowsers.length - index,
             }}
           >
-            <WebBrowser
-              sessionId={browser.sessionId}
-              isScrapeComplete={browser.isScrapeComplete}
-            >
+            <WebBrowser sessionId={browser.sessionId} isScrapeComplete={browser.isScrapeComplete}>
               {browser.children}
             </WebBrowser>
           </motion.div>

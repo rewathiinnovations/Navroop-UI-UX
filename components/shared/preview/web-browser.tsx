@@ -1,13 +1,11 @@
-import { useEffect, useState } from "react";
-import LivePreviewFrame from "./live-preview-frame";
+import { useEffect, useState } from 'react';
+import LivePreviewFrame from './live-preview-frame';
 
 export default function WebBrowser({
-  url,
   sessionId,
   isScrapeComplete,
   children,
 }: {
-  url?: string;
   sessionId: string;
   isScrapeComplete: boolean;
   children?: React.ReactNode;
@@ -29,7 +27,7 @@ export default function WebBrowser({
     <main className="relative w-full h-full flex items-center justify-center bg-transparent">
       <div
         className={`w-full h-full max-w-[95vw] max-h-[85vh] min-w-full sm:min-w-[700px] rounded-2xl shadow-lg border border-gray-100 bg-white overflow-hidden flex flex-col transform-gpu ${
-          isVisible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4"
+          isVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'
         } transition-all duration-300 ease-out`}
       >
         {/* macOS-style top bar with loading indicator */}
@@ -37,17 +35,17 @@ export default function WebBrowser({
           <div className="flex gap-2">
             <div
               className={`w-3 h-3 rounded-full transition-colors duration-200 ${
-                isLoading ? "bg-yellow-500" : "bg-red-500"
+                isLoading ? 'bg-yellow-500' : 'bg-red-500'
               }`}
             />
             <div
               className={`w-3 h-3 rounded-full transition-colors duration-200 ${
-                isLoading ? "bg-yellow-500" : "bg-yellow-500"
+                isLoading ? 'bg-yellow-500' : 'bg-yellow-500'
               }`}
             />
             <div
               className={`w-3 h-3 rounded-full transition-colors duration-200 ${
-                isLoading ? "bg-yellow-500" : "bg-green-500"
+                isLoading ? 'bg-yellow-500' : 'bg-green-500'
               }`}
             />
           </div>
@@ -61,7 +59,7 @@ export default function WebBrowser({
         {/* Content area with fade transition */}
         <div
           className={`flex-1 overflow-hidden transition-opacity duration-300 ${
-            isLoading ? "opacity-50" : "opacity-100"
+            isLoading ? 'opacity-50' : 'opacity-100'
           }`}
         >
           <LivePreviewFrame
@@ -69,7 +67,7 @@ export default function WebBrowser({
             onScrapeComplete={
               isScrapeComplete
                 ? () => {
-                    console.log("Scrape complete");
+                    console.log('Scrape complete');
                     setIsLoading(false);
                   }
                 : undefined

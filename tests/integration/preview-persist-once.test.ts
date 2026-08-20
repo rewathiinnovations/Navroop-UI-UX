@@ -40,6 +40,7 @@ vi.mock('@/lib/signals/collect', () => ({
   countVisualEditsFromSource: () => 0,
   recordVisualEditRate: async () => undefined,
   maybeSettleFollowups: async () => undefined,
+  recordGenerationKept: async () => undefined,
 }));
 vi.mock('@/lib/preview/production', () => ({
   buildPreviewForProject: async (projectId: string, checkpointId: string) => {

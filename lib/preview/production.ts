@@ -27,6 +27,9 @@ function prismaStore(): PreviewBuildStore {
           mode: input.mode,
           error: input.error ?? null,
           buildLog: input.buildLog ?? null,
+          // A half-finished upload leaves objects under this prefix; recording
+          // it is the only way the pruner can reclaim them (F-146).
+          ...(input.storagePrefix ? { storagePrefix: input.storagePrefix } : {}),
           builtAt: new Date(),
         },
       });

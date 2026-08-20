@@ -1,4 +1,4 @@
-import * as esbuild from 'esbuild-wasm';
+import type * as ESBuild from 'esbuild-wasm';
 import { isLocalPreviewSpecifier, stripPreviewScheme } from './labels';
 
 /**
@@ -23,17 +23,33 @@ export type BundleResult =
   | { ok: false; error: string; durationMs: number; cacheHit: boolean };
 
 declare global {
+  var __navroopEsbuild: Promise<typeof ESBuild> | undefined;
   var __navroopEsbuildInit: Promise<void> | undefined;
   var __navroopBundleCache: Map<string, { code: string; css: string }> | undefined;
 }
 
 const BUNDLE_CACHE_LIMIT = 16;
 
+/**
+ * The esbuild JS wrapper, fetched at the moment it is first needed.
+ *
+ * The wasm binary was always lazy, but the wrapper was a static top-level import
+ * in a module a `'use client'` component imports statically, which put the whole
+ * esbuild API surface in the workspace route's first client chunk — for every
+ * user, including those who never open the preview (F-640). The type import
+ * above is erased at compile time, so nothing above this line reaches the
+ * bundle. The promise is cached on `globalThis` alongside the init promise so a
+ * fast-refresh reload does not re-download it.
+ */
+function loadEsbuild(): Promise<typeof ESBuild> {
+  globalThis.__navroopEsbuild ??= import('esbuild-wasm');
+  return globalThis.__navroopEsbuild;
+}
+
 export function ensureEsbuild(): Promise<void> {
-  globalThis.__navroopEsbuildInit ??= esbuild.initialize({
-    wasmURL: ESBUILD_WASM_URL,
-    worker: true,
-  });
+  globalThis.__navroopEsbuildInit ??= loadEsbuild().then((esbuild) =>
+    esbuild.initialize({ wasmURL: ESBUILD_WASM_URL, worker: true }),
+  );
   return globalThis.__navroopEsbuildInit;
 }
 
@@ -54,6 +70,7 @@ export async function bundlePreview(
   }
 
   await ensureEsbuild();
+  const esbuild = await loadEsbuild();
   const start = performance.now();
   try {
     const result = await esbuild.build({
@@ -84,7 +101,7 @@ export async function bundlePreview(
   }
 }
 
-function virtualFs(files: Record<string, string>, aliases: Record<string, string>): esbuild.Plugin {
+function virtualFs(files: Record<string, string>, aliases: Record<string, string>): ESBuild.Plugin {
   return {
     name: 'navroop-virtual-fs',
     setup(build) {
@@ -166,7 +183,7 @@ function isBareSpecifier(specifier: string) {
   return !specifier.startsWith('vfs:') && !isLocalPreviewSpecifier(specifier);
 }
 
-function loaderFor(path: string): esbuild.Loader {
+function loaderFor(path: string): ESBuild.Loader {
   if (path.endsWith('.tsx')) return 'tsx';
   if (path.endsWith('.ts')) return 'ts';
   if (path.endsWith('.jsx')) return 'jsx';
@@ -197,7 +214,7 @@ export function normalizeVirtual(path: string) {
   return parts.join('/');
 }
 
-function joinOutputs(outputs: esbuild.OutputFile[] | undefined, extension: string) {
+function joinOutputs(outputs: ESBuild.OutputFile[] | undefined, extension: string) {
   return (outputs ?? [])
     .filter((file) => file.path.endsWith(extension))
     .map((file) => file.text)
@@ -213,7 +230,7 @@ function joinOutputs(outputs: esbuild.OutputFile[] | undefined, extension: strin
 function formatEsbuildError(error: unknown): string {
   if (error && typeof error === 'object' && 'errors' in error && Array.isArray(error.errors)) {
     // A rejected build is a BuildFailure, whose `errors` are esbuild Messages.
-    const messages: esbuild.Message[] = error.errors;
+    const messages: ESBuild.Message[] = error.errors;
     if (messages.length > 0) {
       return stripPreviewScheme(
         messages

@@ -9,7 +9,13 @@ export type PreviewBuildStore = {
   }) => Promise<{ id: string; status: string; mode: string }>;
   markFailed: (
     id: string,
-    input: { error?: string | null; buildLog?: string | null; mode?: PreviewMode },
+    input: {
+      error?: string | null;
+      buildLog?: string | null;
+      mode?: PreviewMode;
+      /** Names the objects a half-finished upload left behind, for the pruner. */
+      storagePrefix?: string | null;
+    },
   ) => Promise<void>;
   markReady: (
     id: string,

@@ -31,7 +31,7 @@ describe('assemblePreview', () => {
     });
     expect(result.kind).toBe('bundle');
     if (result.kind !== 'bundle') return;
-    expect(result.files[result.entry]).toContain("import Root from '/app/page.tsx'");
+    expect(result.files[result.entry]).toContain("'/app/page.tsx'");
     // next/* has no browser build; unshimmed imports kill the preview.
     expect(result.aliases['next/link']).toBeTruthy();
     expect(result.files[result.aliases['next/link']]).toContain("'a'");
@@ -111,16 +111,84 @@ describe('assemblePreview', () => {
     expect(result.files['app/__preview-layout.tsx']).toBeUndefined();
   });
 
-  it('still skips an async layout, which React cannot render on the client', () => {
+  it('mounts an async layout instead of silently dropping it', () => {
+    // F-153: `export default async function RootLayout` is idiomatic App Router
+    // for a layout that fetches data, and the assembler skipped the whole file —
+    // so the nav and the footer vanished from the preview while components/Nav.tsx
+    // sat in the file tree, the exact symptom mounting the layout exists to
+    // prevent. React cannot render a promise, so the async body is called outside
+    // render and its result swapped in when it resolves; until then (and if it
+    // rejects, which server-only data fetching in a browser will) the children
+    // render alone, which is all dropping the layout ever achieved.
     const result = assemblePreview('NEXTJS', {
       'app/page.tsx': 'export default function Page() { return null; }',
       'app/layout.tsx':
-        'export default async function L({children}){ return <html><body>{children}</body></html>; }',
+        'import Nav from "@/components/Nav";\nexport default async function L({children}){ const d = await fetch("/x"); return <html><body><Nav />{children}</body></html>; }',
     });
     if (result.kind !== 'bundle') throw new Error('expected bundle');
 
-    // A promise is not a renderable element; a missing header beats a crashed pane.
-    expect(result.files[result.entry]).not.toContain('import Layout');
+    expect(result.files[result.entry]).toContain('import Layout');
+    const adapted = result.files['app/__preview-layout.tsx'];
+    expect(adapted).toBeTruthy();
+    // The async body survives under its own name, no longer default-exported…
+    expect(adapted).not.toMatch(/export\s+default\s+async\s+function/);
+    expect(adapted).toContain('async function L({children})');
+    // …and the new default export is a sync component that renders the children
+    // first and the resolved layout after.
+    expect(adapted).toMatch(/export default function \w+/);
+    expect(adapted).toContain('<div>');
+    expect(adapted).not.toMatch(/<html|<body/);
+    // The project's own file is never rewritten.
+    expect(result.files['app/layout.tsx']).toContain('export default async function L');
+  });
+
+  it('rewrites document tags only in code position, not inside strings', () => {
+    // F-152: the swap was a plain regex over the file's text, so an analytics
+    // snippet or a <noscript> fallback carrying the literal "<body" in a string
+    // had that string rewritten too — the preview then rendered markup the real
+    // build never contains, invisibly.
+    const result = assemblePreview('NEXTJS', {
+      'app/page.tsx': 'export default function Page() { return null; }',
+      'app/layout.tsx': [
+        'const SNIPPET = `<body class="tracked"></body>`;',
+        'const NOTE = "closes </html> for old crawlers";',
+        '// <head> in a comment stays a comment',
+        'export default function L({children}){',
+        '  return <html><body><div dangerouslySetInnerHTML={{ __html: SNIPPET }} />{NOTE}{children}</body></html>;',
+        '}',
+      ].join('\n'),
+    });
+    if (result.kind !== 'bundle') throw new Error('expected bundle');
+
+    const adapted = result.files['app/__preview-layout.tsx'];
+    expect(adapted).toContain('`<body class="tracked"></body>`');
+    expect(adapted).toContain('"closes </html> for old crawlers"');
+    expect(adapted).toContain('// <head> in a comment stays a comment');
+    // The JSX the layout actually renders is still adapted.
+    expect(adapted).toContain('return <div><div>');
+  });
+
+  it('reads JSX text as prose, so an apostrophe or a URL cannot hide a later tag', () => {
+    // The hazard a string-aware scan introduces if it treats JSX text as
+    // JavaScript: the ' in "Don't" would open a string and the // in a URL a
+    // comment, swallowing the </body> that follows and leaving a second <body>
+    // in the mounted copy — worse than the blanket rewrite it replaced.
+    const result = assemblePreview('NEXTJS', {
+      'app/page.tsx': 'export default function Page() { return null; }',
+      'app/layout.tsx': [
+        'export default function L({children}){',
+        '  return <html><body>',
+        "    <p>Don't stop — see https://example.com/docs for more</p>",
+        '    {children}',
+        '  </body></html>;',
+        '}',
+      ].join('\n'),
+    });
+    if (result.kind !== 'bundle') throw new Error('expected bundle');
+
+    const adapted = result.files['app/__preview-layout.tsx'];
+    expect(adapted).not.toMatch(/<html|<body|<\/html>|<\/body>/);
+    expect(adapted).toContain("Don't stop — see https://example.com/docs for more");
   });
 
   it('hides a <head> without stopping its stylesheet links from loading', () => {

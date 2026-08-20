@@ -1,5 +1,6 @@
 import { peekRootDomain } from '@/lib/integrations/store';
 import { getSetting } from '@/lib/settings/resolve';
+import { getProjectPreviewFields } from './db';
 import { appOriginFromEnv } from './headers';
 import { PREVIEW_STATIC_HOST_PREFIX } from './labels';
 import { issuePreviewToken } from './token';
@@ -59,4 +60,22 @@ export async function signedPreviewUrl(input: {
   const url = new URL(`${base}${path}`);
   url.searchParams.set('token', token);
   return url.toString();
+}
+
+/**
+ * The only preview URL an internal auditor may fetch.
+ *
+ * Never `Project.previewUrl`: that column is owner-writable through
+ * `PATCH /api/projects/[id]`, and the value reaches `page.goto`
+ * (`lib/audit/a11y.ts`), a bare `fetch` (`lib/seo/live.ts`, which deliberately
+ * skips `safeFetch`) and Lighthouse. Both audit entry points used to read it
+ * into a variable and then overwrite it unconditionally, which worked but read
+ * as a live fallback one careless edit away from a server-side request forgery
+ * through three clients (F-759). There is no fallback: no active build means no
+ * URL, and the file-based checks run on their own.
+ */
+export async function auditPreviewUrl(projectId: string, userId: string): Promise<string | null> {
+  const preview = await getProjectPreviewFields(projectId);
+  if (!preview?.activePreviewBuildId) return null;
+  return signedPreviewUrl({ projectId, userId });
 }

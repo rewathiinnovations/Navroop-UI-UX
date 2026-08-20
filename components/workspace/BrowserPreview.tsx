@@ -1,6 +1,7 @@
 'use client';
 
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -10,7 +11,7 @@ import {
   type RefObject,
 } from 'react';
 import { AlertTriangle, Loader2, RefreshCw, Wand2 } from 'lucide-react';
-import { assemblePreview, type PreviewAssembly } from '@/lib/preview/assemble';
+import { assemblePreview, previewFilesKey, type PreviewAssembly } from '@/lib/preview/assemble';
 import { bundlePreview } from '@/lib/preview/bundle';
 import { buildPreviewSrcdoc, PREVIEW_MESSAGE_SOURCE } from '@/lib/preview/html';
 import {
@@ -22,7 +23,7 @@ import {
 } from '@/lib/preview/labels';
 import { summarizeStreamingFiles } from '@/lib/generation/generation-runtime';
 import type { GenerationFile } from '@/lib/generation/types';
-import { cn } from '@/lib/utils';
+import { cn } from '@/utils/cn';
 
 /**
  * Renders a generated project entirely in the browser: esbuild-wasm bundles the
@@ -193,7 +194,7 @@ export function waitingMessage(
     : `${written} — the preview starts once there is a page to render.`;
 }
 
-export function BrowserPreview({
+function BrowserPreviewImpl({
   stack,
   files,
   stream,
@@ -260,13 +261,17 @@ export function BrowserPreview({
     return merged;
   }, [files, streamFiles]);
 
+  // The identity that decides "same code". `compilable` is a new object on every
+  // chunk of a stream — `streamFiles` is a fresh array each time — so this used
+  // to `JSON.stringify` the whole project per chunk to derive the key, an
+  // O(project) allocation on the same thread as the streaming UI (F-642).
+  // `previewFilesKey` reads the same bytes but copies nothing. The assembly still
+  // rebuilds per chunk, but the settle reducer compares `target.key` and drops a
+  // rebuild whose key already matches, so an unchanged file set never recompiles.
   const assembly = useMemo(() => assemblePreview(stack, compilable), [stack, compilable]);
-  // A stable identity for "these exact files", so re-renders that do not change
-  // the code never rebuild (esbuild-wasm on every keystroke is too slow). The
-  // compile effect keys on the settled target, never on this object's identity.
   const target = useMemo<SettleTarget>(
-    () => ({ key: JSON.stringify(assembly), assembly }),
-    [assembly],
+    () => ({ key: `${stack}:${previewFilesKey(compilable)}`, assembly }),
+    [stack, compilable, assembly],
   );
   const [settle, dispatch] = useReducer(settleReducer, { active: target, pending: null });
 
@@ -492,6 +497,18 @@ export function BrowserPreview({
     </div>
   );
 }
+
+/**
+ * Memoised for the same reason as the streaming panel: the workspace root
+ * re-renders on every one of its own state changes, and this pane runs an
+ * esbuild-wasm compile off its props (F-641). Its props change only when the
+ * files or the stream do, so an unrelated root render no longer re-runs it.
+ *
+ * The caller must keep `files`, `stream` and the callbacks referentially stable
+ * across renders that change none of them — an inline `stream={{…}}` object or a
+ * fresh `onFixError` closure defeats this.
+ */
+export const BrowserPreview = memo(BrowserPreviewImpl);
 
 /**
  * Says what each button will actually do. "Try again" on a compile failure was a
