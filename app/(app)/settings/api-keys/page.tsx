@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useState } from 'react';
 import StudioShell from '@/components/app/studio/StudioShell';
 import StudioButton from '@/components/app/studio/StudioButton';
+import ConfirmAction from '@/components/admin/ConfirmAction';
 import StudioField from '@/components/app/studio/StudioField';
 import PageTabs from '@/components/app/studio/PageTabs';
 import { useAuth } from '@/components/app/auth/AuthProvider';
@@ -184,14 +185,16 @@ export default function ApiKeysPage() {
                   <p className="text-[12px] text-[var(--studio-muted)]">{statusLabel(key)}</p>
                 </div>
                 {key.last4 && (
-                  <StudioButton
-                    type="button"
+                  <ConfirmAction
+                    label="Remove"
+                    title={`Remove ${key.label} key?`}
+                    body="Your personal key for this provider will be deleted. Generation will fall back to the team default."
+                    confirmLabel="Remove"
                     variant="danger"
                     disabled={saving === `remove:${key.provider}`}
-                    onClick={() => removePersonal(key.provider)}
-                  >
-                    Remove
-                  </StudioButton>
+                    busyLabel="Removing…"
+                    onConfirm={() => removePersonal(key.provider)}
+                  />
                 )}
               </div>
               <div className="flex flex-col gap-12 sm:flex-row sm:items-end">

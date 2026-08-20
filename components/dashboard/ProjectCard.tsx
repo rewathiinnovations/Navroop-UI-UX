@@ -236,7 +236,7 @@ export default function ProjectCard({
   const kebab = (
     <div
       className={cn(
-        'absolute z-10 opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100',
+        'absolute z-10',
         density === 'grid' ? 'right-8 top-[calc(100%-52px)]' : 'right-8 top-1/2 -translate-y-1/2',
         menuOpen && 'opacity-100',
       )}
@@ -248,7 +248,7 @@ export default function ProjectCard({
             aria-label={`More actions for ${project.name}`}
             disabled={busy}
             onClick={(event) => event.stopPropagation()}
-            className="inline-flex size-[36px] items-center justify-center rounded-8 text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)] transition-colors duration-200"
+            className="studio-icon-hit inline-flex items-center justify-center rounded-8 text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)] transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
           >
             <MoreHorizontal className="size-16" aria-hidden />
           </button>
@@ -309,7 +309,7 @@ export default function ProjectCard({
   return (
     <article
       className={cn(
-        'studio-motion group relative overflow-visible rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] shadow-[0_4px_16px_rgba(24,24,27,0.04)] transition-[transform,border-color] duration-200 hover:border-[var(--studio-line-strong)]',
+        'studio-motion group relative overflow-visible rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] shadow-[0_4px_16px_rgba(24,24,27,0.04)] transition-[transform,border-color,box-shadow] duration-200 hover:border-[var(--studio-line-strong)] hover:shadow-[0_12px_28px_rgba(24,24,27,0.08)]',
         density === 'grid' && 'hover:-translate-y-2',
         density === 'list' && 'flex items-stretch',
       )}

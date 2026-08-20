@@ -2,56 +2,44 @@
 
 import React from "react";
 import { cn } from "@/utils/cn";
-import { AsciiExplosion } from "@/components/shared/effects/flame";
 
 interface EmptyStateProps {
   title?: string;
   description?: string;
   icon?: React.ReactNode;
   action?: React.ReactNode;
-  showFlame?: boolean;
   className?: string;
 }
 
 export function EmptyState({
-  title = "No data yet",
+  title = "Nothing here yet",
   description,
   icon,
   action,
-  showFlame = true,
   className,
 }: EmptyStateProps) {
   return (
     <div
       className={cn(
-        "relative flex flex-col items-center justify-center py-12 px-4 text-center",
-        "min-h-[300px]",
+        "relative flex flex-col items-center justify-center px-16 py-32 text-center",
+        "min-h-[220px]",
         className,
       )}
     >
-      {/* Subtle flame background */}
-      {showFlame && (
-        <div className="absolute inset-0 opacity-5">
-          <AsciiExplosion />
+      {icon ? (
+        <div className="mb-12 text-[var(--studio-faint)]" aria-hidden>
+          {icon}
         </div>
-      )}
+      ) : null}
 
-      <div className="relative z-10 space-y-4">
-        {icon && (
-          <div className="w-12 h-12 mx-auto text-black-alpha-40">{icon}</div>
-        )}
+      <h3 className="text-[15px] font-medium text-[var(--studio-fg)]">{title}</h3>
+      {description ? (
+        <p className="mt-6 max-w-md text-[13px] leading-5 text-[var(--studio-muted)]">
+          {description}
+        </p>
+      ) : null}
 
-        <div className="space-y-2">
-          <h3 className="text-label-large text-black-alpha-72">{title}</h3>
-          {description && (
-            <p className="text-body-medium text-black-alpha-56 max-w-md mx-auto">
-              {description}
-            </p>
-          )}
-        </div>
-
-        {action && <div className="pt-2">{action}</div>}
-      </div>
+      {action ? <div className="mt-16">{action}</div> : null}
     </div>
   );
 }

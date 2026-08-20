@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Copy, ImagePlus, Trash2 } from 'lucide-react';
 import ConfirmAction from '@/components/admin/ConfirmAction';
+import { EmptyState } from '@/components/shared/ui/empty-state';
 import {
   deleteProjectAsset,
   generateProjectImage,
@@ -210,9 +211,28 @@ export default function AssetsPanel({ projectId }: { projectId: string }) {
       )}
 
       <ul className="grid flex-1 auto-rows-min grid-cols-1 gap-12 overflow-y-auto p-16 sm:grid-cols-2 xl:grid-cols-3">
-        {loading && <li className="text-[13px] text-[var(--studio-faint)]">Loading…</li>}
+        {loading && (
+          <li
+            className="col-span-full grid grid-cols-1 gap-12 sm:grid-cols-2 xl:grid-cols-3"
+            role="status"
+            aria-label="Loading assets"
+          >
+            {[0, 1, 2].map((key) => (
+              <div
+                key={key}
+                aria-hidden
+                className="h-140 animate-pulse rounded-12 bg-[var(--studio-skeleton)]"
+              />
+            ))}
+          </li>
+        )}
         {!loading && assets.length === 0 && (
-          <li className="text-[13px] text-[var(--studio-faint)]">No assets yet</li>
+          <li className="col-span-full">
+            <EmptyState
+              title="No assets yet"
+              description="Upload an image or generate one from chat and it will show up here."
+            />
+          </li>
         )}
         {assets.map((asset) => (
           <li

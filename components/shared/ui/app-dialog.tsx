@@ -34,7 +34,7 @@ export function AppDialogContent({
   return (
     <ShadDialogContent
       className={cn(
-        "sm:rounded-16 p-0 border border-border-faint bg-white relative overflow-hidden",
+        "sm:rounded-16 p-0 border border-[var(--studio-line)] bg-[var(--studio-surface)] relative overflow-hidden",
         className,
       )}
       {...props}

@@ -4,6 +4,8 @@ import { FormEvent, useEffect, useState } from 'react';
 import { CircleAlert } from 'lucide-react';
 import StudioButton from '@/components/app/studio/StudioButton';
 import StudioField from '@/components/app/studio/StudioField';
+import ConfirmAction from '@/components/admin/ConfirmAction';
+import { EmptyState } from '@/components/shared/ui/empty-state';
 import { useAuth } from '@/components/app/auth/AuthProvider';
 import {
   createSkill,
@@ -132,7 +134,15 @@ export default function SkillsPanel() {
       )}
 
       {loading ? (
-        <p className="text-[13px] text-[var(--studio-muted)]">Loading skills…</p>
+        <div role="status" aria-label="Loading skills" className="space-y-10">
+          {[0, 1].map((key) => (
+            <div
+              key={key}
+              aria-hidden
+              className="h-88 animate-pulse rounded-12 bg-[var(--studio-skeleton)]"
+            />
+          ))}
+        </div>
       ) : (
         <ul className="space-y-10">
           {skills.map((skill) => (
@@ -179,21 +189,27 @@ export default function SkillsPanel() {
                     >
                       Edit
                     </StudioButton>
-                    <StudioButton
-                      type="button"
+                    <ConfirmAction
+                      label="Delete"
+                      title={`Delete “${skill.name}”?`}
+                      body="This skill will stop matching on new generations. This cannot be undone."
+                      confirmLabel="Delete"
                       variant="danger"
-                      className="min-h-[36px] px-12 text-[12px]"
-                      onClick={() => void remove(skill)}
-                    >
-                      Delete
-                    </StudioButton>
+                      triggerClassName="min-h-[36px] px-12 text-[12px]"
+                      onConfirm={() => remove(skill)}
+                    />
                   </div>
                 )}
               </div>
             </li>
           ))}
           {skills.length === 0 && (
-            <li className="text-[13px] text-[var(--studio-muted)]">No workspace skills yet.</li>
+            <li>
+              <EmptyState
+                title="No workspace skills yet"
+                description="Admins can add conditional instruction sets that load into a generation when the task matches."
+              />
+            </li>
           )}
         </ul>
       )}

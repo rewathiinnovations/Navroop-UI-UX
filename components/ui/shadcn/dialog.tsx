@@ -41,15 +41,15 @@ const DialogContent = React.forwardRef<
       <DialogPrimitive.Content
         ref={ref}
         className={cn(
-          "relative w-full max-w-[520px] border border-border-faint bg-white p-0 duration-200 sm:rounded-16 shadow-2xl data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-bottom-10 data-[state=open]:slide-in-from-bottom-10 sm:data-[state=closed]:slide-out-to-left-1/2 sm:data-[state=closed]:slide-out-to-top-[-2%] sm:data-[state=open]:slide-in-from-left-1/2 sm:data-[state=open]:slide-in-from-top-[-2%]",
+          "relative w-full max-w-[520px] border border-[var(--studio-line)] bg-[var(--studio-surface)] p-0 duration-200 sm:rounded-16 shadow-2xl data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-bottom-10 data-[state=open]:slide-in-from-bottom-10 sm:data-[state=closed]:slide-out-to-left-1/2 sm:data-[state=closed]:slide-out-to-top-[-2%] sm:data-[state=open]:slide-in-from-left-1/2 sm:data-[state=open]:slide-in-from-top-[-2%]",
           className,
         )}
         {...props}
       >
         {children}
         {!hideCloseButton && (
-          <DialogPrimitive.Close className="absolute top-20 right-20 w-32 h-32 rounded-8 flex items-center justify-center hover:bg-black-alpha-4 transition-colors">
-            <X className="h-16 w-16 text-black-alpha-56" />
+          <DialogPrimitive.Close className="studio-icon-hit absolute top-12 right-12 flex items-center justify-center rounded-8 text-[var(--studio-muted)] transition-colors hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]">
+            <X className="h-16 w-16" />
             <span className="sr-only">Close</span>
           </DialogPrimitive.Close>
         )}

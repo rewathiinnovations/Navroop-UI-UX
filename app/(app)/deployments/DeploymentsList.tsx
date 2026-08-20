@@ -7,6 +7,7 @@ import StudioButton from '@/components/app/studio/StudioButton';
 import ConfirmAction from '@/components/admin/ConfirmAction';
 import { notify, toMessage } from '@/lib/notify';
 import type { PublicDeployment } from '@/lib/publish/serialize';
+import { EmptyState } from '@/components/shared/ui/empty-state';
 
 function statusLabel(status: string) {
   if (status === 'LIVE') return 'Live';
@@ -65,6 +66,15 @@ export default function DeploymentsList({ initial }: { initial: PublicDeployment
           Preview and live Coolify sites.
         </p>
 
+        {rows.length === 0 ? (
+          <div className="mt-24 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)]">
+            <EmptyState
+              title="No deployments yet"
+              description="Publish a project from the workspace to see preview and live sites here."
+              action={<StudioButton href="/dashboard">Go to dashboard</StudioButton>}
+            />
+          </div>
+        ) : (
         <div className="mt-24 overflow-x-auto rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)]">
           <table className="w-full text-left text-[14px]">
             <thead className="border-b border-[var(--studio-line)] text-[12px] uppercase tracking-[0.08em] text-[var(--studio-faint)]">
@@ -79,13 +89,6 @@ export default function DeploymentsList({ initial }: { initial: PublicDeployment
               </tr>
             </thead>
             <tbody>
-              {rows.length === 0 && (
-                <tr>
-                  <td colSpan={7} className="px-16 py-24 text-[13px] text-[var(--studio-faint)]">
-                    No deployments yet
-                  </td>
-                </tr>
-              )}
               {rows.map((row) => (
                 <tr
                   key={row.id}
@@ -164,6 +167,7 @@ export default function DeploymentsList({ initial }: { initial: PublicDeployment
             </tbody>
           </table>
         </div>
+        )}
       </main>
     </StudioShell>
   );
