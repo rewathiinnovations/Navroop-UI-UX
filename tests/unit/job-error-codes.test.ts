@@ -47,6 +47,7 @@ const EXPECTED_CODES = [
   'provider_not_configured',
   'provider_quota_exhausted',
   'request_rejected',
+  'repo_conflict',
   'import_failed',
   'stack_mismatch',
 ] as const satisfies readonly JobErrorCode[];

@@ -197,6 +197,8 @@ function publishSpy(
     appUuid?: string;
     dnsRecordId?: string;
     health?: DeploymentHealth;
+    /** Models an org repo that already exists — the F-202 guard decides from its id. */
+    existingRepo?: { repoId: string };
     /** Runs inside `upsertDns` before it returns; throwing here fails the `dns` step. */
     onDns?: () => Promise<void>;
     onCreateApp?: () => Promise<void>;
@@ -248,7 +250,14 @@ function publishSpy(
     async ensureRepo(repoSlug) {
       record('ensureRepo');
       seen.repoSlug = repoSlug;
-      return `deploy-org/${repoSlug}`;
+      // Default: the repo did not exist and this call created it, as on a first publish.
+      return options.existingRepo
+        ? {
+            fullName: `deploy-org/${repoSlug}`,
+            repoId: options.existingRepo.repoId,
+            created: false,
+          }
+        : { fullName: `deploy-org/${repoSlug}`, repoId: `repo-id-${repoSlug}`, created: true };
     },
     async pushFiles(repoFullName, files) {
       record('pushFiles');
@@ -639,19 +648,32 @@ describe('runPublishJob — the shipped ten-step loop', () => {
     const spy = publishSpy(seeded.server, {
       appUuid: 'coolify-app-second',
       dnsRecordId: 'dns-record-second',
+      existingRepo: { repoId: 'repo-id-relive' },
     });
     await runPublishJob(jobId, spy.deps);
 
     // A LIVE slug never changes once assigned, so nothing re-claims it and no new server
     // is chosen. Creating a second Coolify app or DNS record here would strand the first.
     expect(spy.counts.pickServer).toBe(0);
-    expect(spy.counts.ensureRepo).toBe(0);
+    // The repo IS resolved again: the F-202 guard compares the recorded immutable id
+    // against the repo currently behind the name on every publish, so a repo deleted and
+    // re-created by someone else refuses instead of being force-pushed over. The resolve
+    // is a read — `created: false` — so no external resource is made.
+    expect(spy.counts.ensureRepo).toBe(1);
     expect(spy.counts.createApp).toBe(0);
     expect(spy.counts.upsertDns).toBe(0);
     // New code still ships to the existing repo — that is the point of re-publishing.
     expect(spy.counts.pushFiles).toBe(1);
     expect(spy.seen.pushedTo).toBe('deploy-org/pubx-relive');
     expect(spy.seen.deployedUuid).toBe('coolify-app-existing');
+
+    // Pre-feature row (no recorded id) pointing at the repo it already published:
+    // the guard adopts the id one time instead of refusing. Raw SQL because the
+    // generated client on this machine may predate the `githubRepoId` column.
+    const owned = await prisma.$queryRaw<Array<{ githubRepoId: string | null }>>`
+      SELECT "githubRepoId" FROM "Deployment" WHERE id = ${seeded.deploymentId}
+    `;
+    expect(owned[0]?.githubRepoId).toBe('repo-id-relive');
 
     const deployment = await prisma.deployment.findUniqueOrThrow({
       where: { id: seeded.deploymentId },

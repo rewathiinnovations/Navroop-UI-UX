@@ -1,9 +1,11 @@
 import { prisma } from '@/lib/db';
 import { captureFileSnapshot, readSnapshot, SnapshotReadError } from '@/lib/checkpoints/snapshot';
 import type { JobErrorCode } from '@/lib/jobs/types';
+import { PublishRepoConflictError } from './repo-guard';
 
 export function publishJobErrorCode(error: unknown): JobErrorCode {
   if (error instanceof SnapshotReadError) return 'snapshot_unreadable';
+  if (error instanceof PublishRepoConflictError) return 'repo_conflict';
   return 'provider_error';
 }
 

@@ -605,6 +605,9 @@ model Deployment {
   repoFullName  String?
   repoBranch    String           @default("main")
   commitSha     String?
+  // Immutable GitHub repo id recorded when publish creates the deploy repo (F-202):
+  // the guard refuses to push to a same-named repo whose id does not match.
+  githubRepoId  String?
   coolifyAppUuid String?
   dnsRecordId   String?
   passwordHash  String?

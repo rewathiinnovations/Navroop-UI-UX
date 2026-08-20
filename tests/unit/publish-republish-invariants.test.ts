@@ -41,6 +41,11 @@ vi.mock('@/lib/db', () => ({
     deployment: { findUnique: db.deploymentFindUnique, update: db.deploymentUpdate },
     project: { findFirst: db.projectFindFirst, update: db.projectUpdate },
     coolifyServer: { findUniqueOrThrow: db.serverFindUniqueOrThrow },
+    // The repo-ownership guard reads/writes `Deployment.githubRepoId` with raw SQL. No
+    // recorded id here: the seeded row is a pre-feature LIVE preview, so the guard takes
+    // the adopt path (repoFullName matches and publishedAt is set).
+    $queryRaw: vi.fn(async () => []),
+    $executeRaw: vi.fn(async () => 1),
   },
 }));
 vi.mock('@/lib/jobs/store', () => ({ getJob: jobs.getJob, updateJobFields: jobs.updateJobFields }));
@@ -108,7 +113,7 @@ function spyDeps(): { deps: PublishDeps; seen: Seen } {
       return ROOT;
     },
     async ensureRepo() {
-      return `deploy-org/preview-${SLUG}`;
+      return { fullName: `deploy-org/preview-${SLUG}`, repoId: 'repo-id-existing', created: false };
     },
     async pushFiles(_repoFullName, files) {
       seen.pushed = files;

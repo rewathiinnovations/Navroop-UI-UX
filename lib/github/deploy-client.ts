@@ -107,7 +107,11 @@ async function githubJson<T>(
     headers.set('Content-Type', 'application/json');
   }
   // Trusted host — do not route through safeFetch.
-  const response = await fetch(`${GITHUB_API}${path}`, { ...init, headers, signal: AbortSignal.timeout(30_000) });
+  const response = await fetch(`${GITHUB_API}${path}`, {
+    ...init,
+    headers,
+    signal: AbortSignal.timeout(30_000),
+  });
   const raw = await response.text();
   let data = {} as T;
   if (raw) {
@@ -159,13 +163,30 @@ export async function deployOrg(workspaceId = DEFAULT_WORKSPACE_ID) {
   return (await requireAppCreds(workspaceId)).org;
 }
 
-export async function ensureDeployRepo(slug: string, workspaceId = DEFAULT_WORKSPACE_ID) {
+/** What `ensureDeployRepo` / `getDeployRepo` learned about a deploy repo. */
+export type DeployRepo = {
+  fullName: string;
+  /** GitHub's immutable numeric repository id, as a string — the ownership record. */
+  repoId: string;
+  /** True when this call created the repo. */
+  created: boolean;
+};
+
+export async function ensureDeployRepo(
+  slug: string,
+  workspaceId = DEFAULT_WORKSPACE_ID,
+): Promise<DeployRepo> {
   const org = await deployOrg(workspaceId);
   const token = await getInstallationToken(workspaceId);
   const fullName = `${org}/${slug}`;
-  const existing = await githubJson<{ full_name?: string; message?: string }>(token, `/repos/${fullName}`);
-  if (existing.ok && existing.data.full_name) {
-    return existing.data.full_name;
+  const existing = await githubJson<{ id?: number; full_name?: string; message?: string }>(
+    token,
+    `/repos/${fullName}`,
+  );
+  if (existing.ok && existing.data.full_name && existing.data.id != null) {
+    // Found by name only — whether this project may push here is the publish guard's
+    // decision (`evaluateRepoGuard`), made from the id returned alongside.
+    return { fullName: existing.data.full_name, repoId: String(existing.data.id), created: false };
   }
   if (existing.status !== 404) {
     throw new GithubAppError(
@@ -174,25 +195,29 @@ export async function ensureDeployRepo(slug: string, workspaceId = DEFAULT_WORKS
       existing.data,
     );
   }
-  const created = await githubJson<{ full_name?: string; message?: string }>(token, `/orgs/${org}/repos`, {
-    method: 'POST',
-    body: JSON.stringify({
-      name: slug,
-      private: true,
-      auto_init: false,
-      has_issues: false,
-      has_projects: false,
-      has_wiki: false,
-    }),
-  });
-  if (!created.ok || !created.data.full_name) {
+  const created = await githubJson<{ id?: number; full_name?: string; message?: string }>(
+    token,
+    `/orgs/${org}/repos`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        name: slug,
+        private: true,
+        auto_init: false,
+        has_issues: false,
+        has_projects: false,
+        has_wiki: false,
+      }),
+    },
+  );
+  if (!created.ok || !created.data.full_name || created.data.id == null) {
     throw new GithubAppError(
       created.data.message || 'Could not create the deploy repo',
       created.status,
       created.data,
     );
   }
-  return created.data.full_name;
+  return { fullName: created.data.full_name, repoId: String(created.data.id), created: true };
 }
 
 /**
@@ -210,51 +235,86 @@ export async function pushFiles(
     throw new GithubAppError('No project files to push', 400);
   }
 
-  const ref = await githubJson<{ object?: { sha?: string } }>(token, `/repos/${repoFullName}/git/ref/heads/main`);
+  const ref = await githubJson<{ object?: { sha?: string } }>(
+    token,
+    `/repos/${repoFullName}/git/ref/heads/main`,
+  );
   const parentSha = ref.ok ? ref.data.object?.sha : undefined;
 
-  const tree = await githubJson<{ sha?: string; message?: string }>(token, `/repos/${repoFullName}/git/trees`, {
-    method: 'POST',
-    body: JSON.stringify({
-      tree: entries.map(([path, content]) => ({
-        path,
-        mode: '100644',
-        type: 'blob',
-        content,
-      })),
-    }),
-  });
+  const tree = await githubJson<{ sha?: string; message?: string }>(
+    token,
+    `/repos/${repoFullName}/git/trees`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        tree: entries.map(([path, content]) => ({
+          path,
+          mode: '100644',
+          type: 'blob',
+          content,
+        })),
+      }),
+    },
+  );
   if (!tree.ok || !tree.data.sha) {
-    throw new GithubAppError(tree.data.message || 'Could not create the git tree', tree.status, tree.data);
+    throw new GithubAppError(
+      tree.data.message || 'Could not create the git tree',
+      tree.status,
+      tree.data,
+    );
   }
 
-  const commit = await githubJson<{ sha?: string; message?: string }>(token, `/repos/${repoFullName}/git/commits`, {
-    method: 'POST',
-    body: JSON.stringify({
-      message,
-      tree: tree.data.sha,
-      parents: parentSha ? [parentSha] : [],
-    }),
-  });
+  const commit = await githubJson<{ sha?: string; message?: string }>(
+    token,
+    `/repos/${repoFullName}/git/commits`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        message,
+        tree: tree.data.sha,
+        parents: parentSha ? [parentSha] : [],
+      }),
+    },
+  );
   if (!commit.ok || !commit.data.sha) {
-    throw new GithubAppError(commit.data.message || 'Could not create the git commit', commit.status, commit.data);
+    throw new GithubAppError(
+      commit.data.message || 'Could not create the git commit',
+      commit.status,
+      commit.data,
+    );
   }
 
   if (parentSha) {
-    const patched = await githubJson<{ message?: string }>(token, `/repos/${repoFullName}/git/refs/heads/main`, {
-      method: 'PATCH',
-      body: JSON.stringify({ sha: commit.data.sha, force: true }),
-    });
+    const patched = await githubJson<{ message?: string }>(
+      token,
+      `/repos/${repoFullName}/git/refs/heads/main`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ sha: commit.data.sha, force: true }),
+      },
+    );
     if (!patched.ok) {
-      throw new GithubAppError(patched.data.message || 'Could not update the main ref', patched.status, patched.data);
+      throw new GithubAppError(
+        patched.data.message || 'Could not update the main ref',
+        patched.status,
+        patched.data,
+      );
     }
   } else {
-    const created = await githubJson<{ message?: string }>(token, `/repos/${repoFullName}/git/refs`, {
-      method: 'POST',
-      body: JSON.stringify({ ref: 'refs/heads/main', sha: commit.data.sha }),
-    });
+    const created = await githubJson<{ message?: string }>(
+      token,
+      `/repos/${repoFullName}/git/refs`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ ref: 'refs/heads/main', sha: commit.data.sha }),
+      },
+    );
     if (!created.ok) {
-      throw new GithubAppError(created.data.message || 'Could not create the main ref', created.status, created.data);
+      throw new GithubAppError(
+        created.data.message || 'Could not create the main ref',
+        created.status,
+        created.data,
+      );
     }
   }
 
@@ -263,9 +323,15 @@ export async function pushFiles(
 
 export async function deleteDeployRepo(repoFullName: string, workspaceId = DEFAULT_WORKSPACE_ID) {
   const token = await getInstallationToken(workspaceId);
-  const result = await githubJson<{ message?: string }>(token, `/repos/${repoFullName}`, { method: 'DELETE' });
+  const result = await githubJson<{ message?: string }>(token, `/repos/${repoFullName}`, {
+    method: 'DELETE',
+  });
   if (!result.ok && result.status !== 404) {
-    throw new GithubAppError(result.data.message || 'Could not delete the deploy repo', result.status, result.data);
+    throw new GithubAppError(
+      result.data.message || 'Could not delete the deploy repo',
+      result.status,
+      result.data,
+    );
   }
 }
 
@@ -277,14 +343,26 @@ export async function archiveDeployRepo(repoFullName: string, workspaceId = DEFA
     body: JSON.stringify({ archived: true }),
   });
   if (!result.ok && result.status !== 404) {
-    throw new GithubAppError(result.data.message || 'Could not archive the deploy repo', result.status, result.data);
+    throw new GithubAppError(
+      result.data.message || 'Could not archive the deploy repo',
+      result.status,
+      result.data,
+    );
   }
 }
 
-export async function getDeployRepo(repoFullName: string, workspaceId = DEFAULT_WORKSPACE_ID) {
+export async function getDeployRepo(
+  repoFullName: string,
+  workspaceId = DEFAULT_WORKSPACE_ID,
+): Promise<DeployRepo | null> {
   const token = await getInstallationToken(workspaceId);
-  const existing = await githubJson<{ full_name?: string; message?: string }>(token, `/repos/${repoFullName}`);
-  if (existing.ok && existing.data.full_name) return existing.data.full_name;
+  const existing = await githubJson<{ id?: number; full_name?: string; message?: string }>(
+    token,
+    `/repos/${repoFullName}`,
+  );
+  if (existing.ok && existing.data.full_name && existing.data.id != null) {
+    return { fullName: existing.data.full_name, repoId: String(existing.data.id), created: false };
+  }
   if (existing.status === 404) return null;
   throw new GithubAppError(
     existing.data.message || `Deploy repo check failed (${existing.status})`,
@@ -296,10 +374,9 @@ export async function getDeployRepo(repoFullName: string, workspaceId = DEFAULT_
 export async function listDeployRepos(workspaceId = DEFAULT_WORKSPACE_ID) {
   const org = await deployOrg(workspaceId);
   const token = await getInstallationToken(workspaceId);
-  const result = await githubJson<Array<{ full_name?: string; name?: string; created_at?: string }>>(
-    token,
-    `/orgs/${org}/repos?per_page=100&sort=created`,
-  );
+  const result = await githubJson<
+    Array<{ full_name?: string; name?: string; created_at?: string }>
+  >(token, `/orgs/${org}/repos?per_page=100&sort=created`);
   if (!result.ok) {
     throw new GithubAppError('Could not list deploy repos', result.status, result.data);
   }

@@ -9,6 +9,7 @@ import { getPublishState, startPublish } from '@/lib/publish/actions';
 import { DEFAULT_WORKSPACE_ID } from '@/lib/publish/constants';
 import { assertPublishSlot, PublishLimitError, publishLimitPayload } from '@/lib/publish/limits';
 import { runPublishJob } from '@/lib/publish/execute';
+import { confirmRepoOverwrite } from '@/lib/publish/overwrite';
 import { startPublishJob, PublishSetupError } from '@/lib/publish/publish';
 import { jsonError } from '@/lib/api/error-response';
 import { log } from '@/lib/logger';
@@ -41,7 +42,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const user = await getSessionUser();
   if (!user) return NextResponse.json({ error: 'Sign in required' }, { status: 401 });
   const { id } = await params;
-  const body = (await request.json().catch(() => ({}))) as { kind?: unknown };
+  const body = (await request.json().catch(() => ({}))) as {
+    kind?: unknown;
+    overwrite?: unknown;
+    confirmName?: unknown;
+  };
   const kind = parseKind(body.kind);
   if (!kind) return NextResponse.json({ error: 'kind must be PREVIEW or LIVE' }, { status: 422 });
 
@@ -61,6 +66,20 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       { error: setupMessage, missingIntegrations: missing },
       { status: 409 },
     );
+  }
+
+  if (body.overwrite === true) {
+    // F-202 escape hatch: server-side re-validation of the typed repo name. The client
+    // boolean alone is never trusted; only a matching name adopts the existing repo.
+    const confirmed = await confirmRepoOverwrite({
+      projectId: id,
+      kind,
+      confirmName: typeof body.confirmName === 'string' ? body.confirmName : '',
+      userId: user.id,
+    });
+    if (!confirmed.ok) {
+      return NextResponse.json({ error: confirmed.error }, { status: confirmed.status });
+    }
   }
 
   try {

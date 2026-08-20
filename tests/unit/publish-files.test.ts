@@ -33,6 +33,7 @@ vi.mock('@/lib/checkpoints/snapshot', () => ({
 
 const { collectPublishFiles, projectHasPublishableFiles, publishJobErrorCode } =
   await import('@/lib/publish/files');
+const { PublishRepoConflictError } = await import('@/lib/publish/repo-guard');
 
 beforeEach(() => {
   db.projectFindFirst.mockReset();
@@ -107,8 +108,9 @@ describe('projectHasPublishableFiles', () => {
 });
 
 describe('publishJobErrorCode', () => {
-  it('names a storage failure, and stays generic otherwise', () => {
+  it('names a storage failure and a repo refusal, and stays generic otherwise', () => {
     expect(publishJobErrorCode(new FakeSnapshotReadError('x'))).toBe('snapshot_unreadable');
+    expect(publishJobErrorCode(new PublishRepoConflictError('deploy-org/x'))).toBe('repo_conflict');
     expect(publishJobErrorCode(new Error('boom'))).toBe('provider_error');
   });
 });

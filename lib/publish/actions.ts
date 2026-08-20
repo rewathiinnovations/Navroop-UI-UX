@@ -10,6 +10,7 @@ import { getLatestJobByKind, toPublicJob } from '@/lib/jobs';
 import { runPublishJob } from './execute';
 import { getProjectDeployments, startPublishJob, updatePreviewPassword } from './publish';
 import { destroyDeployment, stopDeployment } from './cleanup';
+import { confirmRepoOverwrite } from './overwrite';
 import { projectHasPublishableFiles } from './files';
 import { serializeDeployment } from './serialize';
 import { mapPrimaryHosts } from '@/lib/domains/store';
@@ -113,7 +114,11 @@ export async function getPublishState(projectId: string) {
  * which stores the hash and pushes the plaintext to Coolify. A password accepted here was
  * silently dropped by `startPublishJob`, so the build shipped an unprotected preview.
  */
-export async function startPublish(projectId: string, kind: DeploymentKind) {
+export async function startPublish(
+  projectId: string,
+  kind: DeploymentKind,
+  options?: { overwrite?: boolean; confirmName?: string },
+) {
   const loaded = await loadMutableProject(projectId);
   if ('error' in loaded) return { ok: false as const, error: loaded.error, status: loaded.status };
   const filesState = await projectHasPublishableFiles(projectId);
@@ -133,6 +138,20 @@ export async function startPublish(projectId: string, kind: DeploymentKind) {
       status: 409 as const,
       missingIntegrations: missing,
     };
+  }
+
+  if (options?.overwrite) {
+    // F-202 escape hatch: server-side re-validation of the typed repo name. The client
+    // boolean alone is never trusted; only a matching name adopts the existing repo.
+    const confirmed = await confirmRepoOverwrite({
+      projectId,
+      kind,
+      confirmName: options.confirmName ?? '',
+      userId: loaded.user.id,
+    });
+    if (!confirmed.ok) {
+      return { ok: false as const, error: confirmed.error, status: confirmed.status };
+    }
   }
 
   try {
@@ -197,7 +216,7 @@ export async function startPublish(projectId: string, kind: DeploymentKind) {
     action: 'deployment.create',
     targetType: 'project',
     targetId: projectId,
-    after: { kind },
+    after: options?.overwrite ? { kind, overwrite: true } : { kind },
   });
 
   const state = await getPublishState(projectId);

@@ -179,7 +179,8 @@ function publishSpy(
       return ROOT;
     },
     async ensureRepo(repoSlug) {
-      return `deploy-org/${repoSlug}`;
+      // First publishes in this suite create the repo, so the ownership guard proceeds.
+      return { fullName: `deploy-org/${repoSlug}`, repoId: `repo-id-${repoSlug}`, created: true };
     },
     async pushFiles() {
       return 'commit-sha-1';

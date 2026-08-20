@@ -23,6 +23,13 @@ import { collectPublishFiles, publishJobErrorCode } from './files';
 import { injectPreviewFiles } from './preview-inject';
 import { coolifyAppName, dnsLabel, deployRepoName } from './naming';
 import { withProviderRetry } from './retry';
+import {
+  evaluateRepoGuard,
+  PublishRepoConflictError,
+  readDeploymentGithubRepoId,
+  recordDeploymentGithubRepo,
+  type EnsuredRepo,
+} from './repo-guard';
 import { claimSlug, hostForSlug, urlForSlug } from './slug';
 import { PUBLISH_STEPS } from './steps';
 
@@ -53,7 +60,8 @@ export type PublishDeps = {
   collectFiles: (projectId: string) => Promise<Record<string, string>>;
   pickServer: () => Promise<PublishServer>;
   rootDomain: (workspaceId: string) => Promise<string>;
-  ensureRepo: (repoSlug: string, workspaceId: string) => Promise<string>;
+  /** Find-or-create; the returned id and `created` flag feed the F-202 ownership guard. */
+  ensureRepo: (repoSlug: string, workspaceId: string) => Promise<EnsuredRepo>;
   pushFiles: (
     repoFullName: string,
     files: Record<string, string>,
@@ -340,19 +348,35 @@ export async function runPublishJob(jobId: string, deps: PublishDeps = livePubli
     const auth = serverAuth(server);
 
     await step('github', async () => {
-      const repoFullName =
-        resourceIds.githubRepo ||
-        (await withProviderRetry(() => deps.ensureRepo(repoSlug, deployment.workspaceId)));
-      resourceIds.githubRepo = repoFullName;
+      // Always resolve the repo, even on re-publish: the guard compares the recorded
+      // immutable id against the repo currently behind the name, and a repo that was
+      // deleted and re-created by someone else must refuse, not be force-pushed over.
+      const repo = await withProviderRetry(() => deps.ensureRepo(repoSlug, deployment.workspaceId));
+      const decision = evaluateRepoGuard({
+        repo,
+        recordedRepoId: await readDeploymentGithubRepoId(deployment.id),
+        recordedRepoFullName: deployment.repoFullName,
+        hasPushedBefore: Boolean(deployment.commitSha || deployment.publishedAt),
+      });
+      if (decision.action === 'refuse') {
+        // Typed refusal: fails this step with the full sentence (which repo, why, how to
+        // proceed) and maps to the `repo_conflict` job error code in the catch below.
+        throw new PublishRepoConflictError(repo.fullName);
+      }
+      // Record ownership before pushing — a crash after create must not leave a repo this
+      // project owns but cannot prove it owns. `adopt` is the one-time pre-feature
+      // backfill; `proceed` re-records the same values idempotently.
+      await recordDeploymentGithubRepo(deployment.id, repo);
+      resourceIds.githubRepo = repo.fullName;
       await persistProgress(jobId, deployment.id, {
         steps,
         currentStep: 'github',
         resourceIds,
         hadSuccessfulDeployment,
-        extra: { repoFullName },
+        extra: { repoFullName: repo.fullName },
       });
       const commitSha = await deps.pushFiles(
-        repoFullName,
+        repo.fullName,
         files,
         `Publish ${kind.toLowerCase()} ${slug}`,
         deployment.workspaceId,
@@ -362,7 +386,7 @@ export async function runPublishJob(jobId: string, deps: PublishDeps = livePubli
         currentStep: 'github',
         resourceIds,
         hadSuccessfulDeployment,
-        extra: { repoFullName, commitSha },
+        extra: { repoFullName: repo.fullName, commitSha },
       });
     });
 

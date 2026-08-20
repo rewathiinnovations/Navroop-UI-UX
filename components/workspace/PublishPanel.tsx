@@ -4,9 +4,11 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Check, ChevronDown, Copy, ExternalLink, Loader2, X } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import Hint from './Hint';
+import ConfirmAction from '@/components/admin/ConfirmAction';
 import RecoveryPanel from './RecoveryPanel';
 import { isPublishRunning, type PublicGenerationJob } from '@/lib/jobs/types';
 import { PUBLISH_STEPPER, stepperIndex, type PublishStepKey } from '@/lib/publish/steps';
+import { deployRepoName } from '@/lib/publish/naming';
 import type { PublicDeployment } from '@/lib/publish/serialize';
 import { notify } from '@/lib/notify';
 
@@ -140,8 +142,22 @@ export default function PublishPanel({
   const expectedUrl = sheetKind === 'LIVE' ? state?.liveUrl : state?.previewUrl;
   const liveCanonical = state?.deployments.find((row) => row.kind === 'LIVE')?.canonicalUrl;
   const publicUrl = sheetKind === 'LIVE' && liveCanonical ? liveCanonical : expectedUrl;
+  // F-202: the publish job refused to overwrite an existing deploy-org repository this
+  // project did not create. The escape hatch below makes the user type the repo name;
+  // the server re-validates it before adopting the repo.
+  const conflictRepoName =
+    deployment && sheetKind && !deployment.slug.startsWith('pending-')
+      ? deployRepoName(deployment.slug, sheetKind)
+      : null;
+  const showRepoConflict =
+    Boolean(conflictRepoName) &&
+    state?.job?.status === 'FAILED' &&
+    state?.job?.errorCode === 'repo_conflict';
 
-  const start = async (kind: 'PREVIEW' | 'LIVE') => {
+  const start = async (
+    kind: 'PREVIEW' | 'LIVE',
+    options?: { overwrite: true; confirmName: string },
+  ) => {
     if (!projectId || !canPublish) return;
     setSheetKind(kind);
     setOpenMenu(false);
@@ -153,7 +169,7 @@ export default function PublishPanel({
       const response = await fetch(`/api/projects/${projectId}/publish`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ kind }),
+        body: JSON.stringify({ kind, ...(options ?? {}) }),
       });
       const data = await response.json().catch(() => ({}));
       if (response.ok) {
@@ -401,6 +417,33 @@ export default function PublishPanel({
                     buildLogUrl={deployment?.buildLogUrl}
                     onRetry={() => void start(sheetKind)}
                   />
+                ) : null}
+                {showRepoConflict && conflictRepoName ? (
+                  <div className="space-y-8 rounded-12 border border-[var(--studio-danger)]/30 p-12">
+                    <p className="text-[13px] text-[var(--studio-fg)]">
+                      A repository named <span className="font-medium">{conflictRepoName}</span>{' '}
+                      already exists and was not created by this project. Replacing it permanently
+                      overwrites its contents with this site.
+                    </p>
+                    <ConfirmAction
+                      label="Replace existing repository"
+                      title="Replace the existing repository"
+                      body={
+                        <>
+                          This permanently replaces everything in{' '}
+                          <span className="font-medium">{conflictRepoName}</span> with this
+                          project&apos;s files. The previous contents cannot be restored from here.
+                        </>
+                      }
+                      confirmLabel="Replace and publish"
+                      busyLabel="Publishing…"
+                      confirmPhrase={conflictRepoName}
+                      disabled={busy}
+                      onConfirm={() =>
+                        start(sheetKind, { overwrite: true, confirmName: conflictRepoName })
+                      }
+                    />
+                  </div>
                 ) : null}
                 <ol className="space-y-10">
                   {PUBLISH_STEPPER.map((row) => {

@@ -93,6 +93,10 @@ export type JobErrorCode =
   | 'provider_quota_exhausted'
   | 'request_rejected'
   | 'import_failed'
+  // Publish refused to force-push over an existing deploy-org repository whose recorded
+  // id does not prove this project created it (F-202). The recorded message names the
+  // repo and the way forward, so this code is in `RECORDED_CAUSE_CODES`.
+  | 'repo_conflict'
   | 'stack_mismatch';
 
 export type PartialFile = { path: string; content: string };
