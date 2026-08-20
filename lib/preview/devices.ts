@@ -64,7 +64,11 @@ export function serializePreviewDevice(value: StoredPreviewDevice): string {
   });
 }
 
-export function isMobilePreviewFinding(finding: { id?: string; title?: string; detail?: string }): boolean {
+export function isMobilePreviewFinding(finding: {
+  id?: string;
+  title?: string;
+  detail?: string;
+}): boolean {
   const text = `${finding.id ?? ''} ${finding.title ?? ''} ${finding.detail ?? ''}`;
   return /\b390px\b|\bmobile\b|\bsmartphone\b/i.test(text);
 }
@@ -78,8 +82,21 @@ export function requestPreviewDevice(key: PreviewDeviceKey) {
   window.dispatchEvent(new CustomEvent(PREVIEW_DEVICE_EVENT, { detail: { key } }));
 }
 
+/** Shown on the Open-in-new-tab affordance when no distinct preview origin exists. */
+export const PREVIEW_NEW_TAB_REQUIRES_ORIGIN =
+  'Connect a preview domain in Admin → Configuration to open previews in a new tab';
+
 export function openPreviewWindow(url: string, size?: { width: number; height: number } | null) {
   if (!url) return;
+  // A preview is model-authored JavaScript. Opened top-level on this app's own
+  // origin it would run with the viewer's session (F-140), so a same-origin or
+  // relative URL is never opened — the sandboxed in-app iframe is the only
+  // place such content may render.
+  try {
+    if (new URL(url, window.location.href).origin === window.location.origin) return;
+  } catch {
+    return;
+  }
   if (!size?.width || !size.height) {
     window.open(url, '_blank', 'noopener,noreferrer');
     return;

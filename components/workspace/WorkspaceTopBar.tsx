@@ -28,6 +28,7 @@ import {
   formatPreviewSize,
   getPreviewDevice,
   openPreviewWindow,
+  PREVIEW_NEW_TAB_REQUIRES_ORIGIN,
   rotateDeviceSize,
   type PreviewDeviceKey,
 } from '@/lib/preview/devices';
@@ -98,6 +99,7 @@ export default function WorkspaceTopBar({
   onRefresh,
   onShare,
   previewUrl = null,
+  previewOriginConfigured = true,
   previewDevice = 'desktop',
   previewRotated = false,
   onPreviewDeviceChange,
@@ -126,6 +128,7 @@ export default function WorkspaceTopBar({
   onRefresh: () => void;
   onShare?: () => void;
   previewUrl?: string | null;
+  previewOriginConfigured?: boolean;
   previewDevice?: PreviewDeviceKey;
   previewRotated?: boolean;
   onPreviewDeviceChange?: (key: PreviewDeviceKey) => void;
@@ -409,10 +412,15 @@ export default function WorkspaceTopBar({
           </Hint>
           <div className="relative" ref={previewRef}>
             <div className="inline-flex items-center">
-              <Hint label="Open in new tab">
+              <Hint
+                label={
+                  previewOriginConfigured ? 'Open in new tab' : PREVIEW_NEW_TAB_REQUIRES_ORIGIN
+                }
+              >
                 <button
                   type="button"
-                  disabled={!previewUrl}
+                  disabled={!previewUrl || !previewOriginConfigured}
+                  title={previewOriginConfigured ? undefined : PREVIEW_NEW_TAB_REQUIRES_ORIGIN}
                   onClick={() => previewUrl && openPreviewWindow(previewUrl)}
                   aria-label="Open in new tab"
                   className={ICON_BTN}
@@ -422,7 +430,8 @@ export default function WorkspaceTopBar({
               </Hint>
               <button
                 type="button"
-                disabled={!previewUrl}
+                disabled={!previewUrl || !previewOriginConfigured}
+                title={previewOriginConfigured ? undefined : PREVIEW_NEW_TAB_REQUIRES_ORIGIN}
                 aria-expanded={previewOpen}
                 aria-haspopup="menu"
                 aria-label="Open preview options"
@@ -432,7 +441,7 @@ export default function WorkspaceTopBar({
                 <ChevronDown className="size-12" />
               </button>
             </div>
-            {previewOpen && previewUrl ? (
+            {previewOpen && previewUrl && previewOriginConfigured ? (
               <div
                 role="menu"
                 className="absolute top-full right-0 z-40 mt-6 w-[168px] rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] p-4 shadow-sm"

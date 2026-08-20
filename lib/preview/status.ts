@@ -1,6 +1,6 @@
 import { LIVE_MODE_LOCKED_REASON } from './labels';
 import { previewBuildTable, getProjectPreviewFields } from './db';
-import { signedPreviewUrl } from './url';
+import { previewStaticBaseUrl, signedPreviewUrl } from './url';
 import type { PreviewBuildStatus, PreviewMode } from './types';
 
 export type PublicPreviewStatus = {
@@ -14,6 +14,8 @@ export type PublicPreviewStatus = {
   liveReason: string | null;
   activeBuildId: string | null;
   preparing: boolean;
+  /** False when no distinct preview origin exists, so nothing can open top-level. */
+  originConfigured: boolean;
 };
 
 export async function getPreviewStatus(
@@ -41,6 +43,7 @@ export async function getPreviewStatus(
   const lockedLive = false;
   const preparing = current?.status === 'BUILDING' || current?.status === 'PENDING';
 
+  const originConfigured = (await previewStaticBaseUrl()) != null;
   const previewUrl =
     lastReady?.status === 'READY' ? await signedPreviewUrl({ projectId, userId }) : null;
 
@@ -54,6 +57,7 @@ export async function getPreviewStatus(
     lockedLive,
     liveReason: lockedLive ? LIVE_MODE_LOCKED_REASON : null,
     activeBuildId: project.activePreviewBuildId,
+    originConfigured,
     preparing,
   };
 }

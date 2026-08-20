@@ -378,6 +378,15 @@ export const SETTINGS: readonly SettingEntry[] = [
     placeholder: 'https://navroop.example.com',
   },
   {
+    key: 'preview.host',
+    group: 'app',
+    label: 'Preview host',
+    help: 'A hostname that points at this same application and is used only to serve generated previews, so their scripts run on a different origin from the app itself. One DNS record pointed at this server is enough. Filled automatically when a Cloudflare zone is connected; without either, previews cannot be opened in a new tab (the in-app preview keeps working).',
+    kind: 'text',
+    env: 'PREVIEW_STATIC_HOST',
+    placeholder: 'preview.navroop.example.com',
+  },
+  {
     key: 'app.cronSecret',
     group: 'app',
     label: 'Scheduled-task secret',

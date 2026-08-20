@@ -335,6 +335,7 @@ export default function ProjectWorkspace({
         onRefresh={onRefresh}
         onShare={share}
         previewUrl={previewUrl}
+        previewOriginConfigured={staticPreview.originConfigured}
         previewDevice={previewDevice.device}
         previewRotated={previewDevice.rotated}
         onPreviewDeviceChange={previewDevice.setDevice}

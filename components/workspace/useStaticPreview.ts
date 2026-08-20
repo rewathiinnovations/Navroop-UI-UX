@@ -14,6 +14,7 @@ export type StaticPreviewState = {
   lockedLive: boolean;
   liveReason: string | null;
   preparing: boolean;
+  originConfigured: boolean;
 };
 
 const EMPTY: StaticPreviewState = {
@@ -25,6 +26,10 @@ const EMPTY: StaticPreviewState = {
   lockedLive: false,
   liveReason: null,
   preparing: false,
+  // Assume configured until the server says otherwise, so the stronger
+  // "connect a preview domain" hint never flashes while the first status
+  // request is in flight.
+  originConfigured: true,
 };
 
 type StatusResponse = Partial<StaticPreviewState> & { lastReadyUrl?: string | null };
@@ -106,6 +111,7 @@ export function useStaticPreview({
       lockedLive: Boolean(data.lockedLive),
       liveReason: data.liveReason ?? null,
       preparing: Boolean(data.preparing),
+      originConfigured: data.originConfigured !== false,
     };
     setState(next);
     return next;
