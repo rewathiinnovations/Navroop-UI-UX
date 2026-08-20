@@ -1,7 +1,7 @@
 /**
  * List backup dumps, or restore one into RESTORE_DATABASE_URL (must differ from DATABASE_URL).
- *   npx tsx scripts/restore-db.ts
- *   npx tsx scripts/restore-db.ts --key backups/db/db-YYYY-MM-DD-xxxxxx.dump
+ *   node ./node_modules/tsx/dist/cli.mjs scripts/restore-db.ts
+ *   node ./node_modules/tsx/dist/cli.mjs scripts/restore-db.ts --key backups/db/db-YYYY-MM-DD-xxxxxx.dump
  */
 import { resolve } from 'node:path';
 import { config } from 'dotenv';

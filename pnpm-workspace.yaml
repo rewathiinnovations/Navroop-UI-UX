@@ -9,17 +9,18 @@ allowBuilds:
   protobufjs: true
   sharp: true
   unrs-resolver: true
-minimumReleaseAgeExclude:
-  - '@daytona/analytics-api-client@0.205.0'
-  - '@daytona/api-client@0.205.0'
-  - '@daytona/sdk@0.205.0'
-  - '@daytona/toolbox-api-client@0.205.0'
 
+# Same-major security patches. `pnpm audit --audit-level=high` in `verify` is kept
+# green from here, not from a `pnpm` key in package.json (there is none — pnpm 11
+# reads overrides from this file). An entry for a package that is no longer in the
+# tree is a no-op that reads like protection: `tar: ^7.5.19` sat here after
+# `@e2b/code-interpreter` left with the sandbox subsystem and `tar` stopped
+# resolving at all (F-638). `tests/unit/pnpm-overrides-in-sync.test.ts` keeps this
+# block equal to the `overrides` block pnpm records in pnpm-lock.yaml, because a
+# disagreement fails `pnpm install --frozen-lockfile` in both CI workflows.
 overrides:
-  tar: ^7.5.19
   deepmerge-ts: ^8.0.0
   axios: ^1.16.0
-  '@isaacs/brace-expansion': ^5.0.1
   flatted: ^3.4.2
   picomatch@2: ^2.3.2
   lodash-es: ^4.17.24

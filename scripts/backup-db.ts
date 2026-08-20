@@ -1,6 +1,6 @@
 /**
  * Dump Postgres (custom, compress=9) and stream to the backup bucket.
- *   npx tsx scripts/backup-db.ts
+ *   node ./node_modules/tsx/dist/cli.mjs scripts/backup-db.ts
  *
  * Ideally backup creds are write+list only; put a lifecycle policy on the bucket.
  * This script still applies dailies 14d / weeklies 8w / monthlies 12m.

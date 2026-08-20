@@ -1,11 +1,7 @@
 {
   "compilerOptions": {
     "target": "ES2017",
-    "lib": [
-      "dom",
-      "dom.iterable",
-      "esnext"
-    ],
+    "lib": ["dom", "dom.iterable", "esnext"],
     "allowJs": true,
     "skipLibCheck": true,
     "strict": true,
@@ -24,15 +20,17 @@
       }
     ],
     "paths": {
-      "@/*": [
-        "./*"
-      ]
+      "@/*": ["./*"]
     }
   },
   "include": [
     "types/next-env.d.ts",
     "**/*.ts",
     "**/*.tsx",
+    // Next's writeConfigurationDefaults re-adds these two globs on every `next dev`/`next build`,
+    // so removing them is churn. They are inert: the ".next" entry in `exclude` below filters
+    // them back out, and that is deliberate — including .next/**/*.ts broke `tsc --noEmit` twice
+    // (see .cursor/lessons-learned.md). Do not remove ".next" from `exclude`.
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts"
   ],

@@ -118,6 +118,32 @@ export async function latestRestoreTest(): Promise<BackupRunRow | null> {
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
+/**
+ * Fails every run of `kind` still `running` from before `startedBefore`, and answers how many.
+ *
+ * The only writers of a terminal status are the success and failure paths inside the process
+ * that opened the row, so a run killed mid-`pg_dump` — redeploy, OOM — left `running` forever:
+ * `/admin/backups` showed a backup in progress indefinitely and "Back up now" stayed disabled
+ * (F-722). The caller holds the backup claim, so nothing that could still land is in range.
+ */
+export async function failStaleRunningBackupRuns(input: {
+  kind: BackupKind;
+  startedBefore: Date;
+  detail: string;
+}): Promise<number> {
+  return prisma.$executeRaw`
+    UPDATE "BackupRun"
+    SET
+      "status" = ${'failed'},
+      "detail" = ${input.detail},
+      "finishedAt" = now(),
+      "durationMs" = FLOOR(EXTRACT(EPOCH FROM (now() - "startedAt")) * 1000)::int
+    WHERE "kind" = ${input.kind}
+      AND "status" = ${'running'}
+      AND "startedAt" < ${input.startedBefore}
+  `;
+}
+
 export async function latestRunningDbBackup(): Promise<BackupRunRow | null> {
   const rows = await prisma.$queryRaw<Record<string, unknown>[]>`
     SELECT id, kind, status, "objectKey", "sizeBytes", "durationMs", detail, "startedAt", "finishedAt"

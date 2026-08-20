@@ -55,8 +55,14 @@ jobs:
       # The application database, which `verify` now genuinely needs: `next start`
       # serves it and the Playwright `setup` project seeds the E2E account into it
       # through Prisma before the authenticated journeys sign in.
-      - run: pnpm exec prisma migrate deploy
-      - run: pnpm exec playwright install --with-deps chromium
+      # Direct binaries, not `pnpm exec` (F-799). `pnpm exec` runs a dependency-status check
+      # that can decide to purge node_modules, and .cursor/lessons-learned.md records that it
+      # aborts only because an agent shell has no TTY — with the explicit warning never to
+      # combine it with CI=true, which this job sets above. A frozen-lockfile install makes
+      # the status check pass today, so this was latent rather than broken; the direct call
+      # removes the condition entirely. scripts/migrate-test-db.ts already does it this way.
+      - run: node ./node_modules/prisma/build/index.js migrate deploy
+      - run: node ./node_modules/playwright/cli.js install --with-deps chromium
       - name: Cache Playwright browsers
         uses: actions/cache@v4
         with:

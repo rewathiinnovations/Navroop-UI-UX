@@ -1,6 +1,6 @@
 /**
  * Production pre-migrate: refuse destructive SQL without a flag, back up first, fail closed.
- *   npx tsx scripts/pre-migrate.ts
+ *   node ./node_modules/tsx/dist/cli.mjs scripts/pre-migrate.ts
  *
  * Wired from docker-entrypoint.mjs (production start). Skips the backup step when
  * NODE_ENV is not production so local development is not blocked, and skips both the

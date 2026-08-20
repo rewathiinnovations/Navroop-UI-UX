@@ -53,8 +53,11 @@ jobs:
       # the schema-drift check, then the application database that `next start` and
       # the Playwright `setup` project need.
       - run: pnpm run db:test
-      - run: pnpm exec prisma migrate deploy
-      - run: pnpm exec playwright install --with-deps chromium
+      # Direct binaries, not `pnpm exec` — same reason as verify.yml (F-799): this job also
+      # sets CI: '1', which is the one condition .cursor/lessons-learned.md says never to
+      # combine with `pnpm exec`'s dependency-status check.
+      - run: node ./node_modules/prisma/build/index.js migrate deploy
+      - run: node ./node_modules/playwright/cli.js install --with-deps chromium
       - run: pnpm run verify:full
       - name: Upload Playwright traces
         if: failure()

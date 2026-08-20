@@ -8,7 +8,14 @@ export {
   backupDriver,
 } from './assert';
 export { retentionDecisions, type RetentionObject } from './retention';
-export { isBackupStale, isRestoreTestOverdue, RESTORE_TEST_STALE_MS, STALE_BACKUP_MS } from './stale';
+export {
+  isBackupStale,
+  isRestoreTestOverdue,
+  RESTORE_TEST_STALE_MS,
+  restoreTestStaleMs,
+  STALE_BACKUP_MS,
+  staleBackupMs,
+} from './stale';
 export { encryptionKeyFingerprint } from './fingerprint';
 export { assertBackupBoot } from './boot';
 export {

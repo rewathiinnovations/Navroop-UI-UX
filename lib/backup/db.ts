@@ -12,6 +12,7 @@ import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import { cronClaimStaleMs, DB_BACKUP_CLAIM, getCronClaimStore } from '../cron/claim';
 import { assertFreeSpaceForLargeOp, withTmpDir } from '../runtime/data-dir';
 import { assertDistinctBuckets, assertProductionBackupDriver, backupDriver } from './assert';
 import { clearBackupAlert, notifyBackupAlert, notifyStaleBackupIfNeeded } from './alerts';
@@ -22,8 +23,13 @@ import {
   uploadBackupFile,
 } from './client';
 import { retentionDecisions } from './retention';
-import { finishBackupRun, latestSuccessfulDbBackup, startBackupRun } from './runs';
-import { isBackupStale } from './stale';
+import {
+  failStaleRunningBackupRuns,
+  finishBackupRun,
+  latestSuccessfulDbBackup,
+  startBackupRun,
+} from './runs';
+import { isBackupStale, staleBackupMs } from './stale';
 
 // The 90-day restore-test advisory is not raised from here. `runDbBackup` used to call
 // `notifyBackupAlert('restore_test', …)` on every successful run, and because a `restore_test`
@@ -73,6 +79,51 @@ export async function runDbBackup() {
     return { ok: false as const, error: message };
   }
 
+  const now = new Date();
+  const outcome = await getCronClaimStore().claim(DB_BACKUP_CLAIM, now);
+  if (!outcome.claimed) {
+    // Not an alert and not a BackupRun row: nothing failed, and the run that holds the claim
+    // is the one that owes the operator a receipt.
+    return {
+      ok: false as const,
+      alreadyRunning: true as const,
+      error: `A database backup claimed at ${outcome.runningSince} is still running, so this one did nothing.`,
+    };
+  }
+
+  try {
+    // Unconditional, not only on `outcome.abandoned`: a run whose `finishBackupRun` write is
+    // lost releases its claim cleanly and still strands the row (the failure path logs that
+    // write rather than throwing). Holding the claim is what makes this safe — anything older
+    // than the in-flight budget has already lost it.
+    const settleBefore = new Date(now.getTime() - cronClaimStaleMs(DB_BACKUP_CLAIM));
+    const settled = await failStaleRunningBackupRuns({
+      kind: 'db',
+      startedBefore: settleBefore,
+      detail: `The process running this backup did not finish and recorded no result; settled at ${now.toISOString()} by the next backup.`,
+    }).catch((error: unknown) => {
+      console.error('[backup] could not settle abandoned runs', error);
+      return 0;
+    });
+    if (settled > 0) {
+      console.warn('[backup] settled backup runs left running by a dead process', {
+        settled,
+        before: settleBefore.toISOString(),
+        abandonedClaim: outcome.abandoned?.startedAt ?? null,
+      });
+    }
+    return await dumpAndStore();
+  } finally {
+    // A held claim outlives the process, so a missed release stops every backup until the
+    // in-flight budget expires. Logged rather than thrown: it must not turn a stored backup
+    // into a failure.
+    await outcome.claim.release().catch((error: unknown) => {
+      console.error('[backup] could not release the backup claim', error);
+    });
+  }
+}
+
+async function dumpAndStore() {
   const run = await startBackupRun('db');
   const filename = dumpFilename();
   const objectKey = `${backupObjectPrefix()}${filename}`;
@@ -152,8 +203,9 @@ export async function runDbBackup() {
     });
   }
 
-  const last = await latestSuccessfulDbBackup();
-  if (isBackupStale(last?.startedAt ?? null)) await notifyStaleBackupIfNeeded(true);
+  const [last, staleMs] = await Promise.all([latestSuccessfulDbBackup(), staleBackupMs()]);
+  if (isBackupStale(last?.startedAt ?? null, new Date(), staleMs))
+    await notifyStaleBackupIfNeeded(true);
   else await clearBackupAlert();
 
   return {

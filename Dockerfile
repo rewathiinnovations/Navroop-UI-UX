@@ -40,6 +40,22 @@ ENV GIT_SHA=${GIT_SHA}
 ENV NEXT_TELEMETRY_DISABLED=1
 # Placeholder only — prisma generate reads the schema URL, it is not used at runtime.
 ENV DATABASE_URL="postgresql://build:build@127.0.0.1:5432/build"
+# BUILD-TIME ONLY. `next build` inlines every `NEXT_PUBLIC_*` read into the client chunks, so
+# these must arrive as build args (docker-compose.yml `app.build.args`). Listing them under
+# compose `environment:` reaches the runtime process and never the browser bundle, which is how
+# the shipped bundle carried `undefined` for NEXT_PUBLIC_APP_URL while `assertInternalOrigin()`
+# certified the runtime copy at boot (F-725). Changing one needs a rebuild, not a restart.
+ARG NEXT_PUBLIC_APP_URL
+ENV NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}
+ARG NEXT_PUBLIC_WORKSPACE_NAME=Navroop
+ENV NEXT_PUBLIC_WORKSPACE_NAME=${NEXT_PUBLIC_WORKSPACE_NAME}
+# Fallback DSN for statically prerendered pages only; live pages read the <meta> tag that
+# lib/sentry/config-meta.tsx renders from the runtime config on the volume.
+ARG NEXT_PUBLIC_SENTRY_DSN
+ENV NEXT_PUBLIC_SENTRY_DSN=${NEXT_PUBLIC_SENTRY_DSN}
+# Fail here rather than shipping a bundle whose own origin is the string "undefined". There is
+# no runtime recovery: the value is a literal in the client chunks by the time the app boots.
+RUN node -e "if(!(process.env.NEXT_PUBLIC_APP_URL||'').trim()){console.error('NEXT_PUBLIC_APP_URL must be passed as a build arg: it is inlined into the client bundle and cannot be supplied at runtime');process.exit(1)}console.log('NEXT_PUBLIC_APP_URL ok')"
 # Direct binary, never `pnpm exec`: .cursor/lessons-learned.md bans combining pnpm with a
 # tool that owns locked native engines, and lib/verify/orchestrator.ts already calls it this way.
 RUN node ./node_modules/prisma/build/index.js generate

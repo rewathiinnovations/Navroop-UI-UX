@@ -2,7 +2,7 @@
  * One-off: populate QualitySignals from historical restores, audits, and generations.
  * Stamps promptVersion "v1 baseline". Idempotent — second run creates no duplicates.
  *
- *   npx tsx scripts/backfill-quality-signals.ts
+ *   node ./node_modules/tsx/dist/cli.mjs scripts/backfill-quality-signals.ts
  */
 import { config } from 'dotenv';
 import { prisma } from '../lib/db';
@@ -15,7 +15,11 @@ import {
   typeSafetyScore,
   visualEditRateScore,
 } from '../lib/signals/score';
-import { BASELINE_PROMPT_LABEL, assembleVersionedPrefix, hashPromptPrefix } from '../lib/prompts/version';
+import {
+  BASELINE_PROMPT_LABEL,
+  assembleVersionedPrefix,
+  hashPromptPrefix,
+} from '../lib/prompts/version';
 import { DESIGN_DIRECTION_IDS } from '../lib/design/directions';
 import { STACK_IDS } from '../lib/stacks';
 import { MEMORY_CATEGORIES, MEMORY_TOKEN_BUDGET } from '../lib/memory/types';
@@ -26,7 +30,8 @@ const BUILD_KINDS = ['initial', 'followup'];
 const SETTLE_MS = 30 * 60 * 1000;
 
 function rawRecord(value: unknown): Record<string, unknown> {
-  if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>;
+  if (value && typeof value === 'object' && !Array.isArray(value))
+    return value as Record<string, unknown>;
   return {};
 }
 
@@ -65,7 +70,8 @@ async function main() {
   const has = (kind: string, key: string, value: unknown) =>
     existing.some((row) => row.kind === kind && rawRecord(row.rawValue)[key] === value);
   const hasEvent = (kind: string, eventId: string | null) =>
-    Boolean(eventId) && existing.some((row) => row.kind === kind && row.generationEventId === eventId);
+    Boolean(eventId) &&
+    existing.some((row) => row.kind === kind && row.generationEventId === eventId);
 
   const created: string[] = [];
 
@@ -125,9 +131,15 @@ async function main() {
   });
   for (const audit of seoAudits) {
     if (has('seo_score', 'seoAuditId', audit.id)) continue;
-    const findings = Array.isArray(audit.findings) ? (audit.findings as Array<{ status?: string; ignored?: boolean }>) : [];
+    const findings = Array.isArray(audit.findings)
+      ? (audit.findings as Array<{ status?: string; ignored?: boolean }>)
+      : [];
     const event = await prisma.generationEvent.findFirst({
-      where: { projectId: audit.projectId, kind: { in: BUILD_KINDS }, createdAt: { lte: audit.scannedAt } },
+      where: {
+        projectId: audit.projectId,
+        kind: { in: BUILD_KINDS },
+        createdAt: { lte: audit.scannedAt },
+      },
       orderBy: { createdAt: 'desc' },
       select: { id: true },
     });
@@ -145,9 +157,15 @@ async function main() {
   });
   for (const audit of codeAudits) {
     const metrics = (audit.metrics || {}) as { tsErrors?: number; a11yViolations?: number };
-    const findings = Array.isArray(audit.findings) ? (audit.findings as Array<{ id?: string }>) : [];
+    const findings = Array.isArray(audit.findings)
+      ? (audit.findings as Array<{ id?: string }>)
+      : [];
     const event = await prisma.generationEvent.findFirst({
-      where: { projectId: audit.projectId, kind: { in: BUILD_KINDS }, createdAt: { lte: audit.scannedAt } },
+      where: {
+        projectId: audit.projectId,
+        kind: { in: BUILD_KINDS },
+        createdAt: { lte: audit.scannedAt },
+      },
       orderBy: { createdAt: 'desc' },
       select: { id: true },
     });
@@ -198,13 +216,19 @@ async function main() {
     let windowStart = 0;
     for (let i = 0; i < events.length; i += 1) {
       const next = events[i + 1];
-      const gap = next ? next.createdAt.getTime() - events[i].createdAt.getTime() : now - events[i].createdAt.getTime();
+      const gap = next
+        ? next.createdAt.getTime() - events[i].createdAt.getTime()
+        : now - events[i].createdAt.getTime();
       if (gap < SETTLE_MS) continue;
       const slice = events.slice(windowStart, i + 1);
       windowStart = i + 1;
       if (slice.length === 0) continue;
       const last = slice[slice.length - 1];
-      if (has('followups_to_settle', 'eventIds', last.id) || hasEvent('followups_to_settle', last.id)) continue;
+      if (
+        has('followups_to_settle', 'eventIds', last.id) ||
+        hasEvent('followups_to_settle', last.id)
+      )
+        continue;
       await emit({
         projectId,
         generationEventId: last.id,

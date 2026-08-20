@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as BackupAssert from '@/lib/backup/assert';
+import type * as CronClaim from '@/lib/cron/claim';
 
 /**
  * What a nightly backup is allowed to tell the operator.
@@ -19,8 +20,9 @@ import type * as BackupAssert from '@/lib/backup/assert';
  *    plus mail to every admin, every night, forever, with no way to clear it from the product.
  *
  * Goes red if a durable backup is ever recorded `failed` for a housekeeping error, if an
- * advisory turns back into an alert email, if a retention failure becomes silent, or if the
- * restore path stops refusing a database it was not aimed at.
+ * advisory turns back into an alert email, if a retention failure becomes silent, if the
+ * restore path stops refusing a database it was not aimed at, or if two backups can dump into
+ * the same volume at once (F-722).
  */
 
 const child = vi.hoisted(() => ({ exitCode: 0 }));
@@ -37,7 +39,24 @@ const client = vi.hoisted(() => ({
   listBackupObjects: vi.fn(),
   uploadBackupFile: vi.fn(),
 }));
-const runs = vi.hoisted(() => ({ start: vi.fn(), finish: vi.fn(), latestSuccess: vi.fn() }));
+const runs = vi.hoisted(() => ({
+  start: vi.fn(),
+  finish: vi.fn(),
+  latestSuccess: vi.fn(),
+  failStale: vi.fn(),
+}));
+/**
+ * The in-flight claim `runDbBackup` takes. Held here rather than mocked per case so a test can
+ * make the claim refuse, or hand back an abandoned holder, and still watch the release.
+ */
+const claims = vi.hoisted(() => ({
+  release: vi.fn(),
+  claimedAt: null as Date | null,
+  outcome: null as unknown,
+  store: {
+    claim: vi.fn(),
+  },
+}));
 
 vi.mock('node:child_process', () => ({
   spawn: () => {
@@ -79,15 +98,23 @@ vi.mock('@/lib/backup/client', () => ({
   uploadBackupFile: client.uploadBackupFile,
 }));
 vi.mock('@/lib/backup/runs', () => ({
+  failStaleRunningBackupRuns: runs.failStale,
   finishBackupRun: runs.finish,
   latestSuccessfulDbBackup: runs.latestSuccess,
   startBackupRun: runs.start,
+}));
+// Only the store is replaced: `cronClaimStaleMs` stays real, so the window the settle pass
+// uses is the one production uses.
+vi.mock('@/lib/cron/claim', async (importOriginal) => ({
+  ...(await importOriginal<typeof CronClaim>()),
+  getCronClaimStore: () => claims.store,
 }));
 
 // Dynamic so the `vi.mock` factories above are installed before either module is evaluated; a
 // static import would be hoisted past them and capture the real client, runs and alerts.
 const { runDbBackup } = await import('@/lib/backup/db');
 const { restoreDbBackup } = await import('@/lib/backup/restore');
+const { cronClaimStaleMs, DB_BACKUP_CLAIM } = await import('@/lib/cron/claim');
 
 const STARTED_AT = new Date('2026-08-19T02:00:00.000Z');
 
@@ -140,6 +167,17 @@ beforeEach(() => {
   runs.finish.mockResolvedValue({});
   // A run that just succeeded is never stale, so the healthy path clears the banner.
   runs.latestSuccess.mockResolvedValue({ startedAt: new Date() });
+  runs.failStale.mockResolvedValue(0);
+  claims.release.mockResolvedValue(undefined);
+  claims.claimedAt = null;
+  claims.store.claim.mockImplementation(async (name: string, now: Date) => {
+    claims.claimedAt = now;
+    return {
+      claimed: true,
+      abandoned: null,
+      claim: { runId: `claim-${name}`, startedAt: now.toISOString(), release: claims.release },
+    };
+  });
 });
 
 describe('runDbBackup on a healthy night', () => {
@@ -255,6 +293,97 @@ describe('runDbBackup when the backup itself fails', () => {
     expect(result.ok).toBe(false);
     expect(finishCalls()[0].status).toBe('failed');
     expect(client.uploadBackupFile).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * F-722. `latestRunningDbBackup()` existed and `/admin/backups` rendered it, but nothing read
+ * it before starting work: the 02:00 cron overlapping an operator's "Back up now" put two
+ * `pg_dump`s into `/data/tmp` at once — on the volume the 2 GB precondition exists to protect
+ * — and a killed run left a `running` row that nothing ever settled, so the admin screen
+ * showed a backup in progress forever and the button stayed disabled.
+ */
+describe('runDbBackup while another backup holds the claim', () => {
+  beforeEach(() => {
+    claims.store.claim.mockResolvedValue({
+      claimed: false,
+      runningSince: '2026-08-19T01:58:00.000Z',
+    });
+  });
+
+  it('refuses without dumping, uploading, or opening a second run row', async () => {
+    const result = await runDbBackup();
+
+    expect(result.ok).toBe(false);
+    expect(result.alreadyRunning).toBe(true);
+    expect(result.error).toContain('2026-08-19T01:58:00.000Z');
+    expect(runs.start).not.toHaveBeenCalled();
+    expect(dataDir.withTmpDir).not.toHaveBeenCalled();
+    expect(client.uploadBackupFile).not.toHaveBeenCalled();
+  });
+
+  it('does not email admins: a backup that is already running has not failed', async () => {
+    await runDbBackup();
+    expect(alerts.notifyBackupAlert).not.toHaveBeenCalled();
+    expect(runs.finish).not.toHaveBeenCalled();
+  });
+
+  it('claims under one name for every entry point, so cron and the admin button collide', () => {
+    expect(claims.store.claim).not.toHaveBeenCalled();
+    // The cron route's own `handleCron('backup-db')` claim cannot serialise the admin button
+    // or `tsx scripts/backup-db.ts`, which never reach it — hence a claim on the operation.
+    expect(DB_BACKUP_CLAIM).not.toBe('backup-db');
+    expect(cronClaimStaleMs(DB_BACKUP_CLAIM)).toBe(cronClaimStaleMs('backup-db'));
+  });
+});
+
+describe('runDbBackup after a killed run', () => {
+  it('settles the rows the dead process left running, then backs up', async () => {
+    claims.store.claim.mockImplementation(async (name: string, now: Date) => {
+      claims.claimedAt = now;
+      return {
+        claimed: true,
+        abandoned: { runId: 'dead', startedAt: '2026-08-19T02:00:00.000Z', ageMs: 7_200_000 },
+        claim: { runId: `claim-${name}`, startedAt: now.toISOString(), release: claims.release },
+      };
+    });
+
+    const result = await runDbBackup();
+
+    expect(result.ok).toBe(true);
+    expect(runs.failStale).toHaveBeenCalledTimes(1);
+    const settle = runs.failStale.mock.calls[0][0] as {
+      kind: string;
+      startedBefore: Date;
+      detail: string;
+    };
+    expect(settle.kind).toBe('db');
+    expect(settle.startedBefore.getTime()).toBe(
+      (claims.claimedAt as Date).getTime() - cronClaimStaleMs(DB_BACKUP_CLAIM),
+    );
+    expect(settle.detail).toMatch(/did not (finish|record)/i);
+    // The settle pass runs before a new row is opened, so it can never catch this run.
+    expect(runs.failStale.mock.invocationCallOrder[0]).toBeLessThan(
+      runs.start.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('settles a row abandoned by a lost failure write even when no claim was left behind', async () => {
+    await runDbBackup();
+    // `finishBackupRun` failing is logged, not thrown, so a row can be stranded `running`
+    // with the claim cleanly released. Only an unconditional settle recovers that one.
+    expect(runs.failStale).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases the claim even when the dump fails, so the next run is not locked out', async () => {
+    child.exitCode = 1;
+    await runDbBackup();
+    expect(claims.release).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases the claim on a healthy run', async () => {
+    await runDbBackup();
+    expect(claims.release).toHaveBeenCalledTimes(1);
   });
 });
 

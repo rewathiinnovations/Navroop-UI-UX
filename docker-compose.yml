@@ -25,6 +25,19 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # BUILD-TIME. `next build` inlines every `NEXT_PUBLIC_*` read into the client chunks,
+      # so those values have to arrive here as build args; the `environment:` block below is
+      # runtime only and never reaches the browser bundle. Without these the bundle shipped
+      # `undefined` for NEXT_PUBLIC_APP_URL while `assertInternalOrigin()` certified the
+      # runtime copy at boot (F-725). Changing any of them needs a rebuild, not a restart.
+      args:
+        NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL}
+        NEXT_PUBLIC_WORKSPACE_NAME: ${NEXT_PUBLIC_WORKSPACE_NAME:-Navroop}
+        # Fallback DSN for statically prerendered pages, which render before the /data
+        # runtime config exists. Live pages read the <meta> tag instead.
+        NEXT_PUBLIC_SENTRY_DSN: ${NEXT_PUBLIC_SENTRY_DSN:-}
+        # Both: baked into the image for /api/health and re-supplied at runtime below.
+        GIT_SHA: ${GIT_SHA:-}
     restart: unless-stopped
     depends_on:
       postgres:
@@ -33,6 +46,13 @@ services:
       - '${PORT:-3000}:3000'
     volumes:
       - navroop_data:/data
+    # RUNTIME. Read by the Node process on each request or at boot; a change here needs a
+    # container restart, never a rebuild. Every `env:` name in lib/settings/registry.ts is
+    # forwarded here: a variable the compose file does not list never reaches the container,
+    # so /admin/config would show the field as unconfigured however the operator set it.
+    # The three NEXT_PUBLIC_* names repeated from `args` above are read server-side as well
+    # (lib/api/internal-origin.ts, lib/email/client.ts, lib/observability/migrate-env.ts),
+    # so they belong in both blocks — and both copies must agree.
     environment:
       NODE_ENV: production
       HOSTNAME: 0.0.0.0
@@ -43,6 +63,7 @@ services:
       NEXTAUTH_URL: ${NEXTAUTH_URL}
       AUTH_URL: ${AUTH_URL:-}
       NEXT_PUBLIC_WORKSPACE_NAME: ${NEXT_PUBLIC_WORKSPACE_NAME:-Navroop}
+      NEXT_PUBLIC_SENTRY_DSN: ${NEXT_PUBLIC_SENTRY_DSN:-}
       GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:-}
       GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:-}
       GITHUB_OAUTH_CALLBACK_URL: ${GITHUB_OAUTH_CALLBACK_URL:-}
@@ -66,7 +87,16 @@ services:
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       EMAIL_FROM: ${EMAIL_FROM:-}
       UNSPLASH_ACCESS_KEY: ${UNSPLASH_ACCESS_KEY:-}
+      # Reference only — nothing sends either one anywhere (see their registry help text).
+      UNSPLASH_APPLICATION_ID: ${UNSPLASH_APPLICATION_ID:-}
+      UNSPLASH_SECRET_KEY: ${UNSPLASH_SECRET_KEY:-}
+      # Self-hosted image worker. Without a URL and token, generated pictures fall back to
+      # an OpenAI/Gemini key and then to keyless stock photography.
+      IMAGE_WORKER_URL: ${IMAGE_WORKER_URL:-}
+      IMAGE_WORKER_TOKEN: ${IMAGE_WORKER_TOKEN:-}
+      IMAGE_WORKER_MODEL: ${IMAGE_WORKER_MODEL:-}
       STORAGE_DRIVER: ${STORAGE_DRIVER:-local}
+      STORAGE_LOCAL_DIR: ${STORAGE_LOCAL_DIR:-}
       ELK_ENDPOINT: ${ELK_ENDPOINT:-}
       ELK_REGION: ${ELK_REGION:-}
       ELK_ACCESS_KEY_ID: ${ELK_ACCESS_KEY_ID:-}
@@ -78,6 +108,8 @@ services:
       BACKUP_ACCESS_KEY_ID: ${BACKUP_ACCESS_KEY_ID:-}
       BACKUP_SECRET_ACCESS_KEY: ${BACKUP_SECRET_ACCESS_KEY:-}
       BACKUP_BUCKET: ${BACKUP_BUCKET:-}
+      # Development only: a backup on the same disk as the database is not a backup.
+      BACKUP_LOCAL_DIR: ${BACKUP_LOCAL_DIR:-}
       SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-}
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-}
@@ -85,14 +117,24 @@ services:
       DATA_DIR: ${DATA_DIR:-/data}
       OBSERVABILITY_CONFIG_PATH: ${OBSERVABILITY_CONFIG_PATH:-/data/config/observability.json}
       ALLOW_DESTRUCTIVE_MIGRATION: ${ALLOW_DESTRUCTIVE_MIGRATION:-}
+      CHECKPOINT_RETENTION_DAYS: ${CHECKPOINT_RETENTION_DAYS:-}
+      PURGE_DELETED_DAYS: ${PURGE_DELETED_DAYS:-}
       GIT_SHA: ${GIT_SHA:-}
       DEPLOYED_AT: ${DEPLOYED_AT:-}
       COOLIFY_APP_UUID: ${COOLIFY_APP_UUID:-}
       APP_URL: ${APP_URL:-}
+      # Runtime name used when this app creates a GitHub App or Sentry project on the
+      # operator's behalf. NEXT_PUBLIC_WORKSPACE_NAME above is the browser-facing twin and
+      # the accepted alias for this one.
+      WORKSPACE_NAME: ${WORKSPACE_NAME:-}
       # Required. Same host as APP_URL / NEXTAUTH_URL. The GitHub App Manifest
       # callback and static preview origins are built from it, and the app
       # refuses to boot in production if it is unset or points elsewhere.
       NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL}
+      # A second hostname pointing at this same app, used only to serve generated previews
+      # so their scripts run on a different origin. Filled automatically when a Cloudflare
+      # zone is connected.
+      PREVIEW_STATIC_HOST: ${PREVIEW_STATIC_HOST:-}
     healthcheck:
       test:
         [

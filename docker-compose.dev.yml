@@ -12,7 +12,12 @@ services:
       POSTGRES_PASSWORD: openlovable
       POSTGRES_DB: openlovable
     ports:
-      - '5433:5432'
+      # Loopback only. Without the bind address Docker publishes on 0.0.0.0:5433, which put
+      # this database — the live working database for both worktrees, holding real project
+      # content, user rows and AppSetting secrets — on the LAN behind a guessable credential
+      # (F-753). The password stays as it is: TEST_DATABASE_URL, SHADOW_DATABASE_URL and every
+      # developer's .env already carry it, and it is unreachable off this host now.
+      - '127.0.0.1:5433:5432'
     volumes:
       - open_lovable_pg:/var/lib/postgresql/data
 

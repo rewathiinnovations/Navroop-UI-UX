@@ -2,7 +2,7 @@
  * Live smoke against a deployed Navroop URL.
  * Client site deploys must keep responding — this script asserts a known live URL.
  *
- *   SMOKE_URL=https://app.example pnpm exec tsx scripts/smoke-test.ts
+ *   SMOKE_URL=https://app.example node ./node_modules/tsx/dist/cli.mjs scripts/smoke-test.ts
  *   SMOKE_CLIENT_URL=https://known-client.example
  *
  * Checks are independent: a failing check records the failure and the run
@@ -15,6 +15,7 @@
  * are expected for the target being probed — a dev box with no `/data` mount,
  * for instance — are reported as warnings and leave the exit code at 0.
  */
+import { setTimeout as sleep } from 'node:timers/promises';
 import { matchPublicRoute } from '../lib/auth/public-routes.ts';
 import { collectRouteEndpoints, samplePath } from '../lib/auth/route-inventory.ts';
 
@@ -54,7 +55,13 @@ function skip(message: string) {
 
 if (!base) fatal('SMOKE_URL (or APP_URL) is required');
 
-const LOCAL_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '0.0.0.0', 'host.docker.internal']);
+const LOCAL_HOSTNAMES = new Set([
+  'localhost',
+  '127.0.0.1',
+  '::1',
+  '0.0.0.0',
+  'host.docker.internal',
+]);
 const TRUTHY = new Set(['on', 'true', '1', 'yes']);
 const FALSY = new Set(['off', 'false', '0', 'no']);
 
@@ -136,10 +143,16 @@ type HealthBody = {
   };
   observabilityFile?: {
     present?: boolean;
+    state?: 'ok' | 'absent' | 'unreadable';
+    error?: string | null;
     projectId?: string | null;
     matchesIntegration?: boolean | null;
   };
-  sentry?: { dsnConfigured?: boolean };
+  sentry?: {
+    dsnConfigured?: boolean;
+    initState?:
+      'initialised' | 'skipped_absent' | 'skipped_unreadable' | 'skipped_disabled' | 'not_captured';
+  };
 };
 
 async function readJson(response: Response): Promise<HealthBody | null> {
@@ -242,12 +255,25 @@ async function checkHealth() {
     fail('silent lost volume — volume id changed but the change was not reported');
   }
   if (dataDir?.volumeChanged) {
-    warn(`volume id changed (previous ${dataDir.previousVolumeId || 'none'} → ${dataDir.volumeId})`);
+    warn(
+      `volume id changed (previous ${dataDir.previousVolumeId || 'none'} → ${dataDir.volumeId})`,
+    );
   }
   if (dataDir?.warnLowSpace) reportVolume('free space is below the 20% warning threshold');
 
+  // `Sentry.init` runs once, at boot. A DSN that reads as configured now says nothing
+  // about whether this process reports anything, and that is the state F-738 was about.
+  if (healthBody.sentry?.initState === 'skipped_unreadable') {
+    fail('this process never initialised Sentry: the observability config was unreadable at boot');
+  }
   if (healthBody.sentry?.dsnConfigured) {
-    if (!healthBody.observabilityFile?.present) fail('observability.json is missing while Sentry is connected');
+    if (healthBody.observabilityFile?.state === 'unreadable') {
+      fail(
+        `observability.json could not be read while Sentry is connected: ${healthBody.observabilityFile.error ?? 'unknown error'}`,
+      );
+    } else if (!healthBody.observabilityFile?.present) {
+      fail('observability.json is missing while Sentry is connected');
+    }
     if (healthBody.observabilityFile?.matchesIntegration === false) {
       fail('observability.json project id does not match the Sentry Integration');
     } else if (healthBody.observabilityFile?.matchesIntegration == null) {
@@ -265,6 +291,12 @@ async function checkHealth() {
     console.log(`ok  health (${HEALTH_DEPENDENCIES.join(', ')} reachable)`);
   }
 }
+
+/**
+ * Enough of a gap that ~170 probes do not look like an attack to the app's own limiters,
+ * and small enough that the whole sweep stays inside a few seconds (F-798).
+ */
+const AUTH_PROBE_PACING_MS = 25;
 
 /**
  * Unauthenticated probe of the whole API surface.
@@ -297,6 +329,7 @@ async function checkUnauthenticatedRoutes() {
   let allowlisted = 0;
   let probed = 0;
 
+  const unreachable: string[] = [];
   for (const endpoint of endpoints) {
     const path = samplePath(endpoint.pattern);
     if (matchPublicRoute(path, endpoint.method)) {
@@ -304,14 +337,26 @@ async function checkUnauthenticatedRoutes() {
       continue;
     }
     probed += 1;
-    const response = await fetch(`${base}${path}`, {
+    // `fetchOrNull`, not bare `fetch`: this loop fires ~170 requests, and one connection
+    // reset used to throw out of the whole run and lose every result already gathered,
+    // contradicting the "checks are independent" promise at the top of this file (F-798).
+    const response = await fetchOrNull(`${base}${path}`, {
       method: endpoint.method,
       redirect: 'manual',
       headers: { accept: 'application/json' },
     });
+    if (!response) {
+      // A probe that could not be made proves nothing, so it is a failure, not a pass.
+      unreachable.push(`${endpoint.method} ${path} was unreachable (${endpoint.file})`);
+      continue;
+    }
     if (response.status !== 401) {
       unexpected.push(`${endpoint.method} ${path} returned ${response.status} (${endpoint.file})`);
     }
+    // The probe walks every discovered method, including POST and DELETE, against a live
+    // deployment. Unpaced it tripped the app's own login rate limiter before `checkSignIn`
+    // ran a few lines later, so an unrelated check failed and blamed the credentials.
+    await sleep(AUTH_PROBE_PACING_MS);
   }
 
   // Every endpoint the walker found is either allowlisted or gated, so the three
@@ -326,23 +371,36 @@ async function checkUnauthenticatedRoutes() {
     // Nothing was actually requested, so "all returned 401" would be true of the
     // empty set. Reachable if the allowlist is ever widened to cover everything.
     fail(`${census}; no gated route was probed, so the probe proved nothing`);
-  } else if (unexpected.length > 0) {
-    for (const row of unexpected) console.error(`[smoke] ${row}`);
-    fail(`${census}; ${unexpected.length} of ${probed} gated routes did not return 401 unauthenticated`);
+  } else if (unexpected.length > 0 || unreachable.length > 0) {
+    for (const row of [...unexpected, ...unreachable]) console.error(`[smoke] ${row}`);
+    const parts = [
+      unexpected.length > 0 ? `${unexpected.length} did not return 401` : null,
+      unreachable.length > 0 ? `${unreachable.length} were unreachable` : null,
+    ].filter(Boolean);
+    fail(`${census}; of ${probed} gated routes, ${parts.join(' and ')}`);
   } else {
     console.log(`ok  unauthenticated route probe (${census}, all ${probed} returned 401)`);
   }
 
   // A cron endpoint is allowlisted past the proxy on purpose, so its bearer
   // check is the only thing standing in front of it.
-  const cronNoBearer = await fetch(`${base}/api/cron/reap-jobs`, { method: 'POST', redirect: 'manual' });
-  if (cronNoBearer.status !== 401) fail(`cron without a bearer token returned ${cronNoBearer.status}`);
-  const cronBadBearer = await fetch(`${base}/api/cron/reap-jobs`, {
+  const cronNoBearer = await fetchOrNull(`${base}/api/cron/reap-jobs`, {
+    method: 'POST',
+    redirect: 'manual',
+  });
+  const cronBadBearer = await fetchOrNull(`${base}/api/cron/reap-jobs`, {
     method: 'POST',
     redirect: 'manual',
     headers: { authorization: 'Bearer not-the-cron-secret' },
   });
-  if (cronBadBearer.status !== 401) fail(`cron with a wrong bearer token returned ${cronBadBearer.status}`);
+  if (!cronNoBearer || !cronBadBearer) {
+    fail('cron bearer check could not be probed: the deployment was unreachable');
+    return;
+  }
+  if (cronNoBearer.status !== 401)
+    fail(`cron without a bearer token returned ${cronNoBearer.status}`);
+  if (cronBadBearer.status !== 401)
+    fail(`cron with a wrong bearer token returned ${cronBadBearer.status}`);
   if (cronNoBearer.status === 401 && cronBadBearer.status === 401) {
     console.log('ok  cron rejects a missing and a wrong bearer token');
   }
