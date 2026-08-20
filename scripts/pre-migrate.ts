@@ -3,7 +3,9 @@
  *   npx tsx scripts/pre-migrate.ts
  *
  * Wired from docker-entrypoint.mjs (production start). Skips the backup step when
- * NODE_ENV is not production so local development is not blocked.
+ * NODE_ENV is not production so local development is not blocked, and skips both the
+ * destructive gate and the backup on a database that has no `_prisma_migrations` table
+ * yet — a first deploy has nothing to destroy and nothing to dump (F-704).
  */
 import { resolve } from 'node:path';
 import { config } from 'dotenv';
@@ -13,6 +15,7 @@ import {
   assertSafePrismaCommand,
   loadMigrationSql,
   pendingMigrationSql,
+  readAppliedMigrations,
   runPreMigrate,
 } from '../lib/migrate/safety.ts';
 
@@ -26,22 +29,29 @@ const allowDestructive = process.env.ALLOW_DESTRUCTIVE_MIGRATION === 'true';
 const migrationsDir = resolve(process.cwd(), 'prisma/migrations');
 
 const prisma = new PrismaClient();
-
-let applied: string[] = [];
-try {
-  const rows = await prisma.$queryRaw<Array<{ migration_name: string }>>`
+// `readAppliedMigrations` reports its own failure instead of throwing, so the disconnect
+// needs no try/finally and the result can stay `const`.
+const read = await readAppliedMigrations(
+  () => prisma.$queryRaw<Array<{ migration_name: string }>>`
     SELECT migration_name FROM _prisma_migrations WHERE finished_at IS NOT NULL
-  `;
-  applied = rows.map((row) => row.migration_name);
-} catch (error) {
-  if (nodeEnv === 'production') {
-    console.error('[pre-migrate] could not read applied migrations');
-    console.error(error instanceof Error ? error.message : error);
-    await prisma.$disconnect();
-    process.exit(1);
-  }
-} finally {
-  await prisma.$disconnect();
+  `,
+);
+await prisma.$disconnect();
+
+if (!read.ok) {
+  // A missing `_prisma_migrations` is handled as a fresh database, so reaching here means
+  // the database itself could not be read.
+  console.error('[pre-migrate] could not read applied migrations');
+  console.error(read.error);
+  if (nodeEnv === 'production') process.exit(1);
+}
+
+const applied = read.ok ? read.applied : [];
+const freshDatabase = read.ok && read.freshDatabase;
+
+if (freshDatabase) {
+  console.log('[pre-migrate] no _prisma_migrations table: first deploy against an empty database');
+  console.log('[pre-migrate] nothing to back up; prisma migrate deploy will create the schema');
 }
 
 const all = await loadMigrationSql(migrationsDir);
@@ -51,6 +61,7 @@ const result = await runPreMigrate({
   nodeEnv,
   allowDestructive,
   pendingSql,
+  freshDatabase,
   backup: async () => {
     if (pendingSql.length === 0) {
       console.log('[pre-migrate] no pending migrations');

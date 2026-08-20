@@ -47,17 +47,20 @@ services:
       GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:-}
       GITHUB_OAUTH_CALLBACK_URL: ${GITHUB_OAUTH_CALLBACK_URL:-}
       FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY:-}
-      SANDBOX_PROVIDER: ${SANDBOX_PROVIDER:-}
-      E2B_API_KEY: ${E2B_API_KEY:-}
       VERCEL_TOKEN: ${VERCEL_TOKEN:-}
       VERCEL_TEAM_ID: ${VERCEL_TEAM_ID:-}
       VERCEL_PROJECT_ID: ${VERCEL_PROJECT_ID:-}
-      AI_GATEWAY_API_KEY: ${AI_GATEWAY_API_KEY:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Generation runs on DeepSeek and nothing else. Admin → Configuration overrides these;
+      # they are the fallback an untouched deployment reads. The file used to forward
+      # AI_GATEWAY_API_KEY, ANTHROPIC_API_KEY, GROQ_API_KEY and MORPH_API_KEY into
+      # production, none of which any code read (F-712, and Morph itself is gone).
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-}
+      AI_PRIMARY_MODEL: ${AI_PRIMARY_MODEL:-}
+      AI_PROVIDER_CONCURRENCY: ${AI_PROVIDER_CONCURRENCY:-}
+      # Image generation and alt text only, not generation providers.
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      GROQ_API_KEY: ${GROQ_API_KEY:-}
-      MORPH_API_KEY: ${MORPH_API_KEY:-}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
       CRON_SECRET: ${CRON_SECRET:-}
       RESEND_API_KEY: ${RESEND_API_KEY:-}

@@ -71,6 +71,33 @@ export async function withCronRun<T extends CronOutcome>(
 }
 
 /**
+ * The receipt a run that died still owes the operator (F-708).
+ *
+ * `withCronRun` can only write a row once the body settles, so a process killed by an OOM,
+ * a redeploy or a SIGKILL left `CronRun` with nothing at all — and "no row" reads on
+ * /admin/health exactly like "never scheduled". The claim in `lib/cron/claim.ts` outlives
+ * the process, so the next invocation finds it and writes the row the dead run could not.
+ * Dated `now` rather than the dead run's start, because a row behind the last successful
+ * one would be invisible to `listLatestCronRunPerName`.
+ */
+export async function recordAbandonedCronRun(
+  name: string,
+  abandoned: { startedAt: string; ageMs: number },
+  deps: CronRecordDeps = {},
+) {
+  const store = deps.store ?? getObservabilityStore();
+  await store.createCronRun({
+    name,
+    ok: false,
+    durationMs: abandoned.ageMs,
+    detail:
+      `run started ${abandoned.startedAt} never reported an outcome ` +
+      '(killed, redeployed or hung); settled by the next invocation',
+    createdAt: deps.now ? deps.now() : new Date(),
+  });
+}
+
+/**
  * `CronOutcome` is the real guard; this is the runtime backstop for a value that reached here
  * through an `any` — a `vi.mock`, a JSON round trip, a route that casts. It fails the run and
  * says so loudly rather than assuming success, because assuming success is precisely what hid

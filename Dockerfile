@@ -9,23 +9,40 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 ENV PNPM_HOME="/pnpm"
 ENV PATH="${PNPM_HOME}:${PATH}"
-RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
+# No version here on purpose. `package.json` "packageManager" is the single source of truth,
+# and corepack's shims resolve it from the nearest package.json at invocation. The Dockerfile
+# used to `corepack prepare pnpm@9.15.9 --activate` beside a repo declaring pnpm 11: either
+# corepack fetched 11 anyway and the pin was a lie, or pnpm 9 read a v9 lockfile plus
+# `pnpm-workspace.yaml` keys it does not understand (`allowBuilds`,
+# `minimumReleaseAgeExclude`, `verifyDepsBeforeRun`) and silently dropped the `overrides`
+# that pin the tar and deepmerge-ts advisories — shipping the vulnerable transitives while
+# `pnpm audit` on a developer machine reported clean (F-716).
+RUN corepack enable
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
 FROM base AS deps
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+# Fails the build rather than installing under a pnpm that cannot read this lockfile.
+# String concatenation, not template literals: Docker substitutes ${...} in a RUN line with
+# build args and would blank them out.
+RUN corepack install \
+  && node -e "const want=require('./package.json').packageManager.split('@')[1];const got=require('node:child_process').execSync('pnpm --version').toString().trim();if(got!==want){console.error('pnpm '+got+' is not the declared packageManager '+want);process.exit(1)}console.log('pnpm '+got)"
 RUN pnpm install --frozen-lockfile --ignore-scripts
 
-FROM base AS builder
+# FROM deps, not base: the builder then inherits both node_modules and the corepack-installed
+# pnpm, so `pnpm build` cannot resolve a different version than the one deps asserted.
+FROM deps AS builder
 WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ARG GIT_SHA=unknown
 ENV GIT_SHA=${GIT_SHA}
 ENV NEXT_TELEMETRY_DISABLED=1
 # Placeholder only — prisma generate reads the schema URL, it is not used at runtime.
 ENV DATABASE_URL="postgresql://build:build@127.0.0.1:5432/build"
-RUN pnpm exec prisma generate
+# Direct binary, never `pnpm exec`: .cursor/lessons-learned.md bans combining pnpm with a
+# tool that owns locked native engines, and lib/verify/orchestrator.ts already calls it this way.
+RUN node ./node_modules/prisma/build/index.js generate
 RUN pnpm build
 
 FROM base AS runner

@@ -1,24 +1,45 @@
-node_modules
-.next
-.git
-.github
-.env
-.env.*
-!.env.example
-generated
-coverage
+# Docker matches these against the whole relative path, so a pattern without a separator only
+# ever matches at the root (F-713). `**/` is what makes one match at any depth — and depth is
+# not hypothetical here: AGENTS.md documents a sibling git worktree at .worktrees/main, a
+# complete second checkout carrying its own node_modules, .next and .env.local. Root-anchored
+# patterns let all of that into the build context and into the `builder` layer, where a leaked
+# intermediate layer or `docker history` exposes credentials the final image never COPYs.
+#
+# Nothing in the build reads a .env file: `next build` and `prisma generate` take DATABASE_URL
+# from the Dockerfile's placeholder ENV, and no source file reads .env.example. So there is no
+# `!**/.env.example` re-include — env files are excluded outright.
+**/node_modules
+**/.next
+**/.git
+**/.github
+**/.env
+**/.env.*
+**/generated
+**/coverage
+**/.turbo
+**/.vercel
+**/.vscode
+**/.idea
+**/.DS_Store
+
+# Second checkouts and agent scratch space, each with their own installs and env files.
+.worktrees
+.claude
 .cursor
-.vscode
-.idea
+
+# Not needed by `prisma generate` or `next build`.
 tests
+e2e
+playwright-report
+test-results
 examples
-packages
-*.md
-!README.md
-!docs/**
+audit
+agent-transcripts
+.data
 *.tar.gz
 e2b-template-*
 *.tmp
 *.temp
-agent-transcripts
-.vercel
+*.md
+!README.md
+!docs/**

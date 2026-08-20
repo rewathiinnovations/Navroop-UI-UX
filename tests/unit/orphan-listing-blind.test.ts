@@ -57,6 +57,18 @@ vi.mock('@/lib/cron/auth', () => ({ authorizeCron: async () => true }));
 vi.mock('@/lib/observability/store', () => ({
   getObservabilityStore: () => ({ createCronRun: cron.createCronRun }),
 }));
+// `handleCron` claims an in-flight marker before it runs the body (F-708). The prisma mock
+// above has no `$transaction`, and overlap protection is not what this file is about, so the
+// claim always succeeds here; `tests/unit/cron-overlap.test.ts` owns its behaviour.
+vi.mock('@/lib/cron/claim', () => ({
+  getCronClaimStore: () => ({
+    claim: async (_name: string, now: Date) => ({
+      claimed: true as const,
+      abandoned: null,
+      claim: { runId: 'test-run', startedAt: now.toISOString(), release: async () => undefined },
+    }),
+  }),
+}));
 // Every provider CONNECTED unless a case says otherwise: the gate below decides whether a
 // listing is attempted at all, and an unconfigured provider must never read as a failure.
 vi.mock('@/lib/integrations/store', () => ({

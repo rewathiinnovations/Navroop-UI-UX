@@ -16,7 +16,30 @@ vi.mock('../../lib/observability/store', () => ({
   }),
 }));
 
-const SECRET = 'cron-secret-for-tests';
+/**
+ * `handleCron` now claims an in-flight marker before it runs the body (F-708). This file is
+ * about status codes and correlation ids, so the claim is stubbed rather than letting these
+ * unit tests reach Postgres; the claim's own behaviour is covered by
+ * `tests/unit/cron-overlap.test.ts`.
+ */
+const released: string[] = [];
+vi.mock('../../lib/cron/claim', () => ({
+  getCronClaimStore: () => ({
+    claim: async (name: string, now: Date) => ({
+      claimed: true as const,
+      abandoned: null,
+      claim: {
+        runId: 'test-run',
+        startedAt: now.toISOString(),
+        release: async () => {
+          released.push(name);
+        },
+      },
+    }),
+  }),
+}));
+
+const SECRET = 'cron-test';
 
 function cronRequest(authorization?: string) {
   return new Request('http://localhost:3000/api/cron/reap-jobs', {
@@ -29,6 +52,7 @@ let previousSecret: string | undefined;
 
 beforeEach(() => {
   recorded.length = 0;
+  released.length = 0;
   previousSecret = process.env.CRON_SECRET;
   process.env.CRON_SECRET = SECRET;
 });
@@ -44,13 +68,17 @@ describe('cron authorization', () => {
     expect(response.status).toBe(401);
     expect(response.headers.get('x-request-id')).toBeTruthy();
 
-    const body = (await response.json()) as { error: { message: string; code: string; requestId: string } };
+    const body = (await response.json()) as {
+      error: { message: string; code: string; requestId: string };
+    };
     expect(body.error).toMatchObject({ message: 'Unauthorized', code: 'UNAUTHORIZED' });
     expect(body.error.requestId).toBe(response.headers.get('x-request-id'));
   });
 
   it('rejects a wrong bearer token', async () => {
-    const response = await handleCron('reap-jobs', cronRequest('Bearer wrong'), async () => ({ ok: true }));
+    const response = await handleCron('reap-jobs', cronRequest('Bearer wrong'), async () => ({
+      ok: true,
+    }));
     expect(response.status).toBe(401);
   });
 
@@ -72,6 +100,7 @@ describe('cron authorization', () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ ok: true, reaped: 2 });
     expect(recorded).toEqual([{ name: 'reap-jobs', ok: true, detail: null }]);
+    expect(released).toEqual(['reap-jobs']);
   });
 });
 
@@ -81,7 +110,9 @@ describe('cron failure shapes', () => {
       throw new Error('boom');
     });
     expect(response.status).toBe(500);
-    const body = (await response.json()) as { error: { message: string; code: string; requestId: string } };
+    const body = (await response.json()) as {
+      error: { message: string; code: string; requestId: string };
+    };
     expect(body.error).toMatchObject({ message: 'boom', code: 'CRON_FAILED' });
     expect(body.error.requestId).toBe(response.headers.get('x-request-id'));
     expect(recorded).toEqual([{ name: 'reap-jobs', ok: false, detail: 'boom' }]);
