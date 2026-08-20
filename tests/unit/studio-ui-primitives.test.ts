@@ -128,7 +128,10 @@ describe('the shared Tabs has real tab semantics', () => {
   it('moves selection and focus together on arrow, Home and End', () => {
     const source = read('components/shared/tabs/Tabs.tsx');
     for (const key of ['ArrowRight', 'ArrowLeft', 'Home', 'End']) {
-      expect(source).toContain(`"${key}"`);
+      // Quote-agnostic: prettier owns quote style in this repo, so pinning the
+      // assertion to one of them makes the test fail on a reformat rather than
+      // on a behaviour change. What matters is that the key is handled at all.
+      expect(source).toMatch(new RegExp(`['"\`]${key}['"\`]`));
     }
     expect(source).toContain('onKeyDown={(event) => onKeyDown(event, index)}');
   });

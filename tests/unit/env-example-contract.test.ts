@@ -26,8 +26,21 @@ import { BOOTSTRAP_ENV_VARS, SETTINGS } from '@/lib/settings/registry';
  */
 
 const ROOT = process.cwd();
-const example = readFileSync(join(ROOT, '.env.example'), 'utf8');
-const compose = readFileSync(join(ROOT, 'docker-compose.yml'), 'utf8');
+
+/**
+ * Every scan below is newline-normalised at the read.
+ *
+ * `core.autocrlf=true` plus a `.gitattributes` that only pins `Dockerfile`, `*.sh`
+ * and `docker-entrypoint.mjs` to LF means these YAML/env files arrive CRLF in a
+ * fresh Windows checkout. A literal `'\n    environment:\n'` probe then finds
+ * nothing and the scan reports the block as absent rather than as unmatched —
+ * a silent false pass in the other direction, and a hard failure here.
+ */
+const readText = (...parts: string[]) =>
+  readFileSync(join(ROOT, ...parts), 'utf8').replace(/\r\n/g, '\n');
+
+const example = readText('.env.example');
+const compose = readText('docker-compose.yml');
 
 type Definition = { name: string; commented: boolean; line: number };
 
@@ -105,7 +118,7 @@ describe('.env.example against the settings registry', () => {
 
     const read = new Set<string>([...PRIMARY_ENV, ...ALIAS_ENV]);
     for (const rel of sources) {
-      for (const hit of readFileSync(join(ROOT, rel), 'utf8').matchAll(
+      for (const hit of readText(rel).matchAll(
         /(?:process\.)?env(?:\.|\[')([A-Z][A-Z0-9_]{2,})/g,
       )) {
         read.add(hit[1]);
@@ -114,7 +127,7 @@ describe('.env.example against the settings registry', () => {
     // A compose file interpolating `${NAME}` is a reader too: POSTGRES_PASSWORD never appears
     // in application code, but the postgres service cannot start without it.
     for (const file of ['docker-compose.yml', 'docker-compose.dev.yml']) {
-      for (const hit of readFileSync(join(ROOT, file), 'utf8').matchAll(/\$\{([A-Z][A-Z0-9_]*)/g)) {
+      for (const hit of readText(file).matchAll(/\$\{([A-Z][A-Z0-9_]*)/g)) {
         read.add(hit[1]);
       }
     }
@@ -148,7 +161,7 @@ describe('build-time values reach the build', () => {
       for (const entry of readdirSync(join(ROOT, dir), { withFileTypes: true })) {
         if (entry.isDirectory()) walk(`${dir}/${entry.name}`);
         else if (/\.(?:ts|tsx)$/.test(entry.name)) {
-          for (const hit of readFileSync(join(ROOT, `${dir}/${entry.name}`), 'utf8').matchAll(
+          for (const hit of readText(`${dir}/${entry.name}`).matchAll(
             /(?:process\.)?env(?:\.|\[')(NEXT_PUBLIC_[A-Z0-9_]+)/g,
           )) {
             found.add(hit[1]);
@@ -168,7 +181,7 @@ describe('build-time values reach the build', () => {
   const PRODUCTION_INERT = 'NEXT_PUBLIC_DEV_QUICK_LOGIN';
 
   it('hard-disables the one public variable the production build omits', () => {
-    const source = readFileSync(join(ROOT, 'lib', 'dev-quick-login.ts'), 'utf8');
+    const source = readText('lib', 'dev-quick-login.ts');
     expect(source).toContain(PRODUCTION_INERT);
     expect(source).toMatch(/NODE_ENV\s*===\s*["']production["']\)\s*return false/);
   });
@@ -182,7 +195,7 @@ describe('build-time values reach the build', () => {
   });
 
   it('declares each of those build args in the Dockerfile builder stage', () => {
-    const dockerfile = readFileSync(join(ROOT, 'Dockerfile'), 'utf8');
+    const dockerfile = readText('Dockerfile');
     const builder = dockerfile.slice(
       dockerfile.indexOf('FROM deps AS builder'),
       dockerfile.indexOf('FROM base AS runner'),
@@ -204,7 +217,7 @@ describe('build-time values reach the build', () => {
   it('fails the build when the required public origin is missing', () => {
     // There is no runtime recovery: by the time the app boots, the value is a literal in the
     // client chunks. The build is the last moment anything can object.
-    const dockerfile = readFileSync(join(ROOT, 'Dockerfile'), 'utf8');
+    const dockerfile = readText('Dockerfile');
     expect(dockerfile).toMatch(/RUN node -e "if\(!\(process\.env\.NEXT_PUBLIC_APP_URL/);
   });
 });
@@ -214,7 +227,7 @@ describe('the development database is not on the network', () => {
     // `pnpm db:up` on a laptop on any shared network exposed the live working database —
     // real project content, user rows, AppSetting secrets — behind a guessable credential
     // (F-753). Without a bind address Docker publishes on 0.0.0.0.
-    const dev = readFileSync(join(ROOT, 'docker-compose.dev.yml'), 'utf8');
+    const dev = readText('docker-compose.dev.yml');
     const published = [...dev.matchAll(/^\s*- '([^']+)'/gm)].map((hit) => hit[1]);
     expect(published).toContain('127.0.0.1:5433:5432');
     expect(published, 'a port published on every interface').not.toContain('5433:5432');

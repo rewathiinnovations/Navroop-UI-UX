@@ -12,7 +12,9 @@ const routePath = path.join(
   fileURLToPath(new URL('../../', import.meta.url)),
   'app/api/generate-ai-code-stream/route.ts',
 );
-const source = readFileSync(routePath, 'utf8');
+// Newline-normalised: core.autocrlf=true gives this file CRLF in a fresh Windows
+// checkout, and every multi-line probe below is written with `\n`.
+const source = readFileSync(routePath, 'utf8').replace(/\r\n/g, '\n');
 
 /**
  * F-035: with no project id the route ran a full build outside every control it has.
@@ -113,7 +115,11 @@ describe('generate-ai-code-stream refuses a project-less run (F-035)', () => {
     // disagree about whether this run has a project. One resolution, read everywhere.
     expect(source).toMatch(/const projectId = projectCheck\.projectId;/);
     expect(source).toMatch(/holdProjectLock\(projectId, sessionUser\.id, 'generation'\)/);
-    expect(source).toMatch(/\n {6}projectId,\n {6}workspaceId: WORKSPACE_ROW_ID,/);
+    // Indentation-agnostic: prettier owns formatting here, so pinning the exact
+    // six-space indent made this assert on a reflow rather than on the property,
+    // which is that the metering call reads the one resolved id and the shared
+    // workspace constant, adjacently.
+    expect(source).toMatch(/^\s*projectId,\n\s*workspaceId: WORKSPACE_ROW_ID,/m);
     expect(source).toMatch(/const conversationProjectId = projectId;/);
     // The usage event is written for every run now, not only when an id happened to be
     // present, so a build's input tokens always have a GenerationEvent to land on.

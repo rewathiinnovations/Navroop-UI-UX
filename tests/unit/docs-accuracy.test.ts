@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { VERIFY_STEPS } from '@/lib/verify/orchestrator';
 
@@ -37,6 +37,22 @@ import { VERIFY_STEPS } from '@/lib/verify/orchestrator';
 const ROOT = process.cwd();
 const E2E_BRIEF = join(ROOT, 'docs', 'e2e-test-and-fix-prompt.md');
 
+/**
+ * Every scan in this file reads through here, newline-normalised.
+ *
+ * `core.autocrlf=true` and a `.gitattributes` that pins only `Dockerfile`, `*.sh`
+ * and `docker-entrypoint.mjs` to LF mean these docs arrive CRLF in a fresh Windows
+ * checkout. A `split('\n\n')` paragraph probe then never splits, so a scan meant to
+ * read one block silently reads the rest of the file instead — which is how the
+ * verify-gate enumeration check started matching numbered lists from unrelated
+ * sections. Normalising once at the read removes the whole class.
+ */
+const readText = (...parts: string[]) =>
+  readFileSync(isAbsolute(parts[0]) ? join(...parts) : join(ROOT, ...parts), 'utf8').replace(
+    /\r\n/g,
+    '\n',
+  );
+
 /** Binaries the repo invokes as `node ./node_modules/…`; `pnpm exec <binary>` is the banned form. */
 const BINARIES = ['tsc', 'tsx', 'eslint', 'vitest', 'prisma', 'playwright', 'next'];
 
@@ -72,7 +88,7 @@ const CREDENTIAL_DOCS = [
 function linesMatching(files: string[], pattern: RegExp) {
   const hits: { where: string; text: string }[] = [];
   for (const rel of files) {
-    readFileSync(join(ROOT, rel), 'utf8')
+    readText(rel)
       .split('\n')
       .forEach((line, index) => {
         if (pattern.test(line)) hits.push({ where: `${rel}:${index + 1}`, text: line });
@@ -102,7 +118,7 @@ const NEGATION =
 function unnegatedMentions(files: string[], pattern: RegExp) {
   const offenders: string[] = [];
   for (const rel of files) {
-    readFileSync(join(ROOT, rel), 'utf8')
+    readText(rel)
       .split('\n')
       .forEach((line, index) => {
         for (const hit of line.matchAll(pattern)) {
@@ -134,14 +150,14 @@ describe('docs accuracy', () => {
     // Naming the form to forbid it is fine; issuing it is not. `pnpm exec` runs pnpm's
     // dependency-status check, and the abort an agent shell sees is a `node_modules` purge in a
     // human terminal (AGENTS.md, Verify/release).
-    const offenders = readFileSync(E2E_BRIEF, 'utf8')
+    const offenders = readText(E2E_BRIEF)
       .split('\n')
       .filter((line) => BINARIES.some((binary) => line.includes(`pnpm exec ${binary}`)));
     expect(offenders, 'the e2e brief issues a `pnpm exec <binary>` command').toEqual([]);
   });
 
   it('names only API routes that exist in the e2e brief', () => {
-    const text = readFileSync(E2E_BRIEF, 'utf8');
+    const text = readText(E2E_BRIEF);
     const named = [...text.matchAll(/\/api\/[a-z0-9\-[\]/*]+/gi)].map((row) => row[0]);
     const missing = [...new Set(named)].filter((path) => !apiRouteExists(path));
     expect(missing, 'the e2e brief drives API routes that do not exist').toEqual([]);
@@ -150,7 +166,7 @@ describe('docs accuracy', () => {
   it('gives the e2e brief an owner and a freshness marker', () => {
     // F-575: it is an executable artefact. Without a date, "is this still true?" has no answer,
     // which is how the 659-line version survived the subsystem it described.
-    const text = readFileSync(E2E_BRIEF, 'utf8');
+    const text = readText(E2E_BRIEF);
     expect(text).toMatch(/^- Owner: /m);
     expect(text).toMatch(/Verified against code on \*\*\d{4}-\d{2}-\d{2}\*\*/);
   });
@@ -159,9 +175,9 @@ describe('docs accuracy', () => {
     // Four documents and a git hook describe the purge this setting suppresses. If the setting is
     // present, the document carrying that prose has to say so; otherwise every reader concludes the
     // check still fires (F-534).
-    const workspace = readFileSync(join(ROOT, 'pnpm-workspace.yaml'), 'utf8');
+    const workspace = readText('pnpm-workspace.yaml');
     if (!workspace.includes('verifyDepsBeforeRun')) return;
-    const agents = readFileSync(join(ROOT, 'AGENTS.md'), 'utf8');
+    const agents = readText('AGENTS.md');
     expect(agents).toContain('verifyDepsBeforeRun');
     expect(agents).toContain('pnpm exec');
   });
@@ -172,14 +188,13 @@ describe('docs accuracy', () => {
     // who "cleans up" the env var changes a client preview's access posture.
     const publishDir = join(ROOT, 'lib', 'publish');
     const referenced = readdirSync(publishDir).some((file) =>
-      readFileSync(join(publishDir, file), 'utf8').includes('PREVIEW_PASSWORD'),
+      readText(publishDir, file).includes('PREVIEW_PASSWORD'),
     );
     if (!referenced) return;
     for (const file of ['AGENTS.md', '.cursor/README.md', 'docs/coolify.md']) {
-      expect(
-        readFileSync(join(ROOT, file), 'utf8'),
-        `${file} does not mention PREVIEW_PASSWORD`,
-      ).toContain('PREVIEW_PASSWORD');
+      expect(readText(file), `${file} does not mention PREVIEW_PASSWORD`).toContain(
+        'PREVIEW_PASSWORD',
+      );
     }
   });
 
@@ -192,9 +207,7 @@ describe('docs accuracy', () => {
     // is load-bearing: `\b` finds no boundary inside `pnpm`, but a bare `/npm run verify/` matches
     // the tail of every legitimate `pnpm run verify`, which is how this assertion managed to be
     // simultaneously too loose (whole-line prohibition hatch) and too strict (fifteen false hits).
-    expect(JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).packageManager).toMatch(
-      /^pnpm@/,
-    );
+    expect(JSON.parse(readText('package.json')).packageManager).toMatch(/^pnpm@/);
     expect(
       unnegatedMentions(DOC_FILES, /(?<![\w.-])(?:npm|yarn) (?:run|install|add|exec|ci)\b/g),
       'a document offers npm/yarn as a way to run this repo',
@@ -230,7 +243,7 @@ describe('docs accuracy', () => {
     // F-532: three documents stated three different floors, all wrong, and all three instructed
     // the reader to raise them. A ratchet needs exactly one recorded value, so the floors are read
     // out of the config here and any restatement has to match it.
-    const config = readFileSync(join(ROOT, 'vitest.config.ts'), 'utf8');
+    const config = readText('vitest.config.ts');
     const thresholds = config.slice(config.indexOf('thresholds: {'));
     // Per-module globs repeat the same metric names, so stop at the first one.
     const global = thresholds.slice(0, thresholds.indexOf("'lib/"));
@@ -243,7 +256,7 @@ describe('docs accuracy', () => {
     );
     const wrong: string[] = [];
     for (const rel of DOC_FILES) {
-      const text = readFileSync(join(ROOT, rel), 'utf8');
+      const text = readText(rel);
       for (const hit of text.matchAll(
         /(\d{2,3})(?:\.\d+)?\s*%?\s*(statements|branches|functions|lines)\b/gi,
       )) {
@@ -268,7 +281,7 @@ describe('docs accuracy', () => {
     // F-542. `CLAUDE.md` listed eight of thirteen steps and `AGENTS.md` dropped
     // `playwright-authenticated` — the only automated proof a signed-in user can reach the
     // dashboard, and a step that had already been silently absent from every run once.
-    const release = readFileSync(join(ROOT, 'docs', 'release.md'), 'utf8');
+    const release = readText('docs', 'release.md');
     const marker = '`verify` order — the **only** enumeration';
     expect(release, 'docs/release.md lost the verify enumeration').toContain(marker);
     const block = release.slice(release.indexOf(marker)).split('\n\n').slice(0, 2).join('\n');
@@ -282,10 +295,7 @@ describe('docs accuracy', () => {
     ).toEqual(VERIFY_STEPS.map((step) => step.id));
     // The other two summaries must point here rather than keep their own list.
     for (const rel of ['AGENTS.md', 'CLAUDE.md']) {
-      expect(
-        readFileSync(join(ROOT, rel), 'utf8'),
-        `${rel} does not point at the runbook`,
-      ).toContain('docs/release.md');
+      expect(readText(rel), `${rel} does not point at the runbook`).toContain('docs/release.md');
     }
   });
 
@@ -293,8 +303,8 @@ describe('docs accuracy', () => {
     // F-533. Three documents sent the fixer to `pnpm.overrides` in `package.json`. pnpm 11 reads
     // them from `pnpm-workspace.yaml`, so the edit did nothing, `pnpm audit` stayed red, and the
     // natural next move is dropping the audit step the same documents forbid dropping.
-    const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
-    const workspace = readFileSync(join(ROOT, 'pnpm-workspace.yaml'), 'utf8');
+    const pkg = JSON.parse(readText('package.json'));
+    const workspace = readText('pnpm-workspace.yaml');
     if (pkg.pnpm?.overrides) return;
     expect(workspace, 'pnpm-workspace.yaml has no overrides block').toMatch(/^overrides:/m);
     expect(
@@ -309,7 +319,7 @@ describe('docs accuracy', () => {
     const present = new Set(readdirSync(join(ROOT, 'lib', 'stack-prompts')));
     const missing: string[] = [];
     for (const rel of DOC_FILES) {
-      const text = readFileSync(join(ROOT, rel), 'utf8');
+      const text = readText(rel);
       // Both the plain form and the brace-expanded shell form the doc used.
       for (const hit of text.matchAll(/lib\/stack-prompts\/(?:\{([^}]+)\}|([\w-]+))\.ts/g)) {
         for (const name of (hit[1] ?? hit[2]).split(',')) {
@@ -324,7 +334,7 @@ describe('docs accuracy', () => {
     // F-539. A third worktree existed with no row in the table, so it had no assigned port and no
     // owner — while sharing one Postgres with the other two. The table is the allocation
     // mechanism, so an unlisted checkout is an unallocated one.
-    const rule = readFileSync(join(ROOT, '.cursor', 'rules', 'single-dev-server.mdc'), 'utf8');
+    const rule = readText('.cursor', 'rules', 'single-dev-server.mdc');
     const trees = existsSync(join(ROOT, '.worktrees'))
       ? readdirSync(join(ROOT, '.worktrees'), { withFileTypes: true }).filter((entry) =>
           entry.isDirectory(),
@@ -340,11 +350,11 @@ describe('docs accuracy', () => {
   it('names only settings the registry defines, in the credential docs', () => {
     // F-535. `docs/coolify.md` sent operators to a `tooling.e2b.apiKey` that no registry entry
     // has, on a deployment guide, next to a claim that the AI keys are editable in the same place.
-    const registry = readFileSync(join(ROOT, 'lib', 'settings', 'registry.ts'), 'utf8');
+    const registry = readText('lib', 'settings', 'registry.ts');
     const known = new Set([...registry.matchAll(/key: '([^']+)'/g)].map((hit) => hit[1]));
     const unknown: string[] = [];
     for (const rel of CREDENTIAL_DOCS) {
-      const text = readFileSync(join(ROOT, rel), 'utf8');
+      const text = readText(rel);
       for (const hit of text.matchAll(
         /`((?:ai|tooling|storage|backups|email|github|app|preview)\.[a-z][A-Za-z0-9.]*)`/g,
       )) {
@@ -358,9 +368,7 @@ describe('docs accuracy', () => {
     // F-546. `SOURCE_COMMIT` decides the release sha a rollback compares against and
     // `NAVROOP_FILE_CONTEXT_TOKEN_CAP` changes generation cost; neither appeared in any document
     // or in `.env.example`, so a deployment could report a sha from a variable no runbook names.
-    const documented = [...DOC_FILES, '.env.example']
-      .map((rel) => readFileSync(join(ROOT, rel), 'utf8'))
-      .join('\n');
+    const documented = [...DOC_FILES, '.env.example'].map((rel) => readText(rel)).join('\n');
     // Set by the platform, never by an operator: Next per bundle, the container, the OS shell, git.
     const PLATFORM_PROVIDED: Record<string, true> = {
       NEXT_RUNTIME: true,
@@ -386,9 +394,7 @@ describe('docs accuracy', () => {
     }
     const undocumented = new Map<string, string>();
     for (const rel of sources) {
-      for (const hit of readFileSync(join(ROOT, rel), 'utf8').matchAll(
-        /process\.env\.([A-Z][A-Z0-9_]{2,})/g,
-      )) {
+      for (const hit of readText(rel).matchAll(/process\.env\.([A-Z][A-Z0-9_]{2,})/g)) {
         if (PLATFORM_PROVIDED[hit[1]] || documented.includes(hit[1])) continue;
         if (!undocumented.has(hit[1])) undocumented.set(hit[1], rel);
       }
@@ -410,9 +416,7 @@ describe('docs accuracy', () => {
     ] as const) {
       if (!existsSync(join(assets, file))) continue;
       for (const rel of ['AGENTS.md', '.cursor/README.md']) {
-        expect(readFileSync(join(ROOT, rel), 'utf8'), `${rel} does not mention ${claim}`).toContain(
-          claim,
-        );
+        expect(readText(rel), `${rel} does not mention ${claim}`).toContain(claim);
       }
     }
   });
@@ -421,7 +425,7 @@ describe('docs accuracy', () => {
     // F-551. `keep-cursor-current.mdc` is the rule that exists to stop this drift, and its sync
     // list named `AGENTS.md`, `.cursor/README.md` and four `*.mdc` files. Every finding in this
     // file was in a document the rule did not cover, `README.md` most of all.
-    const rule = readFileSync(join(ROOT, '.cursor', 'rules', 'keep-cursor-current.mdc'), 'utf8');
+    const rule = readText('.cursor', 'rules', 'keep-cursor-current.mdc');
     for (const claim of ['README.md', 'CLAUDE.md', 'AGENTS.md', '.cursor/rules/', 'docs/']) {
       expect(rule, `keep-cursor-current.mdc does not list ${claim}`).toContain(claim);
     }
@@ -444,7 +448,7 @@ describe('docs accuracy', () => {
       }
     };
     walk('');
-    const agents = readFileSync(join(ROOT, 'AGENTS.md'), 'utf8');
+    const agents = readText('AGENTS.md');
     expect(routes.length).toBeGreaterThan(20);
     expect(routes.filter((rel) => !agents.includes(`/api/projects/[id]/${rel}`))).toEqual([]);
   });
@@ -456,7 +460,15 @@ describe('docs accuracy', () => {
     // actually loads and the gitignored `settings.local.json` that enables an MCP server.
     // F-548 is the root `.mcp.json`, which no document named at all, and F-549 is
     // `docs/superpowers/specs/`, the only record of the post-sandbox preview architecture.
-    const agents = readFileSync(join(ROOT, 'AGENTS.md'), 'utf8');
+    const agents = readText('AGENTS.md');
+    /**
+     * `.claude/settings.local.json` is deliberately gitignored, so whether it exists
+     * is a property of one developer's machine, not of the repository. Asserting
+     * existence made this test pass only where someone had already created it and
+     * fail in every fresh checkout and on CI. AGENTS.md still has to name it —
+     * that is the claim under test — but only the tracked paths are checked on disk.
+     */
+    const GITIGNORED_CLAIMS: Record<string, true> = { '.claude/settings.local.json': true };
     for (const claim of [
       'CLAUDE.md',
       '.claude/skills/',
@@ -465,13 +477,13 @@ describe('docs accuracy', () => {
       '.mcp.json',
       'docs/superpowers/specs/',
     ]) {
-      expect(existsSync(join(ROOT, claim)), `${claim} does not exist`).toBe(true);
+      if (!GITIGNORED_CLAIMS[claim]) {
+        expect(existsSync(join(ROOT, claim)), `${claim} does not exist`).toBe(true);
+      }
       expect(agents, `AGENTS.md does not map ${claim}`).toContain(claim);
     }
     // `dev3000` is enabled by default from a gitignored file; naming the server is the point.
-    expect(JSON.parse(readFileSync(join(ROOT, '.mcp.json'), 'utf8')).mcpServers).toHaveProperty(
-      'dev3000',
-    );
+    expect(JSON.parse(readText('.mcp.json')).mcpServers).toHaveProperty('dev3000');
     expect(agents).toContain('dev3000');
   });
 
@@ -481,7 +493,7 @@ describe('docs accuracy', () => {
     // Byte-identity (`tests/unit/skill-trees-in-sync.test.ts`) makes that harmless today and
     // wrong the moment one tree is edited alone, which is the failure that test exists to stop.
     for (const rel of ['AGENTS.md', '.cursor/README.md', '.cursor/rules/skills-availability.mdc']) {
-      const text = readFileSync(join(ROOT, rel), 'utf8');
+      const text = readText(rel);
       expect(text, `${rel} never mentions .claude/skills/`).toContain('.claude/skills/');
       expect(text, `${rel} does not name the sync guard`).toContain('skill-trees-in-sync');
     }
@@ -493,12 +505,12 @@ describe('docs accuracy', () => {
     // (`.env.local` via `./.env.*`), so the rule bought a refused tool call and offered no
     // fallback. The deny list is the right policy; the rule is what had to change, and this
     // pins the pair together: deny a path, and the rule that grants it has to say so.
-    const settings = JSON.parse(readFileSync(join(ROOT, '.claude', 'settings.json'), 'utf8')) as {
+    const settings = JSON.parse(readText('.claude', 'settings.json')) as {
       permissions?: { deny?: string[] };
     };
     const denied = settings.permissions?.deny ?? [];
     expect(denied).toContain('Read(./.cursor/.env.deploy)');
-    const rule = readFileSync(join(ROOT, '.cursor', 'rules', 'coolify-local-secrets.mdc'), 'utf8');
+    const rule = readText('.cursor', 'rules', 'coolify-local-secrets.mdc');
     for (const claim of ['.claude/settings.json', 'permissions.deny', '/admin/integrations']) {
       expect(rule, `coolify-local-secrets.mdc does not mention ${claim}`).toContain(claim);
     }
@@ -518,8 +530,8 @@ describe('docs accuracy', () => {
     // neither said which was the policy. F-700/F-635 deleted the flag; this keeps it deleted
     // and keeps the allowlist named where an install is configured, so the pair cannot drift
     // back into silently disagreeing.
-    const workspace = readFileSync(join(ROOT, 'pnpm-workspace.yaml'), 'utf8');
-    const npmrc = readFileSync(join(ROOT, '.npmrc'), 'utf8');
+    const workspace = readText('pnpm-workspace.yaml');
+    const npmrc = readText('.npmrc');
     expect(workspace).toContain('allowBuilds:');
     // Naming it in order to forbid it is the whole point of the comment, so match an
     // assignment rather than a mention.

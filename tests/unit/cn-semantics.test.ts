@@ -84,8 +84,11 @@ describe('cn semantics', () => {
   it('the registered font sizes are exactly the ones tailwind.config.ts defines', () => {
     const config = readFileSync('tailwind.config.ts', 'utf8');
     const block = config.slice(config.indexOf('fontSize: {'));
+    // Quote-agnostic, and the key may be bare: prettier owns quote style here, so
+    // pinning to double quotes made this scan silently match nothing after a
+    // reformat — which the `> 10` floor below is what caught.
     const declared = [
-      ...block.slice(0, block.indexOf('\n      },')).matchAll(/"([a-z0-9-]+)": \[/g),
+      ...block.slice(0, block.indexOf('\n      },')).matchAll(/^\s*['"`]?([a-z0-9-]+)['"`]?: \[/gm),
     ].map((match) => match[1]);
     expect(declared.length).toBeGreaterThan(10);
     expect([...DESIGN_SYSTEM_FONT_SIZES].sort()).toEqual([...declared].sort());
