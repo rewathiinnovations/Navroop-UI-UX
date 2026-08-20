@@ -1,11 +1,17 @@
 import { randomBytes } from 'node:crypto';
-import { prisma } from '@/lib/db';
-import { consumeRow } from './single-use';
+import { consumeOauthState, createOauthState, type OauthStateOutcome } from './oauth-state';
 
-const KEY = 'integration.github.csrf';
+/**
+ * One row per in-flight GitHub App create, keyed by the state value.
+ *
+ * It used to be a single `integration.github.csrf` row, so two admins connecting at once
+ * clobbered each other's nonce and the first callback failed with an unexplained
+ * `?reason=state` (F-242).
+ */
+const PREFIX = 'integration.github.csrf';
 const TTL_MS = 10 * 60 * 1000;
 
-type CsrfPayload = {
+export type CsrfPayload = {
   state: string;
   org: string;
   userId: string;
@@ -13,32 +19,16 @@ type CsrfPayload = {
 };
 
 export async function createGithubCsrf(org: string, userId: string) {
-  const state = randomBytes(24).toString('hex');
-  const payload: CsrfPayload = {
-    state,
+  return createOauthState<CsrfPayload>(PREFIX, {
+    state: randomBytes(24).toString('hex'),
     org: org.trim().replace(/^@/, ''),
     userId,
     expiresAt: Date.now() + TTL_MS,
-  };
-  await prisma.appSetting.upsert({
-    where: { key: KEY },
-    create: { key: KEY, value: JSON.stringify(payload) },
-    update: { value: JSON.stringify(payload) },
   });
-  return payload;
 }
 
-export async function consumeGithubCsrf(state: string | null | undefined) {
-  if (!state) return null;
-  const row = await prisma.appSetting.findUnique({ where: { key: KEY } });
-  if (!row) return null;
-  let payload: CsrfPayload;
-  try {
-    payload = JSON.parse(row.value) as CsrfPayload;
-  } catch {
-    return null;
-  }
-  if (payload.state !== state || payload.expiresAt < Date.now()) return null;
-  if (!(await consumeRow(KEY, row.value))) return null;
-  return payload;
+export async function consumeGithubCsrf(
+  state: string | null | undefined,
+): Promise<OauthStateOutcome<CsrfPayload>> {
+  return consumeOauthState<CsrfPayload>(PREFIX, state);
 }

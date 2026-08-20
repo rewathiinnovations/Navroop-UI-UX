@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { getToken } from 'next-auth/jwt';
+import { checkRequestOrigin, csrfMechanismFor, isStateChangingMethod } from '@/lib/auth/csrf';
 import { loginModalHref, signupModalHref } from '@/lib/auth/public-login';
 import { isGuardedApiPath, matchPublicRoute } from '@/lib/auth/public-routes';
 import { createRequestId, REQUEST_ID_HEADER } from '@/lib/request-id';
@@ -82,13 +83,53 @@ function apiUnauthorized(request: NextRequest) {
 }
 
 /**
+ * A state-changing request that a browser sent from somewhere that is not this
+ * app (F-350). 403 rather than 401: the caller may well be signed in, and it
+ * is the origin, not the session, that is being refused.
+ */
+function apiCrossOriginRefused(request: NextRequest, pathname: string, reason: string) {
+  const requestId = request.headers.get(REQUEST_ID_HEADER) || createRequestId();
+  console.warn(
+    `[proxy] refused a cross-origin ${request.method} ${pathname} (${reason}) requestId=${requestId}`,
+  );
+  return NextResponse.json(
+    {
+      error: {
+        message: 'Cross-origin request refused',
+        code: 'CROSS_ORIGIN_REFUSED',
+        requestId,
+      },
+    },
+    { status: 403, headers: { [REQUEST_ID_HEADER]: requestId } },
+  );
+}
+
+/**
  * Deny by default. Anything under `/api` or `/preview-static` needs a session
  * unless `PUBLIC_API_ROUTES` names that exact path and method.
+ *
+ * Then, for a state change carrying the session cookie, the origin has to be
+ * this app (F-350). The order matters: authentication first, so a signed-out
+ * caller still gets the 401 the rest of the gate's tests pin, and the
+ * cross-origin 403 only ever answers a request that had a cookie to abuse.
+ * A public route reached *without* a cookie is left alone — the scheduler's
+ * CRON_SECRET, an Auth.js token or a signed preview token is what protects
+ * those, and none of them is a credential a browser attaches by itself.
  */
 async function guardApi(request: NextRequest, pathname: string) {
-  if (matchPublicRoute(pathname, request.method)) return nextWithRequestId(request);
-  if (await hasValidSessionToken(request)) return nextWithRequestId(request);
-  return apiUnauthorized(request);
+  const isPublic = matchPublicRoute(pathname, request.method) !== null;
+  if (!isPublic && !(await hasValidSessionToken(request))) return apiUnauthorized(request);
+
+  if (
+    isStateChangingMethod(request.method) &&
+    hasSessionCookie(request) &&
+    csrfMechanismFor(request.method, pathname) === 'proxy-origin-check'
+  ) {
+    const verdict = checkRequestOrigin(request.headers);
+    if (!verdict.ok) return apiCrossOriginRefused(request, pathname, verdict.reason);
+  }
+
+  return nextWithRequestId(request);
 }
 
 function withRequestId(request: NextRequest, response: NextResponse) {
@@ -137,7 +178,10 @@ export async function proxy(request: NextRequest) {
       return withRequestId(request, NextResponse.redirect(new URL('/dashboard', request.url)));
     }
     const next = request.nextUrl.searchParams.get('next');
-    return withRequestId(request, NextResponse.redirect(new URL(loginModalHref(next), request.url)));
+    return withRequestId(
+      request,
+      NextResponse.redirect(new URL(loginModalHref(next), request.url)),
+    );
   }
 
   if (session && AUTH_PAGES.has(pathname)) {
@@ -146,7 +190,10 @@ export async function proxy(request: NextRequest) {
 
   if (!session && !PUBLIC_PAGES.has(pathname)) {
     const next = pathname === '/' ? null : pathname;
-    return withRequestId(request, NextResponse.redirect(new URL(loginModalHref(next), request.url)));
+    return withRequestId(
+      request,
+      NextResponse.redirect(new URL(loginModalHref(next), request.url)),
+    );
   }
 
   return nextWithRequestId(request);
