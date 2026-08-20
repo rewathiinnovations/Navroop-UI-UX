@@ -1,71 +1,55 @@
-import { randomBytes } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/db';
-import { hashPassword, requireAdmin, validateEmail } from '@/lib/auth';
+import { requireAdmin } from '@/lib/auth';
 import type { Role } from '@/generated/prisma';
-import { creditDeniedJson } from '@/lib/plans/http';
-import { checkLimit } from '@/lib/plans/limits';
-import { WORKSPACE_ROW_ID } from '@/lib/storage/usage';
 import { writeAudit } from '@/lib/audit/log';
+import { issueInvite } from '@/lib/invites/service';
 
-function tempPassword() {
-  return `nv-${randomBytes(6).toString('base64url')}`;
-}
-
+/**
+ * Creates a pending invitation and mails the link (F-351).
+ *
+ * This used to create the User with a temporary password and return that password to the
+ * admin, who then relayed it over whatever channel they picked; the `Invite` row was
+ * written already accepted, so it recorded history and gated nothing. The mechanics now
+ * live in `lib/invites/service.ts` — a single-use sha256-hashed token with an expiry — and
+ * no password ever crosses this response.
+ */
 export async function POST(request: NextRequest) {
   const { user, error, status } = await requireAdmin();
   if (!user) {
     return NextResponse.json({ error }, { status });
   }
 
-  const body = await request.json();
-  const email = String(body.email || '').trim().toLowerCase();
-  const role = (body.role === 'ADMIN' ? 'ADMIN' : 'MEMBER') as Role;
-  const name = String(body.name || '').trim() || email.split('@')[0];
-
-  if (!validateEmail(email)) {
-    return NextResponse.json({ error: 'Enter a valid email address' }, { status: 400 });
-  }
-
-  const existing = await prisma.user.findUnique({ where: { email } });
-  if (existing) {
-    return NextResponse.json({ error: 'A member with that email already exists' }, { status: 409 });
-  }
-
-  const memberLimit = await checkLimit(WORKSPACE_ROW_ID, 'members');
-  if (!memberLimit.ok) return creditDeniedJson({ ...memberLimit, reason: 'members', message: memberLimit.message || 'Member limit reached' });
-
-  const password = tempPassword();
-  const created = await prisma.user.create({
-    data: {
-      email,
-      name,
-      role,
-      passwordHash: await hashPassword(password),
-    },
-    select: { id: true, email: true, name: true, role: true, createdAt: true },
+  const raw: unknown = await request.json().catch(() => null);
+  const body = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const result = await issueInvite({
+    email: typeof body.email === 'string' ? body.email : '',
+    name: typeof body.name === 'string' ? body.name : undefined,
+    role: (body.role === 'ADMIN' ? 'ADMIN' : 'MEMBER') as Role,
+    invitedById: user.id,
   });
-
-  await prisma.invite.create({
-    data: {
-      email,
-      role,
-      invitedById: user.id,
-      acceptedAt: new Date(),
-    },
-  });
+  if (!result.ok) {
+    return NextResponse.json(
+      { error: result.error, ...(result.details ? { details: result.details } : {}) },
+      { status: result.status },
+    );
+  }
 
   await writeAudit({
     actorId: user.id,
     actorEmail: user.email,
-    action: 'member.invite',
+    action: result.resent ? 'member.invite_resent' : 'member.invite',
     targetType: 'user',
-    targetId: created.id,
-    after: { email: created.email, role: created.role },
+    targetId: result.member.id,
+    after: { email: result.member.email, role: result.member.role },
   });
 
   return NextResponse.json({
-    member: { ...created, projectCount: 0 },
-    temporaryPassword: password,
+    member: { ...result.member, projectCount: 0 },
+    invite: {
+      expiresAt: result.expiresAt.toISOString(),
+      emailed: result.emailed,
+      emailError: result.emailError,
+      resent: result.resent,
+    },
   });
 }

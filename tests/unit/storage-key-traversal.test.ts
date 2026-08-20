@@ -353,12 +353,15 @@ describe('export entry names', () => {
     expect(shouldExcludeExportPath('src/App.jsx')).toBe(false);
   });
 
-  it('drops it from the export file list', () => {
-    const kept = filterExportFiles([
+  it('drops it from the export file list, and does not report it as merely oversized', () => {
+    const { files, oversized } = filterExportFiles([
       { path: 'src/App.jsx', content: 'export default function App(){return null}' },
       { path: '../../../.ssh/authorized_keys', content: 'ssh-rsa AAAA' },
     ]);
-    expect(kept.map((file) => file.path)).toEqual(['src/App.jsx']);
+    expect(files.map((file) => file.path)).toEqual(['src/App.jsx']);
+    // A traversal path is refused outright — it must never surface in the README as a file
+    // the user could go and copy by hand (F-796 lists only the size exclusions).
+    expect(oversized).toEqual([]);
   });
 
   it('never writes such an entry into the archive, even unfiltered', async () => {

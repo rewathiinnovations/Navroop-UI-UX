@@ -19,6 +19,8 @@ type Member = {
   email: string;
   role: TeamRole;
   isActive: boolean;
+  /** A live invite this member has not accepted yet — no password has been set (F-351). */
+  invitePending?: boolean;
   createdAt: string | Date;
   _count: { projects: number };
 };
@@ -109,8 +111,25 @@ export default function TeamTable({
     }
   };
 
+  /**
+   * Re-inviting an address whose invite is still outstanding rotates the link rather than
+   * creating a member (F-351), so this has to update the existing row instead of appending
+   * a second one for the same person.
+   */
   const onInvited = (invited: InvitedMember) => {
-    setMembers((current) => [...current, { ...invited, isActive: true, _count: { projects: 0 } }]);
+    setMembers((current) => {
+      const row: Member = {
+        ...invited,
+        isActive: true,
+        invitePending: true,
+        _count: { projects: 0 },
+      };
+      const existing = current.findIndex((member) => member.id === invited.id);
+      if (existing === -1) return [...current, row];
+      return current.map((member, index) =>
+        index === existing ? { ...member, invitePending: true } : member,
+      );
+    });
   };
 
   return (
@@ -168,9 +187,13 @@ export default function TeamTable({
                 </select>
               </Td>
               <Td>
-                <StatusPill tone={member.isActive ? 'positive' : 'neutral'}>
-                  {member.isActive ? 'Active' : 'Inactive'}
-                </StatusPill>
+                {member.invitePending ? (
+                  <StatusPill tone="warning">Invite pending</StatusPill>
+                ) : (
+                  <StatusPill tone={member.isActive ? 'positive' : 'neutral'}>
+                    {member.isActive ? 'Active' : 'Inactive'}
+                  </StatusPill>
+                )}
               </Td>
               <Td muted>{formatMemberSince(member.createdAt)}</Td>
               <Td align="right" muted>

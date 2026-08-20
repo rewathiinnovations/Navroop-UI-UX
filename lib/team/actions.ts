@@ -4,6 +4,7 @@ import { Prisma } from '@/generated/prisma';
 import { prisma } from '@/lib/db';
 import { requireAdmin } from '@/lib/auth';
 import { isLastAdminDbError, wouldRemoveLastAdmin } from '@/lib/team/last-admin';
+import { pendingInviteEmails } from '@/lib/invites/service';
 import { writeAudit } from '@/lib/audit/log';
 import {
   memberIdSchema,
@@ -14,7 +15,7 @@ import {
   type TeamRole,
 } from '@/lib/team/schema';
 import { asCreditActionErr } from '@/lib/plans/http';
-import { checkLimit } from '@/lib/plans/limits';
+import { withLimit } from '@/lib/plans/limits';
 import { WORKSPACE_ROW_ID } from '@/lib/storage/usage';
 
 export type ActionOk<T> = { ok: true; data: T };
@@ -70,16 +71,21 @@ async function loadMember(userId: string) {
   });
 }
 
-// TODO: email invites are out of scope (self-serve registration).
-
+/**
+ * `invitePending` is the honest half of F-351: a member row created by an invite looks
+ * exactly like an active one until the invitee opens the link and sets a password. The
+ * flag comes from the `Invite` table (live token, not accepted, not revoked), not from
+ * guessing at `passwordChangedAt`.
+ */
 export async function listTeam() {
   const { err } = await adminGate();
   if (err) return err;
 
-  const members = await prisma.user.findMany({
-    orderBy: { createdAt: 'asc' },
-    select: memberSelect,
-  });
+  const [rows, pending] = await Promise.all([
+    prisma.user.findMany({ orderBy: { createdAt: 'asc' }, select: memberSelect }),
+    pendingInviteEmails(),
+  ]);
+  const members = rows.map((row) => ({ ...row, invitePending: pending.has(row.email) }));
   return { ok: true as const, data: { members } };
 }
 
@@ -163,7 +169,7 @@ export async function deactivateMember(userId: string) {
 }
 
 export async function reactivateMember(userId: string) {
-  const { err } = await adminGate();
+  const { user, err } = await adminGate();
   if (err) return err;
 
   const parsed = parseWithZod(memberIdSchema, { userId });
@@ -172,13 +178,30 @@ export async function reactivateMember(userId: string) {
   const existing = await loadMember(parsed.data.userId);
   if (!existing) return notFound();
 
-  const memberLimit = await checkLimit(WORKSPACE_ROW_ID, 'members');
-  if (!memberLimit.ok) return asCreditActionErr(memberLimit);
-
-  const member = await prisma.user.update({
-    where: { id: parsed.data.userId },
-    data: { isActive: true },
-    select: memberSelect,
+  // Reactivation is a create as far as the members ceiling is concerned — it is what
+  // `currentForLimit` counts — so it is enforced at the write (F-307). Two concurrent
+  // reactivations at the ceiling both counted `limit - 1` and both committed.
+  const reserved = await withLimit(WORKSPACE_ROW_ID, 'members', 1, (tx) =>
+    tx.user.update({
+      where: { id: parsed.data.userId },
+      data: { isActive: true },
+      select: memberSelect,
+    }),
+  );
+  if (!reserved.ok) return asCreditActionErr(reserved);
+  const member = reserved.data;
+  // Restoring access to an invite-only workspace — and, since project reads are
+  // workspace-wide, to every project in it — is at least as consequential as the
+  // deactivation above. Without this the trail read as though the account were
+  // still disabled (F-744).
+  await writeAudit({
+    actorId: user.id,
+    actorEmail: user.email,
+    action: 'member.reactivate',
+    targetType: 'user',
+    targetId: member.id,
+    before: { isActive: existing.isActive },
+    after: { isActive: member.isActive },
   });
   return { ok: true as const, data: member };
 }

@@ -8,7 +8,12 @@ import StudioField from '@/components/app/studio/StudioField';
 import { loginModalHref } from '@/lib/auth/public-login';
 import { passwordStrengthHint } from '@/lib/auth/password-hint';
 
-export default function ResetPasswordForm({ token }: { token: string }) {
+/**
+ * The invitee's half of F-351: they choose the password, so the admin never has one to
+ * relay. Same two fields, same show/hide, same failure copy as `ResetPasswordForm` — the
+ * only difference is where it posts and where it sends you afterwards.
+ */
+export default function AcceptInviteForm({ token }: { token: string }) {
   const router = useRouter();
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -16,7 +21,6 @@ export default function ResetPasswordForm({ token }: { token: string }) {
   const [showConfirm, setShowConfirm] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const hint = passwordStrengthHint(password);
 
   const onSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -32,19 +36,20 @@ export default function ResetPasswordForm({ token }: { token: string }) {
 
     setLoading(true);
     try {
-      const response = await fetch('/api/auth/reset-password', {
+      const response = await fetch('/api/auth/accept-invite', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token, password }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data.ok) {
-        setError(data.error || 'Password reset failed');
+        setError(data.error || 'Could not accept the invite');
         return;
       }
-      router.push(`${loginModalHref()}&reset=1`);
+      // Nothing on the sign-in modal reads a status flag, so none is invented here.
+      router.push(loginModalHref());
     } catch {
-      setError('Password reset failed');
+      setError('Could not accept the invite');
     } finally {
       setLoading(false);
     }
@@ -54,8 +59,8 @@ export default function ResetPasswordForm({ token }: { token: string }) {
     <form onSubmit={onSubmit} className="space-y-14">
       <div className="relative">
         <StudioField
-          id="reset-password"
-          label="New password"
+          id="accept-invite-password"
+          label="Password"
           type={showPassword ? 'text' : 'password'}
           autoComplete="new-password"
           required
@@ -72,12 +77,14 @@ export default function ResetPasswordForm({ token }: { token: string }) {
         >
           {showPassword ? <EyeOff className="size-16" /> : <Eye className="size-16" />}
         </button>
-        <p className="mt-6 text-[12px] text-[var(--studio-muted)]">{hint}</p>
+        <p className="mt-6 text-[12px] text-[var(--studio-muted)]">
+          {passwordStrengthHint(password)}
+        </p>
       </div>
 
       <div className="relative">
         <StudioField
-          id="reset-password-confirm"
+          id="accept-invite-confirm"
           label="Confirm password"
           type={showConfirm ? 'text' : 'password'}
           autoComplete="new-password"
@@ -105,7 +112,7 @@ export default function ResetPasswordForm({ token }: { token: string }) {
       )}
 
       <StudioButton type="submit" variant="inverted" className="w-full" disabled={loading}>
-        {loading ? 'Updating…' : 'Update password'}
+        {loading ? 'Setting password…' : 'Set password and continue'}
       </StudioButton>
     </form>
   );

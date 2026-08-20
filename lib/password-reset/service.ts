@@ -143,17 +143,32 @@ export async function resetPasswordWithToken(
 
   const passwordHash = await hashPassword(input.password);
 
-  await prisma.$transaction([
-    ...passwordChangeWrites(peeked.userId, passwordHash, now),
-    prisma.passwordResetToken.update({
-      where: { id: peeked.id },
+  /**
+   * The peek above is only good enough to render a form: between it and the
+   * write, a second request carrying the same token passes the same check.
+   * The win is the row count of a conditional UPDATE, never a re-read
+   * (F-745) — so the token is claimed first, inside the transaction that
+   * writes the password, and a count of 0 aborts before anything else runs.
+   * Rolling back on a later failure hands the token back rather than burning
+   * a link the user cannot re-request without another email.
+   */
+  const claimed = await prisma.$transaction(async (tx) => {
+    const claim = await tx.passwordResetToken.updateMany({
+      where: { id: peeked.id, usedAt: null },
       data: { usedAt: now },
-    }),
-    prisma.passwordResetToken.updateMany({
-      where: { userId: peeked.userId, id: { not: peeked.id }, usedAt: null },
-      data: { usedAt: now },
-    }),
-  ]);
+    });
+    if (claim.count === 0) return false;
+
+    await Promise.all([
+      ...passwordChangeWrites(peeked.userId, passwordHash, now, tx),
+      tx.passwordResetToken.updateMany({
+        where: { userId: peeked.userId, id: { not: peeked.id }, usedAt: null },
+        data: { usedAt: now },
+      }),
+    ]);
+    return true;
+  });
+  if (!claimed) return { ok: false as const, error: EXPIRED_RESET_MESSAGE };
 
   const user = await prisma.user.findUnique({
     where: { id: peeked.userId },

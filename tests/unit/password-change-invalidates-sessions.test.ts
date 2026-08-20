@@ -53,8 +53,8 @@ vi.mock('next-auth', () => ({
 
 vi.mock('@auth/prisma-adapter', () => ({ PrismaAdapter: () => ({}) }));
 
-vi.mock('@/lib/db', () => ({
-  prisma: {
+vi.mock('@/lib/db', () => {
+  const prisma = {
     user: { findUnique: dbMock.findUnique, update: dbMock.update },
     session: { deleteMany: dbMock.deleteMany },
     passwordResetToken: {
@@ -62,10 +62,13 @@ vi.mock('@/lib/db', () => ({
       update: dbMock.tokenUpdate,
       updateMany: dbMock.tokenUpdateMany,
     },
-    $transaction: dbMock.transaction,
+    // Both forms: the settings path commits an array, the reset path runs an
+    // interactive transaction so it can abort on a lost token claim (F-745).
+    $transaction: (arg: unknown) => dbMock.transaction(arg, prisma),
     $executeRaw: dbMock.executeRaw,
-  },
-}));
+  };
+  return { prisma };
+});
 
 /**
  * Only the session lookup and the hashing are stubbed. `lib/auth/session-invalidation.ts`
@@ -123,7 +126,9 @@ beforeEach(() => {
   dbMock.findUnique.mockResolvedValue({ passwordHash: `hashed:${CURRENT_PASSWORD}` });
   dbMock.update.mockImplementation((args: unknown) => args);
   dbMock.deleteMany.mockImplementation((args: unknown) => args);
-  dbMock.transaction.mockImplementation(async (ops: unknown[]) => ops);
+  dbMock.transaction.mockImplementation(async (arg: unknown, client: unknown) =>
+    Array.isArray(arg) ? arg : (arg as (tx: unknown) => Promise<unknown>)(client),
+  );
   emailMock.send.mockResolvedValue({ id: 'msg_1' });
 });
 
@@ -236,8 +241,7 @@ describe('resetting a password with a token', () => {
       usedAt: null,
     });
     dbMock.findUnique.mockResolvedValue({ email: 'owner@example.com' });
-    dbMock.tokenUpdate.mockImplementation((args: unknown) => args);
-    dbMock.tokenUpdateMany.mockImplementation((args: unknown) => args);
+    dbMock.tokenUpdateMany.mockResolvedValue({ count: 1 });
 
     const sent: { to: string }[] = [];
     const result = await resetPasswordWithToken(
@@ -255,10 +259,16 @@ describe('resetting a password with a token', () => {
     expect(dbMock.tokenFindUnique).toHaveBeenCalledWith(
       expect.objectContaining({ where: { tokenHash: hashResetToken(RAW_TOKEN) } }),
     );
-    // One commit: the password, the invalidation stamp, the session rows and the token
-    // bookkeeping.
+    // One commit, and it is the interactive form: the token claim has to be able
+    // to abort the password write when another request already spent the link
+    // (F-745), which an array of statements cannot express.
     expect(dbMock.transaction).toHaveBeenCalledTimes(1);
-    expect(dbMock.transaction.mock.calls[0]?.[0]).toHaveLength(4);
+    expect(typeof dbMock.transaction.mock.calls[0]?.[0]).toBe('function');
+    expect(dbMock.tokenUpdateMany).toHaveBeenCalledWith({
+      where: { id: 'tok_1', usedAt: null },
+      data: { usedAt: NOW },
+    });
+    expect(dbMock.tokenUpdate).not.toHaveBeenCalled();
     expect(dbMock.deleteMany).toHaveBeenCalledWith({ where: { userId: 'user-1' } });
     expect(stampWritten().stamp.toISOString()).toBe('2026-08-19T12:00:00.000Z');
     expect(sent).toEqual([{ to: 'owner@example.com' }]);
@@ -272,8 +282,7 @@ describe('resetting a password with a token', () => {
       usedAt: null,
     });
     dbMock.findUnique.mockResolvedValue({ email: 'owner@example.com' });
-    dbMock.tokenUpdate.mockImplementation((args: unknown) => args);
-    dbMock.tokenUpdateMany.mockImplementation((args: unknown) => args);
+    dbMock.tokenUpdateMany.mockResolvedValue({ count: 1 });
 
     await resetPasswordWithToken(
       { token: RAW_TOKEN, password: NEW_PASSWORD },

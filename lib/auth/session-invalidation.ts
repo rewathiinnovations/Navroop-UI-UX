@@ -1,3 +1,4 @@
+import type { Prisma } from '@/generated/prisma';
 import { prisma } from '@/lib/db';
 
 /**
@@ -26,12 +27,20 @@ import { prisma } from '@/lib/db';
  * change anyway.
  *
  * Returns Prisma promises rather than awaiting them so each caller can put them in its own
- * `$transaction` — the reset path commits them together with the token bookkeeping.
+ * `$transaction` — the reset path commits them together with the token bookkeeping. That
+ * path needs to branch on a claim first, so it runs an interactive transaction and passes
+ * its `tx` in; the statements have to be built on the same client that owns the
+ * transaction or they would commit outside it (F-745).
  */
-export function passwordChangeWrites(userId: string, passwordHash: string, now: Date) {
+export function passwordChangeWrites(
+  userId: string,
+  passwordHash: string,
+  now: Date,
+  client: Prisma.TransactionClient = prisma,
+) {
   const passwordChangedAt = new Date(Math.floor(now.getTime() / 1000) * 1000);
   return [
-    prisma.user.update({ where: { id: userId }, data: { passwordHash, passwordChangedAt } }),
-    prisma.session.deleteMany({ where: { userId } }),
+    client.user.update({ where: { id: userId }, data: { passwordHash, passwordChangedAt } }),
+    client.session.deleteMany({ where: { userId } }),
   ];
 }

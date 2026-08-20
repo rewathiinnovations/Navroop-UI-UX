@@ -90,7 +90,18 @@ function allowedPort(url: URL): boolean {
   return url.port === '80' || url.port === '443';
 }
 
-export async function assertSafeUrl(raw: string, opts: AssertSafeUrlOptions = {}): Promise<URL> {
+/**
+ * The guard's verdict *and* the addresses it approved. Callers that go on to
+ * open a connection must dial one of these rather than resolving the hostname
+ * again — a second lookup is a second answer, which is the whole DNS-rebinding
+ * trick (F-308).
+ */
+export type SafeUrlResolution = { url: URL; addresses: Array<{ address: string; family: number }> };
+
+export async function resolveSafeUrl(
+  raw: string,
+  opts: AssertSafeUrlOptions = {},
+): Promise<SafeUrlResolution> {
   try {
     return await checkUrl(raw, opts);
   } catch (error) {
@@ -103,7 +114,12 @@ export async function assertSafeUrl(raw: string, opts: AssertSafeUrlOptions = {}
   }
 }
 
-async function checkUrl(raw: string, opts: AssertSafeUrlOptions): Promise<URL> {
+/** The verdict alone, for callers that only validate and never connect. */
+export async function assertSafeUrl(raw: string, opts: AssertSafeUrlOptions = {}): Promise<URL> {
+  return (await resolveSafeUrl(raw, opts)).url;
+}
+
+async function checkUrl(raw: string, opts: AssertSafeUrlOptions): Promise<SafeUrlResolution> {
   let parsed: URL;
   try {
     parsed = new URL(raw.trim());
@@ -111,7 +127,10 @@ async function checkUrl(raw: string, opts: AssertSafeUrlOptions): Promise<URL> {
     fail('protocol');
   }
 
-  if (BLOCKED_PROTOCOLS.has(parsed.protocol) || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) {
+  if (
+    BLOCKED_PROTOCOLS.has(parsed.protocol) ||
+    (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
+  ) {
     fail('protocol');
   }
 
@@ -145,5 +164,8 @@ async function checkUrl(raw: string, opts: AssertSafeUrlOptions): Promise<URL> {
     }
   }
 
-  return parsed;
+  // Every address here passed the private-range check, so any of them is a safe
+  // destination — and the caller connecting to one of *these* is what closes the
+  // window between this lookup and the socket (F-308).
+  return { url: parsed, addresses: records.map((r) => ({ address: r.address, family: r.family })) };
 }
