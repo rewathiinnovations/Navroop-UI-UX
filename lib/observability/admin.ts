@@ -1,5 +1,6 @@
 import { currentRelease } from '../deploy/release';
 import { sentryDsn, sentryEnvironment } from '../sentry/options';
+import { edgeReportingCovered } from '../sentry/edge';
 import { HEARTBEAT_FINGERPRINT } from './heartbeat';
 import { dsnProjectId } from './dsn';
 import { createSentryApi, sentryApiConfigured } from './sentry-api';
@@ -27,6 +28,7 @@ export function buildErrorTrackingPanel(input: {
   quota: { used: number; limit: number | null; resetsAt: string | null } | null;
   dropped24h: SentryDropped[];
   topIssues: Array<{ id: string; title: string; count: number }>;
+  edgeCovered: boolean;
 }): ErrorTrackingPanel {
   let status: ErrorTrackingPanel['status'] = 'Healthy';
   if (!input.dsnConfigured || !input.lastSuccessfulSendAt) {
@@ -59,6 +61,10 @@ export function buildErrorTrackingPanel(input: {
     environment: input.environment,
     releaseSha: input.releaseSha,
     dsnConfigured: input.dsnConfigured,
+    // Deliberately not part of `status`: an operator who has chosen not to pass the build
+    // argument should not be told error tracking is Degraded forever. The panel states the
+    // gap in words instead (F-786).
+    edgeCovered: input.edgeCovered,
   };
 }
 
@@ -110,6 +116,7 @@ export async function loadErrorTrackingPanel(
     quota,
     dropped24h,
     topIssues,
+    edgeCovered: edgeReportingCovered(),
   });
 }
 

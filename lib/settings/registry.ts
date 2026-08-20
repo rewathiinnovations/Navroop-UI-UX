@@ -143,6 +143,17 @@ export const SETTINGS: readonly SettingEntry[] = [
     fallback: '2',
   },
   {
+    key: 'ai.fileContextTokenCap',
+    group: 'ai',
+    label: 'Follow-up file context cap (tokens)',
+    help: 'How much of an existing project is shown to the model when someone asks for a change. Raising it means the model sees more of the project and every follow-up costs more; lowering it means it may edit a file it was never shown. 30000 is the built-in default.',
+    kind: 'number',
+    // Was env-only, which made a spend knob invisible on this page and untraceable in the
+    // audit log (F-094). The variable still works as the fallback.
+    env: 'NAVROOP_FILE_CONTEXT_TOKEN_CAP',
+    fallback: '30000',
+  },
+  {
     key: 'ai.cost.inputPerMillionUsd',
     group: 'ai',
     label: 'Input token price (USD per million)',

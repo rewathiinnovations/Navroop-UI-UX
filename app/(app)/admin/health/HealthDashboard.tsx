@@ -71,6 +71,8 @@ type HealthPayload = {
     environment: string;
     releaseSha: string;
     dsnConfigured: boolean;
+    /** Separate from `dsnConfigured`: edge coverage comes from a build-time value (F-786). */
+    edgeCovered: boolean;
   };
   systemChecks?: Array<{
     name: string;
@@ -466,6 +468,29 @@ export default function HealthDashboard() {
                 ))}
               </ul>
             )}
+          </div>
+          {/* F-786. The edge isolate cannot read the DSN saved in Integrations, so edge and
+              middleware errors — the auth gate in proxy.ts among them — are covered only
+              when the build argument was passed. Whichever way it went, it is stated. */}
+          <div className="mt-14">
+            <p className="mb-6 text-[12px] uppercase tracking-[0.08em] text-[var(--studio-faint)]">
+              Edge and middleware
+            </p>
+            <p
+              className={
+                data.errorTracking.edgeCovered
+                  ? 'text-[13px] text-[var(--studio-muted)]'
+                  : 'text-[13px] text-[var(--studio-danger)]'
+              }
+            >
+              {data.errorTracking.edgeCovered
+                ? 'Edge and middleware errors are captured, from the NEXT_PUBLIC_SENTRY_DSN baked into this image.'
+                : 'Edge and middleware errors are not captured. A failure in the auth gate that fronts every /api and /preview-static request is reported nowhere.'}
+            </p>
+            <p className="mt-6 text-[12px] text-[var(--studio-muted)]">
+              The edge runtime cannot read the DSN saved in Integrations. To cover it, pass
+              NEXT_PUBLIC_SENTRY_DSN as a build argument and rebuild the image.
+            </p>
           </div>
           <p className="mt-14 text-[12px] text-[var(--studio-muted)]">
             DSN project {data.errorTracking.dsnProjectId || '—'}

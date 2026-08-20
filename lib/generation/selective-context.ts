@@ -1,11 +1,25 @@
 import { CHARS_PER_TOKEN, estimateTokens } from '@/lib/generation/token-estimate';
+import { positiveNumberSetting } from '@/lib/settings/numbers';
 
-/** Default ~30k-token cap for follow-up file context. Override with NAVROOP_FILE_CONTEXT_TOKEN_CAP. */
+/** Default ~30k-token cap for follow-up file context. */
 export const DEFAULT_FILE_CONTEXT_TOKEN_CAP = 30_000;
 
-export function fileContextTokenCap(): number {
-  const raw = Number(process.env.NAVROOP_FILE_CONTEXT_TOKEN_CAP);
-  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_FILE_CONTEXT_TOKEN_CAP;
+/**
+ * The follow-up context budget, resolved the way every other operator knob is: the
+ * `ai.fileContextTokenCap` row written from /admin/config, then the
+ * `NAVROOP_FILE_CONTEXT_TOKEN_CAP` variable it used to be the only source for, then the
+ * default above (F-094). It trades prompt cost against how much of a project the model can
+ * see, which is exactly the kind of value an operator changes without wanting a redeploy.
+ *
+ * Resolved per request, never at module load: a cap read once at import is a setting that
+ * looks applied and is not. `selectFileContext` takes the number rather than resolving it,
+ * so the selection itself stays synchronous and testable with an explicit cap — and
+ * `tokenCap` is required so a new call site cannot silently ignore the setting.
+ */
+export async function fileContextTokenCap(): Promise<number> {
+  return Math.floor(
+    await positiveNumberSetting('ai.fileContextTokenCap', DEFAULT_FILE_CONTEXT_TOKEN_CAP),
+  );
 }
 
 export type FileContextSource = {
@@ -37,11 +51,7 @@ function normalizeFiles(
     .filter((file) => file.path && !file.path.includes('node_modules'));
 }
 
-function referencedPaths(
-  userMessage: string,
-  paths: string[],
-  extra: string[] = [],
-): Set<string> {
+function referencedPaths(userMessage: string, paths: string[], extra: string[] = []): Set<string> {
   const matched = new Set<string>();
   const lower = userMessage.toLowerCase();
   const tokens = lower.split(/[^a-z0-9._\-/]+/).filter((token) => token.length >= 3);
@@ -52,12 +62,20 @@ function referencedPaths(
     const stem = base.replace(/\.[^.]+$/, '');
     const haystack = normalized.toLowerCase();
     if (
-      extra.some((item) => haystack.endsWith(item.replace(/\\/g, '/').toLowerCase()) || haystack === item.toLowerCase())
+      extra.some(
+        (item) =>
+          haystack.endsWith(item.replace(/\\/g, '/').toLowerCase()) ||
+          haystack === item.toLowerCase(),
+      )
     ) {
       matched.add(path);
       continue;
     }
-    if (lower.includes(haystack) || lower.includes(base.toLowerCase()) || lower.includes(stem.toLowerCase())) {
+    if (
+      lower.includes(haystack) ||
+      lower.includes(base.toLowerCase()) ||
+      lower.includes(stem.toLowerCase())
+    ) {
       matched.add(path);
       continue;
     }
@@ -77,9 +95,9 @@ export function selectFileContext(input: {
   userMessage: string;
   recentlyModifiedPaths?: string[];
   primaryPaths?: string[];
-  tokenCap?: number;
+  tokenCap: number;
 }): SelectiveFileContext {
-  const cap = input.tokenCap ?? fileContextTokenCap();
+  const cap = input.tokenCap;
   const entries = normalizeFiles(input.files);
   const paths = entries.map((file) => file.path);
 

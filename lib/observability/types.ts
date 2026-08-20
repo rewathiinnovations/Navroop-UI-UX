@@ -79,6 +79,12 @@ export type ErrorTrackingPanel = {
   environment: string;
   releaseSha: string;
   dsnConfigured: boolean;
+  /**
+   * Whether edge and middleware errors reach Sentry. It is a separate answer from
+   * `dsnConfigured` because it has a separate source: the edge isolate cannot read the
+   * saved DSN, so coverage there depends on a build-time value (F-786).
+   */
+  edgeCovered: boolean;
 };
 
 export type SystemCheckRow = {

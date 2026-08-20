@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type * as tls from 'node:tls';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { checkSiteCertificate } from '../../lib/observability/certs';
 import { checkSiteUptime } from '../../lib/observability/uptime';
 import { runHealthChecks } from '../../lib/health/check';
@@ -26,6 +26,7 @@ import {
 } from '../../lib/observability/system-checks';
 import {
   clearNoiseBuckets,
+  noiseBucketStats,
   observabilityBeforeSend,
   shouldCaptureException,
 } from '../../lib/observability/noise';
@@ -459,11 +460,39 @@ describe('error tracking panel and test event', () => {
       quota: { used: 10, limit: 100, resetsAt: '2026-09-01T00:00:00.000Z' },
       dropped24h: [{ reason: 'rate_limit', count: 1 }],
       topIssues: [],
+      edgeCovered: true,
     });
     expect(panel.lastSuccessfulSendAt).toBe('2026-08-17T12:00:00.000Z');
     expect(panel.lastConfirmedReceiptAt).toBe('2026-08-17T11:00:00.000Z');
     expect(panel.lastSuccessfulSendAt).not.toBe(panel.lastConfirmedReceiptAt);
     expect(panel.status).toBe('Degraded');
+  });
+
+  /**
+   * F-786. `sentry.edge.config.ts` was `export {}`, so a throw in the auth gate that fronts
+   * every /api and /preview-static request was reported nowhere — and nothing anywhere said
+   * so. The isolate cannot read the DSN saved in Integrations, so coverage depends on the
+   * build-time NEXT_PUBLIC_SENTRY_DSN; the panel therefore has to carry the answer either
+   * way rather than leaving the gap implied.
+   */
+  it('reports whether edge and middleware errors are captured, separately from the DSN', () => {
+    const base = {
+      dsnConfigured: true,
+      dsnProjectId: '123456',
+      environment: 'production',
+      releaseSha: 'abc123',
+      lastSuccessfulSendAt: '2026-08-17T12:00:00.000Z',
+      lastConfirmedReceiptAt: '2026-08-17T12:00:01.000Z',
+      quota: null,
+      dropped24h: [],
+      topIssues: [],
+    };
+    const uncovered = buildErrorTrackingPanel({ ...base, edgeCovered: false });
+    expect(uncovered.edgeCovered).toBe(false);
+    // A healthy Sentry connection with no edge DSN is still Healthy: the gap is disclosed,
+    // not turned into a permanent alert an operator would learn to ignore.
+    expect(uncovered.status).toBe('Healthy');
+    expect(buildErrorTrackingPanel({ ...base, edgeCovered: true }).edgeCovered).toBe(true);
   });
 
   /**
@@ -590,6 +619,47 @@ describe('noise suppression', () => {
       },
     );
     expect(captured).toHaveLength(0);
+  });
+
+  /**
+   * F-780. The map used to gain an entry per distinct fingerprint and never lose one — only
+   * the timestamps inside an entry were filtered — so a long-lived process grew without
+   * limit. `eventFingerprint` falls back to the exception message, which carries
+   * interpolated ids and paths, so the key space is effectively unbounded.
+   */
+  it('evicts fingerprint entries once their window has fully expired', () => {
+    const window = 5 * 60 * 1000;
+    const start = 2_000_000;
+    for (let i = 0; i < 20; i += 1) {
+      observabilityBeforeSend({ fingerprint: [`expired-${i}`] }, {}, start + i);
+    }
+    expect(noiseBucketStats().fingerprints).toBe(20);
+
+    // A single event two windows later. None of the 20 has a timestamp left inside the
+    // window, so all 20 go and only this fingerprint is held.
+    observabilityBeforeSend({ fingerprint: ['still-live'] }, {}, start + 2 * window);
+    expect(noiseBucketStats().fingerprints).toBe(1);
+  });
+
+  it('holds a ceiling when distinct fingerprints flood in inside one window', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const start = 3_000_000;
+      const { ceiling } = noiseBucketStats();
+      // Three times the ceiling, one per millisecond: every entry is still inside the
+      // window, so nothing here can be evicted for being expired.
+      for (let i = 0; i < ceiling * 3; i += 1) {
+        observabilityBeforeSend({ fingerprint: [`flood-${i}`] }, {}, start + i);
+      }
+      expect(noiseBucketStats().fingerprints).toBeLessThanOrEqual(ceiling);
+      expect(noiseBucketStats().fingerprints).toBeGreaterThan(0);
+      // The eviction is lossy on purpose, so it is not allowed to be silent — and it is
+      // rate-limited to once per window, so a flood does not become its own log flood.
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain('fingerprint ceiling');
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 
