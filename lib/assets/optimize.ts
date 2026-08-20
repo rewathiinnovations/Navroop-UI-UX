@@ -5,11 +5,20 @@ export const MAX_EDGE = 1920;
 /**
  * Ceiling for a raw upload body, checked before it is buffered. Everything is
  * re-encoded to WebP capped at {@link MAX_EDGE}, so nothing legitimate needs
- * more than this — the admin thumbnail route settled on 4 MB for the same job
- * (`app/api/admin/templates/[id]/thumbnail/route.ts`); assets get headroom for
- * full-resolution photos.
+ * more than this — admin thumbnails settle for {@link MAX_THUMBNAIL_BYTES} on
+ * the same job; assets get headroom for full-resolution photos.
  */
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+
+/**
+ * Ceiling for an admin template thumbnail, checked before it is buffered. Smaller than
+ * {@link MAX_UPLOAD_BYTES} because the bytes are stored verbatim rather than re-encoded
+ * (`storeThumbnailBuffer`), and a thumbnail is a card image, not a photo library.
+ */
+export const MAX_THUMBNAIL_BYTES = 4_000_000;
+
+/** Smallest buffer that could carry a real image header — below this it is not one. */
+export const MIN_THUMBNAIL_BYTES = 32;
 
 /**
  * Decoded-pixel ceiling handed to sharp. Its default is ~268 megapixels — a

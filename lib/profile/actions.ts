@@ -13,7 +13,8 @@ import {
   type UpdateProfileInput,
 } from '@/lib/profile/schema';
 import { avatarStorageKey } from '@/lib/assets/keys';
-import { optimizeImage } from '@/lib/assets/optimize';
+import { MAX_UPLOAD_BYTES, optimizeImage, sniffImageType } from '@/lib/assets/optimize';
+import { allowAvatarUpload } from '@/lib/assets/rate-limit';
 import { upload } from '@/lib/storage';
 
 export type ActionOk<T> = { ok: true; data: T };
@@ -66,16 +67,59 @@ export async function uploadAvatar(formData: FormData) {
   if (!(file instanceof File) || file.size === 0) {
     return { ok: false as const, error: 'Choose an image to upload', status: 400 as const };
   }
+  // Refused on the declared part length, before `arrayBuffer()` materialises anything: a
+  // ceiling checked after the buffer exists has already paid the memory it was meant to
+  // deny. Same limit and same sentence as `uploadProjectAsset` (lib/assets/actions.ts) —
+  // both re-encode to a 512px WebP, so nothing legitimate needs more (F-173).
+  if (file.size > MAX_UPLOAD_BYTES) {
+    return {
+      ok: false as const,
+      error: 'Image is too large — the limit is 10 MB',
+      status: 400 as const,
+    };
+  }
+  // Counted only once the declared length has passed, and refused before
+  // `arrayBuffer()` for the same reason the ceiling is: the work this denies is
+  // the buffer plus a sharp decode, so a 429 that has already paid for both
+  // protects nothing. Its own bucket, tighter than `uploadProjectAsset`'s —
+  // see `lib/assets/rate-limit.ts` for why the two are not shared.
+  if (!allowAvatarUpload(user.id).allowed) {
+    return {
+      ok: false as const,
+      error: 'Too many avatar uploads — try again in an hour',
+      status: 429 as const,
+    };
+  }
 
-  const buffer = Buffer.from(await file.arrayBuffer());
-  const optimized = await optimizeImage(buffer, { width: 512, height: 512 });
-  const key = avatarStorageKey(user.id, optimized.ext);
-  const stored = await upload(optimized.buffer, {
-    key,
-    contentType: optimized.contentType,
-  });
+  let avatarUrl: string;
+  try {
+    const buffer = Buffer.from(await file.arrayBuffer());
+    // The multipart content type is client-supplied; the bytes decide. Without this a PDF
+    // or an HTML page named `.png` reached sharp, and the decoder error left the action as
+    // an unhandled throw the form could not render.
+    if (!sniffImageType(buffer)) {
+      return {
+        ok: false as const,
+        error: 'Upload a PNG, JPEG, WebP or GIF image',
+        status: 400 as const,
+      };
+    }
+    const optimized = await optimizeImage(buffer, { width: 512, height: 512 });
+    const key = avatarStorageKey(user.id, optimized.ext);
+    const stored = await upload(optimized.buffer, { key, contentType: optimized.contentType });
+    avatarUrl = stored.url;
+  } catch (thrown) {
+    // A decode or storage failure is still a refusal, not a raw throw at the client. The
+    // real message goes to the log; the sentence the form shows names no internals.
+    console.error('[profile] avatar upload failed:', (thrown as Error).message);
+    return {
+      ok: false as const,
+      error: 'We could not process that image — try a different file',
+      status: 400 as const,
+    };
+  }
 
-  return updateProfile({ avatarUrl: stored.url });
+  return updateProfile({ avatarUrl });
 }
 
 export async function changePassword(currentPassword: string, newPassword: string) {
