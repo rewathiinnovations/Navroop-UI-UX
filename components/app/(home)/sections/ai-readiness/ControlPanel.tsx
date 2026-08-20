@@ -1,6 +1,6 @@
 'use client';
 
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence } from 'motion/react';
 import {
   Globe,
   FileText,
@@ -54,9 +54,13 @@ export default function ControlPanel({
   analysisData,
   onReset,
 }: ControlPanelProps) {
-  const [showAIAnalysis, setShowAIAnalysis] = useState(false); // Reserved for AI analysis feature
+  // Both flags are WRITTEN (:143-144, :281) and never read: nothing in the
+  // render branches on them, so the "AI analysis" section they were meant to
+  // reveal does not exist. Elided rather than deleted because the writes are
+  // still there; wiring the section is a separate change.
+  const [, setShowAIAnalysis] = useState(false);
   const [aiInsights, setAiInsights] = useState<CheckItem[]>([]);
-  const [isAnalyzingAI, setIsAnalyzingAI] = useState(false);
+  const [, setIsAnalyzingAI] = useState(false);
   const [combinedChecks, setCombinedChecks] = useState<CheckItem[]>([]);
   const [checks, setChecks] = useState<CheckItem[]>([
     {
@@ -347,13 +351,6 @@ export default function ControlPanel({
       default:
         return <div className="w-16 h-16 rounded-full border border-black-alpha-8" />;
     }
-  };
-
-  // Utility function available but not used in current render
-  const getScoreColor = (score: number) => {
-    if (score >= 80) return 'text-accent-black';
-    if (score >= 60) return 'text-accent-black';
-    return 'text-accent-black';
   };
 
   return (

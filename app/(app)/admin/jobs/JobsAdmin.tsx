@@ -8,6 +8,8 @@ import ConfirmAction from '@/components/admin/ConfirmAction';
 import StatusBanner from '@/components/admin/StatusBanner';
 import { SkeletonTable } from '@/components/admin/AdminSkeleton';
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { handleAdminForbidden } from '@/lib/admin/forbidden';
 import { jobAdminFailureLine } from '@/lib/jobs/admin-display';
 import { notify, toMessage } from '@/lib/notify';
 import { sandboxChoiceLines } from '@/lib/jobs/sandbox-choice';
@@ -41,6 +43,7 @@ function formatAge(ageMs: number) {
 }
 
 export default function JobsAdmin() {
+  const router = useRouter();
   const [data, setData] = useState<JobsPayload | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -52,7 +55,7 @@ export default function JobsAdmin() {
     try {
       const response = await fetch('/api/admin/jobs');
       if (response.status === 403) {
-        window.location.replace('/dashboard');
+        handleAdminForbidden(router);
         return;
       }
       const payload = await response.json();

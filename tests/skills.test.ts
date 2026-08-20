@@ -11,6 +11,7 @@ import {
   resetSkillMatchCacheForTests,
 } from '../lib/skills/match.ts';
 import { buildSkillInjectionBlock } from '../lib/skills/inject.ts';
+import { buildCachedMessages } from '../lib/generation/prompt-cache.ts';
 import type { SkillMatchCandidate, SkillRanker } from '../lib/skills/match.ts';
 
 let failed = 0;
@@ -52,12 +53,6 @@ const table = candidate({
   name: 'Data table UX',
   description: 'When building a data table, sortable rows, pagination, or grid of records',
 });
-const dash = candidate({
-  id: 'dash',
-  name: 'Dashboard layout',
-  description: 'When building a dashboard with metrics, widgets, filters, or summary cards',
-});
-
 const extra = candidate({
   id: 'extra',
   name: 'Checkout flow',
@@ -107,9 +102,18 @@ function listOf(skills: SkillMatchCandidate[]) {
     DEFAULT_SKILLS.some((skill) => skill.name === 'Landing page structure'),
     'includes Landing page structure',
   );
-  assert(DEFAULT_SKILLS.some((skill) => skill.name === 'Form UX'), 'includes Form UX');
-  assert(DEFAULT_SKILLS.some((skill) => skill.name === 'Data table UX'), 'includes Data table UX');
-  assert(DEFAULT_SKILLS.some((skill) => skill.name === 'Dashboard layout'), 'includes Dashboard layout');
+  assert(
+    DEFAULT_SKILLS.some((skill) => skill.name === 'Form UX'),
+    'includes Form UX',
+  );
+  assert(
+    DEFAULT_SKILLS.some((skill) => skill.name === 'Data table UX'),
+    'includes Data table UX',
+  );
+  assert(
+    DEFAULT_SKILLS.some((skill) => skill.name === 'Dashboard layout'),
+    'includes Dashboard layout',
+  );
   const landingSeed = DEFAULT_SKILLS.find((skill) => skill.name === 'Landing page structure');
   assert(landingSeed?.content.toLowerCase().includes('hero'), 'landing content mentions hero');
   assert(landingSeed?.content.includes('FAQ'), 'landing content mentions FAQ');
@@ -145,7 +149,9 @@ function listOf(skills: SkillMatchCandidate[]) {
   const ranker: SkillRanker = async ({ skills, userMessage }) => {
     rankerCalls += 1;
     assert(
-      skills.every((skill) => !('content' in skill) || (skill as { content?: string }).content == null),
+      skills.every(
+        (skill) => !('content' in skill) || (skill as { content?: string }).content == null,
+      ),
       'cheap model receives name+description only',
     );
     assert(userMessage.includes('pricing'), 'cheap model receives the user message');
@@ -161,7 +167,10 @@ function listOf(skills: SkillMatchCandidate[]) {
   });
   assert(rankerCalls === 1, 'more than 3 enabled skills uses the cheap model');
   assert(matched.length === 2, 'caps matches at 2');
-  assert(matched[0]?.id === 'landing' && matched[1]?.id === 'extra', 'keeps the two highest-confidence skills');
+  assert(
+    matched[0]?.id === 'landing' && matched[1]?.id === 'extra',
+    'keeps the two highest-confidence skills',
+  );
 }
 
 {
@@ -212,10 +221,32 @@ function listOf(skills: SkillMatchCandidate[]) {
   assert(block.includes('Landing page structure'), 'injection names the skill');
   assert(block.includes('Use one primary CTA.'), 'injection includes skill content');
   const prefix = buildStablePromptPrefix('NEXTJS', 'minimal');
-  assert(!prefix.includes('Use one primary CTA.'), 'skill content is not inside the cacheable prefix');
   assert(
-    prefix === buildStablePromptPrefix('NEXTJS', 'minimal'),
-    'stable prefix stays byte-identical with or without a skill',
+    !prefix.includes('Use one primary CTA.'),
+    'skill content is not inside the cacheable prefix',
+  );
+  // `prefix === buildStablePromptPrefix('NEXTJS', 'minimal')` used to stand here —
+  // the same call with the same arguments on both sides, so nothing about "with or
+  // without a skill" was exercised (F-610). The placement decision is made by
+  // `buildCachedMessages`, so that is what the two shapes are compared through.
+  const volatileTail = 'Build me a landing page';
+  const withSkill = buildCachedMessages({
+    stablePrefix: prefix,
+    volatileUser: [block, volatileTail].join('\n\n'),
+  });
+  const withoutSkill = buildCachedMessages({ stablePrefix: prefix, volatileUser: volatileTail });
+  assert(
+    withSkill[0]?.content === withoutSkill[0]?.content,
+    'the cacheable system slot is byte-identical with and without a skill',
+  );
+  assert(withSkill[0]?.content === prefix, 'the system slot is exactly the stable prefix');
+  assert(
+    withSkill[0]?.content.includes('Use one primary CTA.') === false,
+    'a matched skill never lands in the cached system slot',
+  );
+  assert(
+    withSkill[1]?.content.includes('Use one primary CTA.') === true,
+    'a matched skill lands in the volatile user slot',
   );
 }
 

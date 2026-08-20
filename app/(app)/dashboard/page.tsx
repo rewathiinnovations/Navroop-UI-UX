@@ -18,6 +18,9 @@ import type { ImportMode } from '@/lib/import/mode';
 import { createProject } from '@/lib/projects/actions';
 import { armProjectGeneration } from '@/lib/projects/start-from-prompt';
 import type { StackId } from '@/lib/stacks';
+import { listAnnouncement } from '@/lib/a11y/list-announcement';
+import { connectionState } from '@/lib/net/connection';
+import { useRefetchOnReconnect } from '@/hooks/useOnline';
 import {
   fetchProjectList,
   isProjectGenerating,
@@ -63,10 +66,18 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!projects.some(isProjectGenerating)) return;
     const timer = setInterval(() => {
+      // Offline, this tick could only add another failed request and another
+      // error line to a page whose banner already says why. The reconnect
+      // refetch below is the single catch-up (F-446).
+      if (connectionState() === 'offline') return;
       void load(true);
     }, 4000);
     return () => clearInterval(timer);
   }, [projects]);
+
+  useRefetchOnReconnect(() => {
+    void load(true);
+  });
 
   const mine = useMemo(() => {
     const owned = userId ? projects.filter((project) => project.ownerId === userId) : projects;
@@ -201,8 +212,18 @@ export default function DashboardPage() {
           </div>
         ) : (
           <>
+            {/* Rendered unconditionally: a live region only announces changes to
+                text it already owns, so it has to exist before the list settles. */}
+            <p className="sr-only" aria-live="polite">
+              {listAnnouncement({ loading, error, count: visible.length, noun: 'project' })}
+            </p>
+
             {loading && (
-              <div className="grid grid-cols-1 gap-16 sm:grid-cols-2 lg:grid-cols-3">
+              <div
+                role="status"
+                aria-label="Loading projects"
+                className="grid grid-cols-1 gap-16 sm:grid-cols-2 lg:grid-cols-3"
+              >
                 {[0, 1, 2, 3].map((key) => (
                   <div
                     key={key}

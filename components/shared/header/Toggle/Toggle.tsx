@@ -1,14 +1,10 @@
-"use client";
+'use client';
 
-import Button from "@/components/ui/shadcn/button";
-import { useHeaderContext } from "@/components/shared/header/HeaderContext";
-import { cn } from "@/utils/cn";
+import Button from '@/components/ui/shadcn/button';
+import { useHeaderContext } from '@/components/shared/header/HeaderContext';
+import { cn } from '@/utils/cn';
 
-export default function HeaderToggle({
-  dropdownContent,
-}: {
-  dropdownContent: React.ReactNode;
-}) {
+export default function HeaderToggle({ dropdownContent }: { dropdownContent: React.ReactNode }) {
   const {
     dropdownContent: headerDropdownContent,
     clearDropdown,
@@ -36,23 +32,24 @@ export default function HeaderToggle({
         xmlns="http://www.w3.org/2000/svg"
       >
         <path
-          className={cn("transition-all origin-center", {
-            "rotate-45 -translate-y-4": headerDropdownContent,
-          })}
+          className={cn(
+            'transition-all origin-center',
+            headerDropdownContent && 'rotate-45 -translate-y-4',
+          )}
           d="M2.28906 13.9609H17.7057"
           stroke="#262626"
           strokeLinecap="round"
           strokeLinejoin="round"
           strokeWidth="1.25"
           style={{
-            transformBox: "fill-box",
+            transformBox: 'fill-box',
           }}
         />
         <path
-          className={cn("transition-all origin-center", {
-            "-rotate-45 translate-y-3 translate-x-[2.5px]":
-              headerDropdownContent,
-          })}
+          className={cn(
+            'transition-all origin-center',
+            headerDropdownContent && '-rotate-45 translate-y-3 translate-x-[2.5px]',
+          )}
           d="M2.28906 6.03906H17.7057"
           stroke="#262626"
           strokeLinecap="round"

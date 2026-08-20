@@ -1,13 +1,10 @@
-"use client";
+'use client';
 
-import { useEffect, useState } from "react";
+import { useEffect, useState } from 'react';
 
-import { Connector } from "@/components/shared/layout/curvy-rect";
-import {
-  useHeaderContext,
-  useHeaderHeight,
-} from "@/components/shared/header/HeaderContext";
-import { cn } from "@/utils/cn";
+import { Connector } from '@/components/shared/layout/curvy-rect';
+import { useHeaderContext, useHeaderHeight } from '@/components/shared/header/HeaderContext';
+import { cn } from '@/utils/cn';
 
 export const BackgroundOuterPiece = () => {
   const [noRender, setNoRender] = useState(false);
@@ -15,13 +12,13 @@ export const BackgroundOuterPiece = () => {
   const { headerHeight } = useHeaderHeight();
 
   useEffect(() => {
-    const heroContent = document.getElementById("hero-content");
+    const heroContent = document.getElementById('hero-content');
     if (!heroContent) {
       // If hero-content doesn't exist, don't render the background piece
       setNoRender(true);
       return;
     }
-    
+
     const heroContentHeight = heroContent.clientHeight;
 
     const onScroll = () => {
@@ -30,18 +27,18 @@ export const BackgroundOuterPiece = () => {
 
     onScroll();
 
-    window.addEventListener("scroll", onScroll);
+    window.addEventListener('scroll', onScroll);
 
     return () => {
-      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener('scroll', onScroll);
     };
   }, []);
 
   return (
     <div
       className={cn(
-        "cw-[1335px] transition-all z-[105] absolute top-0 flex justify-between h-[calc(100%+21px)] duration-[200ms] pointer-events-none",
-        { "opacity-0": noRender || dropdownContent || !headerHeight },
+        'cw-[1335px] transition-all z-[105] absolute top-0 flex justify-between h-[calc(100%+21px)] duration-[200ms] pointer-events-none',
+        (noRender || dropdownContent || !headerHeight) && 'opacity-0',
       )}
       style={{
         paddingTop: headerHeight - 10,

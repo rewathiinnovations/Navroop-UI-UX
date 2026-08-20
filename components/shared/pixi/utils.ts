@@ -1,20 +1,33 @@
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-nocheck -- TODO: fix this
+import { Application, Assets, Container, Sprite, Texture } from 'pixi.js';
 
-import { Application, Assets, Sprite, Texture } from "pixi.js";
-
-export const isDestroyed = (app: Application) => {
-  if (!app.ticker || !app.renderer || !app.stage || !app.renderer.gl)
-    return true;
-
-  return app.renderer.gl.isContextLost();
+/**
+ * The home hero's WebGL guard. This file carried `// @ts-nocheck -- TODO: fix this`
+ * until 2026-08-21, so `verify`'s `tsc --noEmit` reported green over all sixty lines
+ * (F-646) — on a `pixi.js` module in the public home page's client graph, where a
+ * runtime type error is a blank hero for every anonymous visitor.
+ *
+ * Two accesses needed narrowing rather than suppression. `Application` types
+ * `renderer` and `stage` as non-optional, but they are undefined between
+ * construction and `init()`, and null again after `destroy()` — which is the state
+ * this function exists to detect, so the fields are read through a shape that admits
+ * that. `gl` exists only on the WebGL renderer; the WebGPU one has no such field.
+ */
+type MaybeInitialisedApp = {
+  ticker?: Application['ticker'] | null;
+  stage?: Application['stage'] | null;
+  renderer?: (Application['renderer'] & { gl?: WebGLRenderingContext | null }) | null;
 };
 
-export const generateTexture = (app: Application, graphic: any) => {
-  const renderer = app.renderer;
+export const isDestroyed = (app: Application) => {
+  const { ticker, renderer, stage } = app as MaybeInitialisedApp;
+  if (!ticker || !renderer || !stage || !renderer.gl) return true;
 
+  return renderer.gl.isContextLost();
+};
+
+export const generateTexture = (app: Application, graphic: Container) => {
   if (!isDestroyed(app)) {
-    return renderer.generateTexture(graphic);
+    return app.renderer.generateTexture(graphic);
   }
 
   return Texture.WHITE;
@@ -55,6 +68,6 @@ export const createRenderWithFPS = (app: Application, fps: number) => {
 
 export const waitUntilPixiIsReady = (app: Application) => {
   return new Promise((resolve) => {
-    app.canvas.addEventListener("pixi-initialized", resolve);
+    app.canvas.addEventListener('pixi-initialized', resolve);
   });
 };

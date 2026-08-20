@@ -46,6 +46,7 @@ export default function ChatPanel({
   isGenerating,
   header,
   onPreviewCheckpoint,
+  previewedVersionId = null,
   latestCheckpoint = null,
   children,
   phase,
@@ -63,6 +64,8 @@ export default function ChatPanel({
   isGenerating?: boolean;
   header?: ReactNode;
   onPreviewCheckpoint?: (id: string) => void;
+  /** The version the workspace is previewing, so the card can say so (F-156). */
+  previewedVersionId?: string | null;
   latestCheckpoint?: Checkpoint | null;
   children?: ReactNode;
   phase?: ProjectPhase | null;
@@ -148,6 +151,7 @@ export default function ChatPanel({
               {showLatest && latestCheckpoint && (
                 <CheckpointCard
                   checkpoint={latestCheckpoint}
+                  isPreviewing={previewedVersionId === latestCheckpoint.id}
                   onPreviewCheckpoint={onPreviewCheckpoint}
                 />
               )}
@@ -321,7 +325,11 @@ export default function ChatPanel({
           );
         })}
         {latestCheckpoint && lastGenerationIndex < 0 && (
-          <CheckpointCard checkpoint={latestCheckpoint} onPreviewCheckpoint={onPreviewCheckpoint} />
+          <CheckpointCard
+            checkpoint={latestCheckpoint}
+            isPreviewing={previewedVersionId === latestCheckpoint.id}
+            onPreviewCheckpoint={onPreviewCheckpoint}
+          />
         )}
         {phase === 'PLANNING' && !plan && !recovery?.visible && !isGenerating && (
           // The project row exists but the plan is still streaming in (the

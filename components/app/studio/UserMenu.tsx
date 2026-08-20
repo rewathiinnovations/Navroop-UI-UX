@@ -1,56 +1,45 @@
 'use client';
 
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useTheme } from 'next-themes';
 import { KeyRound, LogOut, Moon, Sun, UserRound, Users } from 'lucide-react';
-import { signOut } from 'next-auth/react';
 import { useAuth } from '@/components/app/auth/AuthProvider';
+import { useDisclosurePopover } from '@/hooks/useDisclosurePopover';
 import { cn } from '@/utils/cn';
 
 function initials(name: string) {
-  return name
-    .split(' ')
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase())
-    .join('') || 'N';
+  return (
+    name
+      .split(' ')
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part[0]?.toUpperCase())
+      .join('') || 'N'
+  );
 }
 
 export default function UserMenu({ compact = false }: { compact?: boolean }) {
   const router = useRouter();
-  const { user, ready, setUser } = useAuth();
+  const { user, ready, signOutUser } = useAuth();
   const { resolvedTheme, setTheme } = useTheme();
   const [open, setOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
+  const panelId = useId();
+  const { rootRef, panelRef, triggerRef, onBlurCapture } = useDisclosurePopover({
+    open,
+    onClose: () => setOpen(false),
+  });
 
   useEffect(() => {
     setMounted(true);
   }, []);
 
-  useEffect(() => {
-    if (!open) return;
-    const onPointer = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) {
-        setOpen(false);
-      }
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false);
-    };
-    document.addEventListener('mousedown', onPointer);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onPointer);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [open]);
-
   const logout = async () => {
-    await signOut({ redirect: false });
-    setUser(null);
+    // One sign-out, owned by the provider. This used to call `signOut` here and
+    // then `setUser(null)`, which fired a second unawaited one.
+    await signOutUser();
     setOpen(false);
     router.push('/');
     router.refresh();
@@ -74,12 +63,13 @@ export default function UserMenu({ compact = false }: { compact?: boolean }) {
   const isDark = mounted && resolvedTheme === 'dark';
 
   return (
-    <div className="relative" ref={rootRef}>
+    <div className="relative" ref={rootRef} onBlurCapture={onBlurCapture}>
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((value) => !value)}
-        aria-haspopup="menu"
         aria-expanded={open}
+        aria-controls={panelId}
         aria-label="Open user menu"
         className={cn(
           'inline-flex size-36 items-center justify-center rounded-full',
@@ -99,8 +89,15 @@ export default function UserMenu({ compact = false }: { compact?: boolean }) {
       </button>
 
       {open && (
+        // Not a `role="menu"`: the panel mixes an identity block, links, a
+        // segmented theme control and a destructive action, none of which are
+        // valid `menuitem` content. `useDisclosurePopover` supplies the
+        // keyboard contract this shape does need.
         <div
-          role="menu"
+          ref={panelRef}
+          id={panelId}
+          role="group"
+          aria-label="Account"
           className={cn(
             'absolute right-0 z-50 mt-8 w-[280px] overflow-hidden rounded-12',
             'border border-[var(--studio-line)] bg-[var(--studio-surface)]',
@@ -113,20 +110,34 @@ export default function UserMenu({ compact = false }: { compact?: boolean }) {
               {initials(user.name)}
             </div>
             <div className="min-w-0">
-              <p className="truncate text-[14px] font-medium text-[var(--studio-fg)]">{user.name}</p>
+              <p className="truncate text-[14px] font-medium text-[var(--studio-fg)]">
+                {user.name}
+              </p>
               <p className="truncate text-[12px] text-[var(--studio-muted)]">{user.email}</p>
             </div>
           </div>
 
           <div className="p-6">
-            <MenuLink href="/settings/profile" icon={<UserRound className="size-16" />} onClick={() => setOpen(false)}>
+            <MenuLink
+              href="/settings/profile"
+              icon={<UserRound className="size-16" />}
+              onClick={() => setOpen(false)}
+            >
               Profile
             </MenuLink>
-            <MenuLink href="/settings/api-keys" icon={<KeyRound className="size-16" />} onClick={() => setOpen(false)}>
+            <MenuLink
+              href="/settings/api-keys"
+              icon={<KeyRound className="size-16" />}
+              onClick={() => setOpen(false)}
+            >
               API Keys
             </MenuLink>
             {user.role === 'ADMIN' && (
-              <MenuLink href="/admin" icon={<Users className="size-16" />} onClick={() => setOpen(false)}>
+              <MenuLink
+                href="/admin"
+                icon={<Users className="size-16" />}
+                onClick={() => setOpen(false)}
+              >
                 Admin
               </MenuLink>
             )}
@@ -143,6 +154,7 @@ export default function UserMenu({ compact = false }: { compact?: boolean }) {
                 aria-pressed={!isDark}
                 className={cn(
                   'inline-flex min-h-[44px] items-center justify-center gap-6 rounded-8 text-[13px] cursor-pointer transition-colors duration-200',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]',
                   !isDark
                     ? 'bg-[var(--studio-surface)] text-[var(--studio-fg)] shadow-sm'
                     : 'text-[var(--studio-muted)] hover:text-[var(--studio-fg)]',
@@ -157,6 +169,7 @@ export default function UserMenu({ compact = false }: { compact?: boolean }) {
                 aria-pressed={isDark}
                 className={cn(
                   'inline-flex min-h-[44px] items-center justify-center gap-6 rounded-8 text-[13px] cursor-pointer transition-colors duration-200',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]',
                   isDark
                     ? 'bg-[var(--studio-surface)] text-[var(--studio-fg)] shadow-sm'
                     : 'text-[var(--studio-muted)] hover:text-[var(--studio-fg)]',
@@ -171,9 +184,8 @@ export default function UserMenu({ compact = false }: { compact?: boolean }) {
           <div className="p-6 border-t border-[var(--studio-line)]">
             <button
               type="button"
-              role="menuitem"
               onClick={logout}
-              className="flex w-full min-h-[44px] items-center gap-10 rounded-10 px-10 text-[14px] text-[var(--studio-danger)] hover:bg-[var(--studio-accent-soft)] transition-colors duration-200 cursor-pointer"
+              className="flex w-full min-h-[44px] items-center gap-10 rounded-10 px-10 text-[14px] text-[var(--studio-danger)] hover:bg-[var(--studio-accent-soft)] transition-colors duration-200 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
             >
               <LogOut className="size-16" aria-hidden />
               Sign out
@@ -199,9 +211,8 @@ function MenuLink({
   return (
     <Link
       href={href}
-      role="menuitem"
       onClick={onClick}
-      className="flex min-h-[44px] items-center gap-10 rounded-10 px-10 text-[14px] text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)] transition-colors duration-200"
+      className="flex min-h-[44px] items-center gap-10 rounded-10 px-10 text-[14px] text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)] transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
     >
       <span className="text-[var(--studio-muted)]">{icon}</span>
       {children}

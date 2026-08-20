@@ -1,12 +1,10 @@
-import { animate } from "motion";
+import { Ticker } from '@/components/shared/pixi/Pixi';
+import { sleep } from '@/utils/sleep';
 
-import { Ticker } from "@/components/shared/pixi/Pixi";
-import { sleep } from "@/utils/sleep";
-
-import { CELL_SIZE, MAIN_COLOR } from "./cell";
-import AnimatedRect, { IAnimatedRect } from "./components/AnimatedRect";
-import { IBlinkingContainer } from "./components/BlinkingContainer";
-import Dot from "./components/Dot";
+import { CELL_SIZE, MAIN_COLOR } from './cell';
+import AnimatedRect, { IAnimatedRect } from './components/AnimatedRect';
+import { IBlinkingContainer } from './components/BlinkingContainer';
+import Dot from './components/Dot';
 
 type Props = Parameters<Ticker>[0] & {
   x: number;
@@ -36,9 +34,7 @@ export default async function crawl(props: Props) {
     });
   });
 
-  dots.forEach((dot) =>
-    props.blinkingContainer.container.addChild(dot.graphic),
-  );
+  dots.forEach((dot) => props.blinkingContainer.container.addChild(dot.graphic));
 
   await sleep(500);
 
@@ -58,9 +54,7 @@ export default async function crawl(props: Props) {
     ].flat(),
   );
 
-  rects.forEach((rect) =>
-    props.blinkingContainer.container.addChild(rect.graphic),
-  );
+  rects.forEach((rect) => props.blinkingContainer.container.addChild(rect.graphic));
 
   rects.unshift(props.anchorGraphic);
 
@@ -105,7 +99,9 @@ export default async function crawl(props: Props) {
 
       dots.slice(8, 12).map((dot) => dot.animate({ x: 24, y: 50 })),
       dots.slice(12, 16).map((dot) => dot.animate({ x: 56, y: 50 })),
-    ].flat().filter(Boolean),
+    ]
+      .flat()
+      .filter(Boolean),
   );
 
   await sleep(500);
@@ -140,7 +136,9 @@ export default async function crawl(props: Props) {
 
         [10, 11].map((i) => dots[i].animate({ x: 12, y: 56 })),
         [14, 15].map((i) => dots[i].animate({ x: 68, y: 56 })),
-      ].flat().filter(Boolean),
+      ]
+        .flat()
+        .filter(Boolean),
     );
   } catch (e) {
     console.error(e);
@@ -159,9 +157,7 @@ export default async function crawl(props: Props) {
       [2, 5].map((i) => rects[i].animate({ y: 48 })),
       [3, 6].map((i) => rects[i].animate({ y: 60, x: i === 3 ? 24 : 56 })),
 
-      [0, 1, 4, 5, 8, 9, 12, 13].map((i) =>
-        dots[i].animate({ y: dots[i].currentProps.y - 8 }),
-      ),
+      [0, 1, 4, 5, 8, 9, 12, 13].map((i) => dots[i].animate({ y: dots[i].currentProps.y - 8 })),
 
       dots[2].animate({ x: 4, y: 56 }),
       dots[3].animate({ x: 76, y: 56 }),
@@ -186,9 +182,7 @@ export default async function crawl(props: Props) {
           duration: 0.3,
         }),
       ),
-      dots.map((dot) =>
-        dot.animate(dot.defaultProps, { delay: Math.random() * 0.3 }),
-      ),
+      dots.map((dot) => dot.animate(dot.defaultProps, { delay: Math.random() * 0.3 })),
     ].flat(),
   );
 

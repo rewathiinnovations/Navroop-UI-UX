@@ -1,4 +1,14 @@
-.studio-shell {
+/* The studio palette.
+
+   `.studio-portal` carries the same variables and paints nothing of its own.
+   Radix renders dropdown menus (and anything else it portals) into
+   `document.body`, outside `.studio-shell`, where every `var(--studio-*)`
+   reference resolves to nothing and the declaration is dropped — a menu panel
+   with `bg-[var(--studio-surface)]` came out fully transparent. Portaled
+   surfaces get `studio-portal` on the portaled element itself so the variables
+   are in scope for it and its subtree. */
+.studio-shell,
+.studio-portal {
   --studio-bg: #f7f7f8;
   --studio-fg: #18181b;
   --studio-muted: #52525b;
@@ -18,13 +28,23 @@
   --studio-ring: #c92a4e;
   --studio-cta-fg: #ffffff;
   --studio-danger: #be123c;
+  /* The one advisory colour the shell needs (the legal draft banner). It used
+     raw `amber-*` utilities with no dark pair, so the banner stayed a light-mode
+     card in dark mode. */
+  --studio-warning: #92400e;
+  --studio-warning-soft: #fffbeb;
+  --studio-warning-line: #fcd34d;
   --studio-skeleton: rgba(24, 24, 27, 0.06);
+}
+
+.studio-shell {
   color: var(--studio-fg);
   background-color: var(--studio-bg);
   color-scheme: light;
 }
 
-.dark .studio-shell {
+.dark .studio-shell,
+.dark .studio-portal {
   --studio-bg: #0c0c0e;
   --studio-fg: #f4f4f5;
   --studio-muted: #a1a1aa;
@@ -40,7 +60,13 @@
   --studio-ring: #ff6b8a;
   --studio-cta-fg: #ffffff;
   --studio-danger: #fda4af;
+  --studio-warning: #fcd34d;
+  --studio-warning-soft: rgba(252, 211, 77, 0.1);
+  --studio-warning-line: rgba(252, 211, 77, 0.32);
   --studio-skeleton: rgba(255, 255, 255, 0.05);
+}
+
+.dark .studio-shell {
   color-scheme: dark;
 }
 
@@ -53,7 +79,7 @@
 
 .studio-glow::before,
 .studio-glow::after {
-  content: "";
+  content: '';
   position: absolute;
   border-radius: 999px;
   filter: blur(80px);
@@ -162,16 +188,15 @@
 
 /* Layered elevation for floating surfaces — one soft ambient layer plus one
    tight contact layer, instead of a single hard drop. */
-.studio-shell {
+.studio-shell,
+.studio-portal {
   --studio-shadow-pop:
-    0 24px 48px -12px rgba(24, 24, 27, 0.18),
-    0 4px 12px -4px rgba(24, 24, 27, 0.1);
+    0 24px 48px -12px rgba(24, 24, 27, 0.18), 0 4px 12px -4px rgba(24, 24, 27, 0.1);
 }
 
-.dark .studio-shell {
-  --studio-shadow-pop:
-    0 24px 48px -12px rgba(0, 0, 0, 0.55),
-    0 4px 12px -4px rgba(0, 0, 0, 0.4);
+.dark .studio-shell,
+.dark .studio-portal {
+  --studio-shadow-pop: 0 24px 48px -12px rgba(0, 0, 0, 0.55), 0 4px 12px -4px rgba(0, 0, 0, 0.4);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -197,8 +222,11 @@
 }
 
 /* App chrome scroll regions. Global CSS zeros scrollbar size; restore a thin
-   thumb here so sidebar + main can actually be scrolled on Windows. */
-.studio-shell .studio-scroll {
+   thumb here so sidebar + main can actually be scrolled on Windows. Portaled
+   panels (the account menu) scroll through an inner `studio-scroll` child, so
+   the descendant form is all `.studio-portal` needs. */
+.studio-shell .studio-scroll,
+.studio-portal .studio-scroll {
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
@@ -208,24 +236,29 @@
   scrollbar-color: rgba(24, 24, 27, 0.28) transparent;
 }
 
-.dark .studio-shell .studio-scroll {
+.dark .studio-shell .studio-scroll,
+.dark .studio-portal .studio-scroll {
   scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
 }
 
-.studio-shell .studio-scroll::-webkit-scrollbar {
+.studio-shell .studio-scroll::-webkit-scrollbar,
+.studio-portal .studio-scroll::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
-.studio-shell .studio-scroll::-webkit-scrollbar-track {
+.studio-shell .studio-scroll::-webkit-scrollbar-track,
+.studio-portal .studio-scroll::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.studio-shell .studio-scroll::-webkit-scrollbar-thumb {
+.studio-shell .studio-scroll::-webkit-scrollbar-thumb,
+.studio-portal .studio-scroll::-webkit-scrollbar-thumb {
   background-color: rgba(24, 24, 27, 0.22);
   border-radius: 99px;
 }
 
-.dark .studio-shell .studio-scroll::-webkit-scrollbar-thumb {
+.dark .studio-shell .studio-scroll::-webkit-scrollbar-thumb,
+.dark .studio-portal .studio-scroll::-webkit-scrollbar-thumb {
   background-color: rgba(255, 255, 255, 0.22);
 }

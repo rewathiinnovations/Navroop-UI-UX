@@ -29,12 +29,17 @@ export default function SetupChecklist() {
       .catch(() => undefined);
   }, [user?.role]);
 
-  if (user?.role !== 'ADMIN' || hidden || !rows) return null;
-  const missing = rows.filter((row) => row.status !== 'CONNECTED');
-  if (missing.length === 0) {
-    if (typeof window !== 'undefined') window.localStorage.removeItem(HIDDEN_KEY);
-    return null;
-  }
+  // Every integration connected, so the "Hide" flag has nothing left to hide. The
+  // clear used to run in the component body, which React is free to re-run,
+  // discard, or interleave — and does run twice under StrictMode. `rows` is null
+  // until the fetch lands, so this only fires once the answer is known.
+  const complete = rows !== null && rows.every((row) => row.status === 'CONNECTED');
+  useEffect(() => {
+    if (!complete) return;
+    window.localStorage.removeItem(HIDDEN_KEY);
+  }, [complete]);
+
+  if (user?.role !== 'ADMIN' || hidden || !rows || complete) return null;
 
   return (
     <div className="mb-24 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] p-16">

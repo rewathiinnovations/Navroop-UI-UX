@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { allowEmail, clearEmailRateLimits } from '@/lib/email/rate-limit';
+import { inviteEmail } from '@/lib/email/templates/invite';
 import { passwordChangedEmail } from '@/lib/email/templates/password-changed';
 import { passwordResetEmail } from '@/lib/email/templates/password-reset';
 import { spendAlert80Email } from '@/lib/email/templates/spend-alert';
@@ -34,9 +35,12 @@ describe('password mail', () => {
 
     const reset = passwordResetEmail('https://navroop.test/reset-password?token=abc');
     const changed = passwordChangedEmail();
+    // An invite link is the only way into a new account, so it belongs here too (F-351).
+    const invite = inviteEmail({ acceptUrl: 'https://navroop.test/accept-invite?token=abc' });
 
     expect(allowEmail({ to, emailClass: reset.emailClass }).allowed).toBe(true);
     expect(allowEmail({ to, emailClass: changed.emailClass }).allowed).toBe(true);
+    expect(allowEmail({ to, emailClass: invite.emailClass }).allowed).toBe(true);
   });
 
   it('is classed security by the templates themselves, not by the caller', () => {
@@ -46,6 +50,9 @@ describe('password mail', () => {
       'security',
     );
     expect(passwordChangedEmail().emailClass).toBe('security');
+    expect(
+      inviteEmail({ acceptUrl: 'https://navroop.test/accept-invite?token=abc' }).emailClass,
+    ).toBe('security');
   });
 
   it('does not exempt routine workspace notifications along with it', () => {

@@ -16,6 +16,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/shadcn/dropdown-menu';
+import { ConfirmDialog } from '@/components/admin/ConfirmAction';
 import { cn } from '@/utils/cn';
 import styles from './project-card.module.css';
 import { fetchJson, notify, toMessage } from '@/lib/notify';
@@ -69,6 +70,7 @@ export default function ProjectCard({
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(project.name);
   const [busy, setBusy] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const href = `/project/${project.id}`;
   const ownerName = project.owner?.name?.trim() || 'Member';
@@ -127,16 +129,26 @@ export default function ProjectCard({
     }
   };
 
+  // The gate is `ConfirmDialog`, not `window.confirm`: the native one blocks the
+  // main thread, cannot be themed, and is suppressible per-origin — after which
+  // Delete fires on a single click (F-406).
   const remove = async () => {
-    setMenuOpen(false);
-    if (!confirm('Delete this project? It will be permanently deleted after 30 days.')) return;
     setBusy(true);
     try {
-      await fetchJson(`/api/projects/${project.id}`, { method: 'DELETE' });
+      const result = await fetchJson<{ success: true; warning?: string }>(
+        `/api/projects/${project.id}`,
+        { method: 'DELETE' },
+      );
       onDeleted?.(project.id);
-      notify.success(`“${project.name}” deleted — recoverable for 30 days.`, {
-        key: `project-${project.id}`,
-      });
+      // The project is gone either way, but its sites may not be: saying only "deleted"
+      // hid a Coolify application that kept serving and kept billing (F-806).
+      if (result.warning) {
+        notify.warning(result.warning, { key: `project-${project.id}` });
+      } else {
+        notify.success(`“${project.name}” deleted — recoverable for 30 days.`, {
+          key: `project-${project.id}`,
+        });
+      }
     } catch (cause) {
       notify.error(cause, {
         fallback: 'Could not delete the project',
@@ -291,7 +303,7 @@ export default function ProjectCard({
           align="end"
           sideOffset={4}
           collisionPadding={8}
-          className="z-50 w-168 rounded-10 border-[var(--studio-line)] bg-[var(--studio-surface)] p-0 text-[var(--studio-fg)] shadow-[0_12px_24px_rgba(24,24,27,0.12)]"
+          className="studio-portal z-50 w-168 rounded-10 border-[var(--studio-line)] bg-[var(--studio-surface)] p-0 text-[var(--studio-fg)] shadow-[0_12px_24px_rgba(24,24,27,0.12)]"
         >
           <DropdownMenuItem asChild className={menuItemClass}>
             <Link href={href}>Open</Link>
@@ -319,7 +331,7 @@ export default function ProjectCard({
               menuItemClass,
               'text-[var(--studio-danger)] focus:text-[var(--studio-danger)]',
             )}
-            onSelect={() => void remove()}
+            onSelect={() => setConfirmDelete(true)}
           >
             <Trash2 className="size-14" aria-hidden />
             Delete
@@ -366,6 +378,21 @@ export default function ProjectCard({
         </div>
       )}
       {kebab}
+
+      <ConfirmDialog
+        open={confirmDelete}
+        onOpenChange={setConfirmDelete}
+        title="Delete this project?"
+        body={
+          <>
+            “{project.name}” will be permanently deleted after 30 days. Until then it can be
+            recovered.
+          </>
+        }
+        confirmLabel="Delete project"
+        busyLabel="Deleting…"
+        onConfirm={remove}
+      />
     </article>
   );
 }

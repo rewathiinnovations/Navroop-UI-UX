@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { CircleAlert } from 'lucide-react';
 import StudioButton from '@/components/app/studio/StudioButton';
+import ConfirmAction from '@/components/admin/ConfirmAction';
 import StudioField from '@/components/app/studio/StudioField';
 import { useAuth } from '@/components/app/auth/AuthProvider';
 import {
@@ -14,6 +15,7 @@ import {
   type PublicSkill,
 } from '@/lib/skills/actions';
 import { notify } from '@/lib/notify';
+import { listAnnouncement } from '@/lib/a11y/list-announcement';
 
 type Draft = {
   id?: string;
@@ -84,26 +86,37 @@ export default function SkillsPanel() {
     }
   };
 
+  // `toggle` and `remove` called the server action bare, so a rejected action
+  // — a dropped connection mid-request — was an unhandled promise rejection
+  // with nothing on screen. Both now carry `saveDraft`'s shape (F-422).
   const toggle = async (skill: PublicSkill) => {
     if (!isAdmin) return;
-    const result = await toggleSkillEnabled(skill.id);
-    if (!result.ok) {
-      notify.error(result.error, { key: `skill-${skill.id}` });
-      return;
+    try {
+      const result = await toggleSkillEnabled(skill.id);
+      if (!result.ok) {
+        notify.error(result.error, { key: `skill-${skill.id}` });
+        return;
+      }
+      setSkills((current) => current.map((row) => (row.id === result.data.id ? result.data : row)));
+      notify.success(`“${result.data.name}” ${result.data.enabled ? 'enabled' : 'disabled'}.`, {
+        key: `skill-${skill.id}`,
+      });
+    } catch (cause) {
+      notify.error(cause, {
+        fallback: 'Could not change the skill',
+        key: `skill-${skill.id}`,
+      });
     }
-    setSkills((current) => current.map((row) => (row.id === result.data.id ? result.data : row)));
-    notify.success(`“${result.data.name}” ${result.data.enabled ? 'enabled' : 'disabled'}.`, {
-      key: `skill-${skill.id}`,
-    });
   };
 
+  // Only reachable from `ConfirmAction` below, so a failure is thrown rather
+  // than notified: `ConfirmDialog` catches it, keeps itself open and prints the
+  // reason inside the dialog, which is where the admin is already looking. A
+  // rejected action can no longer vanish as an unhandled promise (F-422).
   const remove = async (skill: PublicSkill) => {
     if (!isAdmin) return;
     const result = await deleteSkill(skill.id);
-    if (!result.ok) {
-      notify.error(result.error, { key: `skill-${skill.id}` });
-      return;
-    }
+    if (!result.ok) throw new Error(result.error);
     setSkills((current) => current.filter((row) => row.id !== skill.id));
     if (draft?.id === skill.id) setDraft(null);
     notify.success(`“${skill.name}” deleted.`, { key: `skill-${skill.id}` });
@@ -131,8 +144,16 @@ export default function SkillsPanel() {
         </p>
       )}
 
+      {/* Rendered unconditionally: a live region only announces changes to text
+          it already owns, so it has to exist before the list settles. */}
+      <p className="sr-only" aria-live="polite">
+        {listAnnouncement({ loading, error, count: skills.length, noun: 'skill' })}
+      </p>
+
       {loading ? (
-        <p className="text-[13px] text-[var(--studio-muted)]">Loading skills…</p>
+        <p className="text-[13px] text-[var(--studio-muted)]" role="status">
+          Loading skills…
+        </p>
       ) : (
         <ul className="space-y-10">
           {skills.map((skill) => (
@@ -178,14 +199,19 @@ export default function SkillsPanel() {
                     >
                       Edit
                     </StudioButton>
-                    <StudioButton
-                      type="button"
-                      variant="danger"
-                      className="min-h-[36px] px-12 text-[12px]"
-                      onClick={() => void remove(skill)}
-                    >
-                      Delete
-                    </StudioButton>
+                    {/* Delete used to fire on one click, destroying up to 4000
+                        characters of hand-written instructions with no undo
+                        (F-422). ConfirmAction owns the trigger, the busy state
+                        and the error now. */}
+                    <ConfirmAction
+                      label="Delete"
+                      title={`Delete “${skill.name}”?`}
+                      body="The instructions are deleted permanently and stop loading into new generations. This cannot be undone."
+                      confirmLabel="Delete skill"
+                      busyLabel="Deleting…"
+                      triggerClassName="min-h-[36px] px-12 text-[12px]"
+                      onConfirm={() => remove(skill)}
+                    />
                   </div>
                 )}
               </div>

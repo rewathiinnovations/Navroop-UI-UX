@@ -24,16 +24,29 @@ function toDate(value: string | Date | null | undefined): Date | null {
   return date;
 }
 
+/**
+ * What a table cell shows when there is no date. `''` rendered an empty cell,
+ * which reads as a layout bug rather than as absent data; `—` is what the rest
+ * of admin already prints for "no value".
+ */
+export const ADMIN_DATE_EMPTY = '—';
+
 /** Absolute date + time. Host locale is ignored so hydration cannot flip 8/17 vs 17/8. */
-export function formatAdminDateTime(value: string | Date | null | undefined): string {
+export function formatAdminDateTime(
+  value: string | Date | null | undefined,
+  fallback: string = ADMIN_DATE_EMPTY,
+): string {
   const date = toDate(value);
-  if (!date) return '';
+  if (!date) return fallback;
   return date.toLocaleString(ADMIN_DATE_LOCALE, DATE_TIME_OPTIONS);
 }
 
 /** Absolute date only. */
-export function formatAdminDate(value: string | Date | null | undefined): string {
+export function formatAdminDate(
+  value: string | Date | null | undefined,
+  fallback: string = ADMIN_DATE_EMPTY,
+): string {
   const date = toDate(value);
-  if (!date) return '';
+  if (!date) return fallback;
   return date.toLocaleDateString(ADMIN_DATE_LOCALE, DATE_OPTIONS);
 }

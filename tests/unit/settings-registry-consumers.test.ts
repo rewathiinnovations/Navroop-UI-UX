@@ -53,6 +53,22 @@ function sourceFiles(dir: string, out: string[] = []) {
   return out;
 }
 
+/**
+ * Every way a module can resolve a registry key.
+ *
+ * `getSetting`/`getSettings`/`hasSettings` are the resolver itself;
+ * `positiveNumberSetting`/`percentSetting` (lib/settings/numbers.ts) are thin resolvers over
+ * `getSetting` that exist so the ~half-dozen numeric knobs share one parse-and-floor rule
+ * instead of six copies (F-793). A reader that goes through one of those wrappers is still a
+ * reader; without this list the guard reports it as an orphan, which is a false alarm that
+ * pushes the next author back to copy-pasting the parse.
+ *
+ * Add a new wrapper here when you add one. The failure mode this list can produce is a false
+ * *orphan*, never a false pass: a key still has to appear as a literal in the same file.
+ */
+const RESOLVER_CALLS =
+  /\bgetSettings?\(|\bhasSettings\(|\bpositiveNumberSetting\(|\bpercentSetting\(/;
+
 /** Files that call the resolver, and are not the registry machinery itself. */
 function consumerSources() {
   return [...sourceFiles(join(ROOT, 'lib')), ...sourceFiles(join(ROOT, 'app'))]
@@ -61,7 +77,7 @@ function consumerSources() {
       return !NOT_A_CONSUMER.includes(rel);
     })
     .map((file) => ({ file, source: readFileSync(file, 'utf8') }))
-    .filter(({ source }) => /\bgetSettings?\(|\bhasSettings\(/.test(source));
+    .filter(({ source }) => RESOLVER_CALLS.test(source));
 }
 
 const CONSUMERS = consumerSources();

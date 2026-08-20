@@ -1,18 +1,15 @@
 'use client';
 
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useTheme } from 'next-themes';
 import {
-  BookOpen,
-  Box,
   Gauge,
   KeyRound,
   LayoutTemplate,
   ListTodo,
   LogOut,
-  Monitor,
   Moon,
   Plug,
   Sparkles,
@@ -20,8 +17,8 @@ import {
   UserRound,
   Users,
 } from 'lucide-react';
-import { signOut } from 'next-auth/react';
 import { useAuth } from '@/components/app/auth/AuthProvider';
+import { useDisclosurePopover } from '@/hooks/useDisclosurePopover';
 import { cn } from '@/utils/cn';
 
 function initials(name: string) {
@@ -37,37 +34,24 @@ function initials(name: string) {
 
 export default function AccountMenu() {
   const router = useRouter();
-  const { user, ready, setUser } = useAuth();
+  const { user, ready, signOutUser } = useAuth();
   const { theme, setTheme } = useTheme();
   const [open, setOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
+  const panelId = useId();
+  const { rootRef, panelRef, triggerRef, onBlurCapture } = useDisclosurePopover({
+    open,
+    onClose: () => setOpen(false),
+  });
 
   useEffect(() => {
     setMounted(true);
   }, []);
 
-  useEffect(() => {
-    if (!open) return;
-    const onPointer = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) {
-        setOpen(false);
-      }
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false);
-    };
-    document.addEventListener('mousedown', onPointer);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onPointer);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [open]);
-
   const logout = async () => {
-    await signOut({ redirect: false });
-    setUser(null);
+    // One sign-out, owned by the provider. This used to call `signOut` here and
+    // then `setUser(null)`, which fired a second unawaited one.
+    await signOutUser();
     setOpen(false);
     router.push('/');
     router.refresh();
@@ -82,12 +66,13 @@ export default function AccountMenu() {
   const currentTheme = mounted ? theme : 'light';
 
   return (
-    <div className="relative" ref={rootRef}>
+    <div className="relative" ref={rootRef} onBlurCapture={onBlurCapture}>
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((value) => !value)}
-        aria-haspopup="menu"
         aria-expanded={open}
+        aria-controls={panelId}
         aria-label="Open account menu"
         className={cn(
           'flex w-full min-h-[44px] items-center gap-10 rounded-10 px-8',
@@ -115,8 +100,15 @@ export default function AccountMenu() {
       </button>
 
       {open && (
+        // Not a `role="menu"`: the panel mixes an identity block, links, a
+        // segmented theme control and a destructive action, none of which are
+        // valid `menuitem` content. `useDisclosurePopover` supplies the
+        // keyboard contract this shape does need.
         <div
-          role="menu"
+          ref={panelRef}
+          id={panelId}
+          role="group"
+          aria-label="Account"
           className={cn(
             'studio-scroll absolute bottom-[calc(100%+8px)] left-0 right-0 z-50 max-h-[min(70dvh,520px)] rounded-12',
             'border border-[var(--studio-line)] bg-[var(--studio-surface)]',
@@ -207,7 +199,10 @@ export default function AccountMenu() {
             <p className="mb-8 text-[12px] font-medium uppercase tracking-[0.08em] text-[var(--studio-faint)]">
               Appearance
             </p>
-            <div className="grid grid-cols-3 rounded-10 bg-[var(--studio-skeleton)] p-4">
+            {/* Light / Dark only: `AppProviders` mounts next-themes with
+                `enableSystem={false}`, so a System choice paints as pressed and
+                changes nothing. `UserMenu` offers the same two. */}
+            <div className="grid grid-cols-2 rounded-10 bg-[var(--studio-skeleton)] p-4">
               <ThemeChoice
                 label="Light"
                 icon={<Sun className="size-14" />}
@@ -220,28 +215,16 @@ export default function AccountMenu() {
                 pressed={currentTheme === 'dark'}
                 onClick={() => setTheme('dark')}
               />
-              <ThemeChoice
-                label="System"
-                icon={<Monitor className="size-14" />}
-                pressed={currentTheme === 'system'}
-                onClick={() => setTheme('system')}
-              />
             </div>
           </div>
 
           <div className="p-6 border-t border-[var(--studio-line)]">
-            <MenuLink
-              href="#"
-              icon={<BookOpen className="size-16" />}
-              onClick={() => setOpen(false)}
-            >
-              Documentation
-            </MenuLink>
+            {/* No Documentation item: there is no docs route in `app/`, and the
+                `href="#"` placeholder navigated to the top of the page. */}
             <button
               type="button"
-              role="menuitem"
               onClick={logout}
-              className="flex w-full min-h-[44px] items-center gap-10 rounded-10 px-10 text-[14px] text-[var(--studio-danger)] hover:bg-[var(--studio-accent-soft)] transition-colors duration-200 cursor-pointer"
+              className="flex w-full min-h-[44px] items-center gap-10 rounded-10 px-10 text-[14px] text-[var(--studio-danger)] hover:bg-[var(--studio-accent-soft)] transition-colors duration-200 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
             >
               <LogOut className="size-16" aria-hidden />
               Sign out
@@ -271,6 +254,7 @@ function ThemeChoice({
       aria-pressed={pressed}
       className={cn(
         'inline-flex min-h-[44px] flex-col items-center justify-center gap-2 rounded-8 text-[11px] cursor-pointer transition-colors duration-200',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]',
         pressed
           ? 'bg-[var(--studio-surface)] text-[var(--studio-fg)] shadow-sm'
           : 'text-[var(--studio-muted)] hover:text-[var(--studio-fg)]',
@@ -296,9 +280,8 @@ function MenuLink({
   return (
     <Link
       href={href}
-      role="menuitem"
       onClick={onClick}
-      className="flex min-h-[44px] items-center gap-10 rounded-10 px-10 text-[14px] text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)] transition-colors duration-200"
+      className="flex min-h-[44px] items-center gap-10 rounded-10 px-10 text-[14px] text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)] transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
     >
       <span className="text-[var(--studio-muted)]">{icon}</span>
       {children}

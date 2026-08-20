@@ -8,16 +8,17 @@ import { TERMS_REQUIRED_MESSAGE, TERMS_VERSION } from './terms';
  * posted a form to `POST /api/auth/register` — and because project reads are
  * workspace-wide by design, a self-registered stranger could read every project in the
  * workspace. The first fix gated it on a pending `Invite` row for the submitted email.
- * That gate was unsatisfiable by construction: the only invite producer,
- * `POST /api/admin/invite`, writes the row with `acceptedAt` already set and creates the
- * User (plus a temporary password) itself, so no claimable invite has ever existed. The
- * endpoint therefore answered 403 to everyone, forever, while the auth modal still
- * offered the form. Navroop is invite-only (see `.cursor/rules/navroop-product.mdc`), so
- * the endpoint is now closed outright rather than guarded by a control that cannot fire,
- * and the registration code is gone rather than left here looking live.
+ * That gate was unsatisfiable at the time: the only invite producer,
+ * `POST /api/admin/invite`, wrote the row with `acceptedAt` already set and created the
+ * User (plus a temporary password) itself, so no claimable invite existed. The endpoint
+ * therefore answered 403 to everyone, forever, while the auth modal still offered the
+ * form. Navroop is invite-only (see `.cursor/rules/navroop-product.mdc`), so the endpoint
+ * is now closed outright rather than guarded by a control that cannot fire, and the
+ * registration code is gone rather than left here looking live.
  *
- * What is left is the invitee's own path: they sign in with the temporary password the
- * admin passes on, and their acceptance of the current terms is read and recorded through
+ * What is left is the invitee's own path, and it is a real one now: `POST /api/admin/invite`
+ * mails a single-use invite link, the invitee sets their own password at `/accept-invite`
+ * (F-351), and their acceptance of the current terms is read and recorded through
  * `GET`/`POST /api/legal/accept`, the only caller of the two functions below.
  */
 

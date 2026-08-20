@@ -15,9 +15,11 @@ import AdminPage from '@/components/admin/AdminPage';
 import { AdminTable, Td, Th, Tr } from '@/components/admin/AdminTable';
 import StatTile from '@/components/admin/StatTile';
 import StatusBanner from '@/components/admin/StatusBanner';
+import { handleAdminForbidden } from '@/lib/admin/forbidden';
 import { fetchJson, notify, toMessage } from '@/lib/notify';
 import { SkeletonTable } from '@/components/admin/AdminSkeleton';
 import { Fragment, FormEvent, useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import StudioButton from '@/components/app/studio/StudioButton';
 import StudioField from '@/components/app/studio/StudioField';
 import { listSkills, type PublicSkill } from '@/lib/skills/actions';
@@ -76,6 +78,7 @@ function formatWhen(value: string) {
 }
 
 export default function UsageDashboard() {
+  const router = useRouter();
   const defaults = useMemo(() => currentMonthInputs(), []);
   const [from, setFrom] = useState(defaults.from);
   const [to, setTo] = useState(defaults.to);
@@ -107,7 +110,7 @@ export default function UsageDashboard() {
           fetch('/api/admin/usage/quality'),
         ]);
         if (summaryRes.status === 403 || membersRes.status === 403) {
-          window.location.replace('/dashboard');
+          handleAdminForbidden(router);
           return;
         }
         const summaryData = await summaryRes.json();
@@ -148,7 +151,7 @@ export default function UsageDashboard() {
     return () => {
       cancelled = true;
     };
-  }, [query]);
+  }, [query, router]);
 
   const applyRange = (event: FormEvent) => {
     event.preventDefault();
@@ -312,12 +315,28 @@ export default function UsageDashboard() {
           >
             {members.map((member) => {
               const isOpen = expanded === member.userId;
+              const detailId = `member-usage-${member.userId}`;
               return (
                 <Fragment key={member.userId}>
-                  <Tr className="cursor-pointer" onClick={() => void toggleMember(member)}>
+                  <Tr>
                     <Td>
-                      <div className="font-medium text-[var(--studio-fg)]">{member.name}</div>
-                      <div className="text-[12px] text-[var(--studio-muted)]">{member.email}</div>
+                      {/* The drill-down is the reason this table exists, so the
+                          toggle is a real button — the row itself carries no
+                          click semantics. */}
+                      <button
+                        type="button"
+                        aria-expanded={isOpen}
+                        aria-controls={detailId}
+                        onClick={() => void toggleMember(member)}
+                        className="-mx-4 rounded-8 px-4 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
+                      >
+                        <span className="block font-medium text-[var(--studio-fg)]">
+                          {member.name}
+                        </span>
+                        <span className="block text-[12px] text-[var(--studio-muted)]">
+                          {member.email}
+                        </span>
+                      </button>
                     </Td>
                     <Td muted>{member.projectCount}</Td>
                     <Td muted>{member.generationCount}</Td>
@@ -330,7 +349,7 @@ export default function UsageDashboard() {
                     </Td>
                   </Tr>
                   {isOpen && (
-                    <Tr>
+                    <Tr id={detailId}>
                       <Td colSpan={5}>
                         {member.projects.length === 0 ? (
                           <p className="text-[13px] text-[var(--studio-muted)]">
@@ -414,13 +433,34 @@ export default function UsageDashboard() {
             type="checkbox"
             checked={memoryExtractionEnabled}
             disabled={savingExtraction}
-            onChange={(event) => {
+            onChange={async (event) => {
+              // No `.catch` used to mean a rejected server action left
+              // `savingExtraction` true forever, so `disabled` locked the checkbox
+              // for the life of the page — and a clean `ok: false` snapped the box
+              // back with no message at all. Both now say what happened.
               const next = event.target.checked;
               setSavingExtraction(true);
-              void updateMemoryExtractionSetting(next).then((result) => {
+              try {
+                const result = await updateMemoryExtractionSetting(next);
+                if (!result.ok) {
+                  notify.error(result.error, { key: 'memory-extraction' });
+                  return;
+                }
+                setMemoryExtractionEnabled(result.data.enabled);
+                notify.success(
+                  result.data.enabled
+                    ? 'Memory is extracted automatically after a generation.'
+                    : 'Automatic memory extraction is off.',
+                  { key: 'memory-extraction' },
+                );
+              } catch (cause) {
+                notify.error(cause, {
+                  fallback: 'Could not save the memory setting',
+                  key: 'memory-extraction',
+                });
+              } finally {
                 setSavingExtraction(false);
-                if (result.ok) setMemoryExtractionEnabled(result.data.enabled);
-              });
+              }
             }}
           />
           Automatically extract memory after generation

@@ -1,29 +1,25 @@
-"use client";
+'use client';
 
-import React from "react";
-import { ChevronDown, ChevronUp } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
-import { cn } from "@/utils/cn";
+import React from 'react';
+import { ChevronDown, ChevronUp } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
+import { cn } from '@/utils/cn';
 
 interface AnimatedChevronProps {
   isOpen: boolean;
   className?: string;
-  size?: "sm" | "md" | "lg";
+  size?: 'sm' | 'md' | 'lg';
 }
 
-export function AnimatedChevron({
-  isOpen,
-  className,
-  size = "md",
-}: AnimatedChevronProps) {
+export function AnimatedChevron({ isOpen, className, size = 'md' }: AnimatedChevronProps) {
   const sizeClasses = {
-    sm: "h-12 w-12",
-    md: "h-16 w-16",
-    lg: "h-20 w-20",
+    sm: 'h-12 w-12',
+    md: 'h-16 w-16',
+    lg: 'h-20 w-20',
   };
 
   return (
-    <div className={cn("flex items-center justify-center", sizeClasses[size])}>
+    <div className={cn('flex items-center justify-center', sizeClasses[size])}>
       <AnimatePresence mode="wait" initial={false}>
         {isOpen ? (
           <motion.div
@@ -33,13 +29,7 @@ export function AnimatedChevron({
             exit={{ opacity: 0 }}
             transition={{ duration: 0.2 }}
           >
-            <ChevronUp
-              className={cn(
-                sizeClasses[size],
-                "text-black-alpha-40",
-                className,
-              )}
-            />
+            <ChevronUp className={cn(sizeClasses[size], 'text-black-alpha-40', className)} />
           </motion.div>
         ) : (
           <motion.div
@@ -49,13 +39,7 @@ export function AnimatedChevron({
             exit={{ opacity: 0 }}
             transition={{ duration: 0.2 }}
           >
-            <ChevronDown
-              className={cn(
-                sizeClasses[size],
-                "text-black-alpha-40",
-                className,
-              )}
-            />
+            <ChevronDown className={cn(sizeClasses[size], 'text-black-alpha-40', className)} />
           </motion.div>
         )}
       </AnimatePresence>

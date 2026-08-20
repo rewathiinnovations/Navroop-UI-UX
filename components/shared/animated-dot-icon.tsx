@@ -1,8 +1,8 @@
-"use client";
+'use client';
 
-import { animate } from "framer-motion";
-import { useEffect, useRef } from "react";
-import { cn } from "@/utils/cn";
+import { animate } from 'motion';
+import { useEffect, useRef } from 'react';
+import { cn } from '@/utils/cn';
 
 interface AnimatedDotIconProps {
   active?: boolean;
@@ -11,25 +11,25 @@ interface AnimatedDotIconProps {
   size?: number;
   className?: string;
   pattern?:
-    | "usage"
-    | "api-keys"
-    | "settings"
-    | "overview"
-    | "team"
-    | "billing"
-    | "account-settings"
-    | "admin"
-    | "domain-checker"
-    | "extract-playground"
-    | "extract"
-    | "logs"
-    | "playground"
-    | "teams";
+    | 'usage'
+    | 'api-keys'
+    | 'settings'
+    | 'overview'
+    | 'team'
+    | 'billing'
+    | 'account-settings'
+    | 'admin'
+    | 'domain-checker'
+    | 'extract-playground'
+    | 'extract'
+    | 'logs'
+    | 'playground'
+    | 'teams';
 }
 
 const initCanvas = (canvas: HTMLCanvasElement) => {
   const { width, height } = canvas.getBoundingClientRect();
-  const ctx = canvas.getContext("2d")!;
+  const ctx = canvas.getContext('2d')!;
 
   canvas.style.width = `${width}px`;
   canvas.style.height = `${height}px`;
@@ -43,7 +43,7 @@ const initCanvas = (canvas: HTMLCanvasElement) => {
 
     ctx.scale(dpr, dpr);
 
-    canvas.dispatchEvent(new Event("resize"));
+    canvas.dispatchEvent(new Event('resize'));
   };
 
   upscaleCanvas();
@@ -52,8 +52,8 @@ const initCanvas = (canvas: HTMLCanvasElement) => {
     setTimeout(upscaleCanvas, 500);
   };
 
-  window.addEventListener("resize", handleResize);
-  window.visualViewport?.addEventListener("resize", handleResize);
+  window.addEventListener('resize', handleResize);
+  window.visualViewport?.addEventListener('resize', handleResize);
 
   return ctx;
 };
@@ -72,7 +72,7 @@ const patterns = {
     spacing: 2,
     offset: 3,
   },
-  "api-keys": {
+  'api-keys': {
     grid: [[12], [10, 14], [8, 16], [6, 18], [4, 5, 19, 20]],
     gridSize: 5,
     cellSize: 2,
@@ -93,12 +93,7 @@ const patterns = {
     offset: 3,
   },
   overview: {
-    grid: [
-      [24],
-      [16, 18, 30, 32],
-      [8, 12, 36, 40],
-      [0, 3, 6, 21, 27, 42, 45, 48],
-    ],
+    grid: [[24], [16, 18, 30, 32], [8, 12, 36, 40], [0, 3, 6, 21, 27, 42, 45, 48]],
     gridSize: 7,
     cellSize: 2,
     spacing: 2,
@@ -140,7 +135,7 @@ const patterns = {
     spacing: 2,
     offset: 3,
   },
-  "account-settings": {
+  'account-settings': {
     grid: [
       [2, 7, 12, 17, 22],
       [5, 10, 15, 20],
@@ -165,7 +160,7 @@ const patterns = {
     spacing: 2,
     offset: 3,
   },
-  "domain-checker": {
+  'domain-checker': {
     grid: [
       [12, 13, 14],
       [7, 11, 15, 19],
@@ -177,7 +172,7 @@ const patterns = {
     spacing: 2,
     offset: 3,
   },
-  "extract-playground": {
+  'extract-playground': {
     grid: [
       [5, 10, 15, 20],
       [6, 11, 16, 21],
@@ -228,7 +223,7 @@ export function AnimatedDotIcon({
   triggerOnHover = false,
   size = 20,
   className,
-  pattern = "usage",
+  pattern = 'usage',
 }: AnimatedDotIconProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -253,7 +248,7 @@ export function AnimatedDotIcon({
     const scaler = size / 20;
 
     const render = () => {
-      ctx.fillStyle = "#fa5d19";
+      ctx.fillStyle = '#fa5d19';
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       for (const group of config.grid.slice(0, 4)) {
@@ -262,11 +257,8 @@ export function AnimatedDotIcon({
 
         for (const index of group) {
           ctx.fillRect(
-            (config.offset + (index % config.gridSize) * config.spacing) *
-              scaler,
-            (config.offset +
-              Math.floor(index / config.gridSize) * config.spacing) *
-              scaler,
+            (config.offset + (index % config.gridSize) * config.spacing) * scaler,
+            (config.offset + Math.floor(index / config.gridSize) * config.spacing) * scaler,
             config.cellSize * scaler,
             config.cellSize * scaler,
           );
@@ -338,18 +330,18 @@ export function AnimatedDotIcon({
     };
 
     render();
-    canvas.addEventListener("resize", render);
+    canvas.addEventListener('resize', render);
 
     if (triggerOnHover) {
-      const group = canvasRef.current!.closest(".group");
+      const group = canvasRef.current!.closest('.group');
 
       if (group) {
-        group.addEventListener("mouseenter", fnRefs.current.activate);
-        group.addEventListener("mouseleave", fnRefs.current.deactivate);
+        group.addEventListener('mouseenter', fnRefs.current.activate);
+        group.addEventListener('mouseleave', fnRefs.current.deactivate);
 
         return () => {
-          group.removeEventListener("mouseenter", fnRefs.current.activate);
-          group.removeEventListener("mouseleave", fnRefs.current.deactivate);
+          group.removeEventListener('mouseenter', fnRefs.current.activate);
+          group.removeEventListener('mouseleave', fnRefs.current.deactivate);
         };
       }
     }
@@ -380,11 +372,8 @@ export function AnimatedDotIcon({
     <canvas
       className={cn(
         alwaysHeat
-          ? ""
-          : [
-              "[&.grayscale]:opacity-60 transition-[filter,opacity]",
-              !active && "grayscale",
-            ],
+          ? ''
+          : ['[&.grayscale]:opacity-60 transition-[filter,opacity]', !active && 'grayscale'],
         className,
       )}
       ref={canvasRef}

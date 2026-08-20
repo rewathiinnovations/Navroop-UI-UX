@@ -5,6 +5,7 @@ import StudioShell from '@/components/app/studio/StudioShell';
 import StudioButton from '@/components/app/studio/StudioButton';
 import StudioField from '@/components/app/studio/StudioField';
 import PageTabs from '@/components/app/studio/PageTabs';
+import ConfirmAction from '@/components/admin/ConfirmAction';
 import { useAuth } from '@/components/app/auth/AuthProvider';
 import { notify } from '@/lib/notify';
 import {
@@ -212,15 +213,22 @@ export default function ApiKeysPage() {
                     {key.legacy ? LEGACY_HINT : statusLabel(key)}
                   </p>
                 </div>
+                {/* Remove dropped a credential the member then has to go
+                    re-mint, on a single click (F-422). */}
                 {key.last4 && (
-                  <StudioButton
-                    type="button"
-                    variant="danger"
+                  <ConfirmAction
+                    label="Remove"
+                    title={`Remove your ${key.label} key?`}
+                    body={
+                      key.hasOrgDefault
+                        ? `Your personal key is deleted and your requests fall back to the team default for ${key.label}. You will need the original key to set it again.`
+                        : `Your personal key is deleted and ${key.label} stops working for your account until you paste a new one. You will need the original key to set it again.`
+                    }
+                    confirmLabel="Remove key"
+                    busyLabel="Removing…"
                     disabled={saving === `remove:${key.provider}`}
-                    onClick={() => removePersonal(key.provider)}
-                  >
-                    Remove
-                  </StudioButton>
+                    onConfirm={() => removePersonal(key.provider)}
+                  />
                 )}
               </div>
               {!key.legacy && (
@@ -277,15 +285,18 @@ export default function ApiKeysPage() {
                             : 'No default set'}
                       </p>
                     </div>
+                    {/* Workspace-wide blast radius: every member without a
+                        personal key loses this provider at once (F-422). */}
                     {key.last4 && (
-                      <StudioButton
-                        type="button"
-                        variant="danger"
+                      <ConfirmAction
+                        label="Remove"
+                        title={`Remove the team default for ${key.label}?`}
+                        body={`Every member without their own ${key.label} key loses access to it immediately. You will need the original key to set the default again.`}
+                        confirmLabel="Remove default"
+                        busyLabel="Removing…"
                         disabled={saving === `org-remove:${key.provider}`}
-                        onClick={() => removeOrg(key.provider)}
-                      >
-                        Remove
-                      </StudioButton>
+                        onConfirm={() => removeOrg(key.provider)}
+                      />
                     )}
                   </div>
                   {!key.legacy && (

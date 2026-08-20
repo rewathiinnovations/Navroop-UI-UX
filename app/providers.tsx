@@ -5,6 +5,7 @@ import { ThemeProvider } from 'next-themes';
 import { AuthProvider } from '@/components/app/auth/AuthProvider';
 import { GenerationProvider } from '@/components/app/generation/GenerationProvider';
 import { CommandPaletteProvider } from '@/components/layout/CommandPalette';
+import OfflineBanner from '@/components/layout/OfflineBanner';
 import { Toaster } from '@/components/ui/Toaster';
 
 export function AppProviders({ children }: { children: React.ReactNode }) {
@@ -16,6 +17,7 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
             <CommandPaletteProvider>
               {children}
               <Toaster />
+              <OfflineBanner />
             </CommandPaletteProvider>
           </GenerationProvider>
         </AuthProvider>

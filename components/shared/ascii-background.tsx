@@ -1,7 +1,7 @@
-"use client";
+'use client';
 
-import { useEffect, useState } from "react";
-import { cn } from "@/utils/cn";
+import { useEffect, useState } from 'react';
+import { cn } from '@/utils/cn';
 
 const asciiPatterns = [
   `·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·
@@ -28,13 +28,14 @@ const asciiPatterns = [
 
 interface AsciiBackgroundProps {
   className?: string;
-  variant?: "dots" | "grid" | "flame";
+  /**
+   * Accepted and ignored. The render cycles every entry of `asciiPatterns` on a
+   * timer and has no per-variant branch. Kept so no caller breaks; it does nothing.
+   */
+  variant?: 'dots' | 'grid' | 'flame';
 }
 
-export function AsciiBackground({
-  className,
-  variant = "dots",
-}: AsciiBackgroundProps) {
+export function AsciiBackground({ className }: AsciiBackgroundProps) {
   const [frameIndex, setFrameIndex] = useState(0);
 
   useEffect(() => {
@@ -47,10 +48,7 @@ export function AsciiBackground({
 
   return (
     <div
-      className={cn(
-        "absolute inset-0 pointer-events-none select-none overflow-hidden",
-        className,
-      )}
+      className={cn('absolute inset-0 pointer-events-none select-none overflow-hidden', className)}
     >
       <pre className="text-heat-100/3 font-mono text-[10px] leading-tight whitespace-pre absolute top-0 left-0 w-full h-full flex items-center justify-center">
         {asciiPatterns[frameIndex]}

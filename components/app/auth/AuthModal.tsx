@@ -23,7 +23,8 @@ import type { PendingPrompt } from '@/lib/projects/signed-out-submit';
 /**
  * `'signup'` no longer means "show a registration form" — it means "explain how access
  * works". Navroop is invite-only: an admin creates the account through
- * `POST /api/admin/invite` and passes on a temporary password, and both
+ * `POST /api/admin/invite`, which mails a single-use link the invitee redeems at
+ * `/accept-invite` to set their own password (F-351), and both
  * `POST /api/auth/register` and `POST /api/auth/signup` answer 403 without touching the
  * database. This modal used to POST to `/api/auth/register`, which meant the only
  * possible outcome of filling the form in was an error — including for someone who had
@@ -35,6 +36,19 @@ import type { PendingPrompt } from '@/lib/projects/signed-out-submit';
  * invited.
  */
 export type AuthMode = 'login' | 'signup';
+
+/**
+ * One sentence for every 2xx `/api/auth/forgot-password` can return.
+ *
+ * The route answers 200 with the same envelope whether the address exists, does
+ * not exist, or was dropped by the hourly limiter (`EMAIL_LIMIT` 3, `IP_LIMIT`
+ * 10) — deliberately, so nothing distinguishes a member from a stranger. The old
+ * copy turned that uniform 200 into "a reset link is on its way", which is a
+ * promise the response cannot support for a throttled request. This states what
+ * is true in every case, and being constant it still reveals nothing.
+ */
+const FORGOT_SUBMITTED_MESSAGE =
+  'Request received. If that address has an account and has not asked for a reset in the last hour, a link is on its way.';
 
 type AuthModalProps = {
   open: boolean;
@@ -174,21 +188,27 @@ export default function AuthModal({
     }
     setLoading(true);
     try {
-      await fetch('/api/auth/forgot-password', {
+      const response = await fetch('/api/auth/forgot-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: trimmedEmail }),
       });
-    } catch {
-      // Deliberately indistinguishable from success: revealing whether the
-      // address exists would leak account membership.
-    } finally {
-      // The panel says "check your inbox" either way; the toast repeats it so
-      // the confirmation survives closing the dialog.
+      // The catch used to be empty and the "on its way" line unconditional, so a
+      // 500 or a dropped connection read exactly like a queued email and the
+      // person waited for something that was never sent. Saying the *request*
+      // failed reveals nothing about whether the address has an account.
+      if (!response.ok) {
+        setError('Could not send the reset request. Please try again.');
+        return;
+      }
       setPanel('forgot-sent');
-      notify.info('If that address has an account, a reset link is on its way.', {
-        key: 'auth-forgot',
-      });
+      // Wording that holds for every 2xx the route can return, including a
+      // request its hourly limiter dropped. It is the same sentence for every
+      // address, so it still says nothing about who has an account.
+      notify.info(FORGOT_SUBMITTED_MESSAGE, { key: 'auth-forgot' });
+    } catch {
+      setError('Could not reach the server. Please try again.');
+    } finally {
       setLoading(false);
     }
   };
@@ -278,7 +298,7 @@ export default function AuthModal({
             )}
             {panel === 'forgot-sent' && (
               <p className="text-[13px] leading-5 text-[var(--studio-fg)]" role="status">
-                If this email is registered, a link has been sent. Check inbox and spam.
+                {FORGOT_SUBMITTED_MESSAGE} Check inbox and spam.
               </p>
             )}
             {panel === 'forgot' && (
@@ -302,13 +322,13 @@ export default function AuthModal({
           // 403 to everyone. Ask an admin, then sign in.
           <div className="space-y-14">
             <p className="text-[13px] leading-5 text-[var(--studio-fg)]">
-              An admin creates your account from the Team page and passes on a temporary password.
-              Nothing is emailed — ask whoever runs this workspace for it, sign in, then change it
-              under Settings → Profile.
+              An admin creates your account from the Team page, and you get an email with a
+              single-use link. Open it to choose your own password — nothing is passed on by hand,
+              and no temporary password exists.
             </p>
             <p className="text-[13px] leading-5 text-[var(--studio-muted)]">
-              Already have your temporary password? Sign in — anything you typed on the landing page
-              is kept and starts building once you are in.
+              Already set your password? Sign in — anything you typed on the landing page is kept
+              and starts building once you are in.
             </p>
             <StudioButton
               type="button"

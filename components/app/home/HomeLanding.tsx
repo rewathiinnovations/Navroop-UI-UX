@@ -112,8 +112,16 @@ export default function HomeLanding({
         </div>
       </header>
 
-      <main className="relative z-10 flex min-h-0 flex-1 flex-col items-center justify-center px-20">
-        <div className="w-full max-w-[720px] -translate-y-12">
+      {/* The shell stays locked to `h-dvh` with `overflow-hidden`, so this is
+          the scroller. Without it the hero, its four-row textarea, the chips
+          and the submit button were clipped with no way to reach them once an
+          on-screen keyboard halved `dvh` (F-435). `justify-center` is gone
+          deliberately: on a scroll container it clips the leading edge instead
+          of scrolling to it. `my-auto` centres while there is spare room and
+          collapses to 0 the moment content overflows, and the `py-24` absorbs
+          the hero's optical `-translate-y-12` so nothing is cut at the top. */}
+      <main className="relative z-10 flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-20 py-24">
+        <div className="my-auto w-full max-w-[720px] -translate-y-12">
           <PromptHero
             ref={heroRef}
             greeting="Describe it. We'll build the site."

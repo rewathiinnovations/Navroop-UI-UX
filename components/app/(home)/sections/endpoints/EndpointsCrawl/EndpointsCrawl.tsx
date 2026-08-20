@@ -1,10 +1,10 @@
-"use client";
+'use client';
 
-import { animate } from "motion";
-import { useEffect, useRef } from "react";
+import { animate } from 'motion';
+import { useEffect, useRef } from 'react';
 
-import { cn } from "@/utils/cn";
-import initCanvas from "@/utils/init-canvas";
+import { cn } from '@/utils/cn';
+import initCanvas from '@/utils/init-canvas';
 
 export default function EndpointsCrawl({
   active,
@@ -29,7 +29,7 @@ export default function EndpointsCrawl({
 
     if (!canvas) return;
 
-    const ctx = initCanvas(canvas);
+    const { ctx, dispose } = initCanvas(canvas);
 
     let isRunning = false;
     let isActive = false;
@@ -37,17 +37,12 @@ export default function EndpointsCrawl({
     let activeGroup = 0;
     const rowAlphas = [0.2, 0.4, 1, 0.04];
 
-    const grid = [
-      [24],
-      [16, 18, 30, 32],
-      [8, 12, 36, 40],
-      [0, 3, 6, 21, 27, 42, 45, 48],
-    ];
+    const grid = [[24], [16, 18, 30, 32], [8, 12, 36, 40], [0, 3, 6, 21, 27, 42, 45, 48]];
 
     const scaler = size / 20;
 
     const render = () => {
-      ctx.fillStyle = "#FF4C00";
+      ctx.fillStyle = '#FF4C00';
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       for (const group of grid.slice(0, 4)) {
@@ -133,21 +128,26 @@ export default function EndpointsCrawl({
     };
 
     render();
-    canvas.addEventListener("resize", render);
+    canvas.addEventListener('resize', render);
 
     if (triggerOnHover) {
-      const group = canvasRef.current!.closest(".group");
+      const group = canvasRef.current!.closest('.group');
 
       if (group) {
-        group.addEventListener("mouseenter", fnRefs.current.activate);
-        group.addEventListener("mouseleave", fnRefs.current.deactivate);
+        group.addEventListener('mouseenter', fnRefs.current.activate);
+        group.addEventListener('mouseleave', fnRefs.current.deactivate);
 
         return () => {
-          group.removeEventListener("mouseenter", fnRefs.current.activate);
-          group.removeEventListener("mouseleave", fnRefs.current.deactivate);
+          group.removeEventListener('mouseenter', fnRefs.current.activate);
+          group.removeEventListener('mouseleave', fnRefs.current.deactivate);
+          dispose();
         };
       }
     }
+
+    // `initCanvas` registers two window resize listeners. Without this they
+    // outlived every mount, holding the detached canvas and its 2D context.
+    return dispose;
   }, [triggerOnHover, size]);
 
   useEffect(() => {
@@ -175,11 +175,8 @@ export default function EndpointsCrawl({
     <canvas
       className={cn(
         alwaysHeat
-          ? ""
-          : [
-              "[&.grayscale]:opacity-60 transition-[filter,opacity]",
-              !active && "grayscale",
-            ],
+          ? ''
+          : ['[&.grayscale]:opacity-60 transition-[filter,opacity]', !active && 'grayscale'],
       )}
       ref={canvasRef}
       style={{ width: size, height: size }}

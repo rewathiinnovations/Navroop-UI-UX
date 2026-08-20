@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import {
   Brain,
   ChevronDown,
@@ -11,8 +11,15 @@ import {
   Search,
   SlidersHorizontal,
 } from 'lucide-react';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/shadcn/dropdown-menu';
 import { cn } from '@/utils/cn';
-import { relativeTime } from '@/lib/projects/prompt';
+import { formatRelativeTime } from '@/lib/format-relative-time';
 import Hint from './Hint';
 import {
   WORKSPACE_PRIMARY_TABS,
@@ -39,10 +46,33 @@ const VIEW_ICONS: Record<WorkspaceView, typeof Eye> = {
 };
 
 /**
- * Quality/Assets/Brain/Domains, behind one trigger. `open` is controlled by the
- * caller so the menu can be rendered — and asserted on — without a DOM to click in;
- * the outside-click and Escape handlers live here because they belong to the menu,
- * and they report the close upwards rather than keeping a second copy of the state.
+ * The shared row style for every workspace header menu. Radix's stock radio item
+ * ships an indicator dot positioned for the rem-based Tailwind scale (this repo
+ * runs on px, so `left-2` is 2 px); selection here reads from weight and colour
+ * plus the view icon, so the indicator span is hidden rather than left as a
+ * 2 px speck in the padding gutter.
+ */
+export const WORKSPACE_MENU_ITEM = cn(
+  'flex w-full cursor-pointer items-center gap-8 rounded-8 px-10 py-8 text-left text-[12px]',
+  'outline-none focus:bg-[var(--studio-surface-hover)] focus:text-[var(--studio-fg)]',
+  'data-[highlighted]:bg-[var(--studio-surface-hover)] data-[highlighted]:text-[var(--studio-fg)]',
+  'data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
+  '[&>span:first-child]:hidden',
+);
+
+/**
+ * Quality/Assets/Brain/Domains, behind one trigger, as a real single-select menu.
+ *
+ * It used to be a hand-rolled `role="menu"` div with `role="menuitemradio"`
+ * children: opening it left focus on the trigger, arrows and Home/End did
+ * nothing, there was no roving tabIndex, and Escape dropped focus on `<body>`
+ * instead of returning it to the trigger — so it announced a keyboard contract
+ * it did not implement (N-016, same defect as F-410). Radix owns that contract
+ * now, and `DropdownMenuRadioGroup` is what "exactly one of these four views is
+ * showing" actually is.
+ *
+ * `open` stays controlled by the caller so the menu can be rendered — and
+ * asserted on — without a DOM to click in.
  *
  * The trigger takes the active view's name when one of these four is showing.
  * Without that, choosing Quality left the header with nothing selected while a
@@ -59,82 +89,60 @@ export function WorkspaceToolMenu({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onPointer = (event: MouseEvent) => {
-      if (!menuRef.current?.contains(event.target as Node)) onOpenChange(false);
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onOpenChange(false);
-    };
-    document.addEventListener('mousedown', onPointer);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onPointer);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [onOpenChange, open]);
-
   const activeTool = WORKSPACE_TOOL_TABS.find((tab) => tab.id === view) ?? null;
   const TriggerIcon = activeTool ? VIEW_ICONS[activeTool.id] : SlidersHorizontal;
 
   return (
-    <div className="relative" ref={menuRef}>
-      <button
-        type="button"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-label={activeTool ? `${activeTool.label} — more views` : 'More views'}
-        onClick={() => onOpenChange(!open)}
-        className={cn(
-          'inline-flex h-32 items-center gap-4 rounded-full px-10 text-[12px] font-medium transition-colors',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]',
-          activeTool
-            ? 'bg-[var(--studio-surface)] text-[var(--studio-fg)] shadow-sm'
-            : 'text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)]',
-        )}
+    <DropdownMenu open={open} onOpenChange={onOpenChange}>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label={activeTool ? `${activeTool.label} — more views` : 'More views'}
+          className={cn(
+            'inline-flex h-32 items-center gap-4 rounded-full px-10 text-[12px] font-medium transition-colors',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]',
+            activeTool
+              ? 'bg-[var(--studio-surface)] text-[var(--studio-fg)] shadow-sm'
+              : 'text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)]',
+          )}
+        >
+          <TriggerIcon className="size-15" aria-hidden />
+          <span className="hidden lg:inline">{activeTool ? activeTool.label : 'More'}</span>
+          <ChevronDown className="size-12" aria-hidden />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="start"
+        sideOffset={6}
+        collisionPadding={8}
+        aria-label="More views"
+        className="studio-portal z-40 w-[176px] rounded-12 border-[var(--studio-line)] bg-[var(--studio-surface)] p-4 text-[var(--studio-fg)] shadow-sm"
       >
-        <TriggerIcon className="size-15" aria-hidden />
-        <span className="hidden lg:inline">{activeTool ? activeTool.label : 'More'}</span>
-        <ChevronDown className="size-12" aria-hidden />
-      </button>
-      {open ? (
-        <div
-          role="menu"
-          aria-label="More views"
-          className="absolute top-full left-0 z-40 mt-6 w-[176px] rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] p-4 shadow-sm"
+        <DropdownMenuRadioGroup
+          value={view}
+          onValueChange={(next) => onViewChange(next as WorkspaceView)}
         >
           {WORKSPACE_TOOL_TABS.map((tab) => {
             const Icon = VIEW_ICONS[tab.id];
-            const selected = view === tab.id;
             return (
-              <button
+              <DropdownMenuRadioItem
                 key={tab.id}
-                type="button"
-                role="menuitemradio"
-                aria-checked={selected}
-                onClick={() => {
-                  onViewChange(tab.id);
-                  onOpenChange(false);
-                }}
+                value={tab.id}
                 className={cn(
-                  'flex w-full items-center gap-8 rounded-8 px-10 py-8 text-left text-[12px]',
-                  'hover:bg-[var(--studio-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]',
-                  selected
+                  WORKSPACE_MENU_ITEM,
+                  view === tab.id
                     ? 'font-medium text-[var(--studio-fg)]'
-                    : 'text-[var(--studio-muted)] hover:text-[var(--studio-fg)]',
+                    : 'text-[var(--studio-muted)]',
                 )}
               >
                 <Icon className="size-14" aria-hidden />
                 {tab.label}
-              </button>
+              </DropdownMenuRadioItem>
             );
           })}
-        </div>
-      ) : null}
-    </div>
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -225,7 +233,7 @@ export function versionPillList(
       id: checkpoint.id,
       version: total - index,
       label: `v${total - index}`,
-      detail: `${checkpoint.label} · ${relativeTime(checkpoint.createdAt)}`,
+      detail: `${checkpoint.label} · ${formatRelativeTime(checkpoint.createdAt)}`,
       pruned: Boolean(checkpoint.snapshotPruned),
     }))
     .reverse();

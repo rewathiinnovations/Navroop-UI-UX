@@ -1,8 +1,24 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from 'next/server';
 import FirecrawlApp from '@mendable/firecrawl-js';
 import { assertSafeUrl, UnsafeUrlError } from '@/lib/security/url-guard';
 import { jsonError } from '@/lib/api/error-response';
 import { requireSessionUser } from '@/lib/auth';
+
+/** The fields this route reads off a scraped document, whichever envelope carried it. */
+type ScrapedDocument = {
+  markdown?: string;
+  html?: string;
+  screenshot?: string;
+  links?: string[];
+  metadata?: { title?: string; description?: string } & Record<string, unknown>;
+};
+
+/** The v3 response envelope the v4 SDK types no longer describe. */
+type LegacyScrapeEnvelope = ScrapedDocument & {
+  success?: boolean;
+  error?: unknown;
+  data?: ScrapedDocument;
+};
 
 export async function POST(request: NextRequest) {
   const auth = await requireSessionUser();
@@ -10,12 +26,9 @@ export async function POST(request: NextRequest) {
 
   try {
     const { url, formats = ['markdown', 'html'], options = {} } = await request.json();
-    
+
     if (!url) {
-      return NextResponse.json(
-        { error: "URL is required" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: 'URL is required' }, { status: 400 });
     }
 
     try {
@@ -24,33 +37,33 @@ export async function POST(request: NextRequest) {
       const message = error instanceof UnsafeUrlError ? error.message : 'URL import failed';
       return NextResponse.json({ error: message }, { status: 400 });
     }
-    
+
     // Initialize Firecrawl with API key from environment
     const apiKey = process.env.FIRECRAWL_API_KEY;
-    
+
     if (!apiKey) {
-      console.error("FIRECRAWL_API_KEY not configured");
+      console.error('FIRECRAWL_API_KEY not configured');
       // For demo purposes, return mock data if API key is not set
       return NextResponse.json({
         success: true,
         data: {
-          title: "Example Website",
+          title: 'Example Website',
           content: `This is a mock response for ${url}. Configure FIRECRAWL_API_KEY to enable real scraping.`,
-          description: "A sample website",
+          description: 'A sample website',
           markdown: `# Example Website\n\nThis is mock content for demonstration purposes.`,
           html: `<h1>Example Website</h1><p>This is mock content for demonstration purposes.</p>`,
           metadata: {
-            title: "Example Website",
-            description: "A sample website",
+            title: 'Example Website',
+            description: 'A sample website',
             sourceURL: url,
-            statusCode: 200
-          }
-        }
+            statusCode: 200,
+          },
+        },
       });
     }
-    
+
     const app = new FirecrawlApp({ apiKey });
-    
+
     // Scrape the website using the latest SDK patterns
     // Include screenshot if requested in formats
     const scrapeResult = await app.scrape(url, {
@@ -58,66 +71,60 @@ export async function POST(request: NextRequest) {
       onlyMainContent: options.onlyMainContent !== false, // Default to true for cleaner content
       waitFor: options.waitFor || 2000, // Wait for dynamic content
       timeout: options.timeout || 30000,
-      ...options // Pass through any additional options
+      ...options, // Pass through any additional options
     });
-    
-    // Handle the response according to the latest SDK structure
-    const result = scrapeResult as any;
+
+    // Handle the response according to the latest SDK structure. `scrape` is typed as
+    // a v4 Document; the `{ success, error }` / `{ data }` envelopes below are the v3
+    // shapes a mismatched API version still returns, which the SDK type no longer
+    // declares. Narrowing through `unknown` keeps those branches without an `any`
+    // that would also swallow a misspelt field.
+    const result = scrapeResult as unknown as LegacyScrapeEnvelope;
     if (result.success === false) {
-      throw new Error(result.error || "Failed to scrape website");
+      throw new Error(typeof result.error === 'string' ? result.error : 'Failed to scrape website');
     }
-    
+
     // The SDK may return data directly or nested
-    const data = result.data || result;
-    
+    const data: ScrapedDocument = result.data ?? result;
+
     return NextResponse.json({
       success: true,
       data: {
-        title: data?.metadata?.title || "Untitled",
-        content: data?.markdown || data?.html || "",
-        description: data?.metadata?.description || "",
-        markdown: data?.markdown || "",
-        html: data?.html || "",
+        title: data?.metadata?.title || 'Untitled',
+        content: data?.markdown || data?.html || '',
+        description: data?.metadata?.description || '',
+        markdown: data?.markdown || '',
+        html: data?.html || '',
         metadata: data?.metadata || {},
         screenshot: data?.screenshot || null,
         links: data?.links || [],
         // Include raw data for flexibility
-        raw: data
-      }
+        raw: data,
+      },
     });
-    
   } catch (error) {
-    console.error("Error scraping website:", error);
-    
-    // Return a more detailed error response
-    return NextResponse.json({
-      success: false,
-      error: error instanceof Error ? error.message : "Failed to scrape website",
-      // Provide mock data as fallback for development
-      data: {
-        title: "Example Website",
-        content: "This is fallback content due to an error. Please check your configuration.",
-        description: "Error occurred while scraping",
-        markdown: `# Error\n\n${error instanceof Error ? error.message : 'Unknown error occurred'}`,
-        html: `<h1>Error</h1><p>${error instanceof Error ? error.message : 'Unknown error occurred'}</p>`,
-        metadata: {
-          title: "Error",
-          description: "Failed to scrape website",
-          statusCode: 500
-        }
-      }
-    }, { status: 500 });
-  }
-}
+    console.error('Error scraping website:', error);
 
-// Optional: Add OPTIONS handler for CORS if needed
-export async function OPTIONS() {
-  return new NextResponse(null, {
-    status: 200,
-    headers: {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
-    },
-  });
+    // Return a more detailed error response
+    return NextResponse.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to scrape website',
+        // Provide mock data as fallback for development
+        data: {
+          title: 'Example Website',
+          content: 'This is fallback content due to an error. Please check your configuration.',
+          description: 'Error occurred while scraping',
+          markdown: `# Error\n\n${error instanceof Error ? error.message : 'Unknown error occurred'}`,
+          html: `<h1>Error</h1><p>${error instanceof Error ? error.message : 'Unknown error occurred'}</p>`,
+          metadata: {
+            title: 'Error',
+            description: 'Failed to scrape website',
+            statusCode: 500,
+          },
+        },
+      },
+      { status: 500 },
+    );
+  }
 }

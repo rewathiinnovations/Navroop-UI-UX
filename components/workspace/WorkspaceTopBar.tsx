@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
@@ -16,11 +16,20 @@ import {
   RefreshCw,
   MoreHorizontal,
 } from 'lucide-react';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/shadcn/dropdown-menu';
 import SaveAsTemplateDialog from '@/components/templates/SaveAsTemplateDialog';
 import { downloadProjectZip, formatExportBytes } from '@/lib/export/client';
 import { cn } from '@/utils/cn';
 import { pushProjectToGitHub } from '@/lib/github/actions';
-import { relativeTime } from '@/lib/projects/prompt';
+import { formatRelativeTime } from '@/lib/format-relative-time';
 import Hint from './Hint';
 import PreviewDeviceToolbar from './PreviewDeviceToolbar';
 import PublishPanel from './PublishPanel';
@@ -32,10 +41,11 @@ import {
   rotateDeviceSize,
   type PreviewDeviceKey,
 } from '@/lib/preview/devices';
+import { useDisclosurePopover } from '@/hooks/useDisclosurePopover';
 import { type Checkpoint, type SaveStatus, type WorkspacePage, type WorkspaceView } from './types';
 import PresenceAvatars from './PresenceAvatars';
 import type { PresenceViewer } from './useProjectPresence';
-import { VersionPills, WorkspaceViewSwitch } from './WorkspaceViewControls';
+import { VersionPills, WORKSPACE_MENU_ITEM, WorkspaceViewSwitch } from './WorkspaceViewControls';
 
 const ICON_BTN =
   'inline-flex size-32 items-center justify-center rounded-full text-[var(--studio-muted)] transition-colors hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)] disabled:cursor-not-allowed disabled:opacity-40';
@@ -79,7 +89,7 @@ function saveLabel(saveState: SaveStatus, updatedAt: string | null) {
   if (saveState === 'saving') return 'Saving…';
   if (saveState === 'saved') return 'All changes saved';
   if (saveState === 'signin') return 'Sign in to save';
-  if (updatedAt) return `Last saved ${relativeTime(updatedAt)}`;
+  if (updatedAt) return `Last saved ${formatRelativeTime(updatedAt)}`;
   return null;
 }
 
@@ -157,7 +167,6 @@ export default function WorkspaceTopBar({
   const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportHint, setExportHint] = useState<string | null>(null);
-  const moreRef = useRef<HTMLDivElement>(null);
   const [compactPreview, setCompactPreview] = useState(false);
   /**
    * The pills are the widest thing in the middle group, and the header runs out of
@@ -166,63 +175,25 @@ export default function WorkspaceTopBar({
    * there, and it opens the whole list.
    */
   const [roomForVersions, setRoomForVersions] = useState(false);
-  const connectRef = useRef<HTMLDivElement>(null);
-  const previewRef = useRef<HTMLDivElement>(null);
   const headerRef = useRef<HTMLElement>(null);
+  /**
+   * A paragraph plus one link, not a command list, so this is a disclosure rather
+   * than a menu (the two menus beside it are Radix `DropdownMenu`s). The
+   * hand-rolled `mousedown` + Escape listener it replaces never moved focus into
+   * the panel, returned focus to `<body>` on Escape, and left the panel open when
+   * the reader tabbed past it (N-024).
+   */
+  const connectPanelId = useId();
+  const {
+    rootRef: connectRef,
+    panelRef: connectPanelRef,
+    triggerRef: connectTriggerRef,
+    onBlurCapture: onConnectBlurCapture,
+  } = useDisclosurePopover({ open: connectOpen, onClose: () => setConnectOpen(false) });
 
   useEffect(() => {
     setRepoUrl(githubRepoUrl);
   }, [githubRepoUrl]);
-
-  useEffect(() => {
-    if (!connectOpen) return;
-    const onPointer = (event: MouseEvent) => {
-      if (!connectRef.current?.contains(event.target as Node)) {
-        setConnectOpen(false);
-      }
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setConnectOpen(false);
-    };
-    document.addEventListener('mousedown', onPointer);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onPointer);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [connectOpen]);
-
-  useEffect(() => {
-    if (!previewOpen) return;
-    const onPointer = (event: MouseEvent) => {
-      if (!previewRef.current?.contains(event.target as Node)) setPreviewOpen(false);
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setPreviewOpen(false);
-    };
-    document.addEventListener('mousedown', onPointer);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onPointer);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [previewOpen]);
-
-  useEffect(() => {
-    if (!moreOpen) return;
-    const onPointer = (event: MouseEvent) => {
-      if (!moreRef.current?.contains(event.target as Node)) setMoreOpen(false);
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMoreOpen(false);
-    };
-    document.addEventListener('mousedown', onPointer);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onPointer);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [moreOpen]);
 
   useEffect(() => {
     const node = headerRef.current;
@@ -410,72 +381,72 @@ export default function WorkspaceTopBar({
               <RefreshCw className="size-15" />
             </button>
           </Hint>
-          <div className="relative" ref={previewRef}>
-            <div className="inline-flex items-center">
-              <Hint
-                label={
-                  previewOriginConfigured ? 'Open in new tab' : PREVIEW_NEW_TAB_REQUIRES_ORIGIN
-                }
-              >
-                <button
-                  type="button"
-                  disabled={!previewUrl || !previewOriginConfigured}
-                  title={previewOriginConfigured ? undefined : PREVIEW_NEW_TAB_REQUIRES_ORIGIN}
-                  onClick={() => previewUrl && openPreviewWindow(previewUrl)}
-                  aria-label="Open in new tab"
-                  className={ICON_BTN}
-                >
-                  <ExternalLink className="size-15" />
-                </button>
-              </Hint>
+          <div className="inline-flex items-center">
+            <Hint
+              label={previewOriginConfigured ? 'Open in new tab' : PREVIEW_NEW_TAB_REQUIRES_ORIGIN}
+            >
               <button
                 type="button"
                 disabled={!previewUrl || !previewOriginConfigured}
                 title={previewOriginConfigured ? undefined : PREVIEW_NEW_TAB_REQUIRES_ORIGIN}
-                aria-expanded={previewOpen}
-                aria-haspopup="menu"
-                aria-label="Open preview options"
-                onClick={() => setPreviewOpen((value) => !value)}
-                className={cn(ICON_BTN, 'size-24')}
+                onClick={() => previewUrl && openPreviewWindow(previewUrl)}
+                aria-label="Open in new tab"
+                className={ICON_BTN}
               >
-                <ChevronDown className="size-12" />
+                <ExternalLink className="size-15" />
               </button>
-            </div>
-            {previewOpen && previewUrl && previewOriginConfigured ? (
-              <div
-                role="menu"
-                className="absolute top-full right-0 z-40 mt-6 w-[168px] rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] p-4 shadow-sm"
-              >
+            </Hint>
+            {/* A real command list, so Radix owns the menu keyboard contract: the
+                hand-rolled `role="menu"` div announced arrow keys and roving focus
+                and implemented neither, and Escape dropped focus on `<body>`
+                instead of returning it to this trigger (N-016). */}
+            <DropdownMenu open={previewOpen} onOpenChange={setPreviewOpen}>
+              <DropdownMenuTrigger asChild>
                 <button
                   type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    openPreviewWindow(previewUrl);
-                    setPreviewOpen(false);
-                  }}
-                  className="flex w-full rounded-8 px-10 py-8 text-left text-[12px] text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)]"
+                  disabled={!previewUrl || !previewOriginConfigured}
+                  title={previewOriginConfigured ? undefined : PREVIEW_NEW_TAB_REQUIRES_ORIGIN}
+                  aria-label="Open preview options"
+                  className={cn(ICON_BTN, 'size-24')}
                 >
-                  Full size
+                  <ChevronDown className="size-12" />
                 </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    const mobile = getPreviewDevice('mobile');
-                    openPreviewWindow(previewUrl, {
-                      width: mobile.width ?? 390,
-                      height: mobile.height ?? 844,
-                    });
-                    setPreviewOpen(false);
-                  }}
-                  className="flex w-full rounded-8 px-10 py-8 text-left text-[12px] text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)]"
+              </DropdownMenuTrigger>
+              {previewUrl && previewOriginConfigured ? (
+                <DropdownMenuContent
+                  align="end"
+                  sideOffset={6}
+                  collisionPadding={8}
+                  aria-label="Preview options"
+                  className="studio-portal z-40 w-[168px] rounded-12 border-[var(--studio-line)] bg-[var(--studio-surface)] p-4 text-[var(--studio-fg)] shadow-sm"
                 >
-                  Mobile view
-                </button>
-              </div>
-            ) : null}
+                  <DropdownMenuItem
+                    className={WORKSPACE_MENU_ITEM}
+                    onSelect={() => openPreviewWindow(previewUrl)}
+                  >
+                    Full size
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    className={WORKSPACE_MENU_ITEM}
+                    onSelect={() => {
+                      const mobile = getPreviewDevice('mobile');
+                      openPreviewWindow(previewUrl, {
+                        width: mobile.width ?? 390,
+                        height: mobile.height ?? 844,
+                      });
+                    }}
+                  >
+                    Mobile view
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              ) : null}
+            </DropdownMenu>
           </div>
-          <div className="relative flex flex-col items-end" ref={connectRef}>
+          <div
+            className="relative flex flex-col items-end"
+            ref={connectRef}
+            onBlurCapture={onConnectBlurCapture}
+          >
             <div className="flex items-center gap-6">
               {githubConnected ? (
                 <Hint label={pushing ? 'Pushing…' : 'Push to GitHub'}>
@@ -513,9 +484,10 @@ export default function WorkspaceTopBar({
                 </Hint>
               ) : (
                 <button
+                  ref={connectTriggerRef}
                   type="button"
                   aria-expanded={connectOpen}
-                  aria-haspopup="dialog"
+                  aria-controls={connectPanelId}
                   aria-label="Push to GitHub"
                   onClick={() => setConnectOpen((open) => !open)}
                   className={ICON_BTN}
@@ -534,7 +506,10 @@ export default function WorkspaceTopBar({
             )}
             {!githubConnected && connectOpen && (
               <div
-                role="dialog"
+                ref={connectPanelRef}
+                id={connectPanelId}
+                role="group"
+                aria-label="Push to GitHub"
                 className="absolute top-full right-0 z-40 mt-8 w-[240px] rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] p-12 shadow-sm"
               >
                 <p className="text-[13px] leading-5 text-[var(--studio-fg)]">
@@ -550,100 +525,77 @@ export default function WorkspaceTopBar({
             )}
           </div>
           {projectId ? (
-            <div className="relative" ref={moreRef}>
-              <button
-                type="button"
-                aria-expanded={moreOpen}
-                aria-haspopup="menu"
+            /* The other hand-rolled `role="menu"` from N-016. The page list is a
+               single-select group, so it is a radio group rather than four
+               commands that happen to look selected. */
+            <DropdownMenu open={moreOpen} onOpenChange={setMoreOpen}>
+              <DropdownMenuTrigger asChild>
+                <button type="button" aria-label="Project actions" className={ICON_BTN}>
+                  <MoreHorizontal className="size-16" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="end"
+                sideOffset={6}
+                collisionPadding={8}
                 aria-label="Project actions"
-                onClick={() => setMoreOpen((value) => !value)}
-                className={ICON_BTN}
+                className="studio-portal z-40 w-[200px] rounded-12 border-[var(--studio-line)] bg-[var(--studio-surface)] p-4 text-[var(--studio-fg)] shadow-sm"
               >
-                <MoreHorizontal className="size-16" />
-              </button>
-              {moreOpen ? (
-                <div
-                  role="menu"
-                  className="absolute top-full right-0 z-40 mt-6 w-[200px] rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] p-4 shadow-sm"
-                >
-                  {compactPreview ? (
-                    <>
+                {compactPreview ? (
+                  <>
+                    <DropdownMenuRadioGroup value={selectedPage} onValueChange={onSelectPage}>
                       {pages.map((page) => (
-                        <button
+                        <DropdownMenuRadioItem
                           key={page.path}
-                          type="button"
-                          role="menuitem"
-                          onClick={() => {
-                            onSelectPage(page.path);
-                            setMoreOpen(false);
-                          }}
+                          value={page.path}
                           className={cn(
-                            'flex w-full rounded-8 px-10 py-8 text-left text-[12px] hover:bg-[var(--studio-surface-hover)]',
+                            WORKSPACE_MENU_ITEM,
                             selectedPage === page.path
                               ? 'font-medium text-[var(--studio-fg)]'
                               : 'text-[var(--studio-muted)]',
                           )}
                         >
                           {page.label}
-                        </button>
+                        </DropdownMenuRadioItem>
                       ))}
-                      <div className="my-4 h-px bg-[var(--studio-line)]" />
-                    </>
-                  ) : null}
-                  {repoUrl ? (
-                    <a
-                      href={repoUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      role="menuitem"
-                      onClick={() => setMoreOpen(false)}
-                      className="flex w-full rounded-8 px-10 py-8 text-left text-[12px] text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)]"
-                    >
+                    </DropdownMenuRadioGroup>
+                    <DropdownMenuSeparator className="my-4 bg-[var(--studio-line)]" />
+                  </>
+                ) : null}
+                {repoUrl ? (
+                  <DropdownMenuItem asChild className={WORKSPACE_MENU_ITEM}>
+                    <a href={repoUrl} target="_blank" rel="noreferrer">
                       View on GitHub
                     </a>
-                  ) : null}
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      setMoreOpen(false);
-                      setSaveTemplateOpen(true);
-                    }}
-                    className="flex w-full rounded-8 px-10 py-8 text-left text-[12px] text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)]"
-                  >
-                    Save as template
-                  </button>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    disabled={exporting || !projectId}
-                    onClick={() => {
-                      if (!projectId || exporting) return;
-                      setExporting(true);
-                      setExportHint(null);
-                      void downloadProjectZip(projectId).then((result) => {
-                        setExporting(false);
-                        if (!result.ok) {
-                          setExportHint(result.error);
-                          return;
-                        }
-                        setExportHint(formatExportBytes(result.bytes));
-                      });
-                      setMoreOpen(false);
-                    }}
-                    className="flex w-full items-center justify-between rounded-8 px-10 py-8 text-left text-[12px] text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)] disabled:opacity-50"
-                  >
-                    <span>Download code</span>
-                    {exporting ? <Loader2 className="size-14 animate-spin" /> : null}
-                  </button>
-                  {exportHint ? (
-                    <p className="px-10 pb-6 text-[11px] text-[var(--studio-faint)]">
-                      {exportHint}
-                    </p>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
+                  </DropdownMenuItem>
+                ) : null}
+                <DropdownMenuItem
+                  className={WORKSPACE_MENU_ITEM}
+                  onSelect={() => setSaveTemplateOpen(true)}
+                >
+                  Save as template
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  className={cn(WORKSPACE_MENU_ITEM, 'justify-between')}
+                  disabled={exporting}
+                  onSelect={() => {
+                    if (exporting) return;
+                    setExporting(true);
+                    setExportHint(null);
+                    void downloadProjectZip(projectId).then((result) => {
+                      setExporting(false);
+                      setExportHint(result.ok ? formatExportBytes(result.bytes) : result.error);
+                    });
+                  }}
+                >
+                  <span>Download code</span>
+                  {exporting ? <Loader2 className="size-14 animate-spin" /> : null}
+                </DropdownMenuItem>
+                {exportHint ? (
+                  <p className="px-10 pb-6 text-[11px] text-[var(--studio-faint)]">{exportHint}</p>
+                ) : null}
+              </DropdownMenuContent>
+            </DropdownMenu>
           ) : null}
           <BarDivider />
           <button

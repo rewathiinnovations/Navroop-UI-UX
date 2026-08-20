@@ -62,8 +62,11 @@ export default function PrivacyPage() {
         <h2 className="text-[18px] font-medium">Retention</h2>
         <ul className="list-disc space-y-4 pl-20">
           <li>
-            Previews are compiled in your own browser, so viewing a site starts no server-side
-            machine and leaves nothing to retain.
+            The preview inside the workspace is compiled in your own browser, so opening it starts
+            nothing on a server. A preview that is shared, password-protected, or read by the SEO
+            audit is built on the server instead and kept as a snapshot in the configured object
+            store; those snapshots are pruned alongside their checkpoints, keeping the active one,
+            the two most recent, and any bookmarked checkpoint.
           </li>
           <li>
             Unbookmarked checkpoints are thinned after 7 days (

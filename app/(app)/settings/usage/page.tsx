@@ -1,8 +1,10 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { fetchJson, toMessage } from '@/lib/notify';
 import StudioShell from '@/components/app/studio/StudioShell';
 import PageTabs from '@/components/app/studio/PageTabs';
+import { SkeletonLines } from '@/components/admin/AdminSkeleton';
 import { formatStorageBytes } from '@/lib/storage/format';
 
 type UsageData = {
@@ -27,18 +29,27 @@ type UsageData = {
 export default function SettingsUsagePage() {
   const [data, setData] = useState<UsageData | null>(null);
   const [error, setError] = useState('');
+  // F-428: the page had no loading flag, so a slow or failing request rendered
+  // the heading and the tab strip over blank space with no signal it was
+  // working. `fetchJson` reads the API's `{ error }` envelope, so a 401/500 no
+  // longer collapses into a generic message that discards what the server said.
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    void fetch('/api/settings/usage')
-      .then((response) => response.json())
-      .then((payload: UsageData & { error?: string }) => {
-        if (payload.error) {
-          setError(payload.error);
-          return;
-        }
-        setData(payload);
-      })
-      .catch(() => setError('Could not load usage'));
+    let cancelled = false;
+    void (async () => {
+      try {
+        const payload = await fetchJson<UsageData>('/api/settings/usage');
+        if (!cancelled) setData(payload);
+      } catch (cause) {
+        if (!cancelled) setError(toMessage(cause, 'Could not load usage'));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const reset = data ? new Date(data.resetAt) : null;
@@ -67,6 +78,8 @@ export default function SettingsUsagePage() {
             {error}
           </p>
         )}
+
+        {loading && <SkeletonLines lines={5} />}
 
         {data && (
           <div className="space-y-28">

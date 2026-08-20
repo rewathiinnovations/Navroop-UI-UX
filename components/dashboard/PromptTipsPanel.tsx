@@ -1,6 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { notify } from '@/lib/notify';
+import { saveOnboardingPreference } from '@/lib/onboarding/client';
 import { PROMPT_TIPS } from '@/lib/onboarding/examples';
 
 export default function PromptTipsPanel() {
@@ -23,14 +25,17 @@ export default function PromptTipsPanel() {
         <h2 className="text-[15px] font-medium text-[var(--studio-fg)]">{PROMPT_TIPS.title}</h2>
         <button
           type="button"
-          className="text-[12px] text-[var(--studio-faint)]"
-          onClick={() => {
+          className="rounded-8 px-6 py-2 text-[12px] text-[var(--studio-faint)] hover:text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
+          onClick={async () => {
+            // Hide optimistically, then put the panel back if the write lost —
+            // silently hiding it made the panel reappear on the next load with
+            // no explanation.
             setHidden(true);
-            void fetch('/api/onboarding', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ action: 'dismiss-tips' }),
-            });
+            const result = await saveOnboardingPreference('dismiss-tips');
+            if (!result.ok) {
+              setHidden(false);
+              notify.error(result.error);
+            }
           }}
         >
           Dismiss

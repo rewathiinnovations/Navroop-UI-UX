@@ -2,8 +2,9 @@
 
 import { useState } from 'react';
 import { Loader2, Star, X } from 'lucide-react';
-import { relativeTime } from '@/lib/projects/prompt';
+import { formatRelativeTime } from '@/lib/format-relative-time';
 import { downloadProjectZip, formatExportBytes } from '@/lib/export/client';
+import ImageWithFallback from './ImageWithFallback';
 import type { Checkpoint } from './types';
 import ConfirmAction from '@/components/admin/ConfirmAction';
 
@@ -61,6 +62,12 @@ export default function VersionHistoryPanel({
           )}
           {checkpoints.map((checkpoint) => {
             const pruned = Boolean(checkpoint.snapshotPruned);
+            /** Used for a missing thumbnail and for one that fails to load (F-129). */
+            const thumbnailPlaceholder = (
+              <div className="flex size-full items-center justify-center bg-gradient-to-br from-zinc-100 to-zinc-200 text-[11px] text-[var(--studio-faint)] dark:from-zinc-800 dark:to-zinc-900">
+                {checkpoint.label}
+              </div>
+            );
             return (
               <li
                 key={checkpoint.id}
@@ -70,16 +77,20 @@ export default function VersionHistoryPanel({
               >
                 <div className="mb-10 h-72 overflow-hidden rounded-8 bg-[var(--studio-skeleton)]">
                   {checkpoint.thumbnailUrl ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={checkpoint.thumbnailUrl} alt="" className="size-full object-cover" />
+                    <ImageWithFallback
+                      src={checkpoint.thumbnailUrl}
+                      alt=""
+                      className="size-full object-cover"
+                      fallback={thumbnailPlaceholder}
+                    />
                   ) : (
-                    <div className="flex size-full items-center justify-center bg-gradient-to-br from-zinc-100 to-zinc-200 text-[11px] text-[var(--studio-faint)] dark:from-zinc-800 dark:to-zinc-900">
-                      {checkpoint.label}
-                    </div>
+                    thumbnailPlaceholder
                   )}
                 </div>
                 <div className="mb-4 flex items-start justify-between gap-8">
-                  <p className="text-[13px] font-medium text-[var(--studio-fg)]">{checkpoint.label}</p>
+                  <p className="text-[13px] font-medium text-[var(--studio-fg)]">
+                    {checkpoint.label}
+                  </p>
                   <button
                     type="button"
                     title="Keep this forever"
@@ -94,7 +105,9 @@ export default function VersionHistoryPanel({
                     />
                   </button>
                 </div>
-                <p className="mb-10 text-[11px] text-[var(--studio-faint)]">{relativeTime(checkpoint.createdAt)}</p>
+                <p className="mb-10 text-[11px] text-[var(--studio-faint)]">
+                  {formatRelativeTime(checkpoint.createdAt)}
+                </p>
                 {pruned ? (
                   <p className="text-[12px] text-[var(--studio-muted)]">
                     Old checkpoint — cannot restore
@@ -105,7 +118,7 @@ export default function VersionHistoryPanel({
                       <ConfirmAction
                         label="Restore"
                         title="Restore this version?"
-                        body="The current sandbox changes to this version. A new checkpoint of the current state is created first, so nothing is lost."
+                        body="Your project changes to this version. A new checkpoint of the current state is saved first, so nothing is lost."
                         confirmLabel="Restore"
                         busyLabel="Restoring…"
                         variant="ghost"
@@ -130,7 +143,9 @@ export default function VersionHistoryPanel({
                           }}
                           className="inline-flex min-h-[36px] items-center gap-6 rounded-full border border-[var(--studio-line-strong)] px-12 text-[12px] font-medium text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)] disabled:opacity-50"
                         >
-                          {exportingId === checkpoint.id ? <Loader2 className="size-12 animate-spin" /> : null}
+                          {exportingId === checkpoint.id ? (
+                            <Loader2 className="size-12 animate-spin" />
+                          ) : null}
                           Download code
                         </button>
                       ) : null}

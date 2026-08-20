@@ -1,7 +1,9 @@
 'use client';
 
+import * as Sentry from '@sentry/nextjs';
 import { useEffect, useMemo } from 'react';
 import ErrorId from '@/components/errors/ErrorId';
+import { errorRequestId } from '@/lib/errors/request-id';
 
 export default function AppError({
   error,
@@ -10,20 +12,25 @@ export default function AppError({
   error: Error & { digest?: string };
   reset: () => void;
 }) {
-  const requestId = useMemo(
-    () => (error.digest ? error.digest.slice(0, 12) : crypto.randomUUID().replace(/-/g, '').slice(0, 12)),
-    [error.digest],
-  );
+  const requestId = useMemo(() => errorRequestId(error.digest), [error.digest]);
 
   useEffect(() => {
-    console.error(JSON.stringify({
-      timestamp: new Date().toISOString(),
-      level: 'error',
-      event: 'ui.app.error',
-      requestId,
-      error: error.message,
-      stack: process.env.NODE_ENV === 'production' ? undefined : error.stack,
-    }));
+    // F-436: this boundary catches the common case — a page or nested segment
+    // throwing during render — and used to log only to this browser's console.
+    // `ErrorId` tells the user to send the id to support, so support has to be
+    // able to look it up. `global-error.tsx` already reports the rarer
+    // root-layout throw the same way.
+    Sentry.captureException(error, { tags: { requestId } });
+    console.error(
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: 'error',
+        event: 'ui.app.error',
+        requestId,
+        error: error.message,
+        stack: process.env.NODE_ENV === 'production' ? undefined : error.stack,
+      }),
+    );
   }, [error, requestId]);
 
   return (

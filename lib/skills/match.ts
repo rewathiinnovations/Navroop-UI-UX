@@ -1,7 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { generateObject } from 'ai';
 import { z } from 'zod';
-import { appConfig } from '@/config/app.config';
 import { getProviderForModel } from '@/lib/ai/provider-manager';
 import { log } from '@/lib/logger';
 
@@ -140,7 +139,7 @@ export const defaultSkillRanker: SkillRanker = async ({
   skills,
   userId,
 }) => {
-  const { client, actualModel } = await getProviderForModel(appConfig.ai.defaultModel, userId);
+  const { client, actualModel } = await getProviderForModel(null, userId);
   const catalog = skills
     .map((skill) => `- id: ${skill.id}\n  name: ${skill.name}\n  description: ${skill.description}`)
     .join('\n');

@@ -8,12 +8,28 @@ import StudioButton from '@/components/app/studio/StudioButton';
 import StudioShell from '@/components/app/studio/StudioShell';
 import ProjectCard from '@/components/dashboard/ProjectCard';
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/shadcn/dropdown-menu';
+import { listAnnouncement } from '@/lib/a11y/list-announcement';
+import { connectionState } from '@/lib/net/connection';
+import { useRefetchOnReconnect } from '@/hooks/useOnline';
+import {
   bucketProjectsByUpdatedAt,
   fetchProjectList,
   isProjectGenerating,
   type ListProject,
 } from '@/lib/projects/list-client';
 import { cn } from '@/utils/cn';
+import {
+  OWNER_FILTER_LABELS,
+  mineFromOwnerFilter,
+  ownerFilterFor,
+  parseMine,
+  type OwnerFilter,
+} from './owner-filter';
 
 type SortKey = 'updatedAt' | 'name' | 'createdAt';
 type StatusFilter = 'any' | 'draft' | 'published';
@@ -29,12 +45,6 @@ function parseStatus(value: string | null): StatusFilter {
   return 'any';
 }
 
-function parseMine(value: string | null): boolean | undefined {
-  if (value === 'true') return true;
-  if (value === 'false') return false;
-  return undefined;
-}
-
 function ProjectsContent() {
   const searchParams = useSearchParams();
   const [search, setSearch] = useState(searchParams.get('search') ?? '');
@@ -43,7 +53,6 @@ function ProjectsContent() {
   const [mine, setMine] = useState<boolean | undefined>(parseMine(searchParams.get('mine')));
   const starred = searchParams.get('starred') === 'true';
   const [density, setDensity] = useState<Density>('grid');
-  const [createOpen, setCreateOpen] = useState(false);
   const [projects, setProjects] = useState<ListProject[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -54,18 +63,6 @@ function ProjectsContent() {
     setStatus(parseStatus(searchParams.get('status')));
     setMine(parseMine(searchParams.get('mine')));
   }, [searchParams]);
-
-  useEffect(() => {
-    if (!createOpen) return;
-    const close = () => setCreateOpen(false);
-    const timer = window.setTimeout(() => {
-      document.addEventListener('click', close);
-    }, 0);
-    return () => {
-      window.clearTimeout(timer);
-      document.removeEventListener('click', close);
-    };
-  }, [createOpen]);
 
   const persistUrl = useCallback(
     (patch: {
@@ -131,10 +128,16 @@ function ProjectsContent() {
   useEffect(() => {
     if (!projects.some(isProjectGenerating)) return;
     const timer = setInterval(() => {
+      // Offline: nothing to gain from another failed request. `load` already
+      // renders the offline sentence, and the reconnect refetch below is the one
+      // catch-up (F-446).
+      if (connectionState() === 'offline') return;
       void load(true);
     }, 4000);
     return () => clearInterval(timer);
   }, [load, projects]);
+
+  useRefetchOnReconnect(useCallback(() => void load(true), [load]));
 
   const filtered = useMemo(() => {
     if (status === 'any') return projects;
@@ -179,27 +182,31 @@ function ProjectsContent() {
           <h1 className="text-[32px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">
             Projects
           </h1>
-          <div className="relative">
-            <StudioButton variant="primary" onClick={() => setCreateOpen((open) => !open)}>
-              <Plus className="size-16" aria-hidden />
-              Create
-            </StudioButton>
-            {createOpen && (
-              <div
-                role="menu"
-                className="absolute right-0 z-50 mt-8 w-200 overflow-hidden rounded-10 border border-[var(--studio-line)] bg-[var(--studio-surface)] shadow-[0_12px_24px_rgba(24,24,27,0.12)]"
+          {/* A real menu of create actions: Radix supplies the aria-haspopup /
+              aria-expanded on the trigger, arrow-key roving focus, Escape and
+              focus restore that the hand-rolled `role="menu"` div promised and
+              never implemented (its only dismissal was a document click). */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <StudioButton variant="primary">
+                <Plus className="size-16" aria-hidden />
+                Create
+              </StudioButton>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="end"
+              sideOffset={8}
+              collisionPadding={8}
+              className="studio-portal z-50 w-200 rounded-10 border-[var(--studio-line)] bg-[var(--studio-surface)] p-0 text-[var(--studio-fg)] shadow-[0_12px_24px_rgba(24,24,27,0.12)]"
+            >
+              <DropdownMenuItem
+                asChild
+                className="min-h-[44px] cursor-pointer rounded-10 px-14 text-[14px] text-[var(--studio-fg)] focus:bg-[var(--studio-surface-hover)] focus:text-[var(--studio-fg)]"
               >
-                <Link
-                  href="/dashboard?focus=prompt"
-                  role="menuitem"
-                  className="flex min-h-[44px] items-center px-14 text-[14px] text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)]"
-                  onClick={() => setCreateOpen(false)}
-                >
-                  Blank project
-                </Link>
-              </div>
-            )}
-          </div>
+                <Link href="/dashboard?focus=prompt">Blank project</Link>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
 
         <div className="mb-28 flex flex-col gap-12 lg:flex-row lg:items-center lg:justify-between">
@@ -253,16 +260,19 @@ function ProjectsContent() {
             <label className="flex items-center gap-8 text-[13px] text-[var(--studio-muted)]">
               Owner
               <select
-                value={mine === true ? 'mine' : 'all'}
+                value={ownerFilterFor(mine)}
                 onChange={(event) => {
-                  const next = event.target.value === 'mine' ? true : undefined;
+                  const next = mineFromOwnerFilter(event.target.value);
                   setMine(next);
                   persistUrl({ mine: next });
                 }}
                 className={selectClass}
               >
-                <option value="all">All</option>
-                <option value="mine">Just mine</option>
+                {(['all', 'mine', 'shared'] as OwnerFilter[]).map((option) => (
+                  <option key={option} value={option}>
+                    {OWNER_FILTER_LABELS[option]}
+                  </option>
+                ))}
               </select>
             </label>
           </div>
@@ -302,8 +312,16 @@ function ProjectsContent() {
           </div>
         </div>
 
+        {/* Rendered unconditionally: a live region only announces changes to
+            text it already owns, so it has to exist before the list settles. */}
+        <p className="sr-only" aria-live="polite">
+          {listAnnouncement({ loading, error, count: filtered.length, noun: 'project' })}
+        </p>
+
         {loading && (
           <div
+            role="status"
+            aria-label="Loading projects"
             className={
               density === 'grid'
                 ? 'grid grid-cols-1 gap-16 sm:grid-cols-2 lg:grid-cols-3'

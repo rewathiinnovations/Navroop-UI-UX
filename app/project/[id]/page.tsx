@@ -1,5 +1,5 @@
 import { auth } from '@/auth';
-import { redirect } from 'next/navigation';
+import { notFound, redirect } from 'next/navigation';
 import { prisma } from '@/lib/db';
 import { getGitHubConnectionStatusForUser } from '@/lib/github/connection';
 import { getLatestPlan } from '@/lib/projects/plan';
@@ -27,11 +27,16 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
     getLatestPlan(id),
   ]);
 
+  // A deleted or mistyped id used to render the full workspace against nulls — an empty chat
+  // beside an empty preview, which reads as a broken product rather than a dead link
+  // (F-445). `not-found.tsx` in this segment keeps the workspace frame and offers a way out.
+  if (!project) notFound();
+
   return (
     <GenerationWorkspace
       githubConnected={github.connected}
-      githubRepoUrl={project?.githubRepoUrl ?? null}
-      initialPhase={project?.phase ?? null}
+      githubRepoUrl={project.githubRepoUrl}
+      initialPhase={project.phase}
       initialPlan={planResult.ok ? toWorkspacePlan(planResult.data) : null}
     />
   );

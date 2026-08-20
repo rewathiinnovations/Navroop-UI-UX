@@ -23,11 +23,15 @@ export default function WorkspaceAdmin({
   const [spendLimit, setSpendLimit] = useState(initial.monthlySpendLimitUsd?.toString() ?? '');
   const [paused, setPaused] = useState(initial.generationPaused);
   const [pauseReason, setPauseReason] = useState(initial.pauseReason ?? null);
-  const [busy, setBusy] = useState(false);
+  // Per-field, not one shared flag: saving the cap must not disable the spend
+  // limit, and the pause switch is unrelated to both.
+  const [savingCap, setSavingCap] = useState(false);
+  const [savingSpendLimit, setSavingSpendLimit] = useState(false);
+  const [savingPause, setSavingPause] = useState(false);
 
   const saveCap = async (event: FormEvent) => {
     event.preventDefault();
-    setBusy(true);
+    setSavingCap(true);
     try {
       await fetchJson('/api/admin/workspace', {
         method: 'PATCH',
@@ -40,12 +44,13 @@ export default function WorkspaceAdmin({
     } catch (error) {
       notify.error(error, { fallback: 'Could not save', key: 'workspace-cap' });
     } finally {
-      setBusy(false);
+      setSavingCap(false);
     }
   };
 
-  const saveSpendLimit = async () => {
-    setBusy(true);
+  const saveSpendLimit = async (event: FormEvent) => {
+    event.preventDefault();
+    setSavingSpendLimit(true);
     try {
       await fetchJson('/api/admin/workspace', {
         method: 'PATCH',
@@ -58,13 +63,13 @@ export default function WorkspaceAdmin({
     } catch (error) {
       notify.error(error, { fallback: 'Could not save', key: 'workspace-spend-limit' });
     } finally {
-      setBusy(false);
+      setSavingSpendLimit(false);
     }
   };
 
   // Pausing is confirmed by ConfirmAction on the button; resuming is one click.
   const togglePause = async () => {
-    setBusy(true);
+    setSavingPause(true);
     try {
       const payload = await fetchJson<{ generationPaused?: boolean; pauseReason?: string | null }>(
         '/api/admin/workspace',
@@ -84,7 +89,7 @@ export default function WorkspaceAdmin({
     } catch (error) {
       notify.error(error, { fallback: 'Could not update pause', key: 'workspace-pause' });
     } finally {
-      setBusy(false);
+      setSavingPause(false);
     }
   };
 
@@ -94,6 +99,10 @@ export default function WorkspaceAdmin({
       title="Workspace"
       description="Spending caps for the whole workspace, and the switch that stops all generation at once."
     >
+      {/* Two forms, not one. A single `<form onSubmit={saveCap}>` around both
+          fields meant Enter inside the spend limit ran `saveCap` — which PATCHes
+          `memberMonthlyCreditCap` only — and then toasted "Member cap saved."
+          while the edited spend ceiling was dropped. */}
       <form onSubmit={saveCap} className="space-y-16">
         <StudioField
           id="member-cap"
@@ -103,6 +112,12 @@ export default function WorkspaceAdmin({
           onChange={(event) => setCap(event.target.value)}
           placeholder="Empty = no per-member cap"
         />
+        <StudioButton type="submit" variant="primary" disabled={savingCap}>
+          {savingCap ? 'Saving…' : 'Save cap'}
+        </StudioButton>
+      </form>
+
+      <form onSubmit={saveSpendLimit} className="mt-24 space-y-16">
         <StudioField
           id="spend-limit"
           label="Monthly spend limit (USD)"
@@ -111,16 +126,8 @@ export default function WorkspaceAdmin({
           onChange={(event) => setSpendLimit(event.target.value)}
           placeholder="Empty = no spend ceiling"
         />
-        <StudioButton
-          type="button"
-          variant="ghost"
-          disabled={busy}
-          onClick={() => void saveSpendLimit()}
-        >
-          Save spend limit
-        </StudioButton>
-        <StudioButton type="submit" variant="primary" disabled={busy}>
-          Save cap
+        <StudioButton type="submit" variant="ghost" disabled={savingSpendLimit}>
+          {savingSpendLimit ? 'Saving…' : 'Save spend limit'}
         </StudioButton>
       </form>
 
@@ -145,7 +152,7 @@ export default function WorkspaceAdmin({
           <StudioButton
             type="button"
             variant="ghost"
-            disabled={busy}
+            disabled={savingPause}
             onClick={() => void togglePause()}
           >
             Resume generation
@@ -157,7 +164,7 @@ export default function WorkspaceAdmin({
             body="Every credit-consuming action stops immediately for the whole workspace, including builds already queued. Members see generation as paused until an admin resumes it."
             confirmLabel="Pause generation"
             busyLabel="Pausing…"
-            disabled={busy}
+            disabled={savingPause}
             onConfirm={() => togglePause()}
           />
         )}

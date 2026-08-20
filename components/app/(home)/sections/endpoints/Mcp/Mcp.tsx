@@ -1,10 +1,10 @@
-"use client";
+'use client';
 
-import { animate } from "motion";
-import { useEffect, useRef } from "react";
+import { animate } from 'motion';
+import { useEffect, useRef } from 'react';
 
-import { cn } from "@/utils/cn";
-import initCanvas from "@/utils/init-canvas";
+import { cn } from '@/utils/cn';
+import initCanvas from '@/utils/init-canvas';
 
 export default function EndpointsMcp({
   active,
@@ -29,7 +29,7 @@ export default function EndpointsMcp({
 
     if (!canvas) return;
 
-    const ctx = initCanvas(canvas);
+    const { ctx, dispose } = initCanvas(canvas);
 
     let isRunning = false;
     let isActive = false;
@@ -41,7 +41,7 @@ export default function EndpointsMcp({
 
     const render = () => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = "#FF4C00";
+      ctx.fillStyle = '#FF4C00';
 
       for (let i = 0; i < 9; i++) {
         ctx.globalAlpha = rowAlphas[i];
@@ -128,21 +128,26 @@ export default function EndpointsMcp({
     };
 
     render();
-    canvas.addEventListener("resize", render);
+    canvas.addEventListener('resize', render);
 
     if (triggerOnHover) {
-      const group = canvasRef.current!.closest(".group");
+      const group = canvasRef.current!.closest('.group');
 
       if (group) {
-        group.addEventListener("mouseenter", fnRefs.current.activate);
-        group.addEventListener("mouseleave", fnRefs.current.deactivate);
+        group.addEventListener('mouseenter', fnRefs.current.activate);
+        group.addEventListener('mouseleave', fnRefs.current.deactivate);
 
         return () => {
-          group.removeEventListener("mouseenter", fnRefs.current.activate);
-          group.removeEventListener("mouseleave", fnRefs.current.deactivate);
+          group.removeEventListener('mouseenter', fnRefs.current.activate);
+          group.removeEventListener('mouseleave', fnRefs.current.deactivate);
+          dispose();
         };
       }
     }
+
+    // `initCanvas` registers two window resize listeners. Without this they
+    // outlived every mount, holding the detached canvas and its 2D context.
+    return dispose;
   }, [size, triggerOnHover]);
 
   useEffect(() => {
@@ -170,11 +175,8 @@ export default function EndpointsMcp({
     <canvas
       className={cn(
         alwaysHeat
-          ? ""
-          : [
-              "[&.grayscale]:opacity-60 transition-[filter,opacity]",
-              !active && "grayscale",
-            ],
+          ? ''
+          : ['[&.grayscale]:opacity-60 transition-[filter,opacity]', !active && 'grayscale'],
       )}
       ref={canvasRef}
       style={{ width: size, height: size }}

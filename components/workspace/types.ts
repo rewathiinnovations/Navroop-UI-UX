@@ -86,8 +86,15 @@ export type SendMessageOptions = {
   silent?: boolean;
 };
 
-/** Why a send was refused. One reason so far; the shape is what the UI branches on. */
-export type SendRefusalReason = 'already-running';
+/**
+ * Why a send was refused.
+ *
+ * `already-running`: the server attached to a build already in flight, so the
+ * prompt never reached a model. `send-failed`: the request itself did not get
+ * through — a 402, 409, 503, an offline browser, or a thrown handler. Both mean
+ * the same thing to the input box: nothing was sent, so the text must come back.
+ */
+export type SendRefusalReason = 'already-running' | 'send-failed';
 
 /**
  * What a send did.
@@ -121,6 +128,15 @@ export function sendOutcomeForStream(result: { alreadyRunning?: boolean }): Send
 }
 
 /**
+ * The outcome for a send that did not get through. Every failing exit of
+ * `sendChatMessage` returns this rather than `undefined`: an exit that returns
+ * nothing is indistinguishable from an accepted send, which is how a 402/409/503
+ * or an offline browser used to swallow the typed prompt (F-006). The draft is
+ * cleared on send, so the outcome is the only thing that can hand the text back.
+ */
+export const SEND_FAILED: SendOutcome = { accepted: false, reason: 'send-failed' };
+
+/**
  * Whether a refused send's text goes back in the box.
  *
  * Only when the box is still empty. A refusal lands asynchronously, so by then the
@@ -129,6 +145,57 @@ export function sendOutcomeForStream(result: { alreadyRunning?: boolean }): Send
  */
 export function shouldRestoreRefusedText(outcome: SendOutcome | undefined, current: string) {
   return Boolean(outcome && !outcome.accepted && !current.trim());
+}
+
+/**
+ * Hands the just-sent text back to the box when the send did not get through.
+ *
+ * `ChatInput.submit` clears the input and the persisted draft before the request
+ * settles, so this is the only thing that can undo that. It lives here, apart from
+ * the component, so the three F-006 paths — a resolved refusal, a rejected promise,
+ * and a caller that cannot refuse at all — are testable without a DOM.
+ */
+export async function restoreTextIfNotSent(
+  sent: void | Promise<SendOutcome | void>,
+  text: string,
+  setValue: (update: (current: string) => string) => void,
+) {
+  if (!sent) return;
+  const outcome = await settleSend(sent);
+  setValue((current) => (shouldRestoreRefusedText(outcome, current) ? text : current));
+}
+
+/**
+ * The settled outcome of a send. A `void`-returning send yields `undefined`, and a
+ * rejected promise is the same event as a refusal — nothing was sent — so it
+ * normalises to `SEND_FAILED`. The send handler reports the error itself; this
+ * only classifies it, for the two things that have to be handed back when a send
+ * does not get through: the typed text and the attached images (F-006, F-091).
+ */
+export async function settleSend(sent: Promise<SendOutcome | void>) {
+  try {
+    return (await sent) ?? undefined;
+  } catch {
+    return SEND_FAILED;
+  }
+}
+
+/**
+ * Hands the images attached to a refused send back to the composer.
+ *
+ * They are already uploaded to the project, so losing the chips would leave the
+ * user paying for assets the next message no longer mentions. Same "only if the
+ * user has not moved on" rule as the text: a fresh attachment wins.
+ */
+export async function restoreAttachmentsIfNotSent<T>(
+  sent: void | Promise<SendOutcome | void>,
+  attachments: T[],
+  setAttachments: (update: (current: T[]) => T[]) => void,
+) {
+  if (!sent || attachments.length === 0) return;
+  const outcome = await settleSend(sent);
+  if (outcome?.accepted !== false) return;
+  setAttachments((current) => (current.length === 0 ? attachments : current));
 }
 
 export type ProjectPhase = 'PLANNING' | 'BUILDING' | 'COMPLETE';

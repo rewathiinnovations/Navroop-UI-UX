@@ -1,6 +1,7 @@
 'use client';
 
 import Hint from './Hint';
+import ImageWithFallback from './ImageWithFallback';
 import type { PresenceViewer } from './useProjectPresence';
 
 function initials(name: string) {
@@ -27,8 +28,14 @@ export default function PresenceAvatars({ viewers }: { viewers: PresenceViewer[]
             style={{ marginLeft: index === 0 ? 0 : -8, zIndex: 4 - index }}
           >
             {row.avatarUrl ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={row.avatarUrl} alt="" className="size-full rounded-full object-cover" />
+              <ImageWithFallback
+                src={row.avatarUrl}
+                alt=""
+                className="size-full rounded-full object-cover"
+                width={28}
+                height={28}
+                fallback={initials(row.name)}
+              />
             ) : (
               initials(row.name)
             )}

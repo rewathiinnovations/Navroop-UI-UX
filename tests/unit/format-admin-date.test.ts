@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { formatAdminDate, formatAdminDateTime } from '../../app/(app)/admin/format-admin-date';
+import {
+  ADMIN_DATE_EMPTY,
+  formatAdminDate,
+  formatAdminDateTime,
+} from '../../app/(app)/admin/format-admin-date';
 
 describe('formatAdminDateTime', () => {
   it('passes an explicit locale so SSR and the browser cannot disagree', () => {
@@ -28,9 +32,16 @@ describe('formatAdminDateTime', () => {
     expect(formatAdminDateTime(date)).toMatch(/^8\/17\/2026/);
   });
 
-  it('returns an empty string for invalid values', () => {
-    expect(formatAdminDateTime('not-a-date')).toBe('');
-    expect(formatAdminDateTime(null)).toBe('');
+  it('prints the admin no-value placeholder, not a blank cell, when there is no date', () => {
+    expect(ADMIN_DATE_EMPTY).toBe('—');
+    expect(formatAdminDateTime('not-a-date')).toBe(ADMIN_DATE_EMPTY);
+    expect(formatAdminDateTime(null)).toBe(ADMIN_DATE_EMPTY);
+    expect(formatAdminDateTime(undefined)).toBe(ADMIN_DATE_EMPTY);
+    expect(formatAdminDateTime('')).toBe(ADMIN_DATE_EMPTY);
+  });
+
+  it('lets a caller substitute its own wording for an absent date', () => {
+    expect(formatAdminDateTime(null, 'never')).toBe('never');
   });
 });
 
@@ -42,7 +53,12 @@ describe('formatAdminDate', () => {
     spy.mockRestore();
   });
 
-  it('returns an empty string for invalid values', () => {
-    expect(formatAdminDate('not-a-date')).toBe('');
+  it('prints the admin no-value placeholder, not a blank cell, when there is no date', () => {
+    expect(formatAdminDate('not-a-date')).toBe(ADMIN_DATE_EMPTY);
+    expect(formatAdminDate(null)).toBe(ADMIN_DATE_EMPTY);
+  });
+
+  it('lets a caller substitute its own wording for an absent date', () => {
+    expect(formatAdminDate(undefined, 'unknown')).toBe('unknown');
   });
 });

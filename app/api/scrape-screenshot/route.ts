@@ -1,8 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import FirecrawlApp from '@mendable/firecrawl-js';
 import { assertSafeUrl, UnsafeUrlError } from '@/lib/security/url-guard';
-import { jsonError } from '@/lib/api/error-response';
+import { fromUnknownError, jsonError } from '@/lib/api/error-response';
 import { requireSessionUser } from '@/lib/auth';
+
+/** The v3 response envelopes the v4 SDK types no longer describe. */
+type LegacyScrapeEnvelope = {
+  data?: { screenshot?: unknown; metadata?: unknown };
+  success?: boolean;
+  error?: unknown;
+};
 
 export async function POST(req: NextRequest) {
   const auth = await requireSessionUser();
@@ -10,7 +17,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const { url } = await req.json();
-    
+
     if (!url) {
       return NextResponse.json({ error: 'URL is required' }, { status: 400 });
     }
@@ -24,14 +31,17 @@ export async function POST(req: NextRequest) {
 
     // Initialize Firecrawl with API key from environment
     const apiKey = process.env.FIRECRAWL_API_KEY;
-    
+
     if (!apiKey) {
-      console.error("FIRECRAWL_API_KEY not configured");
-      return NextResponse.json({ 
-        error: 'Firecrawl API key not configured' 
-      }, { status: 500 });
+      console.error('FIRECRAWL_API_KEY not configured');
+      return NextResponse.json(
+        {
+          error: 'Firecrawl API key not configured',
+        },
+        { status: 500 },
+      );
     }
-    
+
     const app = new FirecrawlApp({ apiKey });
 
     console.log('[scrape-screenshot] Attempting to capture screenshot for:', url);
@@ -46,15 +56,22 @@ export async function POST(req: NextRequest) {
       actions: [
         {
           type: 'wait',
-          milliseconds: 2000 // Additional wait for dynamic content
-        }
-      ]
+          milliseconds: 2000, // Additional wait for dynamic content
+        },
+      ],
     });
 
     console.log('[scrape-screenshot] Full scrape result:', JSON.stringify(scrapeResult, null, 2));
     console.log('[scrape-screenshot] Scrape result type:', typeof scrapeResult);
     console.log('[scrape-screenshot] Scrape result keys:', Object.keys(scrapeResult));
-    
+
+    // Firecrawl v4's `scrape` resolves to a Document with `screenshot`/`metadata` at
+    // the top level. The two fallbacks below are the v3 envelopes — `{ data: { … } }`
+    // and `{ success: false, error }` — which the SDK type no longer declares but a
+    // mismatched API version still returns. Narrowing through `unknown` keeps the
+    // fallbacks working without an `any` that would also hide a real typo.
+    const legacy = scrapeResult as unknown as LegacyScrapeEnvelope;
+
     // The Firecrawl v4 API might return data directly without a success flag
     // Check if we have data with screenshot
     if (scrapeResult && scrapeResult.screenshot) {
@@ -62,33 +79,36 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({
         success: true,
         screenshot: scrapeResult.screenshot,
-        metadata: scrapeResult.metadata || {}
+        metadata: scrapeResult.metadata || {},
       });
-    } else if ((scrapeResult as any)?.data?.screenshot) {
-      // Nested data structure
+    } else if (typeof legacy.data?.screenshot === 'string') {
+      // Nested v3 data structure
       return NextResponse.json({
         success: true,
-        screenshot: (scrapeResult as any).data.screenshot,
-        metadata: (scrapeResult as any).data.metadata || {}
+        screenshot: legacy.data.screenshot,
+        metadata: legacy.data.metadata || {},
       });
-    } else if ((scrapeResult as any)?.success === false) {
+    } else if (legacy.success === false) {
       // Explicit failure
-      console.error('[scrape-screenshot] Firecrawl API error:', (scrapeResult as any).error);
-      throw new Error((scrapeResult as any).error || 'Failed to capture screenshot');
+      console.error('[scrape-screenshot] Firecrawl API error:', legacy.error);
+      throw new Error(
+        typeof legacy.error === 'string' ? legacy.error : 'Failed to capture screenshot',
+      );
     } else {
       // No screenshot in response
-      console.error('[scrape-screenshot] No screenshot in response. Full response:', JSON.stringify(scrapeResult, null, 2));
-      throw new Error('Screenshot not available in response - check console for full response structure');
+      console.error(
+        '[scrape-screenshot] No screenshot in response. Full response:',
+        JSON.stringify(scrapeResult, null, 2),
+      );
+      throw new Error(
+        'Screenshot not available in response - check console for full response structure',
+      );
     }
-
-  } catch (error: any) {
-    console.error('[scrape-screenshot] Screenshot capture error:', error);
-    console.error('[scrape-screenshot] Error stack:', error.stack);
-    
-    // Provide fallback response for development - removed NODE_ENV check as it doesn't work in Next.js production builds
-    
-    return NextResponse.json({ 
-      error: error.message || 'Failed to capture screenshot'
-    }, { status: 500 });
+  } catch (error: unknown) {
+    // `fromUnknownError` logs the real message under the request id and returns a
+    // fixed sentence. This handler used to forward `error.message` to the browser,
+    // which is the leak F-079 removed from the helper — Firecrawl errors echo the
+    // request metadata, and a fetch failure names the upstream host.
+    return fromUnknownError(error, 'Failed to capture screenshot', 'SCREENSHOT_FAILED');
   }
 }

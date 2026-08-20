@@ -1,7 +1,7 @@
-"use client";
+'use client';
 
-import { motion } from "framer-motion";
-import { useEffect, useState } from "react";
+import { motion } from 'motion/react';
+import { useEffect, useState } from 'react';
 
 interface RadarChartProps {
   data: {
@@ -15,23 +15,23 @@ interface RadarChartProps {
 export default function RadarChart({ data, size = 300 }: RadarChartProps) {
   const [isAnimated, setIsAnimated] = useState(false);
   const center = size / 2;
-  const radius = (size / 2) - 60; // Increased padding for labels
+  const radius = size / 2 - 60; // Increased padding for labels
   const angleStep = (Math.PI * 2) / data.length;
-  
+
   useEffect(() => {
     setIsAnimated(true);
   }, []);
-  
+
   // Calculate points for the polygon
   const getPoint = (value: number, index: number) => {
     const angle = index * angleStep - Math.PI / 2;
     const r = (value / 100) * radius;
     return {
       x: center + r * Math.cos(angle),
-      y: center + r * Math.sin(angle)
+      y: center + r * Math.sin(angle),
     };
   };
-  
+
   // Create polygon points string
   const polygonPoints = data
     .map((item, i) => {
@@ -39,10 +39,10 @@ export default function RadarChart({ data, size = 300 }: RadarChartProps) {
       return `${point.x},${point.y}`;
     })
     .join(' ');
-  
+
   // Grid levels
   const gridLevels = [20, 40, 60, 80, 100];
-  
+
   return (
     <div className="relative">
       <svg width={size} height={size} className="overflow-visible">
@@ -52,14 +52,14 @@ export default function RadarChart({ data, size = 300 }: RadarChartProps) {
             <stop offset="100%" stopColor="#FF8533" stopOpacity="0.3" />
           </linearGradient>
           <filter id="radar-glow">
-            <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+            <feGaussianBlur stdDeviation="2" result="coloredBlur" />
             <feMerge>
-              <feMergeNode in="coloredBlur"/>
-              <feMergeNode in="SourceGraphic"/>
+              <feMergeNode in="coloredBlur" />
+              <feMergeNode in="SourceGraphic" />
             </feMerge>
           </filter>
         </defs>
-        
+
         {/* Grid circles */}
         {gridLevels.map((level) => (
           <circle
@@ -72,7 +72,7 @@ export default function RadarChart({ data, size = 300 }: RadarChartProps) {
             strokeWidth="1"
           />
         ))}
-        
+
         {/* Axis lines */}
         {data.map((_, i) => {
           const angle = i * angleStep - Math.PI / 2;
@@ -90,7 +90,7 @@ export default function RadarChart({ data, size = 300 }: RadarChartProps) {
             />
           );
         })}
-        
+
         {/* Data polygon */}
         <motion.polygon
           points={polygonPoints}
@@ -99,10 +99,10 @@ export default function RadarChart({ data, size = 300 }: RadarChartProps) {
           strokeWidth="2"
           initial={{ opacity: 0, scale: 0.8 }}
           animate={{ opacity: 1, scale: 1 }}
-          transition={{ duration: 0.8, ease: "easeOut" }}
+          transition={{ duration: 0.8, ease: 'easeOut' }}
           filter="url(#radar-glow)"
         />
-        
+
         {/* Data points */}
         {data.map((item, i) => {
           const point = getPoint(item.score, i);
@@ -121,27 +121,27 @@ export default function RadarChart({ data, size = 300 }: RadarChartProps) {
             />
           );
         })}
-        
+
         {/* Labels */}
         {data.map((item, i) => {
           const angle = i * angleStep - Math.PI / 2;
           const labelRadius = radius + 40; // Increased label distance
           const x = center + labelRadius * Math.cos(angle);
           const y = center + labelRadius * Math.sin(angle);
-          
+
           // Better text anchor logic based on quadrant
-          let textAnchor = "middle";
+          let textAnchor = 'middle';
           let dy = 0;
-          
+
           // Left side
           if (x < center - 20) {
-            textAnchor = "end";
+            textAnchor = 'end';
           }
           // Right side
           else if (x > center + 20) {
-            textAnchor = "start";
+            textAnchor = 'start';
           }
-          
+
           // Top
           if (y < center - 20) {
             dy = -5;
@@ -150,12 +150,12 @@ export default function RadarChart({ data, size = 300 }: RadarChartProps) {
           else if (y > center + 20) {
             dy = 5;
           }
-          
+
           return (
             <motion.g key={i}>
               {/* Background for better readability */}
               <motion.rect
-                x={x - (textAnchor === "middle" ? 30 : textAnchor === "end" ? 60 : 0)}
+                x={x - (textAnchor === 'middle' ? 30 : textAnchor === 'end' ? 60 : 0)}
                 y={y - 10}
                 width={60}
                 height={20}
@@ -171,7 +171,7 @@ export default function RadarChart({ data, size = 300 }: RadarChartProps) {
                 y={y + dy}
                 textAnchor={textAnchor as any}
                 dominantBaseline="middle"
-                className="text-xs fill-black-alpha-80 font-medium"
+                className="text-xs fill-black-alpha-72 font-medium"
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 transition={{ delay: 1 + i * 0.05 }}
@@ -197,7 +197,7 @@ export default function RadarChart({ data, size = 300 }: RadarChartProps) {
           );
         })}
       </svg>
-      
+
       {/* Legend */}
       <div className="mt-16 flex justify-center">
         <div className="inline-flex flex-row gap-16 text-xs text-black-alpha-48 bg-white px-16 py-8 rounded-6 shadow-sm">

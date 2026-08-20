@@ -320,6 +320,26 @@ export const SETTINGS: readonly SettingEntry[] = [
     env: 'S3_PUBLIC_URL',
     envAliases: ['ELK_PUBLIC_URL'],
   },
+  {
+    key: 'storage.orphanGraceDays',
+    group: 'storage',
+    label: 'Orphaned object grace period (days)',
+    help: 'How long a stored file with nothing in the database pointing at it is left alone before the weekly storage check counts it as reclaimable. An upload is written seconds before the row that references it, so a short grace period would flag files that are about to be claimed.',
+    kind: 'number',
+    fallback: '14',
+  },
+  {
+    key: 'storage.orphanAction',
+    group: 'storage',
+    label: 'Orphaned objects',
+    help: 'Report only counts them on the Backups page. Delete also removes those older than the grace period during the weekly storage check. Start with Report, confirm the count looks like abandoned uploads and not your live files, then switch.',
+    kind: 'select',
+    fallback: 'report',
+    options: [
+      { value: 'report', label: 'Report only' },
+      { value: 'delete', label: 'Delete after the grace period' },
+    ],
+  },
 
   // ------------------------------------------------------------------ backups
   {
@@ -403,6 +423,14 @@ export const SETTINGS: readonly SettingEntry[] = [
     env: 'CRON_SECRET',
   },
   {
+    key: 'observability.deadManUrl',
+    group: 'app',
+    label: 'Monitoring heartbeat URL',
+    help: 'The daily system-checks digest calls this address every time it runs. Point it at an external monitor that expects a regular ping (Healthchecks.io, Better Stack, Uptime Kuma "push") and alerts when one does not arrive: that alert is the only thing that can tell you the digest itself stopped running, because the digest is what reports every other scheduled task. Leave blank to disable.',
+    kind: 'url',
+    placeholder: 'https://hc-ping.com/your-check-uuid',
+  },
+  {
     key: 'app.checkpointRetentionDays',
     group: 'app',
     label: 'Checkpoint retention (days)',
@@ -412,6 +440,18 @@ export const SETTINGS: readonly SettingEntry[] = [
     fallback: '7',
   },
   {
+    key: 'app.workspaceName',
+    group: 'app',
+    label: 'Workspace name',
+    help: 'Used when this product creates things on your behalf — the GitHub App is named "Navroop Deploy — <name>" and a new Sentry project takes this name. Applies on the next connect; no rebuild needed.',
+    kind: 'text',
+    env: 'WORKSPACE_NAME',
+    // The old name. It is a build-time variable, which is why the server-side reads moved
+    // here (F-240), but an existing deployment that only sets it must keep working.
+    envAliases: ['NEXT_PUBLIC_WORKSPACE_NAME'],
+    fallback: 'Navroop',
+  },
+  {
     key: 'app.purgeDeletedDays',
     group: 'app',
     label: 'Deleted project retention (days)',
@@ -419,6 +459,46 @@ export const SETTINGS: readonly SettingEntry[] = [
     kind: 'number',
     env: 'PURGE_DELETED_DAYS',
     fallback: '30',
+  },
+  {
+    key: 'app.certWarningDays',
+    group: 'app',
+    label: 'Certificate warning (days)',
+    help: 'How long before your TLS certificate expires the daily certificate check starts failing, so there is still time to renew. Shorter means fewer warnings and less time to act.',
+    kind: 'number',
+    fallback: '14',
+  },
+  {
+    key: 'app.observabilityRetentionDays',
+    group: 'app',
+    label: 'Scheduled-task history (days)',
+    help: 'How long the record of scheduled-task runs and health checks is kept. The most recent run of each task is always kept regardless of age, because that is the row the health page reads. Nothing in the product looks further back than a day, so this only affects how much history you can inspect by hand.',
+    kind: 'number',
+    fallback: '30',
+  },
+  {
+    key: 'app.sentryQuotaWarnPercent',
+    group: 'app',
+    label: 'Error-tracking quota warning (%)',
+    help: 'How much of your Sentry monthly event quota may be used before the daily check emails a warning. Above this level Sentry starts dropping events, so errors stop arriving without anything failing.',
+    kind: 'number',
+    fallback: '80',
+  },
+  {
+    key: 'backups.staleAfterHours',
+    group: 'backups',
+    label: 'Backup considered stale after (hours)',
+    help: 'How long without a successful backup before the Backups page raises a warning and emails the admins. Backups run nightly, so anything under 24 would alert on a normal schedule.',
+    kind: 'number',
+    fallback: '48',
+  },
+  {
+    key: 'backups.restoreTestDays',
+    group: 'backups',
+    label: 'Restore drill overdue after (days)',
+    help: 'How long since the last restore drill before the Backups page marks one as due. An untested backup is a guess; this is an advisory only and never emails.',
+    kind: 'number',
+    fallback: '90',
   },
 ];
 
@@ -453,7 +533,7 @@ export const BOOTSTRAP_ENV_VARS = [
   },
   {
     name: 'NEXT_PUBLIC_WORKSPACE_NAME',
-    help: 'Workspace name shown in the browser. Baked in at build time.',
+    help: 'Workspace name shown in the browser (the dashboard heading, email templates). Baked in at build time. Everything created server-side reads the Workspace name setting above instead.',
   },
 ] as const;
 

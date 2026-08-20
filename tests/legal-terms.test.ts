@@ -4,9 +4,10 @@
  * This suite used to drive `registerAccount`, which no longer exists: Navroop has no
  * self-serve registration, so `POST /api/auth/register` refuses everyone without
  * touching the database (see `lib/legal/register.ts` for the incident). The invitee
- * path is what remains: an admin creates the User through `POST /api/admin/invite`,
- * the invitee signs in with the temporary password, and `/api/legal/accept` records
- * their acceptance of the current terms — which is what these assertions cover.
+ * path is what remains: an admin creates the User through `POST /api/admin/invite`, the
+ * invitee sets their own password from the emailed single-use link (F-351), and
+ * `/api/legal/accept` records their acceptance of the current terms — which is what these
+ * assertions cover.
  *
  * A DB suite: run it through the harness, which points DATABASE_URL at
  * TEST_DATABASE_URL before any PrismaClient exists. Running the file directly is refused
@@ -56,9 +57,10 @@ try {
     'the closed endpoint creates no user',
   );
 
-  // How an account actually comes into being: the admin invite route creates the User
-  // with a temporary password and an already-accepted Invite. `Invite.invitedById` is a
-  // real FK, so the inviter is a throwaway ADMIN.
+  // How an account actually comes into being: the admin invite route creates the User and
+  // a pending Invite. This fixture writes the post-acceptance shape directly, since terms
+  // acceptance is what is under test here, not the invite mechanics.
+  // `Invite.invitedById` is a real FK, so the inviter is a throwaway ADMIN.
   const inviter = await prisma.user.create({
     data: {
       email: `inviter-${suffix}@example.com`,

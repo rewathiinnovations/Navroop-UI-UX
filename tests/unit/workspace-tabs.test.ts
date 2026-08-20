@@ -1,6 +1,12 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+} from '@/components/ui/shadcn/dropdown-menu';
 import {
   WORKSPACE_PRIMARY_TABS,
   WORKSPACE_TABS,
@@ -38,9 +44,25 @@ describe('workspace top bar tabs', () => {
  * not be lost in the move is that each of the four is still a real focusable control
  * with a name — a menu that renders three of them, or renders them as unnamed icons,
  * is a view a keyboard or screen-reader user can no longer reach at all.
+ *
+ * The menu ran on a hand-rolled `role="menu"` div until N-016; it is a Radix
+ * `DropdownMenuRadioGroup` now, so the panel is portaled and never appears in
+ * server markup. The four items are therefore asserted on the element tree the
+ * component returns — which pins the value each item carries and the callback the
+ * group reports through, not just a substring — and the trigger, which does render
+ * on the server, keeps its markup assertions.
  */
 describe('the view overflow keeps every secondary view reachable', () => {
-  function menu(view: WorkspaceView, open: boolean) {
+  function tree(view: WorkspaceView) {
+    return WorkspaceToolMenu({
+      view,
+      open: true,
+      onViewChange: () => {},
+      onOpenChange: () => {},
+    });
+  }
+
+  function markup(view: WorkspaceView, open: boolean) {
     return renderToStaticMarkup(
       createElement(WorkspaceToolMenu, {
         view,
@@ -51,39 +73,128 @@ describe('the view overflow keeps every secondary view reachable', () => {
     );
   }
 
-  it('offers all four as named menu items', () => {
-    const markup = menu('preview', true);
+  it('offers all four as named radio items, in order', () => {
+    const items = elementsOfType(tree('preview'), DropdownMenuRadioItem);
 
-    for (const tab of WORKSPACE_TOOL_TABS) {
-      expect(markup).toContain(tab.label);
-    }
-    expect(markup.match(/role="menuitemradio"/g)).toHaveLength(WORKSPACE_TOOL_TABS.length);
-    // Buttons, not divs with click handlers: that is what makes them tabbable.
-    expect(markup.match(/<button type="button" role="menuitemradio"/g)).toHaveLength(
-      WORKSPACE_TOOL_TABS.length,
+    expect(items.map((item) => item.props.value)).toEqual(WORKSPACE_TOOL_TABS.map((tab) => tab.id));
+    // A name, not a bare icon: an unlabelled item is a view nobody can find.
+    expect(items.map((item) => textOf(item.props.children))).toEqual(
+      WORKSPACE_TOOL_TABS.map((tab) => tab.label),
     );
-    expect(markup).not.toContain('tabindex="-1"');
   });
 
-  it('reports which of the four is showing, on the item and on the trigger', () => {
-    const open = menu('brain', true);
-    // One checked item, and it is Brain — the markup order matches WORKSPACE_TOOL_TABS.
-    expect(open.match(/aria-checked="true"/g)).toHaveLength(1);
-    const checked = open.slice(open.indexOf('aria-checked="true"'));
-    expect(checked.slice(0, checked.indexOf('</button>'))).toContain('Brain');
+  it('reports which of the four is showing, through the group and on the trigger', () => {
+    const [group] = elementsOfType(tree('brain'), DropdownMenuRadioGroup);
+    expect(group.props.value).toBe('brain');
 
     // Closed, the trigger is the only thing left saying where the reader is. Without
     // this the header claimed nothing was selected while a Brain panel filled the pane.
-    const closed = menu('brain', false);
+    const closed = markup('brain', false);
     expect(closed).toContain('aria-label="Brain — more views"');
     expect(closed).toContain('aria-expanded="false"');
-    expect(closed).not.toContain('role="menuitemradio"');
   });
 
-  it('names the trigger plainly while Preview or Code is showing', () => {
-    expect(menu('code', false)).toContain('aria-label="More views"');
+  it('carries no selection while Preview or Code is showing', () => {
+    const [group] = elementsOfType(tree('code'), DropdownMenuRadioGroup);
+    // `code` is a primary tab, so none of the four overflow views is checked.
+    expect(WORKSPACE_TOOL_TABS.map((tab) => tab.id)).not.toContain(group.props.value);
+    expect(markup('code', false)).toContain('aria-label="More views"');
+  });
+
+  it('names the trigger as a menu trigger the keyboard can open', () => {
+    const closed = markup('code', false);
+    expect(closed).toContain('aria-haspopup="menu"');
+    expect(closed).toContain('<button type="button"');
+  });
+
+  it('reports the chosen view upward when the group changes', () => {
+    const chosen: WorkspaceView[] = [];
+    const [group] = elementsOfType(
+      WorkspaceToolMenu({
+        view: 'preview',
+        open: true,
+        onViewChange: (next) => chosen.push(next),
+        onOpenChange: () => {},
+      }),
+      DropdownMenuRadioGroup,
+    );
+
+    (group.props.onValueChange as (value: string) => void)('domains');
+    expect(chosen).toEqual(['domains']);
   });
 });
+
+/**
+ * N-016: three popovers in the workspace header declared `role="menu"` (one of them
+ * `role="menuitemradio"`) while implementing none of the WAI-ARIA menu keyboard
+ * contract — opening did not move focus, arrows and Home/End did nothing, there was
+ * no roving tabIndex, and Escape dropped focus on `<body>` rather than returning it
+ * to the trigger. Radix owns all three now. A hand-written menu role reappearing in
+ * this chrome is the regression, so it is asserted against the source.
+ */
+describe('the workspace header declares no menu role it does not implement', () => {
+  for (const file of [
+    'components/workspace/WorkspaceTopBar.tsx',
+    'components/workspace/WorkspaceViewControls.tsx',
+  ]) {
+    it(`${file} has no hand-rolled menu role`, () => {
+      const source = readFileSync(resolve(process.cwd(), file), 'utf8');
+      // Comments in both files explain the old markup, so the scan runs on code
+      // only — otherwise the explanation of the fix would fail the guard for it.
+      const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+      expect(code).not.toMatch(/role=["']menu/);
+      expect(source).toContain("from '@/components/ui/shadcn/dropdown-menu'");
+    });
+  }
+
+  /**
+   * N-024: the third popover in the same header — the GitHub connect panel — is a
+   * paragraph plus a link, so it is a disclosure rather than a menu. It kept its
+   * own `mousedown` + Escape listener after the other two moved to Radix, which
+   * meant opening it did not move focus, Escape left focus on `<body>`, and
+   * tabbing past it left the panel open behind the page. Every popover in this
+   * header now delegates its keyboard contract, so a re-appearing document-level
+   * listener is the regression to catch.
+   */
+  it('routes the connect disclosure through useDisclosurePopover, not its own listeners', () => {
+    const source = readFileSync(
+      resolve(process.cwd(), 'components/workspace/WorkspaceTopBar.tsx'),
+      'utf8',
+    );
+    expect(source).toContain("from '@/hooks/useDisclosurePopover'");
+    expect(source).not.toContain("document.addEventListener('mousedown'");
+    expect(source).not.toContain("document.addEventListener('keydown'");
+    // The trigger has to name the panel it opens, and take focus back on Escape.
+    expect(source).toContain('ref={connectTriggerRef}');
+    expect(source).toContain('aria-controls={connectPanelId}');
+    expect(source).toContain('onBlurCapture={onConnectBlurCapture}');
+  });
+});
+
+/** Every element of `type` in the tree, outermost first. */
+function elementsOfType(
+  node: unknown,
+  type: unknown,
+  found: { props: Record<string, unknown> }[] = [],
+): { props: Record<string, unknown> }[] {
+  if (Array.isArray(node)) {
+    for (const child of node) elementsOfType(child, type, found);
+    return found;
+  }
+  if (!node || typeof node !== 'object') return found;
+  const element = node as { type?: unknown; props?: Record<string, unknown> };
+  if (!element.props) return found;
+  if (element.type === type) found.push({ props: element.props });
+  elementsOfType(element.props.children, type, found);
+  return found;
+}
+
+/** The visible text of an item, ignoring the icon element beside it. */
+function textOf(children: unknown): string {
+  if (typeof children === 'string') return children.trim();
+  if (Array.isArray(children)) return children.map(textOf).join('').trim();
+  return '';
+}
 
 const CREATED = '2026-08-19T10:00:00.000Z';
 

@@ -151,11 +151,12 @@ export default function TemplatesAdmin({
         error?: string;
       }>;
       const failed = results.filter((row) => !row.ok);
-      // `payload.message` is the route's "nothing to do" note, not a failure —
-      // it used to be pushed through the error banner.
-      if (payload.message) {
-        notify.settle(toastId, 'info', payload.message);
-      } else if (failed.length) {
+      const remaining = typeof payload.remaining === 'number' ? payload.remaining : 0;
+      // F-823: the batch is bounded, so `payload.message` now carries the
+      // how-much-is-left note on *every* press, not just the "nothing to do"
+      // one. A failure has to outrank it — testing `message` first would have
+      // reported a failed capture as an info toast.
+      if (failed.length) {
         notify.settle(
           toastId,
           'warning',
@@ -164,6 +165,9 @@ export default function TemplatesAdmin({
             .join(', ')}`,
           { autoClose: 10000 },
         );
+      } else if (payload.message) {
+        // Unfinished work is not success: the operator has to press again.
+        notify.settle(toastId, remaining > 0 ? 'info' : 'success', payload.message);
       } else {
         notify.settle(toastId, 'success', `Generated ${results.length} thumbnails.`);
       }

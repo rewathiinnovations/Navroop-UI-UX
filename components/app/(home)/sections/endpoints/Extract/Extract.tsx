@@ -1,9 +1,9 @@
-"use client";
+'use client';
 
-import { animate } from "motion";
-import { useEffect, useRef } from "react";
+import { animate } from 'motion';
+import { useEffect, useRef } from 'react';
 
-import initCanvas from "@/utils/init-canvas";
+import initCanvas from '@/utils/init-canvas';
 
 export default function EndpointsExtract({ size = 20 }: { size?: number }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -13,15 +13,14 @@ export default function EndpointsExtract({ size = 20 }: { size?: number }) {
 
     if (!canvas) return;
 
-    const ctx = initCanvas(canvas);
+    const { ctx, dispose } = initCanvas(canvas);
 
     let isRunning = false;
     let isActive = false;
 
     let diff = 0;
     const defaultRowAlphas = [
-      0.4, 0.04, 0.2, 0.4, 0.2, 0, 0, 0.04, 0.04, 0, 0, 0.2, 0.4, 0.2, 0.04,
-      0.4,
+      0.4, 0.04, 0.2, 0.4, 0.2, 0, 0, 0.04, 0.04, 0, 0, 0.2, 0.4, 0.2, 0.04, 0.4,
     ];
 
     const differs = Array.from({ length: 16 }, () => 0.2 + Math.random() * 0.2);
@@ -29,15 +28,14 @@ export default function EndpointsExtract({ size = 20 }: { size?: number }) {
     const scaler = size / 20;
 
     const render = () => {
-      ctx.fillStyle = "#FF4C00";
+      ctx.fillStyle = '#FF4C00';
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       for (let i = 0; i < 16; i++) {
         if ([5, 6, 9, 10].includes(i)) continue;
 
         ctx.globalAlpha = defaultRowAlphas[i] + diff * differs[i];
-        ctx.globalAlpha =
-          Math.min(ctx.globalAlpha, 0.4) - Math.max(ctx.globalAlpha - 0.4, 0);
+        ctx.globalAlpha = Math.min(ctx.globalAlpha, 0.4) - Math.max(ctx.globalAlpha - 0.4, 0);
 
         ctx.fillRect(
           (3 + (i % 4) * 4) * scaler,
@@ -114,19 +112,24 @@ export default function EndpointsExtract({ size = 20 }: { size?: number }) {
     };
 
     render();
-    canvas.addEventListener("resize", render);
+    canvas.addEventListener('resize', render);
 
-    const group = canvasRef.current!.closest(".group");
+    const group = canvasRef.current!.closest('.group');
 
     if (group) {
-      group.addEventListener("mouseenter", activate);
-      group.addEventListener("mouseleave", deactivate);
+      group.addEventListener('mouseenter', activate);
+      group.addEventListener('mouseleave', deactivate);
 
       return () => {
-        group.removeEventListener("mouseenter", activate);
-        group.removeEventListener("mouseleave", deactivate);
+        group.removeEventListener('mouseenter', activate);
+        group.removeEventListener('mouseleave', deactivate);
+        dispose();
       };
     }
+
+    // `initCanvas` registers two window resize listeners. Without this they
+    // outlived every mount, holding the detached canvas and its 2D context.
+    return dispose;
   }, [size]);
 
   return <canvas ref={canvasRef} style={{ width: size, height: size }} />;

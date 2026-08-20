@@ -41,7 +41,9 @@ export default function ProfileSettingsPage() {
   const [savingProfile, setSavingProfile] = useState(false);
   const [savingPassword, setSavingPassword] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
-  const [dataRequesting, setDataRequesting] = useState(false);
+  // Per kind: one shared flag disabled both buttons and printed "Sending…" on
+  // both, so there was no way to tell which request was in flight.
+  const [dataRequesting, setDataRequesting] = useState<'export' | 'deletion' | null>(null);
 
   useEffect(() => {
     if (!user) return;
@@ -287,9 +289,9 @@ export default function ProfileSettingsPage() {
                 key={kind}
                 type="button"
                 variant="ghost"
-                disabled={dataRequesting}
+                disabled={dataRequesting !== null}
                 onClick={async () => {
-                  setDataRequesting(true);
+                  setDataRequesting(kind);
                   try {
                     const response = await fetch('/api/legal/data-request', {
                       method: 'POST',
@@ -315,15 +317,18 @@ export default function ProfileSettingsPage() {
                       key: 'data-request',
                     });
                   } finally {
-                    setDataRequesting(false);
+                    setDataRequesting(null);
                   }
                 }}
               >
-                {dataRequesting
+                {/* The export button used to read "Request data export or deletion"
+                    while sending `kind: 'export'` — the button that mentioned
+                    deletion was the one that did not request it. */}
+                {dataRequesting === kind
                   ? 'Sending…'
                   : kind === 'deletion'
                     ? 'Request account deletion'
-                    : 'Request data export or deletion'}
+                    : 'Request a copy of my data'}
               </StudioButton>
             ))}
           </div>

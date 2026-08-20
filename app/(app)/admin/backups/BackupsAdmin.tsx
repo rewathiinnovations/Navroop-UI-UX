@@ -6,11 +6,14 @@ import AdminPage from '@/components/admin/AdminPage';
 import { AdminTable, Td, Th, Tr } from '@/components/admin/AdminTable';
 import StatTile from '@/components/admin/StatTile';
 import StatusBanner from '@/components/admin/StatusBanner';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import StudioButton from '@/components/app/studio/StudioButton';
 import { BACK_UP_NOW_LABEL } from '@/lib/backup/copy';
 import { notify, toMessage } from '@/lib/notify';
 import { formatAdminDateTime } from '../format-admin-date';
+import { connectionState } from '@/lib/net/connection';
+import { useRefetchOnReconnect } from '@/hooks/useOnline';
+import { BACKUP_POLL_INTERVAL_MS, decidePoll, type PollOutcome } from './poll-policy';
 
 type BackupAdminPayload = {
   lastSuccess: {
@@ -52,34 +55,63 @@ export default function BackupsAdmin({ initial }: { initial: BackupAdminPayload 
   const [data, setData] = useState(initial);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  // Consecutive transient poll failures. A ref, not state: the interval must not
+  // be torn down and rebuilt on every failed tick.
+  const pollFailures = useRef(0);
+  const [pollStopped, setPollStopped] = useState(false);
 
-  const refresh = async () => {
-    const response = await fetch('/api/admin/backups');
-    if (response.status === 403) {
-      window.location.replace('/dashboard');
-      return;
+  const settlePoll = useCallback((outcome: PollOutcome, message?: string) => {
+    const next = decidePoll({ failures: pollFailures.current, outcome, message });
+    pollFailures.current = next.failures;
+    setPollStopped(next.stopped);
+    setError(next.message);
+  }, []);
+
+  const refresh = useCallback(async () => {
+    try {
+      const response = await fetch('/api/admin/backups');
+      if (response.status === 403) {
+        settlePoll('terminal', 'Your admin access was removed. Reload the page.');
+        return;
+      }
+      // Inside the try: a non-JSON body threw here, and this runs on a timer.
+      const payload = await response.json();
+      if (!response.ok) {
+        settlePoll('transient', payload.error || 'Could not load backups');
+        return;
+      }
+      setData(payload);
+      settlePoll('ok');
+    } catch (cause) {
+      settlePoll('transient', toMessage(cause, 'Could not refresh the backup status'));
     }
-    const payload = await response.json();
-    if (!response.ok) {
-      setError(payload.error || 'Could not load backups');
-      return;
-    }
-    setData(payload);
-  };
+  }, [settlePoll]);
 
   useEffect(() => {
+    if (pollStopped) return;
     if (!data.running && !busy) return;
     const timer = window.setInterval(() => {
+      // Offline ticks used to spend the transient-failure budget in `decidePoll`,
+      // so a short outage stopped the poller for good and the page sat on a stale
+      // backup status with a network error above it. The banner already says why
+      // nothing is updating (F-446).
+      if (connectionState() === 'offline') return;
       void refresh();
-    }, 2000);
+    }, BACKUP_POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [data.running, busy]);
+  }, [data.running, busy, pollStopped, refresh]);
+
+  useRefetchOnReconnect(refresh);
 
   // The route runs the backup synchronously (up to 5 minutes), so this keeps a
   // pending toast on screen and settles it in place with the outcome.
   const runNow = async () => {
     setBusy(true);
     setError('');
+    // A manual run is a fresh start for the poller: an earlier give-up must not
+    // keep the new backup's progress off the page.
+    pollFailures.current = 0;
+    setPollStopped(false);
     const toastId = notify.loading('Backing up the database…');
     try {
       const response = await fetch('/api/admin/backups/run', { method: 'POST' });
@@ -130,11 +162,17 @@ export default function BackupsAdmin({ initial }: { initial: BackupAdminPayload 
         <StatusBanner tone="error">{data.alert.message}</StatusBanner>
       )}
       {error && <StatusBanner tone="error">{error}</StatusBanner>}
-      {(busy || data.running) && (
-        <StatusBanner tone="info">
-          Backup in progress. This page refreshes automatically.
-        </StatusBanner>
-      )}
+      {(busy || data.running) &&
+        (pollStopped ? (
+          <StatusBanner tone="warning">
+            Backup in progress, but this page has stopped refreshing itself. Reload to see where it
+            got to.
+          </StatusBanner>
+        ) : (
+          <StatusBanner tone="info">
+            Backup in progress. This page refreshes automatically.
+          </StatusBanner>
+        ))}
 
       <div className="grid grid-cols-1 gap-12 sm:grid-cols-3">
         <StatTile

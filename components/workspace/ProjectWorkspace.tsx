@@ -1,12 +1,12 @@
 'use client';
 
-import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { cn } from '@/utils/cn';
 import '@/components/app/studio/studio.css';
 import ChatInput from './ChatInput';
 import ChatPanel from './ChatPanel';
 import PreviewPanel from './PreviewPanel';
-import { BrowserPreview } from './BrowserPreview';
+import { BrowserPreview, type PreviewErrorKind } from './BrowserPreview';
 import type { GenerationFile } from '@/lib/generation/types';
 import StreamingCodePanel from './StreamingCodePanel';
 import { useProjectFiles } from './useProjectFiles';
@@ -44,6 +44,10 @@ import { dispatchRecoveryRetry, recoveryRetryIntent } from '@/lib/jobs/recovery-
 import type { ImportMode } from '@/lib/import/mode';
 import { useGenerationJob } from './useGenerationJob';
 import { notify } from '@/lib/notify';
+
+/** Referentially stable so `files={streamFiles ?? EMPTY_STREAM_FILES}` does not
+ * hand the memoised panel a fresh array whenever nothing is streaming. */
+const EMPTY_STREAM_FILES: GenerationFile[] = [];
 
 export default function ProjectWorkspace({
   projectId,
@@ -212,6 +216,28 @@ export default function ProjectWorkspace({
     // Returned, not discarded: a refusal has to reach ChatInput or the text is gone.
     return onSend(text, options);
   };
+
+  // The panels below are `memo`ised (F-641), so props that change identity every
+  // render would defeat that. The workspace root re-renders on its own polls
+  // (job, presence) even when idle, so an inline `onFixError` closure and an
+  // inline `stream` object would re-render the preview — and its esbuild-wasm
+  // compile path — on each. A ref to the latest `handleSend` keeps the callback
+  // stable without freezing the closure's view of state.
+  const handleSendRef = useRef(handleSend);
+  // Written in an effect, not during render: a ref may not be touched while
+  // rendering. `handleFixError` only reads it from a user event, after commit.
+  useEffect(() => {
+    handleSendRef.current = handleSend;
+  });
+  const handleFixError = useCallback(
+    (message: string, kind: PreviewErrorKind) =>
+      handleSendRef.current(previewRepairInstruction(message, kind), { mode: 'build' }),
+    [],
+  );
+  const previewStream = useMemo(
+    () => (isJobActive && streamFiles ? { files: streamFiles, active: true } : null),
+    [isJobActive, streamFiles],
+  );
 
   const handleApprove = () => {
     void approve().then((result) => {
@@ -403,6 +429,7 @@ export default function ProjectWorkspace({
               }
               header={chatHeader}
               onPreviewCheckpoint={handlePreviewCheckpoint}
+              previewedVersionId={previewing ? previewedVersionId : null}
               latestCheckpoint={latestCheckpoint}
               phase={phase}
               jobStatus={generationJob.job?.status}
@@ -537,7 +564,7 @@ export default function ProjectWorkspace({
               // compiled page takes over the moment there is a page to compile.
               nothingRenderableYet ? (
                 <StreamingCodePanel
-                  files={streamFiles ?? []}
+                  files={streamFiles ?? EMPTY_STREAM_FILES}
                   status={generationStatus}
                   streamedText={streamedText}
                   className="h-full"
@@ -546,7 +573,7 @@ export default function ProjectWorkspace({
                 <BrowserPreview
                   stack={projectFiles.stack}
                   files={projectFiles.files}
-                  stream={isJobActive && streamFiles ? { files: streamFiles, active: true } : null}
+                  stream={previewStream}
                   frameRef={previewFrameRef}
                   onFrameMounted={setBrowserFrameMounted}
                   // Handing the failure back beats a recompile that can only
@@ -554,9 +581,7 @@ export default function ProjectWorkspace({
                   // first attempt said "fails to compile" about a runtime crash,
                   // so the model went looking for a build error that did not
                   // exist and its edit did not fix anything.
-                  onFixError={(message, kind) =>
-                    handleSend(previewRepairInstruction(message, kind), { mode: 'build' })
-                  }
+                  onFixError={handleFixError}
                 />
               )
             ) : (

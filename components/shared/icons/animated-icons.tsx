@@ -1,8 +1,8 @@
-"use client";
+'use client';
 
-import type { Transition, Variants } from "framer-motion";
-import { motion, useAnimation } from "framer-motion";
-import { useCallback, useEffect } from "react";
+import type { Transition, Variants } from 'motion/react';
+import { motion, useAnimation } from 'motion/react';
+import { useCallback, useEffect } from 'react';
 
 const playIconVariants: Variants = {
   normal: {
@@ -51,9 +51,9 @@ const withIconAnimation = (IconComponent: React.ComponentType<any>) => {
 
     useEffect(() => {
       if (isHovered) {
-        controls.start("animate");
+        controls.start('animate');
       } else {
-        controls.start("normal");
+        controls.start('normal');
       }
     }, [isHovered, controls]);
 
@@ -93,7 +93,7 @@ const withChartIconAnimation = (IconComponent: React.ComponentType<any>) => {
     }, [controls]);
 
     const handleHoverEnd = useCallback(() => {
-      controls.start("normal");
+      controls.start('normal');
     }, [controls]);
 
     useEffect(() => {
@@ -176,7 +176,7 @@ const SettingsGearIconBase = ({ controls }: { controls: any }) => {
       strokeWidth="2"
       strokeLinecap="round"
       strokeLinejoin="round"
-      transition={{ type: "spring", stiffness: 50, damping: 10 }}
+      transition={{ type: 'spring', stiffness: 50, damping: 10 }}
       variants={{
         normal: {
           rotate: 0,
@@ -356,7 +356,7 @@ const ActivityLogsIconBase = ({ controls }: { controls: any }) => {
 };
 
 const defaultTransition2: Transition = {
-  type: "spring",
+  type: 'spring',
   stiffness: 200,
   damping: 10,
 };
@@ -412,26 +412,10 @@ const ScanTextIconBase = ({ controls }: { controls: any }) => {
       strokeLinecap="round"
       strokeLinejoin="round"
     >
-      <motion.path
-        d="M3 7V5a2 2 0 0 1 2-2h2"
-        variants={frameVariants}
-        animate={controls}
-      />
-      <motion.path
-        d="M17 3h2a2 2 0 0 1 2 2v2"
-        variants={frameVariants}
-        animate={controls}
-      />
-      <motion.path
-        d="M21 17v2a2 2 0 0 1-2 2h-2"
-        variants={frameVariants}
-        animate={controls}
-      />
-      <motion.path
-        d="M7 21H5a2 2 0 0 1-2-2v-2"
-        variants={frameVariants}
-        animate={controls}
-      />
+      <motion.path d="M3 7V5a2 2 0 0 1 2-2h2" variants={frameVariants} animate={controls} />
+      <motion.path d="M17 3h2a2 2 0 0 1 2 2v2" variants={frameVariants} animate={controls} />
+      <motion.path d="M21 17v2a2 2 0 0 1-2 2h-2" variants={frameVariants} animate={controls} />
+      <motion.path d="M7 21H5a2 2 0 0 1-2-2v-2" variants={frameVariants} animate={controls} />
       <motion.path
         d="M7 8h8"
         variants={lineVariants}
@@ -487,7 +471,7 @@ const LogOutIconBase = ({ controls }: { controls: any }) => {
           normal: { x: 0 },
           animate: { x: [0, 3, 0] },
         }}
-        transition={{ duration: 0.5, ease: "easeInOut" }}
+        transition={{ duration: 0.5, ease: 'easeInOut' }}
         animate={controls}
       />
       <motion.line
@@ -499,7 +483,7 @@ const LogOutIconBase = ({ controls }: { controls: any }) => {
           normal: { x1: 21, x2: 9 },
           animate: { x1: [21, 24, 21], x2: [9, 12, 9] },
         }}
-        transition={{ duration: 0.5, ease: "easeInOut" }}
+        transition={{ duration: 0.5, ease: 'easeInOut' }}
         animate={controls}
       />
     </motion.svg>
@@ -527,7 +511,7 @@ const ExternalLinkIconBase = ({ controls }: { controls: any }) => {
           normal: { rotate: 0, scale: 1 },
           animate: { rotate: [0, -10, 0], scale: [1, 1.1, 1] },
         }}
-        transition={{ duration: 0.4, ease: "easeInOut" }}
+        transition={{ duration: 0.4, ease: 'easeInOut' }}
         animate={controls}
       />
       <motion.line
@@ -564,7 +548,7 @@ const FileTextIconBase = ({ controls }: { controls: any }) => {
           normal: { pathLength: 1, opacity: 1 },
           animate: { pathLength: [1, 0, 1], opacity: [1, 0.5, 1] },
         }}
-        transition={{ duration: 0.6, ease: "easeInOut" }}
+        transition={{ duration: 0.6, ease: 'easeInOut' }}
         animate={controls}
       />
       <motion.line
@@ -611,7 +595,7 @@ const BookOpenIconBase = ({ controls }: { controls: any }) => {
           normal: { rotate: 0 },
           animate: { rotate: [-2, 2, -2] },
         }}
-        transition={{ duration: 0.6, ease: "easeInOut" }}
+        transition={{ duration: 0.6, ease: 'easeInOut' }}
         animate={controls}
       />
       <motion.path
@@ -620,7 +604,7 @@ const BookOpenIconBase = ({ controls }: { controls: any }) => {
           normal: { rotate: 0 },
           animate: { rotate: [2, -2, 2] },
         }}
-        transition={{ duration: 0.6, ease: "easeInOut" }}
+        transition={{ duration: 0.6, ease: 'easeInOut' }}
         animate={controls}
       />
     </svg>
@@ -708,9 +692,9 @@ const BellIconBase = ({ controls }: { controls: any }) => {
           normal: { rotate: 0 },
           animate: { rotate: [-10, 10, -10, 10, 0] },
         }}
-        transition={{ duration: 0.5, ease: "easeInOut" }}
+        transition={{ duration: 0.5, ease: 'easeInOut' }}
         animate={controls}
-        style={{ transformOrigin: "50% 20%" }}
+        style={{ transformOrigin: '50% 20%' }}
       />
       <motion.path
         d="M10.3 21a1.94 1.94 0 0 0 3.4 0"
@@ -718,7 +702,7 @@ const BellIconBase = ({ controls }: { controls: any }) => {
           normal: { scale: 1 },
           animate: { scale: [1, 1.1, 1] },
         }}
-        transition={{ duration: 0.5, ease: "easeInOut" }}
+        transition={{ duration: 0.5, ease: 'easeInOut' }}
         animate={controls}
       />
     </motion.svg>
@@ -749,9 +733,9 @@ const GiftIconBase = ({ controls }: { controls: any }) => {
           normal: { y: 0, rotate: 0 },
           animate: { y: -3, rotate: -8 },
         }}
-        transition={{ duration: 0.4, ease: "easeOut" }}
+        transition={{ duration: 0.4, ease: 'easeOut' }}
         animate={controls}
-        style={{ transformOrigin: "2px 9px" }}
+        style={{ transformOrigin: '2px 9px' }}
       >
         <rect x="2" y="7" width="20" height="5" />
         <line x1="12" y1="7" x2="12" y2="12" />
@@ -763,7 +747,7 @@ const GiftIconBase = ({ controls }: { controls: any }) => {
             normal: { scale: 1 },
             animate: { scale: [1, 1.1, 1] },
           }}
-          transition={{ duration: 0.4, ease: "easeInOut" }}
+          transition={{ duration: 0.4, ease: 'easeInOut' }}
         />
 
         {/* Right bow */}
@@ -773,7 +757,7 @@ const GiftIconBase = ({ controls }: { controls: any }) => {
             normal: { scale: 1 },
             animate: { scale: [1, 1.1, 1] },
           }}
-          transition={{ duration: 0.4, ease: "easeInOut" }}
+          transition={{ duration: 0.4, ease: 'easeInOut' }}
         />
       </motion.g>
     </svg>
@@ -802,7 +786,7 @@ const HelpCircleIconBase = ({ controls }: { controls: any }) => {
           normal: { rotate: 0 },
           animate: { rotate: 360 },
         }}
-        transition={{ duration: 0.6, ease: "easeInOut" }}
+        transition={{ duration: 0.6, ease: 'easeInOut' }}
         animate={controls}
       />
       <motion.path
@@ -811,7 +795,7 @@ const HelpCircleIconBase = ({ controls }: { controls: any }) => {
           normal: { opacity: 1 },
           animate: { opacity: [1, 0.5, 1] },
         }}
-        transition={{ duration: 0.4, ease: "easeInOut" }}
+        transition={{ duration: 0.4, ease: 'easeInOut' }}
         animate={controls}
       />
       <motion.line
@@ -823,7 +807,7 @@ const HelpCircleIconBase = ({ controls }: { controls: any }) => {
           normal: { scale: 1 },
           animate: { scale: [1, 1.5, 1] },
         }}
-        transition={{ duration: 0.4, ease: "easeInOut", delay: 0.2 }}
+        transition={{ duration: 0.4, ease: 'easeInOut', delay: 0.2 }}
         animate={controls}
       />
     </svg>
@@ -855,7 +839,7 @@ const SquareArrowUpIconBase = ({ controls }: { controls: any }) => {
           normal: { y: 0 },
           animate: { y: [-2, 0] },
         }}
-        transition={{ duration: 0.3, ease: "easeOut" }}
+        transition={{ duration: 0.3, ease: 'easeOut' }}
         animate={controls}
       />
       <motion.path
@@ -864,9 +848,9 @@ const SquareArrowUpIconBase = ({ controls }: { controls: any }) => {
           normal: { scaleY: 1 },
           animate: { scaleY: [0.8, 1] },
         }}
-        transition={{ duration: 0.3, ease: "easeOut" }}
+        transition={{ duration: 0.3, ease: 'easeOut' }}
         animate={controls}
-        style={{ transformOrigin: "50% 100%" }}
+        style={{ transformOrigin: '50% 100%' }}
       />
     </svg>
   );
@@ -894,7 +878,7 @@ const CodeIconBase = ({ controls }: { controls: any }) => {
           normal: { x: 0 },
           animate: { x: [0, 2, 0] },
         }}
-        transition={{ duration: 0.4, ease: "easeInOut" }}
+        transition={{ duration: 0.4, ease: 'easeInOut' }}
         animate={controls}
       />
       <motion.polyline
@@ -903,7 +887,7 @@ const CodeIconBase = ({ controls }: { controls: any }) => {
           normal: { x: 0 },
           animate: { x: [0, -2, 0] },
         }}
-        transition={{ duration: 0.4, ease: "easeInOut" }}
+        transition={{ duration: 0.4, ease: 'easeInOut' }}
         animate={controls}
       />
     </svg>
@@ -931,7 +915,7 @@ const BeakerIconBase = ({ controls }: { controls: any }) => {
       }}
       transition={{
         duration: 0.8,
-        ease: "easeInOut",
+        ease: 'easeInOut',
         times: [0, 0.5, 1],
       }}
       animate={controls}

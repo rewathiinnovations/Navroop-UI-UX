@@ -1,8 +1,8 @@
-"use client";
+'use client';
 
-import { motion, AnimatePresence } from "framer-motion";
-import { useState } from "react";
-import { ChevronDown } from "lucide-react";
+import { motion, AnimatePresence } from 'motion/react';
+import { useState } from 'react';
+import { ChevronDown } from 'lucide-react';
 
 interface MetricBarsProps {
   metrics: {
@@ -18,7 +18,7 @@ interface MetricBarsProps {
 
 export default function MetricBars({ metrics }: MetricBarsProps) {
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
-  
+
   const getBarColor = (score: number) => {
     // Use brand orange colors with opacity for gradient effect
     if (score >= 80) return 'bg-heat-100';
@@ -26,12 +26,12 @@ export default function MetricBars({ metrics }: MetricBarsProps) {
     if (score >= 40) return 'bg-heat-40 opacity-80';
     return 'bg-heat-20';
   };
-  
+
   const getBulletColor = (_score: number) => {
     // Always use heat-100 for all bullets for consistency
     return 'bg-heat-100';
   };
-  
+
   const toggleExpanded = (label: string) => {
     const newExpanded = new Set(expandedItems);
     if (newExpanded.has(label)) {
@@ -41,15 +41,15 @@ export default function MetricBars({ metrics }: MetricBarsProps) {
     }
     setExpandedItems(newExpanded);
   };
-  
+
   // Sort metrics by score descending
   const sortedMetrics = [...metrics].sort((a, b) => b.score - a.score);
-  
+
   return (
     <div className="space-y-8 max-w-[800px] mx-auto">
       {sortedMetrics.map((metric, index) => {
         const isExpanded = expandedItems.has(metric.label);
-        
+
         return (
           <motion.div
             key={metric.label}
@@ -58,7 +58,7 @@ export default function MetricBars({ metrics }: MetricBarsProps) {
             transition={{ delay: index * 0.05, duration: 0.3 }}
             className="space-y-0"
           >
-            <div 
+            <div
               className={`grid grid-cols-12 gap-4 items-center p-8 -m-8 rounded-8 cursor-pointer transition-all hover:bg-black-alpha-2 ${
                 isExpanded ? 'bg-black-alpha-4' : ''
               }`}
@@ -76,7 +76,7 @@ export default function MetricBars({ metrics }: MetricBarsProps) {
                   <ChevronDown className="w-16 h-16 text-black-alpha-32" />
                 </motion.div>
               </div>
-              
+
               {/* Bar container - flexible width */}
               <div className="col-span-7 relative">
                 <div className="relative h-8 bg-black-alpha-8 rounded-full overflow-hidden">
@@ -85,18 +85,18 @@ export default function MetricBars({ metrics }: MetricBarsProps) {
                     className={`absolute inset-y-0 left-0 ${getBarColor(metric.score)} rounded-full`}
                     initial={{ width: 0 }}
                     animate={{ width: `${Math.max(metric.score, 2)}%` }}
-                    transition={{ 
-                      delay: 0.2 + index * 0.05, 
+                    transition={{
+                      delay: 0.2 + index * 0.05,
                       duration: 0.8,
-                      ease: "easeOut"
+                      ease: 'easeOut',
                     }}
                   >
                     {/* Subtle inner glow */}
                     <div className="absolute inset-0 bg-gradient-to-t from-transparent to-white opacity-10 rounded-full" />
                   </motion.div>
-                  
+
                   {/* Score indicator lines at key thresholds */}
-                  {[40, 60, 80].map(threshold => (
+                  {[40, 60, 80].map((threshold) => (
                     <div
                       key={threshold}
                       className="absolute top-0 bottom-0 w-px bg-black-alpha-8 opacity-30"
@@ -105,21 +105,19 @@ export default function MetricBars({ metrics }: MetricBarsProps) {
                   ))}
                 </div>
               </div>
-              
+
               {/* Score value - fixed width */}
               <div className="col-span-1 text-right">
-                <span className="text-label-medium font-medium text-heat-100">
-                  {metric.score}%
-                </span>
+                <span className="text-label-medium font-medium text-heat-100">{metric.score}%</span>
               </div>
             </div>
-            
+
             {/* Expanded Details */}
             <AnimatePresence>
               {isExpanded && metric.details && (
                 <motion.div
                   initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: "auto" }}
+                  animate={{ opacity: 1, height: 'auto' }}
                   exit={{ opacity: 0, height: 0 }}
                   transition={{ duration: 0.3 }}
                   className="overflow-hidden"
@@ -131,16 +129,25 @@ export default function MetricBars({ metrics }: MetricBarsProps) {
                     </div>
                     {metric.recommendation && (
                       <div>
-                        <div className="text-label-small text-black-alpha-48 mb-4">Recommendation</div>
-                        <div className="text-body-small text-black-alpha-64">{metric.recommendation}</div>
+                        <div className="text-label-small text-black-alpha-48 mb-4">
+                          Recommendation
+                        </div>
+                        <div className="text-body-small text-black-alpha-64">
+                          {metric.recommendation}
+                        </div>
                       </div>
                     )}
                     {metric.actionItems && metric.actionItems.length > 0 && (
                       <div>
-                        <div className="text-label-small text-black-alpha-48 mb-4">Action Items</div>
+                        <div className="text-label-small text-black-alpha-48 mb-4">
+                          Action Items
+                        </div>
                         <ul className="space-y-4">
                           {metric.actionItems.map((item: string, i: number) => (
-                            <li key={i} className="flex items-start gap-6 text-body-small text-black-alpha-64">
+                            <li
+                              key={i}
+                              className="flex items-start gap-6 text-body-small text-black-alpha-64"
+                            >
                               <span className="text-heat-100 mt-1">•</span>
                               <span>{item}</span>
                             </li>
@@ -155,7 +162,7 @@ export default function MetricBars({ metrics }: MetricBarsProps) {
           </motion.div>
         );
       })}
-      
+
       {/* Summary stats */}
       <motion.div
         initial={{ opacity: 0 }}
@@ -166,19 +173,19 @@ export default function MetricBars({ metrics }: MetricBarsProps) {
         <div className="grid grid-cols-3 gap-16 text-center">
           <div>
             <div className="text-title-h3 text-heat-150">
-              {metrics.filter(m => m.status === 'pass').length}
+              {metrics.filter((m) => m.status === 'pass').length}
             </div>
             <div className="text-label-small text-black-alpha-48">Passing</div>
           </div>
           <div>
             <div className="text-title-h3 text-heat-100">
-              {metrics.filter(m => m.status === 'warning').length}
+              {metrics.filter((m) => m.status === 'warning').length}
             </div>
             <div className="text-label-small text-black-alpha-48">Warning</div>
           </div>
           <div>
             <div className="text-title-h3 text-heat-50">
-              {metrics.filter(m => m.status === 'fail').length}
+              {metrics.filter((m) => m.status === 'fail').length}
             </div>
             <div className="text-label-small text-black-alpha-48">Failing</div>
           </div>

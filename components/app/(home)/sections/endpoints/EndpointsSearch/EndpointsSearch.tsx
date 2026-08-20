@@ -1,13 +1,20 @@
-"use client";
+'use client';
 
-import initCanvas from "@/utils/init-canvas";
-import { animate } from "motion";
-import { useEffect, useRef } from "react";
+import initCanvas from '@/utils/init-canvas';
+import { animate } from 'motion';
+import { useEffect, useRef } from 'react';
 
 export default function EndpointsSearch({
-  alwaysHeat,
   size = 20,
 }: {
+  /**
+   * Accepted and IGNORED, unlike EndpointsScrape / EndpointsCrawl /
+   * EndpointsExtract, which all wrap their <canvas> in
+   * `cn(alwaysHeat ? "" : ["[&.grayscale]:opacity-60 …", !active && "grayscale"])`.
+   * This component has no `active` prop and drives itself off `.group`
+   * mouseenter/mouseleave, so it renders at full colour whatever is passed.
+   * `components/shared/header/Nav/Nav.tsx` does pass `alwaysHeat` here.
+   */
   alwaysHeat?: boolean;
   size?: number;
 }) {
@@ -18,15 +25,13 @@ export default function EndpointsSearch({
 
     if (!canvas) return;
 
-    const ctx = initCanvas(canvas);
+    const { ctx, dispose } = initCanvas(canvas);
 
     let isRunning = false;
     let isActive = false;
 
     let diff = 0;
-    const defaultRowAlphas = [
-      0, 0.2, 0.4, 0, 0.4, 1, 0.4, 0.2, 0.2, 0.4, 1, 0.4, 0, 0.4, 0.2, 0,
-    ];
+    const defaultRowAlphas = [0, 0.2, 0.4, 0, 0.4, 1, 0.4, 0.2, 0.2, 0.4, 1, 0.4, 0, 0.4, 0.2, 0];
 
     const differs = Array.from({ length: 16 }, () => 0.2 + Math.random() * 0.2);
 
@@ -38,7 +43,7 @@ export default function EndpointsSearch({
     const scaler = size / 20;
 
     const render = () => {
-      ctx.fillStyle = "#FF4C00";
+      ctx.fillStyle = '#FF4C00';
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       for (let i = 0; i < 16; i++) {
@@ -47,10 +52,7 @@ export default function EndpointsSearch({
         const maxAlpha = [5, 6, 9, 10].includes(i) ? 1 : 0.4;
 
         const alpha = defaultRowAlphas[i] + diff * differs[i];
-        ctx.globalAlpha = Math.min(
-          Math.min(alpha, maxAlpha) - Math.max(alpha - maxAlpha, 0),
-          1,
-        );
+        ctx.globalAlpha = Math.min(Math.min(alpha, maxAlpha) - Math.max(alpha - maxAlpha, 0), 1);
 
         ctx.fillRect(
           (3 + (i % 4) * 4) * scaler,
@@ -122,19 +124,24 @@ export default function EndpointsSearch({
     };
 
     render();
-    canvas.addEventListener("resize", render);
+    canvas.addEventListener('resize', render);
 
-    const group = canvasRef.current!.closest(".group");
+    const group = canvasRef.current!.closest('.group');
 
     if (group) {
-      group.addEventListener("mouseenter", activate);
-      group.addEventListener("mouseleave", deactivate);
+      group.addEventListener('mouseenter', activate);
+      group.addEventListener('mouseleave', deactivate);
 
       return () => {
-        group.removeEventListener("mouseenter", activate);
-        group.removeEventListener("mouseleave", deactivate);
+        group.removeEventListener('mouseenter', activate);
+        group.removeEventListener('mouseleave', deactivate);
+        dispose();
       };
     }
+
+    // `initCanvas` registers two window resize listeners. Without this they
+    // outlived every mount, holding the detached canvas and its 2D context.
+    return dispose;
   }, [size]);
 
   return <canvas ref={canvasRef} style={{ width: size, height: size }} />;

@@ -36,6 +36,12 @@ export default function PlansAdmin({
   const [assigned, setAssigned] = useState(assignedPlanId);
   const [busy, setBusy] = useState<string | null>(null);
 
+  /**
+   * Returns whether the row was actually persisted. The blur-to-save inputs below
+   * are uncontrolled, so a rejected value stayed on screen looking saved — the
+   * table showed plan limits that were not the plan limits. Callers use the
+   * answer to put the known-good number back.
+   */
   const patch = async (id: string, body: Record<string, unknown>) => {
     setBusy(id);
     try {
@@ -47,7 +53,7 @@ export default function PlansAdmin({
       const payload = await response.json();
       if (!response.ok) {
         notify.error(payload.error || 'Could not update plan', { key: `plan-${id}` });
-        return;
+        return false;
       }
       setPlans((current) =>
         current.map((plan) => {
@@ -60,8 +66,10 @@ export default function PlansAdmin({
       notify.success(body.isDefault === true ? 'Default plan updated.' : 'Plan updated.', {
         key: `plan-${id}`,
       });
+      return true;
     } catch (cause) {
       notify.error(cause, { fallback: 'Could not update plan', key: `plan-${id}` });
+      return false;
     } finally {
       setBusy(null);
     }
@@ -156,9 +164,12 @@ export default function PlansAdmin({
                   aria-label={`Name for plan ${plan.name}`}
                   defaultValue={plan.name}
                   disabled={busy === plan.id}
-                  onBlur={(event) => {
-                    if (event.target.value !== plan.name)
-                      void patch(plan.id, { name: event.target.value });
+                  onBlur={async (event) => {
+                    const input = event.currentTarget;
+                    if (input.value === plan.name) return;
+                    // A rejected value must not stay on screen: the field is
+                    // uncontrolled, so nothing else puts the real name back.
+                    if (!(await patch(plan.id, { name: input.value }))) input.value = plan.name;
                   }}
                 />
                 <div className="mt-4 text-[11px] text-[var(--studio-faint)]">{plan.key}</div>
@@ -171,9 +182,13 @@ export default function PlansAdmin({
                     aria-label={`${label} for plan ${plan.name}`}
                     defaultValue={plan[field]}
                     disabled={busy === plan.id}
-                    onBlur={(event) => {
-                      const value = Number(event.target.value);
-                      if (value !== plan[field]) void patch(plan.id, { [field]: value });
+                    onBlur={async (event) => {
+                      const input = event.currentTarget;
+                      const value = Number(input.value);
+                      if (value === plan[field]) return;
+                      if (!(await patch(plan.id, { [field]: value }))) {
+                        input.value = String(plan[field]);
+                      }
                     }}
                   />
                 </Td>
@@ -184,9 +199,11 @@ export default function PlansAdmin({
                   aria-label={`Storage limit for plan ${plan.name}`}
                   defaultValue={plan.storageBytesLimit}
                   disabled={busy === plan.id}
-                  onBlur={(event) => {
-                    if (event.target.value !== plan.storageBytesLimit) {
-                      void patch(plan.id, { storageBytesLimit: event.target.value });
+                  onBlur={async (event) => {
+                    const input = event.currentTarget;
+                    if (input.value === plan.storageBytesLimit) return;
+                    if (!(await patch(plan.id, { storageBytesLimit: input.value }))) {
+                      input.value = plan.storageBytesLimit;
                     }
                   }}
                 />
