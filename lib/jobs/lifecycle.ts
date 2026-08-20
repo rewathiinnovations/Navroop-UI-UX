@@ -314,22 +314,33 @@ export async function markJobRunning(
 export type JobHeartbeatOptions = {
   intervalMs?: number;
   /**
-   * Stops the heartbeat when the request that owns the work is torn down.
+   * Records — and only records — that the client owning the request went away.
    *
-   * A heartbeat only means "this job is alive" if something is still working. When a
-   * caller is parked on a write to a disconnected client, its `finally` never runs, so
-   * `stop()` is never called and the timer keeps `heartbeatAt` fresh — which makes the
-   * job permanently invisible to the staleness reaper and leaves it RUNNING until the
-   * 20-minute hard timeout, with the workspace chat input locked the whole time. Pass
-   * `request.signal` and the timer goes quiet the moment the client is gone, so the
-   * reaper abandons the job within a minute instead.
+   * It does NOT stop the heartbeat (F-032: two comments used to claim it did). The
+   * request aborting means the person navigated away, not that the work stopped: the
+   * generation keeps streaming server-side and its files are still persisted, so the row
+   * must keep looking alive to the staleness reaper. The interval clears when a
+   * heartbeat write observes the row settled, or when the owner's `finally` calls
+   * `stop()` — an orphaned stream therefore stops heartbeating with the work, never
+   * with the client.
    */
   signal?: AbortSignal;
+  /**
+   * Called once when a heartbeat write observes the row gone or no longer
+   * QUEUED/RUNNING — something else settled it (Cancel / Start over, the reaper, an
+   * admin). The generation route uses this to abort the in-flight provider stream so a
+   * cancelled build stops buying tokens (F-022). Runs just before the heartbeat stops
+   * itself.
+   */
+  onInactive?: (job: GenerationJobRow | null) => void;
 };
 
 export function beginJobHeartbeat(jobId: string, options: number | JobHeartbeatOptions = {}) {
-  const { intervalMs = HEARTBEAT_INTERVAL_MS, signal } =
-    typeof options === 'number' ? { intervalMs: options } : options;
+  const {
+    intervalMs = HEARTBEAT_INTERVAL_MS,
+    signal,
+    onInactive,
+  } = typeof options === 'number' ? { intervalMs: options } : options;
 
   // Catching the write keeps a heartbeat failure from becoming an unhandled rejection,
   // but a warn-per-tick is how a broken heartbeat hid for a whole session: the reaper
@@ -346,6 +357,7 @@ export function beginJobHeartbeat(jobId: string, options: number | JobHeartbeatO
         // the reaper, an admin, or a sibling path — so keep beating and the row looks
         // alive to every consumer that reads heartbeatAt.
         if (!job || (job.status !== 'QUEUED' && job.status !== 'RUNNING')) {
+          if (!stopped) onInactive?.(job);
           stop();
         }
       })

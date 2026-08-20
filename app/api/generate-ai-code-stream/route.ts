@@ -70,6 +70,7 @@ import {
   getProviderApiKey,
   maxOutputTokensForEntry,
   modelIdForEntry,
+  NO_PROVIDER_CONFIGURED_MESSAGE,
   providerConcurrency,
   providerDisplayName,
   ProviderNotConfiguredError,
@@ -243,6 +244,36 @@ async function generateAiCodeStream(request: NextRequest) {
   let jobHeartbeat: { stop: () => void } | null = null;
   let jobProgress: ReturnType<typeof createProgressBatcher> | null = null;
   let providerSlot: ReturnType<ReturnType<typeof getDefaultProviderQueue>['acquire']> | null = null;
+  // Everything the setup region acquires — job heartbeat, provider-queue slot, job row,
+  // project lock — released in one place, in reverse acquisition order. Every underlying
+  // release is idempotent (heartbeat.stop and slot.release are flag-guarded, the job
+  // settle only touches a QUEUED/RUNNING row, LockHold.release is a no-op the second
+  // time), so any exit path may call this without coordinating with the others. Nothing
+  // is buffered in jobProgress before the stream worker starts, and once that worker
+  // starts its own `finally` owns this cleanup — no path reaches here again (F-001).
+  let setupReleased = false;
+  const releaseSetup = async (
+    settle: { errorCode: string; errorMessage: string; tokensOut?: number } | null,
+  ) => {
+    if (setupReleased) return;
+    setupReleased = true;
+    jobHeartbeat?.stop();
+    providerSlot?.release();
+    // `settle: null` is the reused-job return: the row belongs to the run that is
+    // already streaming, so this exit must not fail it.
+    if (generationJob && settle) {
+      try {
+        await failJob(generationJob.id, settle);
+      } catch (settleError) {
+        await reportSettleFailure({
+          jobId: generationJob.id,
+          intended: 'failed',
+          error: settleError,
+        });
+      }
+    }
+    await releaseGenerationLock?.();
+  };
   try {
     const {
       prompt,
@@ -260,6 +291,14 @@ async function generateAiCodeStream(request: NextRequest) {
       buildFixAttempt,
       buildFixSignature,
     } = await request.json();
+    // Reject a bad prompt before anything is acquired. This guard used to sit after the
+    // credit check, the project lock (with its 60s renew timer), the Job row, the
+    // provider-queue slot and the job heartbeat, and its bare `return` leaked all five
+    // for the life of the process (F-001). Presence and type only; it must stay ahead of
+    // every acquisition below.
+    if (typeof prompt !== 'string' || !prompt.trim()) {
+      return NextResponse.json({ success: false, error: 'Prompt is required' }, { status: 400 });
+    }
     // Explicit only: defaulting this to appConfig.ai.defaultModel pushed that
     // model to the front of the chain and demoted the configured primary
     // (AI_PRIMARY_* / Admin -> Configuration). The concrete `model` used for
@@ -311,7 +350,7 @@ async function generateAiCodeStream(request: NextRequest) {
       generationJob &&
       (generationJob.status === 'RUNNING' || generationJob.status === 'SUCCEEDED')
     ) {
-      await releaseGenerationLock?.();
+      await releaseSetup(null);
       return NextResponse.json({ job: toPublicJob(generationJob), reused: true });
     }
     let providerChain;
@@ -323,14 +362,8 @@ async function generateAiCodeStream(request: NextRequest) {
       const message =
         error instanceof ProviderNotConfiguredError
           ? error.message
-          : 'No AI provider is configured — set GEMINI_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, or GROQ_API_KEY on the server.';
-      if (generationJob) {
-        await failJob(generationJob.id, {
-          errorCode: 'provider_not_configured',
-          errorMessage: message,
-        });
-      }
-      await releaseGenerationLock?.();
+          : NO_PROVIDER_CONFIGURED_MESSAGE;
+      await releaseSetup({ errorCode: 'provider_not_configured', errorMessage: message });
       return jsonError(message, 'PROVIDER_NOT_CONFIGURED', 503);
     }
 
@@ -353,11 +386,14 @@ async function generateAiCodeStream(request: NextRequest) {
       }
       const started = await providerSlot.started;
       if (!started.ok) {
-        await failJob(generationJob.id, {
+        // The waiter timed out without ever taking a slot, and `release()` decrements the
+        // running count unconditionally — dropping the handle here is what keeps every
+        // cleanup path from corrupting the queue counter.
+        providerSlot = null;
+        await releaseSetup({
           errorCode: 'queue_timeout',
           errorMessage: started.errorMessage || QUEUE_TIMEOUT_MESSAGE,
         });
-        await releaseGenerationLock?.();
         return jsonError(started.errorMessage || QUEUE_TIMEOUT_MESSAGE, 'QUEUE_TIMEOUT', 429);
       }
     }
@@ -374,11 +410,19 @@ async function generateAiCodeStream(request: NextRequest) {
         });
       }
     }
-    // A live heartbeat hides the row from the staleness reaper. Tie it to the request so a
-    // client that disconnects stops vouching for work nobody is reading: the row goes stale
-    // within a minute instead of sitting RUNNING until the 20-minute hard timeout.
+    // A live heartbeat hides the row from the staleness reaper, so it beats for exactly
+    // as long as the work runs — including after the browser goes away, because the
+    // stream finishes and persists server-side. `request.signal` only records the
+    // disconnect (see JobHeartbeatOptions.signal); the interval stops when the work
+    // settles or when the stream worker's `finally` runs. When a heartbeat write finds
+    // the row already settled — Cancel / Start over flipped it — `onInactive` aborts the
+    // in-flight provider stream so a cancelled build stops buying tokens (F-022).
+    const jobCancelled = new AbortController();
     jobHeartbeat = generationJob
-      ? beginJobHeartbeat(generationJob.id, { signal: request.signal })
+      ? beginJobHeartbeat(generationJob.id, {
+          signal: request.signal,
+          onInactive: () => jobCancelled.abort(new Error('The build was cancelled')),
+        })
       : null;
     jobProgress = generationJob ? createProgressBatcher(generationJob.id) : null;
     const planCaps = await getPlanCaps(WORKSPACE_ROW_ID);
@@ -497,16 +541,6 @@ async function generateAiCodeStream(request: NextRequest) {
       console.log(
         '[generate-ai-code-stream] - sample content preview:',
         typeof firstFile[1] === 'string' ? firstFile[1].substring(0, 100) + '...' : 'not a string',
-      );
-    }
-
-    if (!prompt) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: 'Prompt is required',
-        },
-        { status: 400 },
       );
     }
 
@@ -1435,7 +1469,7 @@ User request: "${prompt}"`;
             // `attemptProducedOutput`. Whether the reply contained files is a separate
             // question, decided once below on the final reply.
             attemptProducedOutput,
-            { circuit: getDefaultCircuit() },
+            { circuit: getDefaultCircuit(), signal: jobCancelled.signal },
           );
           servedProvider = failover.provider;
           servedModel = failover.model;
@@ -2147,6 +2181,16 @@ Provide the complete file content without any truncation. Include all necessary 
       } catch (error) {
         console.error('[generate-ai-code-stream] Stream processing error:', error);
 
+        if (jobCancelled.signal.aborted) {
+          // Cancel / Start over settled the row as CANCELLED before the abort unwound the
+          // stream — the person asked for this stop. Nothing to fail (`failJob` only
+          // touches an active row and must not overwrite the cancel), and an error frame
+          // would misreport a requested stop as a provider failure. The `finally` still
+          // runs: heartbeat, slot, progress flush, lock.
+          log.info('generation.cancelled_mid_stream', { jobId: generationJob?.id ?? null });
+          return;
+        }
+
         const errorMessage = error instanceof Error ? error.message : String(error);
         // Reaching this catch means the work stopped, whatever the reason. The tool-validation
         // branch used to only warn and then fall out of the block, leaving the job RUNNING
@@ -2245,25 +2289,14 @@ Provide the complete file content without any truncation. Include all necessary 
       },
     });
   } catch (error) {
-    jobHeartbeat?.stop();
-    providerSlot?.release();
-    if (generationJob) {
-      const cap = error instanceof JobCapError ? error : null;
-      try {
-        await failJob(generationJob.id, {
-          errorCode: cap?.errorCode ?? jobErrorCodeForProviderFailure(error),
-          errorMessage: cap?.message ?? providerFailureMessage(error),
-          tokensOut: cap?.tokensOut,
-        });
-      } catch (settleError) {
-        await reportSettleFailure({
-          jobId: generationJob.id,
-          intended: 'failed',
-          error: settleError,
-        });
-      }
-    }
-    await releaseGenerationLock?.();
+    // The stream worker has not started on any path that can throw here, so the setup
+    // resources are still this scope's to release (F-001).
+    const cap = error instanceof JobCapError ? error : null;
+    await releaseSetup({
+      errorCode: cap?.errorCode ?? jobErrorCodeForProviderFailure(error),
+      errorMessage: cap?.message ?? providerFailureMessage(error),
+      tokensOut: cap?.tokensOut,
+    });
     trackFailure('generation.failure', error, {
       action: 'generation',
       durationMs: Date.now() - startedAt,

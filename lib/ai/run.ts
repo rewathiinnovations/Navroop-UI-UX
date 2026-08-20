@@ -50,10 +50,24 @@ async function withTimeout<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
   }
 }
 
+export type ProviderRunOptions = {
+  circuit?: CircuitBreaker;
+  timeoutMs?: number;
+  now?: () => Date;
+  /**
+   * External cancellation — Cancel / Start over settling the job row (F-022). Aborting
+   * it aborts the current attempt's provider-facing signal (which the caller hands to
+   * `streamText`), so an in-flight stream stops mid-collection. A cancelled attempt is
+   * neither retried on the next provider nor counted as a circuit failure: the user
+   * stopping the work says nothing about provider health.
+   */
+  signal?: AbortSignal;
+};
+
 export async function executeWithFailover<T>(
   chain: ProviderEntry[],
   fn: (entry: ProviderEntry, ctx: { signal: AbortSignal }) => Promise<T>,
-  opts: { circuit?: CircuitBreaker; timeoutMs?: number; now?: () => Date } = {},
+  opts: ProviderRunOptions = {},
 ): Promise<ProviderRunResult<T>> {
   const circuit = opts.circuit ?? getDefaultCircuit();
   const timeoutMs = opts.timeoutMs ?? PROVIDER_ATTEMPT_TIMEOUT_MS;
@@ -63,11 +77,19 @@ export async function executeWithFailover<T>(
   let tried = 0;
 
   for (const entry of chain) {
+    if (opts.signal?.aborted) throw opts.signal.reason ?? new Error('The run was aborted');
     if (!circuit.isHealthy(entry.provider)) continue;
     tried += 1;
     const controller = new AbortController();
     const abortTimer = setTimeout(() => controller.abort(), timeoutMs);
     abortTimer.unref?.();
+    // Deliberately left attached past this attempt: the controller's signal is what the
+    // caller hands to the provider stream, and collection continues after `fn` returns —
+    // an external cancel must still reach it mid-collection. Aborting a finished
+    // attempt's controller is a no-op.
+    opts.signal?.addEventListener('abort', () => controller.abort(opts.signal?.reason), {
+      once: true,
+    });
     try {
       const result = await withTimeout(fn(entry, { signal: controller.signal }), timeoutMs);
       circuit.recordSuccess(entry.provider);
@@ -85,6 +107,8 @@ export async function executeWithFailover<T>(
         attempts,
       };
     } catch (error) {
+      // A cancelled attempt is not a provider verdict: no failover, no circuit failure.
+      if (opts.signal?.aborted) throw error;
       lastError = error;
       attempts.push({
         provider: entry.provider,
@@ -115,7 +139,7 @@ export async function executeWithCompletionFailover<TStream, TCollected>(
   start: (entry: ProviderEntry, ctx: { signal: AbortSignal }) => Promise<TStream>,
   collect: (started: TStream, entry: ProviderEntry) => Promise<TCollected>,
   isComplete: (collected: TCollected) => boolean,
-  opts: { circuit?: CircuitBreaker; timeoutMs?: number; now?: () => Date } = {},
+  opts: ProviderRunOptions = {},
 ): Promise<ProviderRunResult<TCollected>> {
   const circuit = opts.circuit ?? getDefaultCircuit();
   const now = opts.now ?? (() => new Date());
@@ -131,7 +155,10 @@ export async function executeWithCompletionFailover<TStream, TCollected>(
       started = await executeWithFailover(remaining, start, opts);
     } catch (error) {
       if (error instanceof ProviderRunError) {
-        throw new ProviderRunError(error.message, error.causeError, [...attempts, ...error.attempts]);
+        throw new ProviderRunError(error.message, error.causeError, [
+          ...attempts,
+          ...error.attempts,
+        ]);
       }
       throw error;
     }
@@ -142,8 +169,7 @@ export async function executeWithCompletionFailover<TStream, TCollected>(
       failedOver = true;
     }
 
-    const servedEntry =
-      chain.find((row) => row.provider === started.provider) ?? remaining[0];
+    const servedEntry = chain.find((row) => row.provider === started.provider) ?? remaining[0];
     let collected: TCollected;
     try {
       collected = await collect(started.result, servedEntry);
@@ -152,6 +178,9 @@ export async function executeWithCompletionFailover<TStream, TCollected>(
       if (collectError instanceof Error && collectError.name === 'JobCapError') {
         throw collectError;
       }
+      // So does an external cancel: the next vendor must not redo cancelled work, and a
+      // user stopping the build is not a circuit failure (F-022).
+      if (opts.signal?.aborted) throw collectError;
       lastError = collectError;
       failedOver = true;
       attempts.push({
