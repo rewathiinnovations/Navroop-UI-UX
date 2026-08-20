@@ -41,6 +41,20 @@ where output lands.
 > **Note:** On Windows use `python` in place of `python3` — the python.org installer does not
 > create a `python3` launcher.
 
+## Navroop product chrome
+
+This skill's generic recommendations (Phosphor icons, dark-default, glassmorphism, new palettes) do **not** override Navroop product chrome. For auth, dashboard, workspace, settings, and admin:
+
+- Icons: Lucide (never emoji, do not switch to Phosphor)
+- Default theme: light (`enableSystem={false}`). Dark is opt-in.
+- Accent: heat `#FA4500` via `--studio-accent` / `--studio-cta-gradient` in `components/app/studio/studio.css`. Never rose `#c92a4e` or a rainbow CTA.
+- Controls: 44px minimum hit area (`studio-icon-hit`). Glyph can stay 16–20px.
+- Shared primitives only: `EmptyState`, `ConfirmAction`, `StatusPill`, `StatusBanner`, `StudioButton`, `StudioField`.
+- Below `md`, sidebar is an overlay drawer. Below `lg`, workspace is one pane (chat or preview).
+- Generated websites stay on the per-request brief in `lib/ui-ux-pro-max/` — do not restyle them as Navroop.
+
+See `design-system/MASTER.md`.
+
 ---
 
 ## How to Use This Skill

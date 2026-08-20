@@ -30,6 +30,10 @@ Use when:
 - Rapid prototyping with immediate visual feedback
 - Adding complex UI patterns (data tables, charts, command palettes)
 
+## Navroop product chrome
+
+Do not restyle Navroop with a new shadcn theme or default-to-dark. Product chrome uses `--studio-*` tokens in `components/app/studio/studio.css`, Lucide icons, light default, heat `#FA4500`, and 44px hit areas. Prefer `StudioButton` / `StudioField` / `EmptyState` / `ConfirmAction` over inventing a parallel button or empty state. Keep `.cursor/skills` and `.claude/skills` copies of this file in sync.
+
 ## Core Stack
 
 ### Component Layer: shadcn/ui

@@ -171,6 +171,51 @@ describe('the workspace header declares no menu role it does not implement', () 
   });
 });
 
+/**
+ * Below 900px `compactActions` hides the standalone Share button, so the overflow
+ * menu is the only route Share has left — with no item there, Share is unreachable
+ * by pointer and by keyboard alike on a tablet. `main` found that hole while the
+ * N-016 Radix port was in flight on this branch, so the item closing it arrived with
+ * the merge; it is pinned here rather than left for the next merge to drop quietly.
+ *
+ * Asserted against the source, not a render: `WorkspaceTopBar` imports the
+ * `'use server'` `pushProjectToGitHub` action, so mounting it in a unit test pulls
+ * prisma and the auth stack in with it. That is the same reason the N-016 scan above
+ * reads the file instead of importing it.
+ */
+describe('Share survives the header going compact', () => {
+  const source = readFileSync(
+    resolve(process.cwd(), 'components/workspace/WorkspaceTopBar.tsx'),
+    'utf8',
+  );
+  // The comments here describe the hole being closed, so the scan reads code only.
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+  /** Collapsed to one line, so neither assertion breaks on a reformat. */
+  const flat = code.replace(/\s+/g, ' ');
+
+  /** The `cond ? (…) : null` branch opening with `open`. */
+  function branch(open: string) {
+    const from = flat.indexOf(open);
+    expect(from).toBeGreaterThan(-1);
+    const rest = flat.slice(from);
+    return rest.slice(0, rest.indexOf(') : null}') + ') : null}'.length);
+  }
+
+  it('hides the standalone Share button once actions go compact', () => {
+    expect(branch('{!compactActions ? (')).toContain('onClick={onShare}');
+  });
+
+  it('offers Share through the overflow menu in exactly that case', () => {
+    const compact = branch('{compactActions ? (');
+    // A DropdownMenuItem, not a bare button: inside `DropdownMenuContent` only a
+    // real item joins the menu's arrow/Home/End/Escape contract (N-016).
+    expect(compact).toContain('<DropdownMenuItem');
+    expect(compact).not.toContain('<button');
+    expect(compact).toContain('onSelect={() => onShare?.()}');
+    expect(compact).toContain('Share');
+  });
+});
+
 /** Every element of `type` in the tree, outermost first. */
 function elementsOfType(
   node: unknown,

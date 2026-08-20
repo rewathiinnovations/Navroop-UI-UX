@@ -416,7 +416,7 @@ function BrowserPreviewImpl({
   }, [frameMounted, onFrameMounted]);
 
   return (
-    <div className={cn('relative h-full w-full bg-white', className)}>
+    <div className={cn('relative h-full w-full bg-[var(--studio-surface)]', className)}>
       {srcdoc ? (
         <iframe
           ref={iframeRef}
@@ -430,7 +430,7 @@ function BrowserPreviewImpl({
       ) : null}
 
       {bundling && !srcdoc ? (
-        <div className="absolute inset-0 grid place-items-center bg-white/85 backdrop-blur-sm">
+        <div className="absolute inset-0 grid place-items-center bg-[var(--studio-surface)]/85 backdrop-blur-sm">
           <div className="flex items-center gap-8 text-[13px] text-[var(--studio-muted)]">
             <Loader2 className="size-16 animate-spin motion-reduce:animate-none" />
             Building your preview…
@@ -440,7 +440,7 @@ function BrowserPreviewImpl({
 
       {bundling && srcdoc ? (
         // A rebuild mid-stream must not curtain off a preview that works.
-        <div className="absolute bottom-12 right-12 flex items-center gap-6 rounded-full border border-[var(--studio-line)] bg-white/90 px-10 py-6 text-[12px] text-[var(--studio-muted)] shadow-sm backdrop-blur-sm">
+        <div className="absolute bottom-12 right-12 flex items-center gap-6 rounded-full border border-[var(--studio-line)] bg-[var(--studio-surface)]/90 px-10 py-6 text-[12px] text-[var(--studio-muted)] shadow-sm backdrop-blur-sm">
           <Loader2 className="size-13 animate-spin motion-reduce:animate-none" />
           Rebuilding…
         </div>
@@ -449,14 +449,14 @@ function BrowserPreviewImpl({
       {state.status === 'waiting' && srcdoc ? (
         // Waiting on a file mid-stream must stay legible without curtaining off
         // the frame that already works, so it reads like the rebuild pill.
-        <div className="absolute bottom-12 right-12 flex max-w-[70%] items-center gap-6 rounded-full border border-[var(--studio-line)] bg-white/90 px-10 py-6 text-[12px] text-[var(--studio-muted)] shadow-sm backdrop-blur-sm">
+        <div className="absolute bottom-12 right-12 flex max-w-[70%] items-center gap-6 rounded-full border border-[var(--studio-line)] bg-[var(--studio-surface)]/90 px-10 py-6 text-[12px] text-[var(--studio-muted)] shadow-sm backdrop-blur-sm">
           <Loader2 className="size-13 shrink-0 animate-spin motion-reduce:animate-none" />
           <span className="truncate">{state.reason}</span>
         </div>
       ) : null}
 
       {state.status === 'waiting' && !srcdoc ? (
-        <div className="absolute inset-0 grid place-items-center bg-white p-24">
+        <div className="absolute inset-0 grid place-items-center bg-[var(--studio-surface)] p-24">
           <div className="flex max-w-[420px] flex-col items-center gap-8 text-center">
             <Loader2 className="size-18 animate-spin text-[var(--studio-accent)] motion-reduce:animate-none" />
             <p className="text-[13px] text-[var(--studio-muted)]">
@@ -469,7 +469,7 @@ function BrowserPreviewImpl({
       ) : null}
 
       {banner && !srcdoc ? (
-        <div className="absolute inset-0 overflow-auto bg-white/95 p-24 backdrop-blur-sm">
+        <div className="absolute inset-0 overflow-auto bg-[var(--studio-surface)]/95 p-24 backdrop-blur-sm">
           <div className="mx-auto max-w-[560px]">
             <PreviewErrorReport
               message={banner.message}
@@ -484,7 +484,7 @@ function BrowserPreviewImpl({
       {banner && srcdoc ? (
         // The last good render stays visible underneath: a broken intermediate
         // state during a stream reports itself without taking the pane away.
-        <div className="absolute inset-x-0 bottom-0 max-h-[45%] overflow-auto border-t border-[var(--studio-line)] bg-white/95 p-12 backdrop-blur-sm">
+        <div className="absolute inset-x-0 bottom-0 max-h-[45%] overflow-auto border-t border-[var(--studio-line)] bg-[var(--studio-surface)]/95 p-12 backdrop-blur-sm">
           <PreviewErrorReport
             compact
             message={banner.message}

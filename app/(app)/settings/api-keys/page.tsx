@@ -3,9 +3,9 @@
 import { FormEvent, useEffect, useState } from 'react';
 import StudioShell from '@/components/app/studio/StudioShell';
 import StudioButton from '@/components/app/studio/StudioButton';
+import ConfirmAction from '@/components/admin/ConfirmAction';
 import StudioField from '@/components/app/studio/StudioField';
 import PageTabs from '@/components/app/studio/PageTabs';
-import ConfirmAction from '@/components/admin/ConfirmAction';
 import { useAuth } from '@/components/app/auth/AuthProvider';
 import { notify } from '@/lib/notify';
 import {
@@ -224,7 +224,7 @@ export default function ApiKeysPage() {
                         ? `Your personal key is deleted and your requests fall back to the team default for ${key.label}. You will need the original key to set it again.`
                         : `Your personal key is deleted and ${key.label} stops working for your account until you paste a new one. You will need the original key to set it again.`
                     }
-                    confirmLabel="Remove key"
+                    confirmLabel="Remove"
                     busyLabel="Removing…"
                     disabled={saving === `remove:${key.provider}`}
                     onConfirm={() => removePersonal(key.provider)}

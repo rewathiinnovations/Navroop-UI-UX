@@ -36,7 +36,7 @@ export default function VisualEditsToolbar({
               aria-pressed={pressed}
               onClick={() => onChange(pressed ? null : tool.id)}
               className={cn(
-                'inline-flex size-32 items-center justify-center rounded-full transition-colors',
+                'studio-icon-hit inline-flex items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]',
                 pressed
                   ? 'bg-[var(--studio-fg)] text-[var(--studio-bg)]'
                   : 'text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)]',

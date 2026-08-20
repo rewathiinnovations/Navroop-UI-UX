@@ -18,13 +18,23 @@
   --studio-surface: #ffffff;
   --studio-surface-hover: #f4f4f5;
   --studio-header-bg: rgb(247 247 248 / 0.86);
+  /* Rose, not heat, and deliberately: `tests/unit/studio-contrast.test.ts` holds this
+     token to WCAG AA against both `--studio-cta-fg` and `--studio-bg`, and no orange in
+     `styles/design-system/colors.css` clears it — #fa4500 is 3.55:1/3.32:1, --heat-100
+     #fa5d19 is 3.16/2.95, --heat-200 #ff6600 is 2.94/2.74, and even the darkest,
+     --heat-50 #c74a12, still misses the second axis at 4.75/4.44. An accent needs
+     relative luminance L <= 0.162 to clear 4.5:1 on both #ffffff and #f7f7f8. This is the
+     accent for text, borders and focus, so it is the one that has to stay legible.
+     `brand-theme.mdc` asks for heat here; until a heat value clears both axes the test
+     wins (N-025), and the heat brand is carried by `--studio-cta-gradient` below instead.
+     Hover/soft/ring move with it — a rose button with an orange hover is worse than
+     either alone. A darker orange in the same hue family fixes this in one commit. */
   --studio-accent: #c92a4e;
   --studio-accent-hover: #c42a4e;
   --studio-accent-soft: rgba(201, 42, 78, 0.12);
-  /* The brand gradient (same as the admin badge and logo mark). Every primary
-     action button paints with this; hover/press use brightness so no second
-     gradient needs maintaining. Solid accent stays for states, bars, pills. */
-  --studio-cta-gradient: linear-gradient(135deg, #ff8a3d 0%, #ff5c7a 55%, #c084fc 100%);
+  /* Heat orange only — matches brand-theme.mdc / design-system MASTER. Hover
+     and press use brightness so no second gradient needs maintaining. */
+  --studio-cta-gradient: linear-gradient(135deg, #ff8a3d 0%, #fa4500 55%, #d63b00 100%);
   --studio-ring: #c92a4e;
   --studio-cta-fg: #ffffff;
   --studio-danger: #be123c;
@@ -96,7 +106,7 @@
   height: 38vh;
   left: -8%;
   bottom: -12%;
-  background: radial-gradient(circle, rgba(255, 92, 122, 0.55), transparent 68%);
+  background: radial-gradient(circle, rgba(250, 69, 0, 0.42), transparent 68%);
 }
 
 .studio-glow::after {
@@ -104,7 +114,7 @@
   height: 34vh;
   right: -6%;
   bottom: -18%;
-  background: radial-gradient(circle, rgba(99, 102, 241, 0.42), transparent 70%);
+  background: radial-gradient(circle, rgba(255, 138, 61, 0.28), transparent 70%);
 }
 
 /* Dialog entrance: opacity + transform only, so it stays on the compositor.
@@ -261,4 +271,18 @@
 .dark .studio-shell .studio-scroll::-webkit-scrollbar-thumb,
 .dark .studio-portal .studio-scroll::-webkit-scrollbar-thumb {
   background-color: rgba(255, 255, 255, 0.22);
+}
+
+/* 44px hit area; keep the glyph 16–20px. Use on icon-only chrome controls. */
+.studio-icon-hit {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+.studio-focus-ring {
+  outline: none;
+}
+
+.studio-focus-ring:focus-visible {
+  box-shadow: 0 0 0 2px var(--studio-ring);
 }

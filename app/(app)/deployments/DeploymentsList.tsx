@@ -4,12 +4,14 @@ import { Fragment, useState } from 'react';
 import Link from 'next/link';
 import StudioShell from '@/components/app/studio/StudioShell';
 import StudioButton from '@/components/app/studio/StudioButton';
+import ConfirmAction from '@/components/admin/ConfirmAction';
 import { notify, toMessage } from '@/lib/notify';
 import { cn } from '@/utils/cn';
 import { formatAdminDateTime } from '../admin/format-admin-date';
 import type { PublicDeployment } from '@/lib/publish/types';
 import { deploymentFailure } from '@/lib/publish/failure-copy';
 import RollbackDialog from './RollbackDialog';
+import { EmptyState } from '@/components/shared/ui/empty-state';
 
 function statusLabel(status: string) {
   if (status === 'LIVE') return 'Live';
@@ -120,6 +122,15 @@ export default function DeploymentsList({ initial }: { initial: PublicDeployment
           Preview and live Coolify sites.
         </p>
 
+        {rows.length === 0 ? (
+          <div className="mt-24 rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)]">
+            <EmptyState
+              title="No deployments yet"
+              description="Publish a project from the workspace to see preview and live sites here."
+              action={<StudioButton href="/dashboard">Go to dashboard</StudioButton>}
+            />
+          </div>
+        ) : (
         <div className="mt-24 overflow-x-auto rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)]">
           <table className="w-full text-left text-[14px]">
             <thead className="border-b border-[var(--studio-line)] text-[12px] uppercase tracking-[0.08em] text-[var(--studio-faint)]">
@@ -134,13 +145,6 @@ export default function DeploymentsList({ initial }: { initial: PublicDeployment
               </tr>
             </thead>
             <tbody>
-              {rows.length === 0 && (
-                <tr>
-                  <td colSpan={7} className="px-16 py-24 text-[13px] text-[var(--studio-faint)]">
-                    No deployments yet
-                  </td>
-                </tr>
-              )}
               {rows.map((row) => (
                 <Fragment key={row.id}>
                   <tr
@@ -213,19 +217,21 @@ export default function DeploymentsList({ initial }: { initial: PublicDeployment
                             Roll back
                           </StudioButton>
                         )}
-                        <StudioButton
-                          type="button"
-                          variant="danger"
+                        {/* Delete used to be a `window.prompt` for the slug: a native,
+                          unthemed, per-origin-suppressible dialog whose "OK" on an empty
+                          field silently did nothing. `ConfirmAction` keeps the
+                          type-the-slug gate and hands the typed phrase to the route,
+                          which re-checks it server-side. */}
+                        <ConfirmAction
+                          label="Delete"
                           disabled={busy !== null}
-                          onClick={() => {
-                            const typed = window.prompt(
-                              `Delete + DNS cleanup. Type the slug: ${row.slug}`,
-                            );
-                            if (typed) void act(row.id, 'delete', typed);
-                          }}
-                        >
-                          Delete
-                        </StudioButton>
+                          title={`Delete ${row.slug}?`}
+                          body="This stops the app, removes DNS records, and archives the deploy repo. This cannot be undone."
+                          confirmLabel="Delete"
+                          busyLabel="Deleting…"
+                          confirmPhrase={row.slug}
+                          onConfirm={(confirmedPhrase) => act(row.id, 'delete', confirmedPhrase)}
+                        />
                       </div>
                     </td>
                   </tr>
@@ -235,6 +241,7 @@ export default function DeploymentsList({ initial }: { initial: PublicDeployment
             </tbody>
           </table>
         </div>
+        )}
 
         <RollbackDialog
           deployment={rollbackFor}

@@ -17,7 +17,7 @@ export default function LockBar({
   const remaining = lock.expiresAt ? formatLockRemaining(lock.expiresAt) : null;
   return (
     <div
-      className="flex items-center justify-between gap-8 border-t border-amber-200 bg-amber-50 px-12 py-8 text-[12px] text-amber-950"
+      className="flex items-center justify-between gap-8 border-t border-amber-500/25 bg-amber-500/10 px-12 py-8 text-[12px] text-amber-700 dark:text-amber-300"
       role="status"
     >
       <p>
@@ -32,7 +32,7 @@ export default function LockBar({
           confirmLabel="Release lock"
           busyLabel="Releasing…"
           variant="ghost"
-          triggerClassName="min-h-0 h-auto shrink-0 rounded-8 border border-amber-300 bg-white px-8 py-4 text-[11px] font-medium text-amber-950 hover:bg-amber-100"
+          triggerClassName="min-h-0 h-auto shrink-0 rounded-8 border border-amber-500/30 bg-[var(--studio-surface)] px-8 py-4 text-[11px] font-medium text-amber-700 hover:bg-amber-500/15 dark:text-amber-300"
           onConfirm={() => onRelease?.()}
         />
       ) : null}

@@ -23,6 +23,7 @@ import type {
 } from './types';
 import { previewPaneKind } from '@/lib/preview/after-generation';
 import { previewToolsState } from '@/lib/preview/display';
+import { EmptyState } from '@/components/shared/ui/empty-state';
 import {
   LIVE_SANDBOX_LABEL,
   PREPARING_PREVIEW,
@@ -238,7 +239,7 @@ export default function PreviewPanel({
             className={cn(
               'relative overflow-hidden',
               frame
-                ? 'rounded-16 border border-[var(--studio-line)] bg-white shadow-sm'
+                ? 'rounded-16 border border-[var(--studio-line)] bg-[var(--studio-surface)] shadow-sm'
                 : 'h-full w-full',
             )}
             style={
@@ -348,7 +349,11 @@ function EmptyPreview() {
   return (
     <div className="flex h-full w-full items-center justify-center px-24 text-center">
       <div className="max-w-[320px]">
-        <p className="text-[14px] leading-6 text-[var(--studio-muted)]">{PREVIEW_EMPTY}</p>
+        <EmptyState
+          title="Nothing to preview yet"
+          description={PREVIEW_EMPTY}
+          className="min-h-0 py-0"
+        />
       </div>
     </div>
   );
@@ -366,7 +371,7 @@ function PreviewBuildFailed({ log, onRetry }: { log?: string | null; onRetry?: (
         <button
           type="button"
           onClick={onRetry}
-          className="inline-flex min-h-[32px] items-center rounded-full [background-image:var(--studio-cta-gradient)] px-12 text-[12px] font-medium text-white transition-[filter] duration-200 hover:brightness-[1.07]"
+          className="inline-flex min-h-[44px] items-center rounded-full [background-image:var(--studio-cta-gradient)] px-14 text-[12px] font-medium text-white transition-[filter] duration-200 hover:brightness-[1.07] active:brightness-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
         >
           Retry
         </button>

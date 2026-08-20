@@ -139,8 +139,11 @@ export default function ConfirmAction({
   variant = 'danger',
   busyLabel,
   triggerClassName,
+  open: controlledOpen,
+  onOpenChange,
 }: {
-  label: ReactNode;
+  /** Omit together with `open`/`onOpenChange` to drive this from another trigger (e.g. a menu item). */
+  label?: ReactNode;
   title: string;
   body: ReactNode;
   confirmLabel?: string;
@@ -151,20 +154,31 @@ export default function ConfirmAction({
   busyLabel?: string;
   /** Styles the trigger button so dense rows can keep their compact pills. */
   triggerClassName?: string;
+  /** Controlled mode: pass both to open this from an external trigger instead of the built-in button. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const isControlled = controlledOpen !== undefined;
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = isControlled ? controlledOpen : internalOpen;
+  const setOpen = (value: boolean) => {
+    if (isControlled) onOpenChange?.(value);
+    else setInternalOpen(value);
+  };
 
   return (
     <>
-      <StudioButton
-        type="button"
-        variant={variant}
-        disabled={disabled}
-        className={triggerClassName}
-        onClick={() => setOpen(true)}
-      >
-        {label}
-      </StudioButton>
+      {!isControlled && (
+        <StudioButton
+          type="button"
+          variant={variant}
+          disabled={disabled}
+          className={triggerClassName}
+          onClick={() => setOpen(true)}
+        >
+          {label}
+        </StudioButton>
+      )}
 
       <ConfirmDialog
         open={open}

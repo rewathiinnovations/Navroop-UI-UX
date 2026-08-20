@@ -153,9 +153,16 @@ export default function DashboardPage() {
             onSubmit={onSubmit}
           />
           {error && (
-            <p className="mt-12 text-center text-[14px] text-[var(--studio-danger)]" role="alert">
-              {error}
-            </p>
+            <div className="mt-12 flex flex-col items-center gap-8 text-center" role="alert">
+              <p className="text-[14px] text-[var(--studio-danger)]">{error}</p>
+              <button
+                type="button"
+                onClick={() => void load()}
+                className="inline-flex min-h-[44px] items-center rounded-full border border-[var(--studio-line-strong)] px-14 text-[13px] font-medium text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
+              >
+                Try again
+              </button>
+            </div>
           )}
         </div>
 
@@ -175,9 +182,10 @@ export default function DashboardPage() {
                 key={id}
                 type="button"
                 onClick={() => setTab(id)}
+                aria-current={tab === id ? 'true' : undefined}
                 className={`inline-flex min-h-[44px] items-center px-8 text-[14px] transition-colors duration-200 ${
                   tab === id
-                    ? 'border-b-2 border-[var(--studio-fg)] text-[var(--studio-fg)]'
+                    ? 'border-b-2 border-[var(--studio-accent)] text-[var(--studio-fg)]'
                     : 'text-[var(--studio-muted)] hover:text-[var(--studio-fg)]'
                 }`}
               >
@@ -220,13 +228,14 @@ export default function DashboardPage() {
 
             {loading && (
               <div
+                className="grid grid-cols-1 gap-16 sm:grid-cols-2 lg:grid-cols-3"
                 role="status"
                 aria-label="Loading projects"
-                className="grid grid-cols-1 gap-16 sm:grid-cols-2 lg:grid-cols-3"
               >
                 {[0, 1, 2, 3].map((key) => (
                   <div
                     key={key}
+                    aria-hidden
                     className="h-240 rounded-12 bg-[var(--studio-skeleton)] animate-pulse"
                   />
                 ))}

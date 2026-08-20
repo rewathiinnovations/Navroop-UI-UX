@@ -9,7 +9,7 @@ import {
   type FormEvent,
   type KeyboardEvent,
 } from 'react';
-import { ArrowUp, Loader2, Mic, Paperclip, X } from 'lucide-react';
+import { ArrowUp, Loader2, Paperclip, X } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import { useDraftStorage } from '@/hooks/useDraftStorage';
 import { chatPlaceholder, isChatBuilding, isChatLocked } from '@/lib/jobs/chat-ui';
@@ -214,7 +214,7 @@ export default function ChatInput({
   const form = (
     <form
       onSubmit={onFormSubmit}
-      className="border-t border-[var(--studio-line)] bg-[var(--studio-surface)] p-12"
+      className="border-t border-[var(--studio-line)] bg-[var(--studio-surface)] p-14"
     >
       {/* Drop target is the whole composer, not the paperclip: a dragged image
           lands wherever the cursor is. `types.includes('Files')` keeps dragged
@@ -228,7 +228,7 @@ export default function ChatInput({
         onDragLeave={() => setDragging(false)}
         onDrop={onDrop}
         className={cn(
-          'rounded-16 border bg-[var(--studio-bg)] focus-within:ring-2 focus-within:ring-[var(--studio-ring)]',
+          'rounded-16 border bg-[var(--studio-bg)] shadow-[0_1px_0_rgba(24,24,27,0.04)] focus-within:border-[var(--studio-accent)] focus-within:ring-2 focus-within:ring-[var(--studio-ring)]',
           dragging
             ? 'border-dashed border-[var(--studio-accent)]'
             : 'border-[var(--studio-line-strong)]',
@@ -333,7 +333,8 @@ export default function ChatInput({
                     aria-pressed={mode === item}
                     onClick={() => setMode(item)}
                     className={cn(
-                      'rounded-6 px-8 py-3 text-[11px] font-medium capitalize',
+                      'min-h-[44px] rounded-6 px-10 text-[11px] font-medium capitalize',
+                      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]',
                       mode === item
                         ? 'bg-[var(--studio-fg)] text-[var(--studio-bg)]'
                         : 'text-[var(--studio-muted)] hover:text-[var(--studio-fg)]',
@@ -346,21 +347,11 @@ export default function ChatInput({
             )}
           </div>
           <div className="flex items-center gap-4">
-            <Hint label="Voice input coming soon">
-              <button
-                type="button"
-                disabled
-                aria-label="Voice input coming soon"
-                className="inline-flex size-32 items-center justify-center rounded-10 text-[var(--studio-muted)] disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                <Mic className="size-15" />
-              </button>
-            </Hint>
             <button
               type="submit"
               disabled={!canSend}
               aria-label="Send message"
-              className="inline-flex size-36 items-center justify-center rounded-full [background-image:var(--studio-cta-gradient)] text-white transition-[filter] duration-200 hover:brightness-[1.07] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:brightness-100"
+              className="studio-icon-hit inline-flex items-center justify-center rounded-full [background-image:var(--studio-cta-gradient)] text-white transition-[filter] duration-200 hover:brightness-[1.07] active:brightness-[0.96] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:brightness-100"
             >
               {busy ? (
                 <Loader2 className="size-16 animate-spin" />

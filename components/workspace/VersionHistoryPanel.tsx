@@ -110,7 +110,7 @@ export default function VersionHistoryPanel({
                     aria-label="Keep this forever"
                     aria-pressed={Boolean(checkpoint.isBookmarked)}
                     onClick={() => onBookmark?.(checkpoint.id)}
-                    className="inline-flex size-28 shrink-0 items-center justify-center rounded-8 text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)]"
+                    className="studio-icon-hit inline-flex shrink-0 items-center justify-center rounded-8 text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
                   >
                     <Star
                       className="size-14"

@@ -266,7 +266,12 @@ export default function TemplatesAdmin({
             </StudioSelect>
           </div>
           <label className="inline-flex w-fit items-center gap-8 text-[13px] text-[var(--studio-muted)]">
-            <input type="checkbox" name="isBuiltIn" /> Built-in (shared across every workspace)
+            <input
+              type="checkbox"
+              name="isBuiltIn"
+              className="size-16 rounded-4 accent-[var(--studio-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
+            />{' '}
+            Built-in (shared across every workspace)
           </label>
           <StudioTextarea id="template-prompt" name="prompt" label="Prompt" required rows={6} />
           <div>

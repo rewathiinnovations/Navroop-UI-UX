@@ -431,6 +431,7 @@ export default function UsageDashboard() {
         <label className="mt-12 inline-flex items-center gap-8 text-[13px] text-[var(--studio-fg)]">
           <input
             type="checkbox"
+            className="size-16 rounded-4 accent-[var(--studio-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
             checked={memoryExtractionEnabled}
             disabled={savingExtraction}
             onChange={async (event) => {

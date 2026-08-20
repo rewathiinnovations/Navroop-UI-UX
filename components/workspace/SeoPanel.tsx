@@ -8,6 +8,7 @@ import { sortFindings } from '@/lib/seo/findings';
 import type { SeoFinding, SeoSeverity } from '@/lib/seo/types';
 import type { SendMessageOptions } from './types';
 import { useSeoAudit } from './useSeoAudit';
+import StatusPill, { type StatusTone } from '@/components/admin/StatusPill';
 
 const SEVERITY_LABEL: Record<SeoSeverity, string> = {
   high: 'High',
@@ -18,26 +19,24 @@ const SEVERITY_LABEL: Record<SeoSeverity, string> = {
   pass: 'Pass',
 };
 
+const SEVERITY_TONE: Record<SeoSeverity, StatusTone> = {
+  high: 'danger',
+  medium: 'warning',
+  low: 'neutral',
+  // A check that could not run is neither a defect nor a pass (F-755), so it
+  // reads as the faint, dashed tone rather than borrowing either verdict.
+  info: 'faint',
+  pass: 'positive',
+};
+
 /**
  * F-820: this used to render "Fixed" from a flag the server stamped before any
  * generation had started. The severity is what the last scan actually measured,
- * so it always shows; a requested fix is a separate, honest note.
+ * so it always shows; a requested fix is a separate, honest note
+ * (`FixRequestedPill`).
  */
 function SeverityBadge({ status }: { status: SeoSeverity }) {
-  return (
-    <span
-      className={cn(
-        'inline-flex items-center rounded-full px-8 py-2 text-[11px] font-medium',
-        status === 'high' && 'bg-rose-100 text-rose-800',
-        status === 'medium' && 'bg-amber-100 text-amber-800',
-        status === 'low' && 'bg-sky-100 text-sky-800',
-        status === 'pass' && 'bg-emerald-100 text-emerald-800',
-        status === 'info' && 'bg-[var(--studio-surface-hover)] text-[var(--studio-muted)]',
-      )}
-    >
-      {SEVERITY_LABEL[status]}
-    </span>
-  );
+  return <StatusPill tone={SEVERITY_TONE[status]}>{SEVERITY_LABEL[status]}</StatusPill>;
 }
 
 function FixRequestedPill() {

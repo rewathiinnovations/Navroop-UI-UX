@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Copy, Link2, MoreHorizontal, RotateCcw, ThumbsDown, ThumbsUp } from 'lucide-react';
+import { Copy, Link2, MoreHorizontal, ThumbsDown, ThumbsUp } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import type { ChatMessage, GenerationFile } from '@/lib/generation/types';
 import type { JobResourceIds } from '@/lib/jobs/types';
@@ -9,7 +9,6 @@ import { isChatBuilding } from '@/lib/jobs/chat-ui';
 import BuildingIndicator from './BuildingIndicator';
 import RecoveryPanel from './RecoveryPanel';
 import CheckpointCard from './CheckpointCard';
-import Hint from './Hint';
 import PlanCard from './PlanCard';
 import type { Checkpoint, MessageFeedback, ProjectPhase, WorkspacePlan } from './types';
 import CreditLimitPanel from './CreditLimitPanel';
@@ -169,7 +168,8 @@ export default function ChatPanel({
                         'bg-[var(--studio-surface)] text-[var(--studio-fg)] border border-[var(--studio-line)]',
                       message.type === 'system' &&
                         'bg-[var(--studio-bg)] text-[var(--studio-muted)] border border-[var(--studio-line)]',
-                      message.type === 'error' && 'bg-rose-50 text-rose-900 border border-rose-200',
+                      message.type === 'error' &&
+                        'bg-[var(--studio-danger)]/10 text-[var(--studio-danger)] border border-[var(--studio-danger)]/25',
                       message.type === 'command' &&
                         'bg-zinc-900 font-mono text-[12px] text-zinc-100',
                       message.type === 'file-update' &&
@@ -219,16 +219,6 @@ export default function ChatPanel({
                       message.type === 'user' ? 'justify-end' : 'justify-start',
                     )}
                   >
-                    <Hint label="Coming soon">
-                      <button
-                        type="button"
-                        disabled
-                        aria-label="Revert"
-                        className="inline-flex size-28 items-center justify-center rounded-8 text-[var(--studio-faint)] disabled:cursor-not-allowed"
-                      >
-                        <RotateCcw className="size-13" />
-                      </button>
-                    </Hint>
                     <button
                       type="button"
                       aria-label="Thumbs up"
@@ -238,7 +228,7 @@ export default function ChatPanel({
                         if (next && projectId) void persistThumbs(projectId, next);
                       }}
                       className={cn(
-                        'inline-flex size-28 items-center justify-center rounded-8',
+                        'studio-icon-hit inline-flex items-center justify-center rounded-8 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]',
                         rating === 'up'
                           ? 'text-[var(--studio-accent)]'
                           : 'text-[var(--studio-faint)] hover:text-[var(--studio-fg)]',
@@ -255,7 +245,7 @@ export default function ChatPanel({
                         if (next && projectId) void persistThumbs(projectId, next);
                       }}
                       className={cn(
-                        'inline-flex size-28 items-center justify-center rounded-8',
+                        'studio-icon-hit inline-flex items-center justify-center rounded-8 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]',
                         rating === 'down'
                           ? 'text-[var(--studio-accent)]'
                           : 'text-[var(--studio-faint)] hover:text-[var(--studio-fg)]',
@@ -280,7 +270,7 @@ export default function ChatPanel({
                           });
                         }
                       }}
-                      className="inline-flex size-28 items-center justify-center rounded-8 text-[var(--studio-faint)] hover:text-[var(--studio-fg)]"
+                      className="studio-icon-hit inline-flex items-center justify-center rounded-8 text-[var(--studio-faint)] hover:text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
                     >
                       <Copy className="size-13" />
                     </button>
@@ -292,7 +282,7 @@ export default function ChatPanel({
                         type="button"
                         aria-label="More actions"
                         onClick={() => setMenuFor((current) => (current === key ? null : key))}
-                        className="inline-flex size-28 items-center justify-center rounded-8 text-[var(--studio-faint)] hover:text-[var(--studio-fg)]"
+                        className="studio-icon-hit inline-flex items-center justify-center rounded-8 text-[var(--studio-faint)] hover:text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
                       >
                         <MoreHorizontal className="size-13" />
                       </button>

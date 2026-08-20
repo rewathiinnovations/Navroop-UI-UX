@@ -99,7 +99,7 @@ export function WorkspaceToolMenu({
           type="button"
           aria-label={activeTool ? `${activeTool.label} — more views` : 'More views'}
           className={cn(
-            'inline-flex h-32 items-center gap-4 rounded-full px-10 text-[12px] font-medium transition-colors',
+            'inline-flex min-h-[44px] items-center gap-4 rounded-full px-10 text-[12px] font-medium transition-colors',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]',
             activeTool
               ? 'bg-[var(--studio-surface)] text-[var(--studio-fg)] shadow-sm'
@@ -166,7 +166,7 @@ export function WorkspaceViewSwitch({
         role="tablist"
         aria-label="Workspace view"
         data-primary-switch
-        className="inline-flex h-38 items-center rounded-full border border-[var(--studio-line-strong)] bg-[var(--studio-bg)] p-3 shadow-sm"
+        className="inline-flex min-h-[44px] items-center rounded-full border border-[var(--studio-line-strong)] bg-[var(--studio-bg)] p-3 shadow-sm"
       >
         {WORKSPACE_PRIMARY_TABS.map((tab) => {
           const Icon = VIEW_ICONS[tab.id];
@@ -180,7 +180,7 @@ export function WorkspaceViewSwitch({
               data-view={tab.id}
               onClick={() => onViewChange(tab.id)}
               className={cn(
-                'inline-flex h-32 items-center gap-6 rounded-full px-16 text-[13px] font-semibold transition-colors',
+                'inline-flex min-h-[36px] items-center gap-6 rounded-full px-16 text-[13px] font-semibold transition-colors',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]',
                 selected
                   ? 'bg-[var(--studio-surface)] text-[var(--studio-fg)] shadow-sm'
@@ -298,7 +298,7 @@ export function VersionPills({
             data-version={pill.version}
             onClick={() => onPreview(pill.id)}
             className={cn(
-              'inline-flex h-26 min-w-30 items-center justify-center rounded-full border px-8 text-[11px] font-medium tabular-nums transition-colors',
+              'inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-full border px-8 text-[11px] font-medium tabular-nums transition-colors',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]',
               'disabled:cursor-not-allowed disabled:opacity-40',
               pill.id === activeId

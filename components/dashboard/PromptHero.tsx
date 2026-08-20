@@ -99,7 +99,7 @@ const PromptHero = forwardRef<PromptHeroHandle, PromptHeroProps>(function Prompt
 
   return (
     <div className="w-full">
-      <h1 className="text-center text-[36px] font-medium tracking-[-0.03em] text-[var(--studio-fg)] sm:text-[42px]">
+      <h1 className="text-center text-[32px] font-medium tracking-[-0.03em] text-[var(--studio-fg)] sm:text-[40px]">
         {greeting}
       </h1>
       {description}
@@ -157,7 +157,7 @@ const PromptHero = forwardRef<PromptHeroHandle, PromptHeroProps>(function Prompt
                 <div
                   role="group"
                   aria-label="URL import mode"
-                  className="inline-flex h-[36px] items-center rounded-10 border border-[var(--studio-line-strong)] p-2"
+                  className="inline-flex min-h-[44px] items-center rounded-10 border border-[var(--studio-line-strong)] p-2"
                 >
                   {(
                     [
@@ -172,8 +172,8 @@ const PromptHero = forwardRef<PromptHeroHandle, PromptHeroProps>(function Prompt
                       onClick={() => setImportMode(id)}
                       className={
                         (importMode ?? DEFAULT_IMPORT_MODE) === id
-                          ? 'rounded-8 bg-[var(--studio-surface)] px-10 text-[12px] font-medium text-[var(--studio-fg)]'
-                          : 'rounded-8 px-10 text-[12px] text-[var(--studio-muted)] hover:text-[var(--studio-fg)]'
+                          ? 'min-h-[36px] rounded-8 bg-[var(--studio-surface)] px-10 text-[12px] font-medium text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]'
+                          : 'min-h-[36px] rounded-8 px-10 text-[12px] text-[var(--studio-muted)] hover:text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]'
                       }
                     >
                       {label}

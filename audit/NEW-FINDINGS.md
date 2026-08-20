@@ -369,3 +369,58 @@ now the document people will read, and it was wrong in three places.
   the same state, and collapsing them sends the operator after the wrong incident.**
 - Not fixed: distinct from F-252's two halves, so W5-Deploy correctly declined to widen scope.
   `getStoredCoolifySettings` now exposes the flag, so wiring the panel is small. Queued.
+
+### N-026 [process] A fixed finding came back on `main` while its fix was in flight on the branch
+
+- Location: `components/workspace/SeoPanel.tsx` / `components/workspace/CodeAuditPanel.tsx` —
+  `SeverityBadge`, as it arrived on `main`. Guard: `tests/unit/audit-fix-not-a-claim.test.ts:92`.
+- F-820 removed a `fixed && status !== 'pass' → "Fixed"` badge because nothing verifies a fix:
+  `fixSeoFinding` / `fixCodeFinding` only ever record `fixRequestedAt`, which the call site
+  already renders honestly as a separate `FixRequestedPill`. `main`'s branding pass rewrote the
+  same component from the pre-fix source and brought the claim back with it.
+- Caught only because a mechanical test asserts findings never carry `fixed`. No human noticed it
+  in review on either side, and the merge would have shipped it silently — "take `main` for design
+  tokens" is the right default and this hunk looked exactly like one.
+- **Why the guards exist.** Two branches editing the same file for months means a fix is only as
+  durable as the assertion pinning it. Prose in a commit message, a finding marked closed in a
+  ledger, and a reviewer's memory all failed here; a four-line test did not. Every fix that
+  removes a false claim should leave behind an assertion that the claim is gone — otherwise the
+  next rewrite of that component silently restores it.
+- Reverted in the merge resolution: `SeverityBadge` keeps `main`'s `StatusPill` presentation and
+  the branch's prop shape, with no `fixed` prop. Recorded rather than buried, because the value
+  here is the pattern, not the one badge. See N-027 for the same pattern with a WCAG floor.
+
+### N-027 [HIGH] `main` shipped a WCAG AA regression against a contrast test it already had
+
+- Location: `components/app/studio/studio.css` — the `--studio-accent` ramp, as it arrived on
+  `main`. Guard: `tests/unit/studio-contrast.test.ts`.
+- `main`'s branding pass moved `--studio-accent` from `#c92a4e` to heat `#fa4500`. Measured
+  against the AA floor of 4.5:1, on `--studio-cta-fg` `#ffffff` and `--studio-bg` `#f7f7f8`:
+  - base/branch `#c92a4e` — **5.35 / 5.00 PASS**
+  - `main` `#fa4500` — **3.55 / 3.32 FAIL**
+- **No orange in `styles/design-system/colors.css` clears it.** The whole heat ramp, computed:
+  `--heat-100` `#fa5d19` 3.16 / 2.95; `--heat-200` `#ff6600` 2.94 / 2.74; `--heat-50` `#c74a12`
+  4.75 / 4.44 — the closest, and it still misses the second axis by 0.06.
+- `studio-contrast.test.ts` exists **unchanged on `main` and at the merge base**. `main` never
+  touched it. So `main` was **red on its own gate** before this merge: it regressed an
+  accessibility floor against a test it was already carrying, and the pass evidently never ran
+  the suite. The branch's only change to that test was a regex fix so it could still find the
+  declaring rule after the tokens moved onto the `.studio-shell, .studio-portal` selector list —
+  a fix that made the guard work, not one that loosened it.
+- Two authorities collide here, and they are genuinely incompatible: this test, versus
+  `.cursor/rules/brand-theme.mdc:12` and `.cursor/skills/ui-ux-pro-max/SKILL.md:50`, the latter
+  saying in as many words "Never rose `#c92a4e` or a rainbow CTA". A test beats documentation, and
+  the substantive reason is that the test encodes an accessibility floor affecting every user
+  while the rule encodes a hue preference stated as a prohibition. Relaxing the test would have
+  converted a visible regression into an invisible one.
+- Resolved in the merge: the accent ramp (`--studio-accent` / `-hover` / `-soft` / `--studio-ring`,
+  light and dark) reverts to rose; `main`'s orange `--studio-cta-gradient` is **kept**, since no
+  test pins it and the rule's "no rainbow CTA" half is satisfiable even when its hex half is not.
+  All four ramp tokens moved together because they are one hue decision — reverting only the base
+  would leave a rose button with an orange hover and focus ring.
+- **The real fix is mechanical, and it is a design decision, not a merge one.** An accent needs
+  relative luminance **L ≤ 0.162** to clear 4.5:1 on both `#ffffff` and `#f7f7f8`. `#c74a12` sits
+  just above that line. A slightly darker orange in the same hue family clears both axes *and*
+  satisfies the brand rule; picking it is a one-commit revert of this entry.
+- Distinct from F-769, which pins `design-system/MASTER.md` to citing the `--heat-` token and
+  `#fa5d19` (`brand-authority.test.ts`, green) and says nothing about `--studio-accent`.

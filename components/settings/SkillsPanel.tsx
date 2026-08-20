@@ -5,6 +5,7 @@ import { CircleAlert } from 'lucide-react';
 import StudioButton from '@/components/app/studio/StudioButton';
 import ConfirmAction from '@/components/admin/ConfirmAction';
 import StudioField from '@/components/app/studio/StudioField';
+import { EmptyState } from '@/components/shared/ui/empty-state';
 import { useAuth } from '@/components/app/auth/AuthProvider';
 import {
   createSkill,
@@ -151,9 +152,15 @@ export default function SkillsPanel() {
       </p>
 
       {loading ? (
-        <p className="text-[13px] text-[var(--studio-muted)]" role="status">
-          Loading skills…
-        </p>
+        <div role="status" aria-label="Loading skills" className="space-y-10">
+          {[0, 1].map((key) => (
+            <div
+              key={key}
+              aria-hidden
+              className="h-88 animate-pulse rounded-12 bg-[var(--studio-skeleton)]"
+            />
+          ))}
+        </div>
       ) : (
         <ul className="space-y-10">
           {skills.map((skill) => (
@@ -178,6 +185,7 @@ export default function SkillsPanel() {
                     <label className="inline-flex items-center gap-6 text-[12px] text-[var(--studio-muted)]">
                       <input
                         type="checkbox"
+                        className="size-16 rounded-4 accent-[var(--studio-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
                         checked={skill.enabled}
                         onChange={() => void toggle(skill)}
                         aria-label={`Enable ${skill.name}`}
@@ -207,7 +215,7 @@ export default function SkillsPanel() {
                       label="Delete"
                       title={`Delete “${skill.name}”?`}
                       body="The instructions are deleted permanently and stop loading into new generations. This cannot be undone."
-                      confirmLabel="Delete skill"
+                      confirmLabel="Delete"
                       busyLabel="Deleting…"
                       triggerClassName="min-h-[36px] px-12 text-[12px]"
                       onConfirm={() => remove(skill)}
@@ -218,7 +226,12 @@ export default function SkillsPanel() {
             </li>
           ))}
           {skills.length === 0 && (
-            <li className="text-[13px] text-[var(--studio-muted)]">No workspace skills yet.</li>
+            <li>
+              <EmptyState
+                title="No workspace skills yet"
+                description="Admins can add conditional instruction sets that load into a generation when the task matches."
+              />
+            </li>
           )}
         </ul>
       )}

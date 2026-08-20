@@ -5,11 +5,15 @@ Product UI for auth and dashboard. Generated websites use a per-request UI/UX Pr
 ## Product chrome
 
 - Brand accent is Navroop's own heat scale: `--heat-4` … `--heat-200`, declared in `styles/design-system/colors.css` (`--heat-100` is `#fa5d19`). Reach for `var(--heat-*)` or the `heat-*` Tailwind utility, never a literal hex — the two literals left in the tree (`#FA4500` in `components/ui/shadcn/checkbox.tsx` and `toggle.tsx`) are hover states that predate the token and do not match it. Product chrome is Navroop's, per `.cursor/rules/navroop-product.mdc`; no other company's identity is to be preserved here.
-- Surfaces: white cards on `background-base`
+- Studio tokens `--studio-accent`, `--studio-ring` and `--studio-cta-gradient` must stay on heat — never rose `#c92a4e`, never a rainbow CTA.
+- Surfaces: `--studio-surface` cards on `--studio-bg` (mapped in `components/app/studio/studio.css`). Do not hardcode `bg-white` / `text-gray-*` in product chrome.
 - Type: Inter / existing Geist stack
 - Motion: 150-200ms color/opacity/transform only
-- Icons: Lucide / existing SVGs, never emoji
-- Controls: 44px minimum, visible focus rings, labeled inputs
+- Icons: Lucide / existing SVGs, never emoji. Do not switch the product chrome to Phosphor.
+- Controls: 44px minimum hit area (`studio-icon-hit` or `min-h/min-w-[44px]`); the glyph can stay 16–20px. Visible `focus-visible` rings on every interactive control. Labeled inputs.
+- Default theme is light (`enableSystem={false}`). Dark is an opt-in toggle, not the default.
+- Below `md`, the app sidebar is an overlay drawer. Below `lg`, the workspace shows one pane (chat or preview) via the existing chat-collapse toggle.
+- Shared primitives — do not invent a fourth: `EmptyState`, `ConfirmAction`, `StatusPill`, `StatusBanner`, `StudioButton`, `StudioField`.
 
 ## Generated websites
 

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { Check, Circle } from 'lucide-react';
 import { useAuth } from '@/components/app/auth/AuthProvider';
 
 type Row = {
@@ -52,7 +53,7 @@ export default function SetupChecklist() {
         </div>
         <button
           type="button"
-          className="text-[12px] text-[var(--studio-faint)]"
+          className="rounded-8 px-8 py-4 text-[12px] text-[var(--studio-faint)] hover:text-[var(--studio-muted)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
           onClick={() => {
             window.localStorage.setItem(HIDDEN_KEY, '1');
             setHidden(true);
@@ -64,12 +65,20 @@ export default function SetupChecklist() {
       <ul className="mt-12 space-y-8">
         {rows.map((row) => (
           <li key={row.kind} className="flex items-center justify-between gap-12 text-[13px]">
-            <span className="text-[var(--studio-fg)]">
-              {row.status === 'CONNECTED' ? '✓' : '○'} {row.name}
-              <span className="ml-8 text-[var(--studio-faint)]">{row.statusLabel}</span>
+            <span className="inline-flex items-center gap-6 text-[var(--studio-fg)]">
+              {row.status === 'CONNECTED' ? (
+                <Check className="size-14 shrink-0 text-[var(--studio-accent)]" aria-hidden />
+              ) : (
+                <Circle className="size-14 shrink-0 text-[var(--studio-faint)]" aria-hidden />
+              )}
+              {row.name}
+              <span className="text-[var(--studio-faint)]">{row.statusLabel}</span>
             </span>
             {row.status !== 'CONNECTED' && (
-              <Link href="/admin/integrations" className="text-[var(--studio-accent)]">
+              <Link
+                href="/admin/integrations"
+                className="rounded-8 text-[var(--studio-accent)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
+              >
                 Connect
               </Link>
             )}

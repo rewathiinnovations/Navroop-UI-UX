@@ -331,6 +331,7 @@ function ProjectsContent() {
             {[0, 1, 2, 3].map((key) => (
               <div
                 key={key}
+                aria-hidden
                 className="h-200 rounded-12 bg-[var(--studio-skeleton)] animate-pulse"
               />
             ))}
@@ -338,9 +339,16 @@ function ProjectsContent() {
         )}
 
         {!loading && error && (
-          <p className="text-[15px] text-[var(--studio-danger)]" role="alert">
-            {error}
-          </p>
+          <div className="flex flex-col items-start gap-8" role="alert">
+            <p className="text-[15px] text-[var(--studio-danger)]">{error}</p>
+            <button
+              type="button"
+              onClick={() => void load()}
+              className="inline-flex min-h-[44px] items-center rounded-full border border-[var(--studio-line-strong)] px-14 text-[13px] font-medium text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
+            >
+              Try again
+            </button>
+          </div>
         )}
 
         {!loading && !error && filtered.length === 0 && (

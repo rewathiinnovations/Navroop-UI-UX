@@ -17,6 +17,7 @@ import { validateEmail } from '@/lib/email';
 import { safeNextPath } from '@/lib/auth/public-login';
 import { createProjectFromPrompt } from '@/lib/projects/start-from-prompt';
 import { notify } from '@/lib/notify';
+import { cn } from '@/utils/cn';
 import { PENDING_PROMPT_KEY, clearDraftStorage } from '@/hooks/useDraftStorage';
 import type { PendingPrompt } from '@/lib/projects/signed-out-submit';
 
@@ -49,6 +50,8 @@ export type AuthMode = 'login' | 'signup';
  */
 const FORGOT_SUBMITTED_MESSAGE =
   'Request received. If that address has an account and has not asked for a reset in the last hour, a link is on its way.';
+const AUTH_LINK =
+  'inline-flex min-h-[44px] items-center rounded-8 text-[13px] font-medium text-[var(--studio-fg)] underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]';
 
 type AuthModalProps = {
   open: boolean;
@@ -85,7 +88,11 @@ export default function AuthModal({
   const [info, setInfo] = useState(resetSuccess ? 'Password updated — sign in' : '');
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      setEmail('');
+      setPassword('');
+      return;
+    }
     setError('');
     setPassword('');
     setLoading(false);
@@ -250,19 +257,23 @@ export default function AuthModal({
       >
         <div className="mb-16 flex items-start justify-between gap-12">
           <div>
-            <DialogTitle className="text-[22px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">
-              {panel !== 'auth'
-                ? 'Password reset'
-                : inviteOnly
-                  ? 'Navroop is invite only'
-                  : 'Welcome back'}
+            <DialogTitle className="text-[24px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">
+              {panel === 'forgot-sent'
+                ? 'Check your email'
+                : panel !== 'auth'
+                  ? 'Password reset'
+                  : inviteOnly
+                    ? 'Navroop is invite only'
+                    : 'Welcome back'}
             </DialogTitle>
-            <DialogDescription className="mt-6 text-[14px] leading-5 text-[var(--studio-muted)]">
-              {panel !== 'auth'
-                ? "We'll send a reset link to the registered email."
-                : inviteOnly
-                  ? 'Accounts are created by an admin, so there is no sign-up form.'
-                  : 'Sign in to open your projects and keep building.'}
+            <DialogDescription className="mt-8 text-[14px] leading-6 text-[var(--studio-muted)]">
+              {panel === 'forgot-sent'
+                ? 'If this email is registered, a reset link is on its way. Check inbox and spam.'
+                : panel !== 'auth'
+                  ? "We'll send a reset link to the registered email."
+                  : inviteOnly
+                    ? 'Accounts are created by an admin, so there is no sign-up form.'
+                    : 'Sign in to open your projects and keep building.'}
             </DialogDescription>
           </div>
           <button
@@ -275,8 +286,25 @@ export default function AuthModal({
           </button>
         </div>
 
-        {panel !== 'auth' ? (
-          <form onSubmit={onForgotSubmit} className="space-y-14">
+        {panel === 'forgot-sent' ? (
+          <div className="space-y-14">
+            <p className="text-[14px] leading-6 text-[var(--studio-fg)]" role="status">
+              {FORGOT_SUBMITTED_MESSAGE} Check inbox and spam.
+            </p>
+            <StudioButton
+              type="button"
+              variant="inverted"
+              className="w-full"
+              onClick={() => {
+                setPanel('auth');
+                setError('');
+              }}
+            >
+              Back to sign in
+            </StudioButton>
+          </div>
+        ) : panel !== 'auth' ? (
+          <form onSubmit={onForgotSubmit} className="space-y-16">
             <StudioField
               id="forgot-email"
               label="Email"
@@ -296,23 +324,16 @@ export default function AuthModal({
                 <span>{error}</span>
               </p>
             )}
-            {panel === 'forgot-sent' && (
-              <p className="text-[13px] leading-5 text-[var(--studio-fg)]" role="status">
-                {FORGOT_SUBMITTED_MESSAGE} Check inbox and spam.
-              </p>
-            )}
-            {panel === 'forgot' && (
-              <StudioButton type="submit" variant="inverted" className="w-full" disabled={loading}>
-                {loading ? 'Sending…' : 'Send reset link'}
-              </StudioButton>
-            )}
+            <StudioButton type="submit" variant="inverted" className="w-full" disabled={loading}>
+              {loading ? 'Sending…' : 'Send reset link'}
+            </StudioButton>
             <button
               type="button"
               onClick={() => {
                 setPanel('auth');
                 setError('');
               }}
-              className="w-full text-center text-[13px] font-medium text-[var(--studio-fg)] underline underline-offset-2 cursor-pointer"
+              className={cn(AUTH_LINK, 'w-full justify-center')}
             >
               Back to sign in
             </button>
@@ -361,7 +382,7 @@ export default function AuthModal({
             </p>
           </div>
         ) : (
-          <form onSubmit={onSubmit} className="space-y-14">
+          <form onSubmit={onSubmit} className="space-y-16">
             <StudioField
               id="auth-email"
               label="Email"
@@ -376,6 +397,7 @@ export default function AuthModal({
               id="auth-password"
               label="Password"
               type="password"
+              revealable
               autoComplete="current-password"
               required
               value={password}
@@ -388,7 +410,7 @@ export default function AuthModal({
                 setPanel('forgot');
                 setError('');
               }}
-              className="text-[13px] font-medium text-[var(--studio-fg)] underline underline-offset-2 cursor-pointer"
+              className={AUTH_LINK}
             >
               Forgot password?
             </button>
@@ -450,7 +472,7 @@ export default function AuthModal({
             <button
               type="button"
               onClick={() => onModeChange('signup')}
-              className="font-medium text-[var(--studio-fg)] underline underline-offset-2 cursor-pointer"
+              className={AUTH_LINK}
             >
               How to get access
             </button>

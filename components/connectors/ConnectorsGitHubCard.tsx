@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Github, X } from 'lucide-react';
+
 import ConfirmAction from '@/components/admin/ConfirmAction';
 import { disconnectGitHub } from '@/lib/github/actions';
 
@@ -158,6 +159,7 @@ export default function ConnectorsGitHubCard({
           </a>
         )}
       </section>
+
     </div>
   );
 }

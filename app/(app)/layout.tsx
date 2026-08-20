@@ -1,4 +1,5 @@
 import { Suspense, type ReactNode } from 'react';
+import AppShell from '@/components/layout/AppShell';
 import Sidebar from '@/components/layout/Sidebar';
 import { getSessionUser } from '@/lib/auth';
 import { withRelativeLabels } from '@/lib/format-relative-time';
@@ -17,21 +18,23 @@ export default async function AppGroupLayout({ children }: { children: ReactNode
   const memberCount = workspaceResult.ok ? workspaceResult.data.memberCount : 0;
 
   return (
-    <div className="studio-shell relative flex h-dvh min-h-0 overflow-hidden">
-      <div className="studio-glow" aria-hidden />
-      <Suspense
-        fallback={
-          <div className="h-full min-h-0 w-[272px] shrink-0 border-r border-[var(--studio-line)]" />
-        }
-      >
-        <Sidebar
-          teamName={teamName}
-          memberCount={memberCount}
-          recents={recents}
-          isAdmin={sessionUser?.role === 'ADMIN'}
-        />
-      </Suspense>
-      <div className="studio-scroll relative z-10 min-h-0 min-w-0 flex-1">{children}</div>
-    </div>
+    <AppShell
+      sidebar={
+        <Suspense
+          fallback={
+            <div className="h-full min-h-0 w-[272px] shrink-0 border-r border-[var(--studio-line)]" />
+          }
+        >
+          <Sidebar
+            teamName={teamName}
+            memberCount={memberCount}
+            recents={recents}
+            isAdmin={sessionUser?.role === 'ADMIN'}
+          />
+        </Suspense>
+      }
+    >
+      {children}
+    </AppShell>
   );
 }
