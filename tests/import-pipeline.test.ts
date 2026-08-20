@@ -16,13 +16,8 @@ function assert(cond: unknown, name: string) {
 }
 
 const { looksLikeUrl } = await import('../lib/projects/prompt.ts');
-const {
-  DEFAULT_IMPORT_MODE,
-  IMPORT_MODES,
-  resolveImportMode,
-  isImportMode,
-  parseDraftImportMode,
-} = await import('../lib/import/mode.ts');
+const { DEFAULT_IMPORT_MODE, IMPORT_MODES, resolveImportMode, isImportMode, parseDraftImportMode } =
+  await import('../lib/import/mode.ts');
 const { BLOCKED_ACCESS_MESSAGE, isBlockedAccessError } = await import('../lib/import/errors.ts');
 const { MAX_REHOST_BYTES, shouldSkipRehost } = await import('../lib/import/rehost-assets.ts');
 const { mergeSectionsToCap, MAX_IMPORT_SECTIONS } = await import('../lib/import/segment.ts');
@@ -33,12 +28,18 @@ const { buildCachedMessages } = await import('../lib/generation/prompt-cache.ts'
 const { decideUrlImportFlow, runUrlImportPipeline } = await import('../lib/import/pipeline.ts');
 
 assert(DEFAULT_IMPORT_MODE === 'reimagine', 'default import mode is reimagine');
-assert(IMPORT_MODES.includes('replicate') && IMPORT_MODES.includes('reimagine'), 'both modes exist');
+assert(
+  IMPORT_MODES.includes('replicate') && IMPORT_MODES.includes('reimagine'),
+  'both modes exist',
+);
 assert(resolveImportMode(undefined) === 'reimagine', 'undefined mode resolves to reimagine');
 assert(resolveImportMode('replicate') === 'replicate', 'replicate is accepted');
 assert(resolveImportMode('nope') === 'reimagine', 'invalid mode falls back to reimagine');
 assert(isImportMode('reimagine') && !isImportMode('clone'), 'isImportMode guards values');
-assert(parseDraftImportMode({ importMode: 'replicate' }) === 'replicate', 'draft JSON keeps replicate');
+assert(
+  parseDraftImportMode({ importMode: 'replicate' }) === 'replicate',
+  'draft JSON keeps replicate',
+);
 assert(parseDraftImportMode({ importMode: 'nope' }) === 'reimagine', 'draft JSON falls back');
 
 assert(looksLikeUrl('https://example.com/pricing'), 'https URL is detected');
@@ -78,7 +79,10 @@ assert(
     "This site blocked automated access — try pasting the page's content directly instead",
   'blocked-access message is exact',
 );
-assert(isBlockedAccessError(new Error('net::ERR_HTTP_RESPONSE_CODE_FAILURE 403')), '403 is blocked');
+assert(
+  isBlockedAccessError(new Error('net::ERR_HTTP_RESPONSE_CODE_FAILURE 403')),
+  '403 is blocked',
+);
 assert(isBlockedAccessError(new Error('Timeout 30000ms exceeded')), 'timeout is blocked');
 assert(isBlockedAccessError(new Error('Please log in to continue')), 'login wall is blocked');
 assert(!isBlockedAccessError(new Error('sharp failed')), 'unrelated errors are not blocked');
@@ -97,9 +101,14 @@ const many = Array.from({ length: 15 }, (_, i) => ({
 }));
 const capped = mergeSectionsToCap(many, MAX_IMPORT_SECTIONS);
 assert(capped.length === 12, 'merges down to 12 sections');
-assert(capped.every((section) => section.id && section.label), 'merged sections keep id/label');
 assert(
-  capped.some((section) => section.label.includes('Section 4') || section.contentSummary.includes('copy 4')),
+  capped.every((section) => section.id && section.label),
+  'merged sections keep id/label',
+);
+assert(
+  capped.some(
+    (section) => section.label.includes('Section 4') || section.contentSummary.includes('copy 4'),
+  ),
   'smallest adjacent section is merged rather than dropped',
 );
 assert(mergeSectionsToCap(many.slice(0, 5)).length === 5, 'does not merge when already under cap');
@@ -121,7 +130,10 @@ const clustered = clusterColors([
 ]);
 assert(clustered.length <= 8, 'clusters colors to about 8');
 assert(clustered.length >= 3, 'keeps distinct color families');
-assert(clustered.every((hex) => /^#[0-9a-f]{6}$/i.test(hex)), 'colors are hex');
+assert(
+  clustered.every((hex) => /^#[0-9a-f]{6}$/i.test(hex)),
+  'colors are hex',
+);
 
 const tokenBlock = formatDesignTokens({
   fontFamily: 'Inter, system-ui, sans-serif',
@@ -141,8 +153,14 @@ const prefixB = buildCachedMessages({
   stablePrefix: 'base-rules + stack + memory',
   volatileUser: 'section-2',
 });
-assert(prefixA[0]?.content === prefixB[0]?.content, 'stable prefix is byte-identical across sections');
-assert(prefixA[0]?.content === 'base-rules + stack + memory', 'system slot is the cacheable prefix');
+assert(
+  prefixA[0]?.content === prefixB[0]?.content,
+  'stable prefix is byte-identical across sections',
+);
+assert(
+  prefixA[0]?.content === 'base-rules + stack + memory',
+  'system slot is the cacheable prefix',
+);
 
 const replicateVolatile = buildSectionVolatilePrompt({
   mode: 'replicate',
@@ -160,7 +178,10 @@ const replicateVolatile = buildSectionVolatilePrompt({
 });
 assert(replicateVolatile.includes('/uploads/hero.webp'), 'section prompt lists rehosted URL');
 assert(replicateVolatile.includes('rehosted'), 'section prompt requires rehosted URLs only');
-assert(replicateVolatile.includes('faithful') || replicateVolatile.includes('match source'), 'replicate is faithful');
+assert(
+  replicateVolatile.includes('faithful') || replicateVolatile.includes('match source'),
+  'replicate is faithful',
+);
 assert(!replicateVolatile.includes('look deliberately different'), 'replicate does not reimagine');
 
 const reimagineVolatile = buildSectionVolatilePrompt({
@@ -178,7 +199,8 @@ const reimagineVolatile = buildSectionVolatilePrompt({
   designDirection: 'bold',
 });
 assert(
-  reimagineVolatile.includes('deliberately different') || reimagineVolatile.includes('design direction'),
+  reimagineVolatile.includes('deliberately different') ||
+    reimagineVolatile.includes('design direction'),
   'reimagine applies project design direction',
 );
 
@@ -192,7 +214,6 @@ const fallback = await runUrlImportPipeline({
   capture: async () => ({
     sourceUrl: 'https://example.com',
     desktopPng: Buffer.from('desk'),
-    mobilePng: Buffer.from('mob'),
     tokens: {
       fontFamily: 'Inter',
       fontSizes: ['16px'],

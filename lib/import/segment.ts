@@ -83,7 +83,6 @@ async function defaultSegmentComplete(input: {
   const { generateObject } = await import('ai');
   const { z } = await import('zod');
   const { getProviderForModel } = await import('../ai/provider-manager.ts');
-  const { appConfig } = await import('../../config/app.config.ts');
 
   const schema = z.object({
     sections: z
@@ -99,10 +98,7 @@ async function defaultSegmentComplete(input: {
       .min(1),
   });
 
-  const { client, actualModel } = await getProviderForModel(
-    appConfig.ai.defaultModel,
-    input.userId,
-  );
+  const { client, actualModel } = await getProviderForModel(null, input.userId);
   const result = await generateObject({
     model: client(actualModel),
     schema,

@@ -14,6 +14,7 @@ import {
 } from '@/lib/assets/actions';
 import type { GenerateAspect } from '@/lib/assets/generate-image';
 import { notify } from '@/lib/notify';
+import ImageWithFallback from './ImageWithFallback';
 
 const ASPECTS: Array<{ id: GenerateAspect; label: string }> = [
   { id: '16:9', label: '16:9' },
@@ -220,8 +221,18 @@ export default function AssetsPanel({ projectId }: { projectId: string }) {
             className="rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] p-12"
           >
             <div className="mb-10 h-72 overflow-hidden rounded-8 bg-[var(--studio-skeleton)]">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={asset.url} alt={asset.altText} className="size-full object-cover" />
+              <ImageWithFallback
+                src={asset.url}
+                alt={asset.altText}
+                className="size-full object-cover"
+                width={asset.width}
+                height={asset.height}
+                fallback={
+                  <div className="flex size-full items-center justify-center px-8 text-center text-[11px] text-[var(--studio-faint)]">
+                    Image unavailable
+                  </div>
+                }
+              />
             </div>
             <div className="mb-8 flex items-center justify-between gap-8">
               <span className="rounded-full bg-[var(--studio-bg)] px-8 py-2 text-[11px] text-[var(--studio-muted)]">

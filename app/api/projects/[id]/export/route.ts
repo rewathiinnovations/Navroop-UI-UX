@@ -62,7 +62,7 @@ async function exportProject(request: NextRequest, params: Promise<{ id: string 
     return NextResponse.json({ error: 'Checkpoint not found' }, { status: 404 });
   }
 
-  const files = await collectExportFiles({
+  const { files, oversized } = await collectExportFiles({
     projectId: project.id,
     checkpointId,
     checkpoints: project.checkpoints,
@@ -82,7 +82,7 @@ async function exportProject(request: NextRequest, params: Promise<{ id: string 
   );
   const exportFiles = Object.entries(repoFiles).map(([path, content]) => ({ path, content }));
 
-  const readme = buildExportReadme({ name: project.name, stack: project.stack });
+  const readme = buildExportReadme({ name: project.name, stack: project.stack, oversized });
   const { withRecordedJob } = await import('@/lib/jobs/wrap');
   await withRecordedJob(
     {
@@ -99,6 +99,7 @@ async function exportProject(request: NextRequest, params: Promise<{ id: string 
     userId: user.id,
     projectId: project.id,
     checkpointId: checkpointId || project.checkpoints[0]?.id || null,
+    oversizedSkipped: oversized.length,
   });
 
   const body = await streamExportZip(exportFiles, readme);
@@ -107,6 +108,10 @@ async function exportProject(request: NextRequest, params: Promise<{ id: string 
     headers: {
       'Content-Type': 'application/zip',
       'Content-Disposition': `attachment; filename="${filename}"`,
+      // F-796: the README names the skipped paths; this is the machine-readable half, so a
+      // caller that is not a browser download can tell the archive is incomplete without
+      // parsing prose.
+      'X-Export-Skipped-Oversized': String(oversized.length),
     },
   });
 }

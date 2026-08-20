@@ -1,5 +1,5 @@
 import { getEffectiveApiKey } from '@/lib/api-keys';
-import { fallbackAltText } from '@/lib/assets/keys';
+import { generateAltText } from '@/lib/assets/alt-text';
 import { persistOptimizedAsset, type PersistedAsset } from '@/lib/assets/persist';
 import {
   generateWithImageWorker,
@@ -34,70 +34,6 @@ const OPENAI_SIZE: Record<GenerateAspect, '1536x1024' | '1024x1024' | '1024x1536
 const TARGET_SIZE: Partial<Record<GenerateAspect, { width: number; height: number }>> = {
   '1200x630': { width: 1200, height: 630 },
 };
-
-async function generateAltText(userId: string | null | undefined, prompt: string) {
-  const fallback = fallbackAltText(prompt);
-  const openai = await getEffectiveApiKey(userId, 'openai');
-  if (openai) {
-    try {
-      const response = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${openai}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'gpt-4o-mini',
-          temperature: 0.2,
-          max_tokens: 60,
-          messages: [
-            {
-              role: 'system',
-              content: 'Write a concise image alt text (max 12 words). No quotes.',
-            },
-            { role: 'user', content: prompt },
-          ],
-        }),
-      });
-      if (response.ok) {
-        const data = (await response.json()) as {
-          choices?: Array<{ message?: { content?: string } }>;
-        };
-        const text = data.choices?.[0]?.message?.content?.replace(/\s+/g, ' ').trim();
-        if (text) return text;
-      }
-    } catch {
-      /* fall through */
-    }
-  }
-  const google = await getEffectiveApiKey(userId, 'gemini');
-  if (google) {
-    try {
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(google)}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [
-              { parts: [{ text: `Write concise image alt text (max 12 words) for: ${prompt}` }] },
-            ],
-          }),
-        },
-      );
-      if (response.ok) {
-        const data = (await response.json()) as {
-          candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-        };
-        const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.replace(/\s+/g, ' ').trim();
-        if (text) return text;
-      }
-    } catch {
-      /* fall through */
-    }
-  }
-  return fallback;
-}
 
 async function generateWithOpenAI(apiKey: string, prompt: string, aspect: GenerateAspect) {
   const response = await fetch('https://api.openai.com/v1/images/generations', {
@@ -207,7 +143,11 @@ async function storeGenerated(
   buffer: Buffer,
   provider: GeneratedImage['provider'],
 ): Promise<GeneratedImage> {
-  const altText = await generateAltText(input.userId, prompt);
+  const altText = await generateAltText({
+    userId: input.userId,
+    projectId: input.projectId,
+    prompt,
+  });
   const asset = await persistOptimizedAsset({
     projectId: input.projectId,
     buffer,

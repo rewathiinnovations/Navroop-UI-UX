@@ -18,8 +18,11 @@ export type CapturedImage = {
 
 export type PageCapture = {
   sourceUrl: string;
+  /**
+   * Desktop only. There was a `mobilePng` here that no consumer ever read (F-180); every
+   * import paid a viewport resize, a settle wait and a second full-page PNG to produce it.
+   */
   desktopPng: Buffer;
-  mobilePng: Buffer;
   tokens: DesignTokens;
   images: CapturedImage[];
   firecrawlText: string;

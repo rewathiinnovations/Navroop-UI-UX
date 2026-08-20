@@ -29,9 +29,27 @@ export function shouldExcludeExportPath(path: string) {
   return isEnvFile(path);
 }
 
-export function filterExportFiles(files: FileSnapshotEntry[]): FileSnapshotEntry[] {
-  return files.filter((file) => {
-    if (shouldExcludeExportPath(file.path)) return false;
-    return Buffer.byteLength(file.content, 'utf8') <= EXPORT_MAX_FILE_BYTES;
-  });
+export type OversizedExportFile = { path: string; bytes: number };
+
+/**
+ * Splits, rather than silently dropping.
+ *
+ * The three structural exclusions (`node_modules`, `.git`, `.env`, plus zip-slip paths) are
+ * named in the README the user receives, so they need no per-file record — but the 10 MB size
+ * rule was not, and a file simply vanished from the download (F-796). Oversized paths come
+ * back so the README and the response header can say what is missing.
+ */
+export function filterExportFiles(files: FileSnapshotEntry[]): {
+  files: FileSnapshotEntry[];
+  oversized: OversizedExportFile[];
+} {
+  const kept: FileSnapshotEntry[] = [];
+  const oversized: OversizedExportFile[] = [];
+  for (const file of files) {
+    if (shouldExcludeExportPath(file.path)) continue;
+    const bytes = Buffer.byteLength(file.content, 'utf8');
+    if (bytes > EXPORT_MAX_FILE_BYTES) oversized.push({ path: file.path, bytes });
+    else kept.push(file);
+  }
+  return { files: kept, oversized };
 }

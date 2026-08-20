@@ -1,3 +1,4 @@
+import { buildMemoryBlock } from '@/lib/memory/build-context';
 import { persistProjectGeneration } from '@/lib/projects/actions';
 import type { ImportMode } from './mode.ts';
 import { runUrlImportPipeline } from './pipeline.ts';
@@ -14,6 +15,16 @@ export async function runProjectUrlImport(input: {
   onProgress?: (message: string) => void;
   jobId?: string;
 }): Promise<UrlImportResult> {
+  // Brain memory is always-on and belongs inside the cacheable prefix, including on the
+  // import that produces the site's first version (F-107). Loaded once here, not per
+  // section, so the prefix stays byte-identical. A failure to read it is logged and the
+  // import continues without memory — same contract as the chat generation route.
+  let memoryBlock = '';
+  try {
+    memoryBlock = (await buildMemoryBlock(input.projectId)).block;
+  } catch (error) {
+    console.warn('[import] memory block failed', error);
+  }
   return runUrlImportPipeline({
     projectId: input.projectId,
     sourceUrl: input.sourceUrl,
@@ -21,6 +32,7 @@ export async function runProjectUrlImport(input: {
     stack: input.stack,
     designDirection: input.designDirection,
     userId: input.userId,
+    memoryBlock,
     jobId: input.jobId,
     persistSource: async ({ capture, sections }) => {
       await upsertImportSource({

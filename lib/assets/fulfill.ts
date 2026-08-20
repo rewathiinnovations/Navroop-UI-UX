@@ -45,8 +45,19 @@ export async function fulfillNeedImages(input: {
 }): Promise<FulfilledFiles> {
   const combined = input.files.map((file) => file.content).join('\n');
   const directives = parseNeedImageDirectives(combined);
-  // A copy, so attaching `unfulfilled` never mutates the caller's own array.
-  if (directives.length === 0) return Object.assign([...input.files], { unfulfilled: [] });
+  // The early return is still an exit through the module's floor: a token the
+  // parser cannot read (`NEED_IMAGE:|16:9`, an empty description) reaches no
+  // provider, so there is nothing to fulfil — but `withPlaceholdersForUnfulfilled`
+  // is also where `sweepNeedImageTokens` lives, and skipping it shipped the raw
+  // token. Sweeping here makes the guarantee self-contained rather than
+  // dependent on a second caller re-applying it (F-128).
+  if (directives.length === 0) {
+    const swept = input.files.map((file) => ({
+      path: file.path,
+      content: withPlaceholdersForUnfulfilled(file.content),
+    }));
+    return Object.assign(swept, { unfulfilled: [] });
+  }
 
   // Shared across directives so a provider that has refused for the whole
   // generation is skipped for the rest of it rather than asked again per image.

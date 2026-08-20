@@ -44,7 +44,6 @@ function pageCapture(overrides: Partial<PageCapture> = {}): PageCapture {
   return {
     sourceUrl: 'https://example.com',
     desktopPng: Buffer.from('desk'),
-    mobilePng: Buffer.from('mob'),
     tokens: {
       fontFamily: 'Inter',
       fontSizes: ['16px'],
@@ -331,7 +330,9 @@ describe('section generation severity', () => {
       /Section "Pricing" could not be generated \(model timed out\)/,
     );
     expect(sectionGenerateFailureMessage('Pricing', 'model timed out')).toMatch(/other sections/);
-    expect(sectionGenerateFailureMessage('Pricing', 'model timed out')).not.toMatch(/build failed/i);
+    expect(sectionGenerateFailureMessage('Pricing', 'model timed out')).not.toMatch(
+      /build failed/i,
+    );
   });
 
   it('falls back only when every section failed', () => {
@@ -375,9 +376,7 @@ describe('section generation severity', () => {
     });
 
     expect(result.filesXml).toContain('ok.html');
-    expect(result.warnings).toEqual([
-      sectionGenerateFailureMessage('Pricing', 'model timed out'),
-    ]);
+    expect(result.warnings).toEqual([sectionGenerateFailureMessage('Pricing', 'model timed out')]);
     expect(progress).toContain(sectionGenerateFailureMessage('Pricing', 'model timed out'));
     expect(recordStep).toHaveBeenCalledWith('job_import_3', {
       key: 'section:pricing',

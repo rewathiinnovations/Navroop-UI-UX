@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import type * as PinnedFetchModule from '@/lib/security/pinned-fetch';
 
 /**
  * A verified generated site ("Tilt & Tamp", 22 files) shipped a grey box where its
@@ -34,6 +35,27 @@ vi.mock('@/lib/plans/limits', () => ({
 }));
 vi.mock('@/lib/assets/generate-image', () => ({ generateImage: vi.fn() }));
 vi.mock('@/lib/observability/track', () => ({ trackFailure: vi.fn() }));
+
+/**
+ * The image download now goes through `safeFetch` (F-124), whose SSRF guard
+ * resolves the host. Stubbed so these tests stay off real DNS.
+ */
+vi.mock('node:dns', () => ({
+  promises: { lookup: async () => [{ address: '93.184.216.34', family: 4 }] },
+}));
+
+/**
+ * And it pins the socket to the address that guard approved, driving
+ * `node:http` itself so a rebinding second lookup cannot move the connection
+ * (F-308). The transport is the interception point now — routed back at the
+ * stubbed global `fetch` so the assertions below still read the outbound
+ * request.
+ */
+vi.mock('@/lib/security/pinned-fetch', async (importOriginal) => ({
+  ...(await importOriginal<typeof PinnedFetchModule>()),
+  pinnedFetch: (url: URL, _pinned: unknown, init: RequestInit) =>
+    fetch(url.href, { ...init, redirect: 'manual' }),
+}));
 
 import { fulfillNeedImages } from '@/lib/assets/fulfill';
 import { openverseKeywords, parseOpenverseResults } from '@/lib/assets/openverse';
@@ -114,14 +136,15 @@ function jsonResponse(body: unknown, status = 200) {
   } as unknown as Response;
 }
 
+/**
+ * A real `Response`: `safeFetch` reads the body as a stream, so a hand-rolled
+ * object with only `arrayBuffer` would arrive as zero bytes.
+ */
 function imageResponse() {
-  const bytes = Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
-  return {
-    ok: true,
+  return new Response(Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]), {
     status: 200,
-    headers: new Headers({ 'content-type': 'image/jpeg' }),
-    arrayBuffer: async () => bytes.buffer,
-  } as unknown as Response;
+    headers: { 'content-type': 'image/jpeg' },
+  });
 }
 
 let fetchMock: Mock;
@@ -399,6 +422,23 @@ describe('fulfillNeedImages reporting', () => {
 
     expect(out.unfulfilled).toEqual([]);
     expect(out[0]?.content).toBe('<p>no images here</p>');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('sweeps a token the parser missed even when nothing parses (F-128)', async () => {
+    // `NEED_IMAGE:|16:9` fails the description group, so `parseNeedImageDirectives`
+    // finds nothing and the function returns early — before the placeholder
+    // sweep that is the module's documented floor. The literal token used to
+    // ship inside the user's source on that branch.
+    const out = await fulfillNeedImages({
+      projectId: PROJECT,
+      userId: 'u-1',
+      files: [{ path: 'index.html', content: '<img src="NEED_IMAGE:|16:9">' }],
+    });
+
+    expect(out.unfulfilled).toEqual([]);
+    expect(out[0]?.content).not.toContain('NEED_IMAGE');
+    expect(out[0]?.content).toContain('data:image/svg+xml');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

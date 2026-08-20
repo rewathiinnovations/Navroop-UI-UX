@@ -28,6 +28,8 @@ export type MemoryRecord = {
 export type MemoryBlockResult = {
   block: string;
   truncated: boolean;
+  /** Scopes that lost at least one ACTIVE row to the budget, so a warning can name them. */
+  truncatedScopes: MemoryScope[];
   tokenEstimate: number;
 };
 

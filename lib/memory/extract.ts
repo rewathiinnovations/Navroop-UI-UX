@@ -1,5 +1,4 @@
 import { generateText } from 'ai';
-import { appConfig } from '@/config/app.config';
 import { getProviderForModel } from '@/lib/ai/provider-manager';
 import { prisma } from '@/lib/db';
 import { peekConversationState } from '@/lib/generation/conversation-state';
@@ -88,7 +87,7 @@ export function parseExtractedMemories(raw: string): ExtractedProposal[] {
 }
 
 async function defaultComplete(userText: string, userId: string | null) {
-  const { client, actualModel } = await getProviderForModel(appConfig.ai.defaultModel, userId);
+  const { client, actualModel } = await getProviderForModel(null, userId);
   const result = await generateText({
     model: client(actualModel),
     temperature: 0,

@@ -12,6 +12,7 @@ import { checkCredits } from '@/lib/plans/limits';
 import { WORKSPACE_ROW_ID } from '@/lib/storage/usage';
 import { assertSafeUrl, UnsafeUrlError } from '@/lib/security/url-guard';
 import { errorPayload } from '@/lib/api/error-response';
+import { withRequest } from '@/lib/api/with-request';
 import { holdProjectLock } from '@/lib/projects/lock';
 import { lockConflictJson } from '@/lib/projects/lock-http';
 import {
@@ -29,7 +30,20 @@ import { log } from '@/lib/logger';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
 
-export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+/**
+ * `withRequest` like every sibling route. Without it there is no request-context store, so
+ * the `getRequestId()` below returned undefined and the IMPORT job row carried no request
+ * id — the one identifier the recovery panel shows the user to quote and the only thing
+ * that correlates their report to a log line (F-049).
+ */
+export async function POST(request: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  return withRequest(request, () => importProjectUrl(request, ctx));
+}
+
+async function importProjectUrl(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
   const user = await getSessionUser();
   if (!user) {
     return Response.json({ error: 'Sign in required' }, { status: 401 });

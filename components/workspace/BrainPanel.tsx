@@ -16,6 +16,7 @@ import {
   MEMORY_CATEGORIES,
   MEMORY_TOKEN_BUDGET,
   type MemoryCategory,
+  type MemoryScope,
   type PublicMemory,
 } from '@/lib/memory/types';
 import { notify } from '@/lib/notify';
@@ -26,6 +27,23 @@ const CATEGORY_LABEL: Record<MemoryCategory, string> = {
   content: 'Content',
   context: 'Context',
 };
+
+/**
+ * The old warning named no scope and told everyone to "archive unused entries", which is
+ * the wrong list for a project owner who cannot edit workspace memory. Each scope that
+ * actually lost a row is named instead.
+ */
+function truncationWarning(scopes: MemoryScope[]) {
+  const project = scopes.includes('PROJECT');
+  const workspace = scopes.includes('WORKSPACE');
+  if (project && workspace) {
+    return `Some rules are not injected — both lists are over the ${MEMORY_TOKEN_BUDGET}-token budget. Archive project entries below, and ask an admin to archive workspace entries.`;
+  }
+  if (workspace) {
+    return `Some workspace rules are not injected — workspace memory fills the ${MEMORY_TOKEN_BUDGET}-token budget. This project's own rules are still injected. Only an admin can archive workspace entries.`;
+  }
+  return `Some of this project's rules are not injected — the block is at the ${MEMORY_TOKEN_BUDGET}-token budget. Archive project entries below so later rules take effect.`;
+}
 
 function groupByCategory(entries: PublicMemory[]) {
   const groups = MEMORY_CATEGORIES.map((category) => ({
@@ -316,7 +334,10 @@ export default function BrainPanel({ projectId }: { projectId: string }) {
   const isAdmin = user?.role === 'ADMIN';
   const [workspace, setWorkspace] = useState<PublicMemory[]>([]);
   const [project, setProject] = useState<PublicMemory[]>([]);
-  const [budget, setBudget] = useState<{ tokenEstimate: number; truncated: boolean } | null>(null);
+  const [budget, setBudget] = useState<{
+    tokenEstimate: number;
+    truncatedScopes: MemoryScope[];
+  } | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [canEditProject, setCanEditProject] = useState(isAdmin);
@@ -329,7 +350,10 @@ export default function BrainPanel({ projectId }: { projectId: string }) {
   const refreshBudget = async () => {
     const result = await getMemoryBudget(projectId);
     if (result.ok)
-      setBudget({ tokenEstimate: result.data.tokenEstimate, truncated: result.data.truncated });
+      setBudget({
+        tokenEstimate: result.data.tokenEstimate,
+        truncatedScopes: result.data.truncatedScopes,
+      });
   };
 
   useEffect(() => {
@@ -347,7 +371,10 @@ export default function BrainPanel({ projectId }: { projectId: string }) {
         setProject(list.data.project);
         setCanEditProject(isAdmin || Boolean(user?.id));
         if (usage.ok)
-          setBudget({ tokenEstimate: usage.data.tokenEstimate, truncated: usage.data.truncated });
+          setBudget({
+            tokenEstimate: usage.data.tokenEstimate,
+            truncatedScopes: usage.data.truncatedScopes,
+          });
       },
     );
     return () => {
@@ -487,10 +514,9 @@ export default function BrainPanel({ projectId }: { projectId: string }) {
         <p className="text-[12px] text-[var(--studio-muted)]">
           Active memory: {budget ? `${budget.tokenEstimate} / ${MEMORY_TOKEN_BUDGET} tokens` : '—'}
         </p>
-        {budget?.truncated && (
+        {budget && budget.truncatedScopes.length > 0 && (
           <p className="mt-4 text-[12px] text-amber-800" role="status">
-            Some rules are not injected — the block is truncated at the 1500-token budget. Archive
-            unused entries so later rules can take effect.
+            {truncationWarning(budget.truncatedScopes)}
           </p>
         )}
       </footer>

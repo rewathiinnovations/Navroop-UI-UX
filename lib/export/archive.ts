@@ -3,18 +3,18 @@ import type { FileSnapshotEntry } from '@/lib/checkpoints/snapshot-store';
 import { sanitizeGenerationPath } from '@/lib/generation/parse-files';
 import { log } from '@/lib/logger';
 
-type Archiver = {
-  append: (source: string | Buffer, data: { name: string }) => unknown;
-  finalize: () => Promise<void> | void;
-} & NodeJS.ReadableStream;
-
 /**
  * Stream a zip with archiver. Do not buffer the whole archive in memory.
  * Exports do not consume credits — zipping is a download, not generation.
+ *
+ * The module is imported dynamically so a missing install fails this one
+ * download rather than the build. Its shape comes from `types/archiver.d.ts`,
+ * not from a local cast: the cast this file used to carry was over a module
+ * declared as bare `any`, so nothing here was checked at all (F-767).
  */
 export async function streamExportZip(files: FileSnapshotEntry[], readme: string) {
   const mod = await import('archiver');
-  const create = (mod as { default?: (format: string, opts?: object) => Archiver }).default;
+  const create = mod.default;
   if (!create) {
     throw new Error(
       'archiver is not installed — ask the server agent to stop :3000, then pnpm add archiver',

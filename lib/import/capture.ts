@@ -1,5 +1,6 @@
 import { assertSafeUrl, UnsafeUrlError } from '../security/url-guard.ts';
-import { BLOCKED_ACCESS_MESSAGE, isBlockedAccessError, toBlockedAccessError } from './errors.ts';
+import { MAX_REHOST_ASSETS } from './rehost-assets.ts';
+import { BLOCKED_ACCESS_MESSAGE, toBlockedAccessError } from './errors.ts';
 import { scrapeFirecrawlText } from './firecrawl.ts';
 import { clusterColors, uniqueTrimmed } from './tokens.ts';
 import type { CapturedImage, DesignTokens, PageCapture } from './types.ts';
@@ -8,7 +9,6 @@ import { normalizeSourceUrl } from './url.ts';
 export { BLOCKED_ACCESS_MESSAGE, isBlockedAccessError } from './errors';
 
 const DESKTOP = { width: 1440, height: 900 } as const;
-const MOBILE = { width: 390, height: 844 } as const;
 const WAIT_MS = 25_000;
 
 const COOKIE_BUTTON_RE = /^(accept|agree|allow|got it|ok|i agree|accept all|allow all|continue)$/i;
@@ -25,11 +25,18 @@ type EvaluateResult = {
 
 async function dismissCookieBanners(page: {
   locator: (selector: string) => {
-    all: () => Promise<Array<{ innerText: () => Promise<string>; click: (opts?: { timeout?: number }) => Promise<void> }>>;
+    all: () => Promise<
+      Array<{
+        innerText: () => Promise<string>;
+        click: (opts?: { timeout?: number }) => Promise<void>;
+      }>
+    >;
   };
 }) {
   try {
-    const buttons = await page.locator('button, [role="button"], input[type="button"], input[type="submit"]').all();
+    const buttons = await page
+      .locator('button, [role="button"], input[type="button"], input[type="submit"]')
+      .all();
     for (const button of buttons.slice(0, 40)) {
       const label = (await button.innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
       if (!label || !COOKIE_BUTTON_RE.test(label)) continue;
@@ -91,7 +98,11 @@ export async function capturePage(
     await dismissCookieBanners(page);
     await page.waitForTimeout(400).catch(() => undefined);
 
-    const extracted = (await page.evaluate(() => {
+    // Bounded to what the rehost stage will actually use: `document.images` on a
+    // catalogue or a gallery ran into the hundreds, and every one of them cost a
+    // fetch, a sharp re-encode and an asset row downstream (F-125). The
+    // background-image path above has always been bounded by its node slice.
+    const extracted = (await page.evaluate((maxImages) => {
       const skip = new Set(['', 'transparent', 'rgba(0, 0, 0, 0)', 'inherit', 'initial', 'none']);
       const fontSizes: string[] = [];
       const colors: string[] = [];
@@ -106,13 +117,14 @@ export async function capturePage(
         const style = getComputedStyle(node);
         if (style.fontSize) fontSizes.push(style.fontSize);
         if (style.color && !skip.has(style.color)) colors.push(style.color);
-        if (style.backgroundColor && !skip.has(style.backgroundColor)) colors.push(style.backgroundColor);
+        if (style.backgroundColor && !skip.has(style.backgroundColor))
+          colors.push(style.backgroundColor);
         if (style.borderRadius && style.borderRadius !== '0px') radii.push(style.borderRadius);
         if (style.paddingTop && style.paddingTop !== '0px') spacing.push(style.paddingTop);
         if (style.marginTop && style.marginTop !== '0px') spacing.push(style.marginTop);
         const bg = style.backgroundImage;
         const bgMatch = bg && bg !== 'none' ? bg.match(/url\(["']?(https?:[^"')]+)["']?\)/i) : null;
-        if (bgMatch?.[1] && !seenImg.has(bgMatch[1])) {
+        if (bgMatch?.[1] && !seenImg.has(bgMatch[1]) && images.length < maxImages) {
           seenImg.add(bgMatch[1]);
           images.push({
             url: bgMatch[1],
@@ -123,6 +135,7 @@ export async function capturePage(
       }
 
       for (const img of Array.from(document.images)) {
+        if (images.length >= maxImages) break;
         const src = img.currentSrc || img.src;
         if (!src || src.startsWith('data:') || seenImg.has(src)) continue;
         seenImg.add(src);
@@ -135,7 +148,9 @@ export async function capturePage(
       }
 
       const password = document.querySelector('input[type="password"]');
-      const loginText = /log\s*in|sign\s*in|verify you are human/i.test(document.body?.innerText?.slice(0, 800) || '');
+      const loginText = /log\s*in|sign\s*in|verify you are human/i.test(
+        document.body?.innerText?.slice(0, 800) || '',
+      );
       const body = getComputedStyle(document.body);
 
       return {
@@ -147,23 +162,24 @@ export async function capturePage(
         images,
         loginWall: Boolean(password && loginText && document.body.innerText.trim().length < 800),
       };
-    })) as EvaluateResult;
+    }, MAX_REHOST_ASSETS)) as EvaluateResult;
 
     if (extracted.loginWall) {
       throw new Error(BLOCKED_ACCESS_MESSAGE);
     }
 
+    // Desktop only. Every import used to resize the viewport to 390x844, wait for it to
+    // settle and take a second full-page screenshot — and nothing outside the test fixtures
+    // ever read it (F-180). That is a viewport resize, a settle wait and a full-page PNG per
+    // import, carried through the pipeline for nothing. If a mobile view is wanted later, the
+    // place it would earn its cost is the segmenter, which is not written to take one.
     const desktopPng = Buffer.from(await page.screenshot({ type: 'png', fullPage: true }));
-    await page.setViewportSize(MOBILE);
-    await page.waitForTimeout(200).catch(() => undefined);
-    const mobilePng = Buffer.from(await page.screenshot({ type: 'png', fullPage: true }));
 
     // Trusted host — scrapeFirecrawlText does not route through safeFetch.
     const firecrawl = await scrapeFirecrawlText(url);
     return {
       sourceUrl: url,
       desktopPng,
-      mobilePng,
       tokens: tokensFromEvaluate(extracted),
       images: extracted.images.filter((image) => /^https?:\/\//i.test(image.url)),
       firecrawlText: firecrawl.ok ? firecrawl.markdown : '',

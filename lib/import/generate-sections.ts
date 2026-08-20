@@ -1,6 +1,5 @@
 import sharp from 'sharp';
 import { generateText } from 'ai';
-import { appConfig } from '@/config/app.config';
 import { getProviderForModel } from '@/lib/ai/provider-manager';
 import { buildCachedMessages } from '@/lib/generation/prompt-cache';
 import { resolveInputTokens } from '@/lib/generation/token-estimate';
@@ -27,8 +26,18 @@ export type ImportCompleteXml = (input: {
   userId: string;
 }) => Promise<{ text: string; inputTokens: number }>;
 
-export function buildImportStablePrefix(stack: string, designDirection?: string | null) {
-  return buildStablePromptPrefix(stack, designDirection);
+/**
+ * Brain memory is documented as always-on and inside the cacheable prefix, but the import
+ * path built its prefix without it, so durable preferences did not reach the generation
+ * that produces the site's first version (F-107). It is loaded once per import and passed
+ * in here rather than per section, which keeps the prefix byte-identical and cacheable.
+ */
+export function buildImportStablePrefix(
+  stack: string,
+  designDirection?: string | null,
+  memoryBlock?: string | null,
+) {
+  return buildStablePromptPrefix(stack, designDirection, { memoryBlock });
 }
 
 export { buildSectionVolatilePrompt };
@@ -114,15 +123,10 @@ async function completeXml(input: {
   projectId: string;
   userId: string;
 }) {
-  const { client, actualModel } = await getProviderForModel(
-    appConfig.ai.defaultModel,
-    input.userId,
-  );
-  const enableAnthropicCache = appConfig.ai.defaultModel.startsWith('anthropic/');
+  const { client, actualModel } = await getProviderForModel(null, input.userId);
   const cached = buildCachedMessages({
     stablePrefix: input.stablePrefix,
     volatileUser: input.volatileUser,
-    enableAnthropicCache,
   });
   const messages = input.image
     ? [
@@ -172,12 +176,18 @@ export async function generateImportedSections(input: {
   capture: PageCapture;
   sections: ImportSection[];
   assets: RehostedAsset[];
+  /** ACTIVE workspace + project Brain memory, inside the cacheable prefix. */
+  memoryBlock?: string | null;
   onProgress?: (message: string) => void;
   jobId?: string;
   complete?: ImportCompleteXml;
 }): Promise<GenerateSectionsResult> {
   const complete = input.complete ?? completeXml;
-  const stablePrefix = buildImportStablePrefix(input.stack, input.designDirection);
+  const stablePrefix = buildImportStablePrefix(
+    input.stack,
+    input.designDirection,
+    input.memoryBlock,
+  );
   const tokens = formatDesignTokens(input.capture.tokens);
   const files: string[] = [];
   const paths: { path: string; label: string }[] = [];
@@ -270,9 +280,17 @@ export async function generateImportFallback(input: {
   mode: ImportMode;
   capture: PageCapture;
   assets: RehostedAsset[];
+  /** ACTIVE workspace + project Brain memory, inside the cacheable prefix. */
+  memoryBlock?: string | null;
+  complete?: ImportCompleteXml;
 }): Promise<GenerateSectionsResult> {
-  const stablePrefix = buildImportStablePrefix(input.stack, input.designDirection);
-  const result = await completeXml({
+  const complete = input.complete ?? completeXml;
+  const stablePrefix = buildImportStablePrefix(
+    input.stack,
+    input.designDirection,
+    input.memoryBlock,
+  );
+  const result = await complete({
     stablePrefix,
     volatileUser: buildFallbackVolatilePrompt({
       mode: input.mode,

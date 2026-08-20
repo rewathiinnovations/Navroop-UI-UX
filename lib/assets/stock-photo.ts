@@ -2,6 +2,7 @@ import { fallbackAltText } from '@/lib/assets/keys';
 import { getSetting } from '@/lib/settings/resolve';
 import { persistOptimizedAsset } from '@/lib/assets/persist';
 import { searchOpenversePhoto } from '@/lib/assets/openverse';
+import { downloadImageBuffer } from '@/lib/assets/download';
 
 /**
  * Stock photography for a generated site, as an ordered chain of providers.
@@ -81,9 +82,9 @@ async function searchUnsplash(
     throw new Error('No Unsplash photo matched that query');
   }
 
-  const image = await fetch(downloadUrl);
-  if (!image.ok) throw new Error('Unsplash download failed');
-  const buffer = Buffer.from(await image.arrayBuffer());
+  // Same ceiling and content-type check as the Openverse path: the URL is still
+  // a remote body this process has to hold in memory.
+  const buffer = await downloadImageBuffer(downloadUrl);
 
   const photographer = photo.user?.name || photo.user?.username || 'Unsplash photographer';
   const attribution = `Photo by ${photographer} on Unsplash`;

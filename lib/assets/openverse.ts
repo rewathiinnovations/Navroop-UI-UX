@@ -1,4 +1,5 @@
 import { fallbackAltText } from '@/lib/assets/keys';
+import { downloadImageBuffer } from '@/lib/assets/download';
 import { persistOptimizedAsset } from '@/lib/assets/persist';
 
 /**
@@ -298,16 +299,11 @@ export async function searchOpenversePhoto(input: SearchOpenverseInput) {
     let buffer: Buffer;
     try {
       // Openverse indexes third-party CDNs, so an individual record can point at
-      // a URL that has since died or answers with an error page. One retry on
-      // the next-best candidate costs a request and saves a placeholder.
-      const image = await fetch(candidate.url);
-      if (!image.ok) throw new Error(`HTTP ${image.status}`);
-      const contentType = image.headers.get('content-type') ?? '';
-      if (contentType && !contentType.toLowerCase().startsWith('image/')) {
-        throw new Error(`content-type ${contentType}`);
-      }
-      buffer = Buffer.from(await image.arrayBuffer());
-      if (buffer.byteLength === 0) throw new Error('empty body');
+      // a URL that has since died, answers with an error page, or was chosen to
+      // aim this server at something internal. `downloadImageBuffer` refuses a
+      // private target before the request and caps the body. One retry on the
+      // next-best candidate costs a request and saves a placeholder.
+      buffer = await downloadImageBuffer(candidate.url);
     } catch (error) {
       downloadFailures.push(
         `${candidate.url} (${error instanceof Error ? error.message : String(error)})`,

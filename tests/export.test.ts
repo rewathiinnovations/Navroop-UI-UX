@@ -30,7 +30,7 @@ function assert(cond: unknown, name: string) {
 }
 
 const huge = 'x'.repeat(10 * 1024 * 1024 + 1);
-const filtered = filterExportFiles([
+const { files: filtered, oversized } = filterExportFiles([
   { path: 'src/App.jsx', content: 'export default function App(){return null}' },
   { path: 'node_modules/react/index.js', content: 'module.exports={}' },
   { path: '.git/HEAD', content: 'ref: refs/heads/main' },
@@ -45,22 +45,56 @@ assert(
   'filter drops node_modules, .git, .env, and files over 10 MB',
 );
 assert(
-  !filtered.some((file) => file.path.includes('node_modules') || file.path.includes('.git') || file.path.includes('.env')),
+  !filtered.some(
+    (file) =>
+      file.path.includes('node_modules') ||
+      file.path.includes('.git') ||
+      file.path.includes('.env'),
+  ),
   'filter never keeps excluded paths',
+);
+// F-796: the size rule is the only exclusion the README does not name structurally, so the
+// oversized path has to come back out of the filter or the download lies about being complete.
+assert(
+  oversized.length === 1 && oversized[0].path === 'public/huge.bin',
+  'filter reports the oversized path rather than dropping it silently',
+);
+assert(
+  !oversized.some((file) => file.path.includes('node_modules') || file.path.includes('.env')),
+  'structural exclusions are not reported as oversized',
 );
 
 const next = getStack('NEXTJS');
 const readme = buildExportReadme({
   name: 'Saffron Clay',
   stack: 'NEXTJS',
+  oversized,
 });
 assert(readme.includes('Saffron Clay'), 'README names the project');
-assert(readme.includes(next.label) || readme.includes('NEXTJS') || readme.includes('Next.js'), 'README names the stack');
-assert(Boolean(next.installCommand) && readme.includes(next.installCommand!), 'README documents the stack install command');
+assert(
+  readme.includes(next.label) || readme.includes('NEXTJS') || readme.includes('Next.js'),
+  'README names the stack',
+);
+assert(
+  Boolean(next.installCommand) && readme.includes(next.installCommand!),
+  'README documents the stack install command',
+);
 assert(readme.includes(next.devCommand), 'README documents the stack dev command');
-assert(Boolean(next.buildCommand) && readme.includes(next.buildCommand!), 'README documents the stack build command');
+assert(
+  Boolean(next.buildCommand) && readme.includes(next.buildCommand!),
+  'README documents the stack build command',
+);
+assert(readme.includes('public/huge.bin'), 'README names the file that was left out for size');
+assert(
+  buildExportReadme({ name: 'Saffron Clay', stack: 'NEXTJS' }).includes('over 10 MB') === false,
+  'README stays quiet about the size rule when nothing was skipped',
+);
 
-assert(buildExportFilename('Saffron Clay', new Date('2026-08-17T10:00:00.000Z')) === 'saffron-clay-2026-08-17.zip', 'filename is {slug}-{YYYY-MM-DD}.zip');
+assert(
+  buildExportFilename('Saffron Clay', new Date('2026-08-17T10:00:00.000Z')) ===
+    'saffron-clay-2026-08-17.zip',
+  'filename is {slug}-{YYYY-MM-DD}.zip',
+);
 
 clearExportRateLimits();
 const userId = 'user_export_rate';
@@ -88,12 +122,24 @@ try {
   const older = await writeSnapshot('proj_export', 'cp_old', olderFiles);
   const latest = await writeSnapshot('proj_export', 'cp_new', latestFiles);
 
-  const fromDeadSandbox = await collectExportFiles({
+  // No `sandboxStatus`: the parameter was removed in F-770 because it was `void`ed on
+  // every path. The claim it was here to make — a dead sandbox does not block export —
+  // is proven by the assertions below reading only from checkpoint snapshots.
+  const { files: fromDeadSandbox } = await collectExportFiles({
     projectId: 'proj_export',
-    sandboxStatus: 'DEAD',
     checkpoints: [
-      { id: 'cp_new', snapshotKey: latest.snapshotKey, fileSnapshot: null, createdAt: new Date('2026-08-17T12:00:00.000Z') },
-      { id: 'cp_old', snapshotKey: older.snapshotKey, fileSnapshot: null, createdAt: new Date('2026-08-16T12:00:00.000Z') },
+      {
+        id: 'cp_new',
+        snapshotKey: latest.snapshotKey,
+        fileSnapshot: null,
+        createdAt: new Date('2026-08-17T12:00:00.000Z'),
+      },
+      {
+        id: 'cp_old',
+        snapshotKey: older.snapshotKey,
+        fileSnapshot: null,
+        createdAt: new Date('2026-08-16T12:00:00.000Z'),
+      },
     ],
   });
   assert(
@@ -105,13 +151,22 @@ try {
     'export never reads the sandbox filesystem',
   );
 
-  const fromOlder = await collectExportFiles({
+  const { files: fromOlder } = await collectExportFiles({
     projectId: 'proj_export',
     checkpointId: 'cp_old',
-    sandboxStatus: 'DEAD',
     checkpoints: [
-      { id: 'cp_new', snapshotKey: latest.snapshotKey, fileSnapshot: null, createdAt: new Date('2026-08-17T12:00:00.000Z') },
-      { id: 'cp_old', snapshotKey: older.snapshotKey, fileSnapshot: null, createdAt: new Date('2026-08-16T12:00:00.000Z') },
+      {
+        id: 'cp_new',
+        snapshotKey: latest.snapshotKey,
+        fileSnapshot: null,
+        createdAt: new Date('2026-08-17T12:00:00.000Z'),
+      },
+      {
+        id: 'cp_old',
+        snapshotKey: older.snapshotKey,
+        fileSnapshot: null,
+        createdAt: new Date('2026-08-16T12:00:00.000Z'),
+      },
     ],
   });
   assert(

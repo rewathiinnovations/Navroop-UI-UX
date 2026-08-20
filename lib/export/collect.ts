@@ -1,5 +1,5 @@
 import { readSnapshot, type FileSnapshotEntry } from '@/lib/checkpoints/snapshot-store';
-import { filterExportFiles } from './files';
+import { filterExportFiles, type OversizedExportFile } from './files';
 
 export type ExportCheckpoint = {
   id: string;
@@ -10,7 +10,11 @@ export type ExportCheckpoint = {
 
 /**
  * Collect files from a checkpoint snapshot. The sandbox is never consulted —
- * a DEAD sandbox must not block export.
+ * a DEAD sandbox must not block export, and there is no `sandboxStatus`
+ * parameter for that reason: it used to be accepted and immediately `void`ed
+ * (F-770), so every caller computed and passed a value that could not affect
+ * the result while the signature advertised a dependency this export
+ * deliberately does not have.
  *
  * Propagates `SnapshotReadError` on purpose: the route turns an empty result into a 409
  * "No checkpoint files to export", but it streams whatever it is handed, so swallowing a
@@ -20,12 +24,8 @@ export type ExportCheckpoint = {
 export async function collectExportFiles(input: {
   projectId: string;
   checkpointId?: string | null;
-  sandboxStatus?: string | null;
   checkpoints: ExportCheckpoint[];
-}): Promise<FileSnapshotEntry[]> {
-  void input.projectId;
-  void input.sandboxStatus;
-
+}): Promise<{ files: FileSnapshotEntry[]; oversized: OversizedExportFile[] }> {
   const selected = input.checkpointId
     ? input.checkpoints.find((row) => row.id === input.checkpointId)
     : [...input.checkpoints].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
@@ -41,7 +41,7 @@ export async function collectExportFiles(input: {
       const { captureFileSnapshot } = await import('@/lib/checkpoints/snapshot');
       return filterExportFiles(await captureFileSnapshot(input.projectId));
     }
-    return [];
+    return { files: [], oversized: [] };
   }
   const files = await readSnapshot({
     snapshotKey: selected.snapshotKey,

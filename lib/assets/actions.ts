@@ -245,8 +245,43 @@ export async function deleteProjectAsset(projectId: string, assetId: string) {
   });
   if (!existing) return { ok: false as const, error: 'Asset not found', status: 404 as const };
 
-  await deleteObject(existing.storageKey);
-  await prisma.projectAsset.delete({ where: { id: assetId } });
+  // Row first, object second. A row-less object is reclaimed by the project
+  // purge, which deletes the whole `projects/{id}/` prefix; an object-less row
+  // is reclaimed by nothing and renders as a permanently broken tile.
+  try {
+    await prisma.projectAsset.delete({ where: { id: assetId } });
+  } catch (error) {
+    trackFailure('assets.delete_row_failed', error, {
+      action: 'asset_delete',
+      projectId,
+      assetId,
+      userId: user.id,
+    });
+    return {
+      ok: false as const,
+      error: 'Could not delete this image — try again',
+      status: 500 as const,
+    };
+  }
+
+  try {
+    await deleteObject(existing.storageKey);
+  } catch (error) {
+    // The bytes are still stored, so they stay counted: decrementing here is how
+    // the storage total drifts below what the bucket actually holds. The object
+    // outlives its row until the project is purged, and that is worth a signal —
+    // nothing else will ever mention this key again.
+    trackFailure('assets.orphan_object', error, {
+      action: 'asset_delete',
+      projectId,
+      assetId,
+      storageKey: existing.storageKey,
+      sizeBytes: existing.sizeBytes,
+      userId: user.id,
+    });
+    return { ok: true as const, data: { id: assetId } };
+  }
+
   await adjustStorageBytes(-existing.sizeBytes);
   return { ok: true as const, data: { id: assetId } };
 }
