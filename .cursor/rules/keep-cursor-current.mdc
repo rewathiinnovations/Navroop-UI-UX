@@ -17,6 +17,17 @@ After meaningful product, schema, API, or layout changes, update the docs in the
 
 Removing a subsystem is not done until the doc set has been grepped for its name. `tests/unit/docs-accuracy.test.ts` mechanises the part of this that can be: coverage floors, the verify step list, setting keys, env vars, stack prompts, worktree ports, the runner every documented repo script is invoked through, and the banned `npm` / `yarn` / `pnpm exec` command forms are all read out of the source and compared. It cannot check prose, which is why this rule still exists.
 
+## Lessons-learned lifecycle
+
+`.cursor/lessons-learned.md` is the one doc that is also an instruction file — this file and the always-on `self-evolving-memory` rule both tell every agent to read it before starting. So a stale entry there does not just misinform a reader, it instructs the next agent to preserve infrastructure that is gone. Deleting a subsystem includes grepping that file for its name.
+
+Entries are **never deleted** (a deleted lesson gets re-learned). Append exactly one marker bullet as the entry's last bullet and leave its original three untouched:
+
+- `- **Superseded [YYYY-MM-DD]:** …` — the rule still binds, only its example moved; point at the live equivalent.
+- `- **Obsolete [YYYY-MM-DD]:** …` — the mistake is unreachable because its subsystem is gone; say what deleted it and what still generalises.
+
+Either marker must name a replacement, and an unmarked entry is a live instruction — never mark one whose subject is still in the tree. `tests/unit/lessons-learned-lifecycle.test.ts` checks the marker shape, that no entry lost its bullets, and that the subjects existing markers call dead really are still absent.
+
 ## Rules
 
 - Reflect what actually exists. Do not invent features.

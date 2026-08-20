@@ -56,17 +56,20 @@ disagree in length or in ids. Fatal unless the row says otherwise:
 
 1. `tsc` — `tsc --noEmit` (excludes generated `.next` / `next-env.d.ts` route types; `types/next-env.d.ts` keeps `next` refs)
 2. `eslint` — `eslint . --max-warnings 0`
-3. `public-routes` — public API allowlist (`scripts/check-public-routes.ts`)
-4. `prisma-validate` — `prisma validate`
-5. `schema-drift` — `prisma migrate diff --from-migrations` vs committed schema (`--shadow-database-url`, dedicated `openlovable_shadow` — never the app or test DB)
-6. `destructive` — destructive-migration detector (`ALLOW_DESTRUCTIVE_MIGRATION=true` required for DROP TABLE/COLUMN / ALTER TYPE)
-7. `vitest` — `vitest run --coverage`
-8. `next-build` — `next build`
-9. `playwright-critical` — `playwright test --project=critical`
-10. `playwright-authenticated` — `playwright test --project=authenticated`; the `setup` project seeds the E2E account and signs in first as a declared dependency, so this is the step that proves a real signed-in user can reach the dashboard and create a project. Separate from `critical` on purpose: merged into one command, a silently empty `authenticated` project would hide behind `critical`'s passing count
-11. `depcheck` — **fatal** since 2026-08-21 (F-645). It was report-only with no config, printing the same ten entries on every run and blocking nothing. `.depcheckrc.yml` declares those ten — split into "used, but not via an import depcheck can see" (`autoprefixer`, `postcss-import`, `postcss-nesting`, `depcheck`, `knip`, `@vitest/coverage-v8`, `prettier`) and "unused, pending removal with a lockfile regeneration" (`@eslint/eslintrc`, `msw`, `semver`) — so a clean tree exits 0 and a _newly_ unused dependency is a red gate
-12. `knip` — **report only**, non-fatal, but the tick is now truthful (`--no-exit-code` was removed)
-13. `audit` — `pnpm audit --audit-level=high`; high severity blocks
+3. `secret-scan` — `scripts/secret-scan.ts --tracked`; the in-repo PEM / AWS / provider-key rules over every file git has under version control. **This is the only re-scan a bypassed commit ever gets** (F-785): `pre-commit` scans the _index_, and `pnpm run verify:bypass` is a documented escape hatch, so `--no-verify` skipped that scan and nothing looked again. Exit **2** means the scan could not run and is red by exit code; a zero exit that reports no scanned file is red too (`requireSecretsScanned`). `--tracked` rather than the default whole-tree mode because the tree mode reads ignored files on purpose — a developer's own `.env.local` would hold the gate permanently red, and its _staged_ copy is still blocked by the hook
+4. `public-routes` — public API allowlist (`scripts/check-public-routes.ts`)
+5. `prisma-validate` — `prisma validate`
+6. `schema-drift` — `prisma migrate diff --from-migrations` vs committed schema (`--shadow-database-url`, dedicated `openlovable_shadow` — never the app or test DB)
+7. `destructive` — destructive-migration detector (`ALLOW_DESTRUCTIVE_MIGRATION=true` required for DROP TABLE/COLUMN / ALTER TYPE)
+8. `vitest` — `vitest run --coverage`
+9. `next-build` — `next build`
+10. `playwright-critical` — `playwright test --project=critical`
+11. `playwright-authenticated` — `playwright test --project=authenticated`; the `setup` project seeds the E2E account and signs in first as a declared dependency, so this is the step that proves a real signed-in user can reach the dashboard and create a project. Separate from `critical` on purpose: merged into one command, a silently empty `authenticated` project would hide behind `critical`'s passing count
+12. `depcheck` — **fatal** since 2026-08-21 (F-645). It was report-only with no config, printing the same ten entries on every run and blocking nothing. `.depcheckrc.yml` declares those ten — split into "used, but not via an import depcheck can see" (`autoprefixer`, `postcss-import`, `postcss-nesting`, `depcheck`, `knip`, `@vitest/coverage-v8`, `prettier`) and "unused, pending removal with a lockfile regeneration" (`@eslint/eslintrc`, `msw`, `semver`) — so a clean tree exits 0 and a _newly_ unused dependency is a red gate
+13. `knip` — **report only**, non-fatal, but the tick is now truthful (`--no-exit-code` was removed)
+14. `audit` — `pnpm audit --audit-level=high`; high severity blocks
+
+**No repo-wide `prettier --check` step, deliberately** (the other half of F-785, scoped out 2026-08-21). `.prettierrc.json` exists and `lint-staged` formats staged files, but the tree it has been applied to is not the whole repository: `prettier . --check` reports **809 files** with style differences as of `345a0a8`. Adding the step means a reformat of 809 files in one commit — a diff that conflicts with every branch in flight and buries real changes in whitespace for a year of `git blame`. The gate would also be red for the entire window between adding the step and landing that reformat. The honest sequence is: reformat first, in its own commit, on a quiet tree; add the step second. Neither belongs in a finding whose subject is the missing secret scan.
 
 Every step runs a vendored binary (`node ./node_modules/…`) except `pnpm audit`, which resolves the lockfile itself and has no binary equivalent. That is not cosmetic: `verify` runs from `.husky/pre-push`, and `pnpm run` / `pnpm exec` first run a dependency-status check that can purge `node_modules` mid-push on a TTY. The hook avoided the shim; until 2026-08-19 every step it ran put it straight back.
 
@@ -159,24 +162,32 @@ Two things are still covered by nothing, deliberately recorded here rather than 
 
 Husky + lint-staged:
 
-- **pre-commit** (<10s): ESLint + Prettier on staged files; in-repo secret scanner (PEM / AWS / GitHub PAT). Install `gitleaks` for a second pass on full-tree scans (`node ./node_modules/tsx/dist/cli.mjs scripts/secret-scan.ts`).
-- **pre-push**: `verify` (`node ./node_modules/tsx/dist/cli.mjs scripts/verify.ts`)
+- **pre-commit** (<10s): ESLint + Prettier on staged files; in-repo secret scanner over the **index** (PEM / AWS / GitHub PAT). Install `gitleaks` for a second pass on the local full-tree audit (`node ./node_modules/tsx/dist/cli.mjs scripts/secret-scan.ts`).
+- **pre-push**: `verify` (`node ./node_modules/tsx/dist/cli.mjs scripts/verify.ts`), whose `secret-scan` step re-runs the same rules over every **tracked** file — see below.
 
 ### Hooks call binaries directly, never `pnpm exec` / `pnpm run`
 
-Both hooks `cd "$(git rev-parse --show-toplevel)"` and then run `node ./node_modules/<tool>/…`, and so does every step `verify` itself runs (`lib/verify/orchestrator.ts`) — the hook rule was worthless while the twelve steps under it were all `pnpm exec`. They must never go through `pnpm exec` or `pnpm run`: pnpm runs a dependency-status check first, decides `node_modules` is stale, and tries to **purge it** before running anything. An agent shell survives that only because it has no TTY — a real `git commit` has one, so the purge would happen mid-commit and take the nested `minimatch@10` under `test-exclude/node_modules` with it (`.cursor/lessons-learned.md`). Never set `CI=true` or `confirmModulesPurge=false` to get past the abort; both arm the deletion. Each hook checks the binary exists first and exits 1 with "run pnpm install" if it does not. `.husky/.gitattributes` pins `eol=lf` so the hooks stay POSIX-runnable on Windows. The one deliberate exception is `pnpm audit`, which is not a script runner and has no vendored binary.
+Both hooks `cd "$(git rev-parse --show-toplevel)"` and then run `node ./node_modules/<tool>/…`, and so does every step `verify` itself runs (`lib/verify/orchestrator.ts`) — the hook rule was worthless while every step under it went through `pnpm exec`. They must never go through `pnpm exec` or `pnpm run`: pnpm runs a dependency-status check first, decides `node_modules` is stale, and tries to **purge it** before running anything. An agent shell survives that only because it has no TTY — a real `git commit` has one, so the purge would happen mid-commit and take the nested `minimatch@10` under `test-exclude/node_modules` with it (`.cursor/lessons-learned.md`). Never set `CI=true` or `confirmModulesPurge=false` to get past the abort; both arm the deletion. Each hook checks the binary exists first and exits 1 with "run pnpm install" if it does not. `.husky/.gitattributes` pins `eol=lf` so the hooks stay POSIX-runnable on Windows. The one deliberate exception is `pnpm audit`, which is not a script runner and has no vendored binary.
 
 ### Secret scan exit codes
 
 `scripts/secret-scan.ts` fails **closed**: a scan that cannot enumerate its input or cannot read a file it was asked to check never reports a pass.
 
-| Exit | Meaning                                                                                                                                                                    |
-| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0    | Scanned clean, or genuinely nothing staged (the message says which, and never claims "passed" with 0 files scanned)                                                        |
-| 1    | A credential pattern matched — a real finding to fix                                                                                                                       |
-| 2    | The scan could not complete (git could not list the staged files, a staged blob or file was unreadable, or an installed `gitleaks` crashed) — a broken gate, not a finding |
+| Exit | Meaning                                                                                                                                                                        |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 0    | Scanned clean, or genuinely nothing staged (the message says which, and never claims "passed" with 0 files scanned)                                                            |
+| 1    | A credential pattern matched — a real finding to fix                                                                                                                           |
+| 2    | The scan could not complete (git could not list the staged or tracked files, a blob or file was unreadable, or an installed `gitleaks` crashed) — a broken gate, not a finding |
 
-Diagnostics go to stderr because that is what a git hook shows. In `--staged` mode the content comes from the **index** (`git show :path`) for any path whose worktree copy differs, so a partially staged file is scanned as it will be committed. A missing `gitleaks` (`ENOENT`) is still a skip; any other `gitleaks` failure is exit 2.
+Diagnostics go to stderr because that is what a git hook shows. Three input sets, and the difference matters:
+
+| Mode        | Input                                                  | Used by                                                                                    |
+| ----------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| `--staged`  | the index blobs of the staged paths (`git show :path`) | `pre-commit` — a partially staged file is scanned as it will be committed                  |
+| `--tracked` | every file under version control (`git ls-files`)      | the `secret-scan` `verify` step — ignored paths absent, so `.env.local` cannot hold it red |
+| (default)   | the whole working tree, ignored files included         | a local audit, run by hand; it reports the real keys in `.env.local` on purpose            |
+
+`--tracked` is the answer to "who scans a bypassed commit". `--no-verify` skips `pre-commit`, so a secret committed that way was never examined by anything until the next `verify` — which, before 2026-08-21, had no scan step at all (F-785). Because `verify` reads the tracked set rather than the diff, the finding surfaces on the next push whoever makes it. The gitleaks second pass stays on the default mode only: `detect --no-git --source <cwd>` reads ignored files, so under `--tracked` it would put a permanent red on any machine that has gitleaks installed and a populated `.env.local`. A missing `gitleaks` (`ENOENT`) is still a skip; any other `gitleaks` failure is exit 2.
 
 ### `--no-verify` escape hatch
 
@@ -321,8 +332,8 @@ The gate runs **projects**, so read this per project; `node ./node_modules/@play
 | Project                          | In the gate                                                  | What it proves                                                                                                                                                                                                                                     |
 | -------------------------------- | ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `setup`                          | Yes, as a dependency of `authenticated`                      | Seeds the E2E account through Prisma and signs it in through the real credentials form, then saves the session. Not a journey; a prerequisite that fails loudly                                                                                    |
-| `authenticated`                  | **Yes — fatal `verify` step 10, and in CI since 2026-08-19** | The signed-in journeys: dashboard render (journey 0), create-project-from-a-prompt (2), the plan/build toggle (3), and the workflow journeys that need a session. Paid routes are stubbed; nothing here calls a provider                           |
-| `critical`                       | **Yes — fatal `verify` step 9**                              | Signed-out sign-in screen, English copy, no serious axe findings (journey 1). An unreachable base URL is red unless `PLAYWRIGHT_ALLOW_NO_SERVER=1`, and the config now reuses or boots a server, so unreachable means something is genuinely wrong |
+| `authenticated`                  | **Yes — fatal `verify` step 11, and in CI since 2026-08-19** | The signed-in journeys: dashboard render (journey 0), create-project-from-a-prompt (2), the plan/build toggle (3), and the workflow journeys that need a session. Paid routes are stubbed; nothing here calls a provider                           |
+| `critical`                       | **Yes — fatal `verify` step 10**                             | Signed-out sign-in screen, English copy, no serious axe findings (journey 1). An unreachable base URL is red unless `PLAYWRIGHT_ALLOW_NO_SERVER=1`, and the config now reuses or boots a server, so unreachable means something is genuinely wrong |
 | `NEXTJS` … `SVELTE` (six stacks) | `verify:full` only                                           | Per-stack create/plan-build. Skipped with a stated prerequisite: the stack projects have no `storageState`, and there is no credential-free per-stack journey. No CI matrix any more (see CI above)                                                |
 | `full`                           | `verify:full` only                                           | Signed-out surfaces reachable without a session (domains, recovery copy, invite gating, templates)                                                                                                                                                 |
 

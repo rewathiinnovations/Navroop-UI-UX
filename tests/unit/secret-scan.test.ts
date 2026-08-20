@@ -1,5 +1,22 @@
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { scanFilesForSecrets, scanTextForSecrets, shouldScanPath } from '../../lib/secret-scan';
+
+const REPO = resolve(import.meta.dirname, '..', '..');
+const TSX = join(REPO, 'node_modules', 'tsx', 'dist', 'cli.mjs');
+const SCRIPT = join(REPO, 'scripts', 'secret-scan.ts');
+
+function runScanner(args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}) {
+  const result = spawnSync('node', [TSX, SCRIPT, ...args], {
+    cwd: options.cwd ?? REPO,
+    env: options.env ?? process.env,
+    encoding: 'utf8',
+  });
+  return { status: result.status, output: `${result.stdout ?? ''}${result.stderr ?? ''}` };
+}
 
 describe('secret scanner hook', () => {
   it('blocks a private key', () => {
@@ -126,5 +143,36 @@ describe('secret scanner hook', () => {
     expect(shouldScanPath('.data/state/volume-id')).toBe(false);
     expect(shouldScanPath('public/uploads/import-4711/asset.svg')).toBe(false);
     expect(shouldScanPath('lib/settings/registry.ts')).toBe(true);
+  });
+
+  /**
+   * F-785. The `verify` gate's `secret-scan` step runs `--tracked`. These drive the
+   * real script, because the whole point of the step is that the *command* works on
+   * a developer machine: the default whole-tree mode reads `.env.local` on purpose
+   * and reports its real keys, so wiring that mode into a gate would have produced
+   * a step nobody could ever get green.
+   */
+  describe('the tracked mode the verify gate runs', () => {
+    it('scans the tracked tree of this repository and exits 0', () => {
+      const { status, output } = runScanner(['--tracked']);
+      const scanned = /Secret scan passed \((\d+) file/.exec(output);
+      expect(output).not.toContain('Nothing to scan');
+      expect(Number(scanned?.[1] ?? 0)).toBeGreaterThan(500);
+      expect(status).toBe(0);
+    });
+
+    it('exits 2, not 0, when it cannot enumerate the tracked files', () => {
+      // Fails closed: git cannot answer, so nothing was examined, so the scan
+      // cannot report a pass. Exit 1 would be wrong too — there is no finding, the
+      // gate is broken, and the two need different reactions.
+      const dir = mkdtempSync(join(tmpdir(), 'navroop-secret-scan-'));
+      const { status, output } = runScanner(['--tracked'], {
+        cwd: dir,
+        env: { ...process.env, GIT_DIR: join(dir, 'absent.git') },
+      });
+      expect(status).toBe(2);
+      expect(output).toContain('could not list the tracked files');
+      expect(output).not.toContain('Secret scan passed');
+    });
   });
 });

@@ -13,7 +13,11 @@ tool before changing product behaviour, schema, API routes, or layout. Do not gu
 what it documents.
 
 `.cursor/README.md` is the map of the Cursor layout. `.cursor/lessons-learned.md` is a
-self-evolving mistake log — read it before starting, and append to it when corrected.
+self-evolving mistake log — read it before starting, and append to it when corrected. Entries
+are never deleted; when the code an entry describes stops existing it gets one
+`**Superseded [YYYY-MM-DD]:**` or `**Obsolete [YYYY-MM-DD]:**` bullet naming what replaced it,
+so an entry with no marker is a live instruction. The convention is in that file's header and in
+the always-on `keep-cursor-current` rule; `tests/unit/lessons-learned-lifecycle.test.ts` enforces it.
 
 `AGENTS.md`'s first section, **Agent configuration layout**, is the one table that lists both
 halves of the agent config: this file, `.cursor/rules/`, both skill trees, `.claude/settings.json`
@@ -81,7 +85,7 @@ pnpm run verify
 ```
 
 The pre-push gate. **Its step list is single-sourced in `docs/release.md`, section “`verify` order”** —
-thirteen steps, each named by its `VERIFY_STEPS` id (`lib/verify/orchestrator.ts`). Read it there;
+fourteen steps, each named by its `VERIFY_STEPS` id (`lib/verify/orchestrator.ts`). Read it there;
 this file used to carry eight of them and stopped at the Playwright `critical` project, which
 silently dropped the fatal `playwright-authenticated` step, `depcheck`, `knip` and the fatal
 dependency `audit`. `pnpm run verify:full` runs every Playwright project instead of the two

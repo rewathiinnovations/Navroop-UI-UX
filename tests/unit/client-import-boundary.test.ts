@@ -21,6 +21,11 @@ import { describe, expect, it } from 'vitest';
 const ROOTS = [
   { dir: 'app', minFiles: 20 },
   { dir: 'components', minFiles: 50 },
+  // `'use client'` is not a `components/` privilege: hooks and a couple of
+  // browser-side lib modules carry the directive too, and until 2026-08-21 the
+  // walk never opened either root (F-447).
+  { dir: 'hooks', minFiles: 3 },
+  { dir: 'lib', minFiles: 1 },
 ] as const;
 
 const SKIP_DIRS = new Set(['node_modules', '.next', 'coverage', 'dist', 'generated']);
@@ -39,21 +44,72 @@ const POLYFILL_NODE = new Set([
   'punycode',
 ]);
 
+/**
+ * Bare (unprefixed) Node builtins. Anything a browser bundle cannot supply
+ * belongs here — the `node:` prefixed form is covered by POLYFILL_NODE being
+ * the allowlist instead.
+ */
 const BARE_NODE_ONLY = new Set([
   'async_hooks',
+  'child_process',
+  'cluster',
+  'crypto',
+  'dgram',
+  'diagnostics_channel',
   'dns',
+  'dns/promises',
   'fs',
   'fs/promises',
-  'child_process',
-  'net',
-  'tls',
-  'cluster',
-  'dgram',
-  'inspector',
-  'readline',
+  'http',
   'http2',
   'https',
-  'http',
+  'inspector',
+  'module',
+  'net',
+  'os',
+  'perf_hooks',
+  'readline',
+  'readline/promises',
+  'repl',
+  'stream',
+  'stream/promises',
+  'stream/web',
+  'timers/promises',
+  'tls',
+  'trace_events',
+  'tty',
+  'v8',
+  'vm',
+  'wasi',
+  'worker_threads',
+  'zlib',
+]);
+
+/**
+ * Packages that only exist on the server. `resolveLocal` cannot follow a bare
+ * specifier into node_modules, so without this list a client file importing a
+ * native or secret-bearing package was invisible to the walk (F-447). Exact
+ * specifier only: `next-auth/react` and `@ai-sdk/react` are the browser halves
+ * of two of these and stay allowed.
+ */
+const SERVER_ONLY_PACKAGES = new Set([
+  '@ai-sdk/openai',
+  '@auth/prisma-adapter',
+  '@aws-sdk/client-s3',
+  '@aws-sdk/lib-storage',
+  '@mendable/firecrawl-js',
+  '@prisma/client',
+  '@sentry/node',
+  'archiver',
+  'bcryptjs',
+  'dotenv',
+  'esbuild',
+  'lighthouse',
+  'next-auth',
+  'playwright',
+  'prisma',
+  'server-only',
+  'sharp',
 ]);
 
 const SERVER_ONLY_FILES = new Set([
@@ -245,7 +301,7 @@ export function findClientImportBoundaryHits(
           hits.push(hit(entryRel, nodeSpec, current.via));
           continue;
         }
-        if (spec === '@prisma/client' || spec.includes('generated/prisma')) {
+        if (SERVER_ONLY_PACKAGES.has(spec) || spec.includes('generated/prisma')) {
           hits.push(hit(entryRel, spec, current.via));
           continue;
         }
@@ -286,6 +342,8 @@ describe('client import boundary', () => {
       expect(inRoot.length, `${root.dir} 'use client' count`).toBeGreaterThan(root.minFiles);
     }
     expect(entries).toContain('components/workspace/ProjectWorkspace.tsx');
+    expect(entries).toContain('hooks/useOnline.ts');
+    expect(entries).toContain('lib/notify.ts');
   });
 
   it('keeps every use-client graph off Node builtins, Prisma, and the logger', () => {
@@ -302,6 +360,58 @@ describe('client import boundary', () => {
     expect(hits).toHaveLength(1);
     expect(hits[0]?.reached).toBe('node:dns');
     expect(hits[0]?.message).toBe('Client graph from Page.tsx reaches node:dns');
+  });
+
+  it('names an unprefixed Node builtin the browser cannot supply', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'navroop-client-boundary-'));
+    for (const spec of ['crypto', 'os', 'zlib', 'worker_threads']) {
+      writeFileSync(
+        join(dir, `Uses-${spec.replace('/', '-')}.tsx`),
+        `'use client';\nimport * as mod from '${spec}';\nexport const x = mod;\n`,
+      );
+    }
+    const hits = findClientImportBoundaryHits({ cwd: dir, roots: [dir] });
+    expect(hits.map((row) => row.reached).sort()).toEqual([
+      'crypto',
+      'os',
+      'worker_threads',
+      'zlib',
+    ]);
+  });
+
+  it('names a server-only package a client file imports directly', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'navroop-client-boundary-'));
+    writeFileSync(
+      join(dir, 'Page.tsx'),
+      `'use client';\nimport sharp from 'sharp';\nexport const x = sharp;\n`,
+    );
+    const hits = findClientImportBoundaryHits({ cwd: dir, roots: [dir] });
+    expect(hits.map((row) => row.message)).toEqual(['Client graph from Page.tsx reaches sharp']);
+  });
+
+  it('names a server-only package reached through a local helper', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'navroop-client-boundary-'));
+    writeFileSync(
+      join(dir, 'hash.ts'),
+      `import bcrypt from 'bcryptjs';\nexport const hash = bcrypt.hashSync;\n`,
+    );
+    writeFileSync(
+      join(dir, 'Page.tsx'),
+      `'use client';\nimport { hash } from './hash';\nexport const x = hash;\n`,
+    );
+    const hits = findClientImportBoundaryHits({ cwd: dir, roots: [dir] });
+    expect(hits.map((row) => row.message)).toEqual([
+      'Client graph from Page.tsx reaches bcryptjs via hash.ts',
+    ]);
+  });
+
+  it('leaves the browser half of a split package alone', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'navroop-client-boundary-'));
+    writeFileSync(
+      join(dir, 'Page.tsx'),
+      `'use client';\nimport { signIn } from 'next-auth/react';\nimport { useChat } from '@ai-sdk/react';\nexport const x = [signIn, useChat];\n`,
+    );
+    expect(findClientImportBoundaryHits({ cwd: dir, roots: [dir] })).toEqual([]);
   });
 
   it('does not follow a type-only Prisma import', () => {

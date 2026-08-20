@@ -299,6 +299,107 @@ describe('docs accuracy', () => {
     }
   });
 
+  // The list is single-sourced, but its *cardinality* was not: `AGENTS.md` and `CLAUDE.md`
+  // both stated it in prose, both said "thirteen", and both were wrong the moment the
+  // `secret-scan` step landed. Deleting the number was the other option and it is the
+  // worse one: the count is the checksum on a list a reader has to follow a link to see —
+  // it is how they notice the copy in front of them is truncated — and deleting it leaves
+  // nothing for a guard to check, so the next contributor re-adds it unchecked. So it stays,
+  // in exactly the two summaries that point at the runbook, and it is derived here.
+  const NUMBER_WORDS: Record<string, number> = {
+    one: 1,
+    two: 2,
+    three: 3,
+    four: 4,
+    five: 5,
+    six: 6,
+    seven: 7,
+    eight: 8,
+    nine: 9,
+    ten: 10,
+    eleven: 11,
+    twelve: 12,
+    thirteen: 13,
+    fourteen: 14,
+    fifteen: 15,
+    sixteen: 16,
+    seventeen: 17,
+    eighteen: 18,
+    nineteen: 19,
+    twenty: 20,
+  };
+
+  it('states no verify step count that disagrees with VERIFY_STEPS', () => {
+    const wrong: string[] = [];
+    const stated: string[] = [];
+    for (const rel of DOC_FILES) {
+      for (const line of readText(rel).split('\n')) {
+        // Only claims about this gate: a count is a claim about `verify` or it is about
+        // something else entirely (a deploy sequence, a migration expand/contract).
+        if (!/verify/i.test(line)) continue;
+        for (const hit of line.matchAll(/\b(\d{1,2}|[a-z]+)[ -](?:steps?)\b/gi)) {
+          const token = hit[1].toLowerCase();
+          const count = /^\d+$/.test(token) ? Number(token) : NUMBER_WORDS[token];
+          // "per-project steps", "the fatal steps": a quantifier, not a count.
+          if (count === undefined) continue;
+          stated.push(`${rel}: ${hit[0]}`);
+          if (count !== VERIFY_STEPS.length) wrong.push(`${rel}: ${hit[0]}`);
+        }
+      }
+    }
+    expect(
+      wrong,
+      `a document states a verify step count that is not ${VERIFY_STEPS.length}`,
+    ).toEqual([]);
+    // A scan with no subjects passes forever, including when its own regex has been broken
+    // by a rewording. The two pointers must carry the count for this check to mean anything.
+    for (const rel of ['AGENTS.md', 'CLAUDE.md']) {
+      expect(
+        stated.filter((entry) => entry.startsWith(`${rel}:`)),
+        `${rel} points at the runbook without saying how many steps to expect there`,
+      ).not.toEqual([]);
+    }
+  });
+
+  it('numbers a named verify step by its position in VERIFY_STEPS', () => {
+    // The same defect one level down, and already live when this was written:
+    // docs/release.md called `playwright-critical` "fatal `verify` step 9" and
+    // `playwright-authenticated` "step 10". Inserting `secret-scan` at position 3 pushed
+    // both along by one, and the numbers are what someone reads to know how far a red run
+    // got. An ordinal is checkable exactly when the prose also names the step.
+    const ids = VERIFY_STEPS.map((step) => step.id);
+    const wrong: string[] = [];
+    let seen = 0;
+    for (const rel of DOC_FILES) {
+      for (const line of readText(rel).split('\n')) {
+        for (const hit of line.matchAll(/`verify` step (\d+)/g)) {
+          seen += 1;
+          // Playwright steps are named by their project (`critical`) as often as by their
+          // step id (`playwright-critical`); both forms resolve to the same step.
+          const named = ids.filter(
+            (id) =>
+              line.includes(`\`${id}\``) ||
+              (id.startsWith('playwright-') &&
+                line.includes(`\`${id.slice('playwright-'.length)}\``)),
+          );
+          if (named.length !== 1) {
+            wrong.push(`${rel}: "${hit[0]}" names no single VERIFY_STEPS id`);
+            continue;
+          }
+          const position = ids.indexOf(named[0]) + 1;
+          if (position !== Number(hit[1])) {
+            wrong.push(`${rel}: "${hit[0]}" — \`${named[0]}\` is step ${position}`);
+          }
+        }
+      }
+    }
+    expect(wrong, 'a document numbers a verify step by a position it does not hold').toEqual([]);
+    expect(
+      seen,
+      'no document numbers a verify step — has this check been reworded away?',
+    ).toBeGreaterThan(0);
+  });
+
   it('points the dependency overrides at the file pnpm reads them from', () => {
     // F-533. Three documents sent the fixer to `pnpm.overrides` in `package.json`. pnpm 11 reads
     // them from `pnpm-workspace.yaml`, so the edit did nothing, `pnpm audit` stayed red, and the

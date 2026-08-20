@@ -12,12 +12,17 @@ import {
 /**
  * The Playwright steps fail on a zero exit code that reported no passing test, so
  * a stub that answers `{ ok: true }` with no output is a *failing* Playwright run
- * now. Every happy-path stub has to speak the reporter's language.
+ * now. The `secret-scan` step is the same shape: exit 0 proves nothing unless the
+ * scanner said how many files it read. Every happy-path stub has to speak the
+ * reporter's language.
  */
 const PLAYWRIGHT_PASSED = '  2 passed (4.1s)';
+const SECRETS_SCANNED = 'Secret scan passed (1923 file(s) scanned, 172 ignored).';
 
 function stubOk(command: string) {
-  return command.includes('playwright') ? { ok: true, output: PLAYWRIGHT_PASSED } : { ok: true };
+  if (command.includes('playwright')) return { ok: true, output: PLAYWRIGHT_PASSED };
+  if (command.includes('secret-scan')) return { ok: true, output: SECRETS_SCANNED };
+  return { ok: true };
 }
 
 describe('verify orchestrator', () => {
@@ -132,6 +137,100 @@ describe('verify orchestrator', () => {
     expect(shims).toEqual(['audit']);
   });
 
+  /**
+   * F-785. `.husky/pre-commit` scans the index, and `verify:bypass` documents
+   * `git push --no-verify` as a supported escape hatch — so a commit made that way
+   * was never scanned for secrets by anything, ever again. The gate now re-reads
+   * the tracked tree on every push.
+   */
+  describe('the secret scan a bypassed commit finally gets', () => {
+    const scan = VERIFY_STEPS.find((step) => step.id === 'secret-scan');
+
+    it('runs the tracked-tree scan as a fatal step, before the slow ones', () => {
+      expect(scan?.command).toBe(
+        'node ./node_modules/tsx/dist/cli.mjs scripts/secret-scan.ts --tracked',
+      );
+      expect(scan?.fatal).toBe(true);
+      const ids = VERIFY_STEPS.map((step) => step.id);
+      // A leaked credential must be reported in the first seconds of a push, not
+      // after ten minutes of Playwright.
+      expect(ids.indexOf('secret-scan')).toBeLessThan(ids.indexOf('vitest'));
+      expect(ids.indexOf('secret-scan')).toBeLessThan(ids.indexOf('playwright-critical'));
+    });
+
+    it('stops the run on a finding and names the command to reproduce it', async () => {
+      const result = await runVerify({
+        mode: 'verify',
+        async runCommand(command) {
+          if (command.includes('secret-scan')) {
+            // Exit 1: the scanner matched a credential pattern.
+            return { ok: false, output: '  .env.production:4  provider-key-sk' };
+          }
+          return stubOk(command);
+        },
+      });
+      expect(result.ok).toBe(false);
+      expect(result.failedStep?.id).toBe('secret-scan');
+      expect(result.reproduce).toContain('scripts/secret-scan.ts --tracked');
+      // Fatal, so nothing after it ran.
+      expect(result.results.map((row) => row.id)).not.toContain('vitest');
+    });
+
+    it('treats exit 2 — a scan that could not run — as a failure, not a pass', async () => {
+      // `scripts/secret-scan.ts` fails closed and separates "found a secret" (1)
+      // from "examined nothing" (2). A broken gate must not print a ✓: that is the
+      // state in which a real secret sails through unnoticed.
+      const result = await runVerify({
+        mode: 'verify',
+        async runCommand(command) {
+          if (command.includes('secret-scan')) {
+            return {
+              ok: false,
+              output: 'Secret scan could not run: git could not list the tracked files',
+            };
+          }
+          return stubOk(command);
+        },
+      });
+      expect(result.ok).toBe(false);
+      expect(result.failedStep?.id).toBe('secret-scan');
+      expect(result.summaryLines.some((line) => line.startsWith('✗ Secret scan'))).toBe(true);
+      expect(result.summaryLines.some((line) => line.startsWith('✓ Secret scan'))).toBe(false);
+    });
+
+    it('fails a scan that exited 0 without reporting a scanned file', async () => {
+      // The "nothing to scan" exit-0 path. Correct for pre-commit on an empty
+      // index; as a gate over the whole tracked tree it means the enumeration came
+      // back empty and the ✓ covers an unexamined repository.
+      const result = await runVerify({
+        mode: 'verify',
+        async runCommand(command) {
+          if (command.includes('secret-scan')) {
+            return {
+              ok: true,
+              output:
+                'Secret scan: git reported no tracked file to scan (0 path(s) listed, 0 ignored by path rules). Nothing to scan — this is not a failed scan.',
+            };
+          }
+          return stubOk(command);
+        },
+      });
+      expect(result.ok).toBe(false);
+      expect(result.failedStep?.id).toBe('secret-scan');
+      expect(result.failedStep?.failureReason).toBe(
+        'exited 0 without reporting a scanned file — the gate examined nothing',
+      );
+    });
+
+    it('accepts a scan that read files and found nothing', () => {
+      expect(scan?.assertExecuted?.(SECRETS_SCANNED)).toBeNull();
+      // A zero count is not a clean scan either.
+      expect(scan?.assertExecuted?.('Secret scan passed (0 file(s) scanned, 0 ignored).')).toBe(
+        'exited 0 without reporting a scanned file — the gate examined nothing',
+      );
+    });
+  });
+
   it('fails a Playwright step that exited 0 without running a test', async () => {
     const allSkipped = await runVerify({
       mode: 'verify',
@@ -157,8 +256,11 @@ describe('verify orchestrator', () => {
 
     const noOutput = await runVerify({
       mode: 'verify',
-      async runCommand() {
-        return { ok: true };
+      // Bare `{ ok: true }` for the Playwright commands only. Every other
+      // output-asserting step has to clear its own assertion, or the run stops
+      // before Playwright and this stops being a test about Playwright.
+      async runCommand(command) {
+        return command.includes('playwright') ? { ok: true } : stubOk(command);
       },
     });
     expect(noOutput.ok).toBe(false);

@@ -82,6 +82,26 @@ export function requireExecuted({
   };
 }
 
+const SCANNED_FILES = /Secret scan passed \((\d+) file/;
+
+/**
+ * `scripts/secret-scan.ts` exits 0 for "there was genuinely nothing to scan" as
+ * well as for "I read everything and it was clean" — the right call for the
+ * pre-commit hook, where an empty index is normal. As a gate step it is not: an
+ * empty tracked list means `git ls-files` came back empty, and a ✓ over an
+ * unexamined repository is the same shape as a test that cannot fail. Exit 2 (the
+ * scan could not run) is already red by exit code; this covers exit 0.
+ */
+export function requireSecretsScanned(): StepAssertion {
+  return (output: string) => {
+    const scanned = SCANNED_FILES.exec(output);
+    if (!scanned || Number(scanned[1]) <= 0) {
+      return 'exited 0 without reporting a scanned file — the gate examined nothing';
+    }
+    return null;
+  };
+}
+
 /**
  * Every command is a direct binary. `pnpm run` / `pnpm exec` first run a
  * dependency-status check that can decide node_modules is stale and purge it, and
@@ -101,6 +121,19 @@ export const VERIFY_STEPS: VerifyStep[] = [
     label: 'ESLint',
     command: 'node ./node_modules/eslint/bin/eslint.js . --max-warnings 0',
     fatal: true,
+  },
+  {
+    // The pre-commit hook scans the *index*, and `verify:bypass` is a documented
+    // escape hatch, so a `--no-verify` commit skipped that scan and — before
+    // 2026-08-21 — was never scanned by anything again (F-785). `--tracked` reads
+    // what git has under version control, which is exactly what such a commit
+    // deposited. Second in the list on purpose: a leaked credential should be
+    // reported in the first ten seconds of a push, not after the Playwright steps.
+    id: 'secret-scan',
+    label: 'Secret scan (tracked tree)',
+    command: 'node ./node_modules/tsx/dist/cli.mjs scripts/secret-scan.ts --tracked',
+    fatal: true,
+    assertExecuted: requireSecretsScanned(),
   },
   {
     id: 'public-routes',
