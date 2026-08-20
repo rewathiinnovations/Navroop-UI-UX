@@ -1,171 +1,55 @@
 import { NextRequest, NextResponse } from 'next/server';
-import type { ConversationState } from '@/types/conversation';
 import { jsonError } from '@/lib/api/error-response';
 import { requireSessionUser } from '@/lib/auth';
+import { prisma } from '@/lib/db';
+import { trimConversationState } from '@/lib/generation/conversation-state';
 
-declare global {
-  var conversationState: ConversationState | null;
-}
-
-// GET: Retrieve current conversation state
-export async function GET() {
-  const auth = await requireSessionUser();
-  if (!auth.user) return jsonError(auth.error, 'UNAUTHORIZED', auth.status);
-
-  try {
-    if (!global.conversationState) {
-      return NextResponse.json({
-        success: true,
-        state: null,
-        message: 'No active conversation'
-      });
-    }
-    
-    return NextResponse.json({
-      success: true,
-      state: global.conversationState
-    });
-  } catch (error) {
-    console.error('[conversation-state] Error getting state:', error);
-    return NextResponse.json({
-      success: false,
-      error: (error as Error).message
-    }, { status: 500 });
-  }
-}
-
-// POST: Reset or update conversation state
+/**
+ * The conversation store lives in `lib/generation/conversation-state.ts`, keyed per
+ * project (per user for unsaved runs). This route used to hold the whole context in one
+ * process-global with no user, workspace or project key: every signed-in member read and
+ * wrote the same object, and a `reset` or `clear-old` from anyone destroyed whoever's
+ * context happened to be loaded (F-303).
+ *
+ * The only remaining consumer is the workspace mount's `clear-old`
+ * (components/workspace/GenerationWorkspace.tsx), which now names its project and trims
+ * only the caller's own key. GET, DELETE, `reset` and `update` had no callers left and
+ * are gone with the global.
+ */
 export async function POST(request: NextRequest) {
   const auth = await requireSessionUser();
   if (!auth.user) return jsonError(auth.error, 'UNAUTHORIZED', auth.status);
 
+  let body: unknown;
   try {
-    const { action, data } = await request.json();
-    
-    switch (action) {
-      case 'reset':
-        global.conversationState = {
-          conversationId: `conv-${Date.now()}`,
-          startedAt: Date.now(),
-          lastUpdated: Date.now(),
-          context: {
-            messages: [],
-            edits: [],
-            projectEvolution: { majorChanges: [] },
-            userPreferences: {}
-          }
-        };
-        
-        console.log('[conversation-state] Reset conversation state');
-        
-        return NextResponse.json({
-          success: true,
-          message: 'Conversation state reset',
-          state: global.conversationState
-        });
-        
-      case 'clear-old':
-        // Clear old conversation data but keep recent context
-        if (!global.conversationState) {
-          // Initialize conversation state if it doesn't exist
-          global.conversationState = {
-            conversationId: `conv-${Date.now()}`,
-            startedAt: Date.now(),
-            lastUpdated: Date.now(),
-            context: {
-              messages: [],
-              edits: [],
-              projectEvolution: { majorChanges: [] },
-              userPreferences: {}
-            }
-          };
-          
-          console.log('[conversation-state] Initialized new conversation state for clear-old');
-          
-          return NextResponse.json({
-            success: true,
-            message: 'New conversation state initialized',
-            state: global.conversationState
-          });
-        }
-        
-        // Keep only recent data
-        global.conversationState.context.messages = global.conversationState.context.messages.slice(-5);
-        global.conversationState.context.edits = global.conversationState.context.edits.slice(-3);
-        global.conversationState.context.projectEvolution.majorChanges = 
-          global.conversationState.context.projectEvolution.majorChanges.slice(-2);
-        
-        console.log('[conversation-state] Cleared old conversation data');
-        
-        return NextResponse.json({
-          success: true,
-          message: 'Old conversation data cleared',
-          state: global.conversationState
-        });
-        
-      case 'update':
-        if (!global.conversationState) {
-          return NextResponse.json({
-            success: false,
-            error: 'No active conversation to update'
-          }, { status: 400 });
-        }
-        
-        // Update specific fields if provided
-        if (data) {
-          if (data.currentTopic) {
-            global.conversationState.context.currentTopic = data.currentTopic;
-          }
-          if (data.userPreferences) {
-            global.conversationState.context.userPreferences = {
-              ...global.conversationState.context.userPreferences,
-              ...data.userPreferences
-            };
-          }
-          
-          global.conversationState.lastUpdated = Date.now();
-        }
-        
-        return NextResponse.json({
-          success: true,
-          message: 'Conversation state updated',
-          state: global.conversationState
-        });
-        
-      default:
-        return NextResponse.json({
-          success: false,
-          error: 'Invalid action. Use "reset" or "update"'
-        }, { status: 400 });
-    }
-  } catch (error) {
-    console.error('[conversation-state] Error:', error);
-    return NextResponse.json({
-      success: false,
-      error: (error as Error).message
-    }, { status: 500 });
+    body = await request.json();
+  } catch {
+    return jsonError('Invalid JSON body', 'BAD_REQUEST', 400);
   }
-}
+  const { action, projectId } = (body ?? {}) as { action?: unknown; projectId?: unknown };
+  if (action !== 'clear-old') {
+    return jsonError('Invalid action. Use "clear-old"', 'BAD_REQUEST', 400);
+  }
+  if (projectId !== undefined && projectId !== null && typeof projectId !== 'string') {
+    return jsonError('projectId must be a string', 'BAD_REQUEST', 400);
+  }
 
-// DELETE: Clear conversation state
-export async function DELETE() {
-  const auth = await requireSessionUser();
-  if (!auth.user) return jsonError(auth.error, 'UNAUTHORIZED', auth.status);
-
-  try {
-    global.conversationState = null;
-    
-    console.log('[conversation-state] Cleared conversation state');
-    
-    return NextResponse.json({
-      success: true,
-      message: 'Conversation state cleared'
+  if (typeof projectId === 'string' && projectId) {
+    // A saved project's conversation is keyed by the project alone, so gate the trim the
+    // way every other project mutation is gated: owner or ADMIN.
+    const project = await prisma.project.findFirst({
+      where: { id: projectId, deletedAt: null },
+      select: { ownerId: true },
     });
-  } catch (error) {
-    console.error('[conversation-state] Error clearing state:', error);
-    return NextResponse.json({
-      success: false,
-      error: (error as Error).message
-    }, { status: 500 });
+    if (!project) return jsonError('Project not found', 'NOT_FOUND', 404);
+    if (auth.user.id !== project.ownerId && auth.user.role !== 'ADMIN') {
+      return jsonError('This project belongs to someone else', 'FORBIDDEN', 403);
+    }
+    trimConversationState(projectId, auth.user.id);
+  } else {
+    // No saved project yet: the caller's own unsaved-run bucket.
+    trimConversationState(null, auth.user.id);
   }
+
+  return NextResponse.json({ success: true, message: 'Old conversation data cleared' });
 }

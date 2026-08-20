@@ -60,6 +60,35 @@ export function conversationStateFor(projectId: string | null, userId: string): 
   return created;
 }
 
+/**
+ * Read-only view of a saved project's conversation, if this process remembers one.
+ * Never creates an entry and never reorders the LRU: the post-generation consumers —
+ * checkpoint labels, memory extraction, the follow-up plan context — only need to look,
+ * and a look that allocated could evict a live run's state. They each used to read a
+ * single process-global published by whichever request ran last, which is how one
+ * project's prompt text ended up naming another project's checkpoint.
+ */
+export function peekConversationState(projectId: string): ConversationState | null {
+  return states.get(projectId) ?? null;
+}
+
+/**
+ * The workspace-mount `clear-old`: bounds the caller's own remembered context. Operates
+ * on exactly the key `conversationStateFor` resolves, creates nothing, and touches no
+ * other key — applied to the old process-global it truncated whichever project had
+ * published last, for everyone in the process.
+ */
+export function trimConversationState(projectId: string | null, userId: string): void {
+  const key = projectId ?? `user:${userId}`;
+  const state = states.get(key);
+  if (!state) return;
+  state.context.messages = state.context.messages.slice(-5);
+  state.context.edits = state.context.edits.slice(-3);
+  state.context.projectEvolution.majorChanges =
+    state.context.projectEvolution.majorChanges.slice(-2);
+  state.lastUpdated = Date.now();
+}
+
 /** Test seam: drops every remembered conversation. */
 export function resetConversationStates() {
   states.clear();

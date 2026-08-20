@@ -28,6 +28,7 @@ import { injectMatchedSkills } from '@/lib/skills/inject';
 import { buildMemoryBlock } from '@/lib/memory/build-context';
 import { revertApprovedPlan } from '@/lib/projects/plan-compensate';
 import { planRetryKind } from '@/lib/projects/plan-retry';
+import { peekConversationState } from '@/lib/generation/conversation-state';
 
 type ActionErr = {
   ok: false;
@@ -61,12 +62,14 @@ export type PlanCompleter = (input: {
 
 const planContentSchema = z.object({
   summary: z.string().min(1),
-  pages: z.array(
-    z.object({
-      name: z.string().min(1),
-      description: z.string().min(1),
-    }),
-  ).min(1),
+  pages: z
+    .array(
+      z.object({
+        name: z.string().min(1),
+        description: z.string().min(1),
+      }),
+    )
+    .min(1),
   keyFeatures: z.array(z.string().min(1)).min(1),
 });
 
@@ -119,11 +122,16 @@ function buildPlanSystemPrompt(
 ) {
   const stackId = getStack(stack).id;
   const brief = buildUiUxProMaxBrief({ prompt: promptContext, isEdit: false });
-  const stackPrompt = getStackPrompt(stackId, designDirection, {
-    conversationContext: '',
-    uiUxBrief: brief,
-    isEdit: false,
-  }, extras);
+  const stackPrompt = getStackPrompt(
+    stackId,
+    designDirection,
+    {
+      conversationContext: '',
+      uiUxBrief: brief,
+      isEdit: false,
+    },
+    extras,
+  );
   return `${stackPrompt}
 
 You are planning a website for the ${stackId} stack. Output a structured plan only. Do NOT write application code, file contents, markup, or diffs.
@@ -150,7 +158,12 @@ async function defaultCompletePlan(input: {
   promptContext: string;
   systemPrompt: string;
   stablePrefix?: string;
-}): Promise<{ content: PlanContent; provider: string; model: string; attempts: ProviderAttempt[] }> {
+}): Promise<{
+  content: PlanContent;
+  provider: string;
+  model: string;
+  attempts: ProviderAttempt[];
+}> {
   const userPrompt = `Create a website plan (no code) for:\n\n${input.promptContext}`;
   // Planning selects and pays with the same keys as building: the effective-env
   // overlay (personal key -> org key -> process.env). Before this, the chain and
@@ -224,7 +237,12 @@ async function defaultCompletePlan(input: {
 async function completePlan(promptContext: string, systemPrompt: string, stablePrefix?: string) {
   if (planCompleterOverride) {
     const content = await planCompleterOverride({ promptContext, systemPrompt, stablePrefix });
-    return { content, provider: null as string | null, model: null as string | null, attempts: [] as ProviderAttempt[] };
+    return {
+      content,
+      provider: null as string | null,
+      model: null as string | null,
+      attempts: [] as ProviderAttempt[],
+    };
   }
   return defaultCompletePlan({ promptContext, systemPrompt, stablePrefix });
 }
@@ -265,26 +283,24 @@ export async function startFollowUpGeneration(input: {
   await startLoggedGeneration({ ...input, kind: 'followup' });
 }
 
-type ConversationMessageLite = { role?: string; content?: string };
-
-function recentFollowUpMessages() {
-  const state = (
-    globalThis as {
-      conversationState?: { context?: { messages?: ConversationMessageLite[] } };
-    }
-  ).conversationState;
-  return state?.context?.messages?.slice(-20) ?? [];
-}
-
 /** File tree + recent messages from the same sources the isEdit follow-up path uses. */
-export function buildFollowUpPromptContext(message: string, lastCode: string | null | undefined) {
+export function buildFollowUpPromptContext(
+  projectId: string,
+  message: string,
+  lastCode: string | null | undefined,
+) {
   const files = getCurrentProjectFiles({ lastCode });
   const paths = Object.keys(files).sort();
-  const recent = recentFollowUpMessages()
-    .filter((entry) => entry.role === 'user' && typeof entry.content === 'string' && entry.content.trim())
-    .map((entry) => {
-      const text = entry.content!.trim();
-      return `- "${text.length > 100 ? `${text.slice(0, 100)}...` : text}"`;
+  // The project's own keyed conversation, never the old process-global — that slot was
+  // overwritten by whichever project generated or mounted last, so a follow-up plan here
+  // could embed another user's prompt text as "Recent messages:". The generate route may
+  // push a non-string content when the prompt was one (F-005), hence the typeof guard.
+  const recent = (peekConversationState(projectId)?.context.messages.slice(-20) ?? [])
+    .filter((entry) => entry.role === 'user' && typeof entry.content === 'string')
+    .flatMap((entry) => {
+      const text = entry.content.trim();
+      if (!text) return [];
+      return [`- "${text.length > 100 ? `${text.slice(0, 100)}...` : text}"`];
     });
 
   return [
@@ -310,7 +326,12 @@ export async function applyCreateProjectPlanFlow(input: {
     });
     return { plan: null };
   }
-  const plan = await generatePlan(input.projectId, input.initialPrompt, 'initial', input.initialPrompt);
+  const plan = await generatePlan(
+    input.projectId,
+    input.initialPrompt,
+    'initial',
+    input.initialPrompt,
+  );
   return { plan };
 }
 
@@ -327,7 +348,8 @@ export async function generatePlan(
   if (!project) {
     throw new Error('Project not found');
   }
-  const { beginJobHeartbeat, createOrReuseJob, failJob, markJobRunning, succeedJob } = await import('@/lib/jobs/lifecycle');
+  const { beginJobHeartbeat, createOrReuseJob, failJob, markJobRunning, succeedJob } =
+    await import('@/lib/jobs/lifecycle');
   const { WORKSPACE_ROW_ID } = await import('@/lib/storage/usage');
   const planJob = await createOrReuseJob({
     projectId,
@@ -354,8 +376,10 @@ export async function generatePlan(
       console.warn('[memory] plan block failed', error);
     }
     const stablePrefix = buildStablePromptPrefix(project.stack, directionId, { memoryBlock });
-    const injected = await injectMatchedSkills(sourceMessage, promptContext);
-    let systemPrompt = buildPlanSystemPrompt(promptContext, project.stack, directionId, { memoryBlock });
+    const injected = await injectMatchedSkills(sourceMessage, promptContext, project.ownerId);
+    let systemPrompt = buildPlanSystemPrompt(promptContext, project.stack, directionId, {
+      memoryBlock,
+    });
     if (injected.block) {
       systemPrompt = `${stablePrefix}\n\n${injected.block}\n\n${systemPrompt.replace(stablePrefix, '').trim()}`;
     }
@@ -381,7 +405,7 @@ export async function generatePlan(
       }
     } catch (error) {
       jobSettled = true;
-      const cause = error instanceof ProviderRunError ? error.causeError ?? error : error;
+      const cause = error instanceof ProviderRunError ? (error.causeError ?? error) : error;
       const attempts = error instanceof ProviderRunError ? error.attempts : [];
       if (attempts.length > 0) {
         const { getJob, updateJobFields } = await import('@/lib/jobs/store');
@@ -530,7 +554,11 @@ export async function requestFollowUpPlan(projectId: string, message: string) {
     data: { phase: 'PLANNING' },
   });
 
-  const promptContext = buildFollowUpPromptContext(parsed.data.message, project.lastCode);
+  const promptContext = buildFollowUpPromptContext(
+    projectId,
+    parsed.data.message,
+    project.lastCode,
+  );
   try {
     const plan = await generatePlan(projectId, promptContext, 'followup', parsed.data.message);
     return { ok: true as const, data: plan };
@@ -550,10 +578,12 @@ export async function requestFollowUpPlan(projectId: string, message: string) {
 export async function approvePlan(
   projectId: string,
   input: { idempotencyKey?: string | null } = {},
-): Promise<ActionResult<{
-  plan: Awaited<ReturnType<typeof generatePlan>>;
-  phase: 'BUILDING';
-}>> {
+): Promise<
+  ActionResult<{
+    plan: Awaited<ReturnType<typeof generatePlan>>;
+    phase: 'BUILDING';
+  }>
+> {
   const { user, err } = await requireActor();
   if (!user) return err;
 

@@ -392,12 +392,14 @@ function AISandboxPage({
         setShouldAutoGenerate(true);
       }
 
-      // Clear old conversation
+      // Trim this workspace's own remembered conversation. The store is keyed per
+      // project (per user when nothing is saved yet), so this can no longer truncate
+      // anyone else's context the way the old process-global clear did.
       try {
         await fetch('/api/conversation-state', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'clear-old' }),
+          body: JSON.stringify({ action: 'clear-old', projectId: projectIdParam }),
         });
         console.log('[home] Cleared old conversation data on mount');
       } catch (error) {

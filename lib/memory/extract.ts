@@ -2,6 +2,7 @@ import { generateText } from 'ai';
 import { appConfig } from '@/config/app.config';
 import { getProviderForModel } from '@/lib/ai/provider-manager';
 import { prisma } from '@/lib/db';
+import { peekConversationState } from '@/lib/generation/conversation-state';
 import { isDuplicateMemory, normalizeMemoryContent } from './normalize';
 import { getMemoryExtractionEnabled } from './settings';
 import {
@@ -43,12 +44,11 @@ Extraction may only propose PROJECT scope, never WORKSPACE.
 Each content must be one atomic instruction, at most 200 characters.
 If nothing durable, return [].`;
 
-function collectUserMessages(sourceMessage?: string | null) {
-  const fromState = (
-    globalThis as {
-      conversationState?: { context?: { messages?: { role?: string; content?: string }[] } };
-    }
-  ).conversationState?.context?.messages;
+function collectUserMessages(projectId: string, sourceMessage?: string | null) {
+  // The project's own keyed conversation, never the old process-global — that slot was
+  // overwritten by whichever request ran last, so extraction here could store another
+  // user's prompt text as a MemoryEntry against this project.
+  const fromState = peekConversationState(projectId)?.context.messages;
   const texts: string[] = [];
   for (const message of fromState ?? []) {
     if (message.role === 'user' && typeof message.content === 'string' && message.content.trim()) {
@@ -87,8 +87,8 @@ export function parseExtractedMemories(raw: string): ExtractedProposal[] {
   return out;
 }
 
-async function defaultComplete(userText: string) {
-  const { client, actualModel } = await getProviderForModel(appConfig.ai.defaultModel);
+async function defaultComplete(userText: string, userId: string | null) {
+  const { client, actualModel } = await getProviderForModel(appConfig.ai.defaultModel, userId);
   const result = await generateText({
     model: client(actualModel),
     temperature: 0,
@@ -128,17 +128,19 @@ async function defaultInsert(rows: PendingInsert[]) {
 
 export async function extractMemoriesAfterGeneration(
   projectId: string,
-  input: { sourceMessage?: string | null } = {},
+  input: { sourceMessage?: string | null; userId?: string | null } = {},
   deps: ExtractDeps = {},
 ): Promise<{ ok: true; inserted: number }> {
   try {
     const enabled = deps.isEnabled ? await deps.isEnabled() : await getMemoryExtractionEnabled();
     if (!enabled) return { ok: true, inserted: 0 };
 
-    const messages = collectUserMessages(input.sourceMessage);
+    const messages = collectUserMessages(projectId, input.sourceMessage);
     if (messages.length === 0) return { ok: true, inserted: 0 };
 
-    const raw = await (deps.complete ?? defaultComplete)(messages.join('\n\n'));
+    const raw = deps.complete
+      ? await deps.complete(messages.join('\n\n'))
+      : await defaultComplete(messages.join('\n\n'), input.userId ?? null);
     const proposals = parseExtractedMemories(raw);
     const active = await (deps.listActiveContents ?? defaultListActive)(projectId);
     const unique = proposals.filter((row) => !isDuplicateMemory(row.content, active));

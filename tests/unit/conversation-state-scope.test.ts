@@ -152,21 +152,25 @@ describe('the generate route trusts the project row, not the client', () => {
     expect(source).not.toMatch(/\n {8}if \(context\) \{\n {10}const contextParts/);
   });
 
-  it('publishes a copy to the legacy global, never the live registry entry', () => {
-    const source = readFileSync(ROUTE, 'utf8');
-    const publish = source.slice(
-      source.indexOf('global.conversationState = {'),
-      source.indexOf('// Debug: Show a sample of actual file content'),
-    );
-    // /api/conversation-state's `clear-old` — POSTed on every workspace mount — reassigns
-    // `context.messages`, `context.edits` and `context.projectEvolution.majorChanges`. Applied
-    // to the live object, that truncated another project's history mid-run; every container it
-    // reassigns through has to be a copy here.
-    expect(publish).toMatch(/\.\.\.conversation,/);
-    expect(publish).toMatch(/\.\.\.conversation\.context,/);
-    expect(publish).toMatch(
-      /projectEvolution: \{ \.\.\.conversation\.context\.projectEvolution \}/,
-    );
-    expect(publish).not.toMatch(/global\.conversationState = conversation;/);
+  it('never touches a process-global conversation slot again', () => {
+    // `global.conversationState` was a single unkeyed slot: this route published a view
+    // of the run's state to it on every request, and three server-side readers —
+    // checkpoint labels, memory extraction, the follow-up plan context — plus
+    // /api/conversation-state read or cleared it, last writer winning across every
+    // signed-in user in the process (F-051, F-100, F-101, F-303, F-812). Every consumer
+    // now goes through the keyed registry in lib/generation/conversation-state.ts; no
+    // file may reference the global again. `conversationStateFor` and
+    // `trimConversationState` do not match the pattern — only the bare identifier does.
+    const files = [
+      '../../app/api/generate-ai-code-stream/route.ts',
+      '../../app/api/conversation-state/route.ts',
+      '../../lib/memory/extract.ts',
+      '../../lib/checkpoints/actions.ts',
+      '../../lib/projects/plan.ts',
+    ];
+    for (const file of files) {
+      const source = readFileSync(fileURLToPath(new URL(file, import.meta.url)), 'utf8');
+      expect(source, file).not.toMatch(/conversationState\b/);
+    }
   });
 });

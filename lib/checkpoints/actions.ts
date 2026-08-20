@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/db';
 import { getSessionUser, type SessionUser } from '@/lib/auth';
 import { peekActor } from '@/lib/projects/plan';
+import { peekConversationState } from '@/lib/generation/conversation-state';
 import { Prisma } from '@/generated/prisma';
 import {
   captureFileSnapshot,
@@ -79,12 +80,13 @@ function restoreLabel(originalCreatedAt?: Date | null) {
   return `Restored to version from ${when}`;
 }
 
-function lastConversationUserMessage() {
-  const messages = (
-    globalThis as {
-      conversationState?: { context?: { messages?: { role?: string; content?: string }[] } };
-    }
-  ).conversationState?.context?.messages;
+function lastConversationUserMessage(projectId: string) {
+  // The project's own keyed conversation, never the old process-global — that slot held
+  // whichever project generated last, so a follow-up checkpoint here could be named
+  // after another user's prompt and display it verbatim in version history. No entry
+  // for this project means no label source; `labelFromSource` then falls back to
+  // 'Latest generation'.
+  const messages = peekConversationState(projectId)?.context.messages;
   if (!messages?.length) return null;
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const entry = messages[i];
@@ -201,7 +203,7 @@ export async function createCheckpointAfterGeneration(
   },
 ) {
   let trigger: CheckpointTrigger = 'followup';
-  let sourceMessage = input.sourceMessage ?? lastConversationUserMessage();
+  let sourceMessage = input.sourceMessage ?? lastConversationUserMessage(projectId);
 
   if (input.previousPhase === 'BUILDING') {
     const plan = await prisma.projectPlan.findFirst({
