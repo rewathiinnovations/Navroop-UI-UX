@@ -1,9 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useState, type RefObject } from 'react';
+import { isMessageFromPreviewFrame } from '@/lib/preview/display';
 import {
   isElementSelectedMessage,
-  previewOriginFromUrl,
   type SelectedElementPayload,
   type SelectedElementRect,
 } from '@/lib/visual-edits/inspector';
@@ -27,11 +27,9 @@ function translateRect(iframe: HTMLIFrameElement, rect: SelectedElementRect): Se
 
 export function useElementSelection({
   iframeRef,
-  sandboxUrl,
   enabled,
 }: {
   iframeRef?: RefObject<HTMLIFrameElement | null>;
-  sandboxUrl?: string | null;
   enabled: boolean;
 }) {
   const [selection, setSelection] = useState<ElementSelection | null>(null);
@@ -48,13 +46,12 @@ export function useElementSelection({
 
     const onMessage = (event: MessageEvent) => {
       const iframe = iframeRef?.current;
-      if (!iframe?.contentWindow) return;
-      if (event.source !== iframe.contentWindow) return;
-
-      const expected =
-        previewOriginFromUrl(iframe.src) ||
-        previewOriginFromUrl(sandboxUrl);
-      if (!expected || event.origin !== expected) return;
+      // Window identity, not origin. The preview frame is a `srcdoc` sandboxed
+      // without allow-same-origin, so `event.origin` is the opaque string
+      // "null" and `iframe.src` is empty — the old check compared that against
+      // an origin parsed out of the served build's URL and dropped every
+      // message the inspector sent (F-143).
+      if (!iframe || !isMessageFromPreviewFrame(event, iframe)) return;
       if (!isElementSelectedMessage(event.data)) return;
 
       setSelection({
@@ -68,7 +65,7 @@ export function useElementSelection({
 
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [enabled, iframeRef, sandboxUrl]);
+  }, [enabled, iframeRef]);
 
   return { selection, clearSelection };
 }

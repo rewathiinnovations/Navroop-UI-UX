@@ -1,6 +1,14 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+  type RefObject,
+} from 'react';
 import { AlertTriangle, Loader2, RefreshCw, Wand2 } from 'lucide-react';
 import { assemblePreview, type PreviewAssembly } from '@/lib/preview/assemble';
 import { bundlePreview } from '@/lib/preview/bundle';
@@ -191,7 +199,9 @@ export function BrowserPreview({
   stream,
   settleMs = DEFAULT_SETTLE_MS,
   className,
+  frameRef,
   onStatusChange,
+  onFrameMounted,
   onFixError,
 }: {
   stack: string;
@@ -201,7 +211,20 @@ export function BrowserPreview({
   stream?: PreviewStream | null;
   settleMs?: number;
   className?: string;
+  /**
+   * The rendered frame, handed up so the workspace can drive Visual Edits on
+   * it. This iframe is the only preview a user sees, so it is also the only
+   * thing the inspector can be pointed at (F-142/F-143).
+   */
+  frameRef?: RefObject<HTMLIFrameElement | null>;
   onStatusChange?: (status: PreviewState['status']) => void;
+  /**
+   * Whether the frame is on screen right now. A ref cannot be observed, and the
+   * status alone does not say: `bundling`, `waiting` and `error` all keep the
+   * last good document mounted underneath. Without this the Visual Edits
+   * toolbar would offer itself over a pane that has no frame in it.
+   */
+  onFrameMounted?: (mounted: boolean) => void;
   /**
    * Hands the failure to whoever owns the chat, so a fault the model caused can
    * be sent straight back to it. The `kind` goes with it because the instruction
@@ -212,7 +235,8 @@ export function BrowserPreview({
 }) {
   const [state, setState] = useState<PreviewState>({ status: 'idle' });
   const [reloadToken, setReloadToken] = useState(0);
-  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const localFrameRef = useRef<HTMLIFrameElement>(null);
+  const iframeRef = frameRef ?? localFrameRef;
   const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const streamFiles = stream?.files;
@@ -375,6 +399,16 @@ export function BrowserPreview({
   const srcdoc = srcdocOf(state);
   const bundling = state.status === 'bundling';
   const banner = errorBanner(state);
+
+  // The pane keeps the last good document mounted through a rebuild, a wait and
+  // a recoverable error, so "is there a frame" is `srcdoc`, not `status`. The
+  // workspace unmounts this component when it switches away from the preview,
+  // and reads its own view state for that case, so there is no unmount report
+  // here to flicker the toolbar between renders.
+  const frameMounted = Boolean(srcdoc);
+  useEffect(() => {
+    onFrameMounted?.(frameMounted);
+  }, [frameMounted, onFrameMounted]);
 
   return (
     <div className={cn('relative h-full w-full bg-white', className)}>

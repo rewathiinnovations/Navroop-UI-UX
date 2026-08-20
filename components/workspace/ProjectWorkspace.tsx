@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, type ReactNode, type RefObject } from 'react';
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { cn } from '@/utils/cn';
 import '@/components/app/studio/studio.css';
 import ChatInput from './ChatInput';
@@ -28,6 +28,7 @@ import type {
   ProjectPhase,
   SaveStatus,
   SendMessageOptions,
+  SendOutcome,
   WorkspacePage,
   WorkspacePlan,
   WorkspaceView,
@@ -59,7 +60,6 @@ export default function ProjectWorkspace({
   view,
   onViewChange,
   onRefresh,
-  iframeRef,
   sandboxUrl,
   preview,
   chatHeader,
@@ -86,7 +86,12 @@ export default function ProjectWorkspace({
   updatedAt: string | null;
   onRename: (name: string) => void;
   messages: ChatMessage[];
-  onSend: (text: string, options: SendMessageOptions) => void;
+  /**
+   * Resolving `{ accepted: false }` tells the chat box the send was refused, so it
+   * can put the typed text back. Callers that cannot refuse may still return
+   * `void`; only the generation path reports a refusal.
+   */
+  onSend: (text: string, options: SendMessageOptions) => void | Promise<SendOutcome | void>;
   sending: boolean;
   pages: WorkspacePage[];
   selectedPage: string;
@@ -94,7 +99,6 @@ export default function ProjectWorkspace({
   view: WorkspaceView;
   onViewChange: (view: WorkspaceView) => void;
   onRefresh: () => void;
-  iframeRef?: RefObject<HTMLIFrameElement | null>;
   sandboxUrl?: string | null;
   preview: ReactNode;
   chatHeader?: ReactNode;
@@ -129,6 +133,17 @@ export default function ProjectWorkspace({
    * whether a preview is on at all, so this cannot outlive one.
    */
   const [previewedVersionId, setPreviewedVersionId] = useState<string | null>(null);
+  /**
+   * The iframe `BrowserPreview` renders, and whether a document is in it.
+   *
+   * This is the only preview a reader ever sees. The workspace used to hand
+   * `useStaticPreview` a ref that belonged to a sandbox-era iframe rendered only
+   * when `sandboxData.url` was truthy — a value nothing has assigned since the
+   * VMs were deleted — so the served build's URL was written to `null.src` on
+   * every poll and the inspector had no frame to talk to (F-142/F-143).
+   */
+  const previewFrameRef = useRef<HTMLIFrameElement | null>(null);
+  const [browserFrameMounted, setBrowserFrameMounted] = useState(false);
   const previewDevice = usePreviewDevice();
   const { phase, plan, refining, approving, refine, approve, watchForPlan } = useProjectPlan({
     projectId,
@@ -154,7 +169,6 @@ export default function ProjectWorkspace({
   const staticPreview = useStaticPreview({
     projectId,
     enabled: true,
-    iframeRef,
     selectedPage,
   });
   const livePreview = useLivePreviewMode({
@@ -181,6 +195,10 @@ export default function ProjectWorkspace({
   const hasStoredFiles = Object.keys(projectFiles.files).length > 0;
   const hasFinishedStreamedFile = streamFiles?.some((file) => file.completed) ?? false;
   const nothingRenderableYet = !hasStoredFiles && !hasFinishedStreamedFile;
+  // The frame only counts while this component is the one rendering it: the
+  // streaming code panel takes the pane on a first build, and the other views
+  // replace it entirely.
+  const previewFrameRendered = view === 'preview' && !nothingRenderableYet && browserFrameMounted;
 
   const handleSend = (text: string, options: SendMessageOptions) => {
     if (phase === 'PLANNING') {
@@ -191,7 +209,8 @@ export default function ProjectWorkspace({
       return;
     }
     if (options.mode === 'plan') watchForPlan();
-    onSend(text, options);
+    // Returned, not discarded: a refusal has to reach ChatInput or the text is gone.
+    return onSend(text, options);
   };
 
   const handleApprove = () => {
@@ -453,7 +472,8 @@ export default function ProjectWorkspace({
 
         <PanelErrorBoundary label="Preview">
           <PreviewPanel
-            iframeRef={iframeRef}
+            iframeRef={previewFrameRef}
+            frameRendered={previewFrameRendered}
             sandboxUrl={previewUrl}
             // Streamed files count too, not just persisted ones, and so does a build
             // that has not written one yet. `hasFiles` decides `previewPaneKind`, and
@@ -463,7 +483,6 @@ export default function ProjectWorkspace({
             // first seconds, when Code owes the reader the streaming panel's own
             // "code appears here as it is written" state rather than EmptyPreview.
             hasFiles={isJobActive || hasStoredFiles || hasFinishedStreamedFile}
-            selectedPage={selectedPage}
             expanded={chatCollapsed}
             previewDevice={previewDevice.device}
             previewRotated={previewDevice.rotated}
@@ -528,6 +547,8 @@ export default function ProjectWorkspace({
                   stack={projectFiles.stack}
                   files={projectFiles.files}
                   stream={isJobActive && streamFiles ? { files: streamFiles, active: true } : null}
+                  frameRef={previewFrameRef}
+                  onFrameMounted={setBrowserFrameMounted}
                   // Handing the failure back beats a recompile that can only
                   // fail identically. The wording has to match the class: the
                   // first attempt said "fails to compile" about a runtime crash,

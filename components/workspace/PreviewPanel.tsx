@@ -8,11 +8,7 @@ import {
   previewScale,
   rotateDeviceSize,
 } from '@/lib/preview/devices';
-import {
-  injectInspectorIntoIframe,
-  previewOriginFromUrl,
-  setInspectorActive,
-} from '@/lib/visual-edits/inspector';
+import { setInspectorActive } from '@/lib/visual-edits/inspector';
 import ElementEditPopover from './ElementEditPopover';
 import { useElementSelection } from './useElementSelection';
 import VisualEditsToolbar from './VisualEditsToolbar';
@@ -26,6 +22,7 @@ import type {
   WorkspaceView,
 } from './types';
 import { previewPaneKind } from '@/lib/preview/after-generation';
+import { previewToolsState } from '@/lib/preview/display';
 import {
   LIVE_SANDBOX_LABEL,
   PREPARING_PREVIEW,
@@ -41,15 +38,17 @@ function popoverMode(tool: VisualEditTool | null, hasEditableText: boolean): Ins
 }
 
 /**
- * Thin wrapper around the existing sandbox iframe / code renderer.
- * Does not load iframe content itself — parent owns src and refresh.
+ * Chrome around the preview: the device frame, the pane's empty/preparing
+ * states and the Visual Edits toolbar. The frame itself belongs to the child —
+ * `iframeRef` is the iframe that child rendered, handed here so the inspector
+ * can be driven on the document the reader is actually looking at.
  */
 export default function PreviewPanel({
   children,
   iframeRef,
+  frameRendered = false,
   sandboxUrl,
   hasFiles = false,
-  selectedPage = '/',
   expanded = false,
   previewDevice = 'desktop',
   previewRotated = false,
@@ -68,10 +67,11 @@ export default function PreviewPanel({
 }: {
   children: ReactNode;
   iframeRef?: RefObject<HTMLIFrameElement | null>;
+  /** A preview document is mounted in `iframeRef` right now. */
+  frameRendered?: boolean;
   sandboxUrl?: string | null;
   /** The project has code to render. Decides whether the pane is ready. */
   hasFiles?: boolean;
-  selectedPage?: string;
   expanded?: boolean;
   previewDevice?: PreviewDeviceKey;
   previewRotated?: boolean;
@@ -93,10 +93,18 @@ export default function PreviewPanel({
   const rotated = previewRotated;
   const shellRef = useRef<HTMLDivElement>(null);
   const [available, setAvailable] = useState({ width: 0, height: 0 });
-  const inspectEnabled = view === 'preview' && Boolean(sandboxUrl) && tool !== null;
+
+  const pane = previewPaneKind({
+    phase,
+    planTrigger,
+    hasFiles,
+    previewUrl: sandboxUrl,
+    preparing: preparingPreview,
+    previewBuildFailed,
+  });
+  const { showTools, inspectEnabled } = previewToolsState({ view, pane, frameRendered, tool });
   const { selection, clearSelection } = useElementSelection({
     iframeRef,
-    sandboxUrl,
     enabled: inspectEnabled,
   });
 
@@ -107,28 +115,22 @@ export default function PreviewPanel({
 
   useEffect(() => {
     const iframe = iframeRef?.current;
-    if (!iframe || view !== 'preview') return;
+    if (!iframe) return;
 
-    const sync = () => {
-      injectInspectorIntoIframe(iframe);
-      setInspectorActive(
-        iframe,
-        inspectEnabled,
-        previewOriginFromUrl(iframe.src) || previewOriginFromUrl(sandboxUrl),
-      );
-    };
+    // postMessage only. The frame is a `srcdoc` sandboxed without
+    // allow-same-origin, so nothing out here can touch its document — the
+    // inspector is part of the document (`lib/preview/html.ts`) and this only
+    // toggles it. `frameRendered` is in the deps because a ref settling is not
+    // a render: without it the first document to mount was never synced.
+    const sync = () => setInspectorActive(iframe, inspectEnabled);
 
     iframe.addEventListener('load', sync);
     sync();
     return () => {
       iframe.removeEventListener('load', sync);
-      setInspectorActive(
-        iframe,
-        false,
-        previewOriginFromUrl(iframe.src) || previewOriginFromUrl(sandboxUrl),
-      );
+      setInspectorActive(iframe, false);
     };
-  }, [iframeRef, inspectEnabled, sandboxUrl, selectedPage, view]);
+  }, [frameRendered, iframeRef, inspectEnabled]);
 
   useEffect(() => {
     const node = shellRef.current;
@@ -156,16 +158,7 @@ export default function PreviewPanel({
     : 1;
   const scaleLabel = formatPreviewScale(scale);
 
-  const pane = previewPaneKind({
-    phase,
-    planTrigger,
-    hasFiles,
-    previewUrl: sandboxUrl,
-    preparing: preparingPreview,
-    previewBuildFailed,
-  });
   const showEmptyPlan = pane === 'planning';
-  const showTools = view === 'preview' && Boolean(sandboxUrl) && !showEmptyPlan;
   const mode = popoverMode(tool, Boolean(selection?.payload.hasEditableText));
   const source = tool === 'comment' ? 'comment' : 'visual-edit';
 

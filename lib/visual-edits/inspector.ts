@@ -18,21 +18,6 @@ export type SelectedElementPayload = {
   hasEditableText: boolean;
 };
 
-type InspectorApi = {
-  activate: () => void;
-  deactivate: () => void;
-  __installed?: boolean;
-};
-
-export function previewOriginFromUrl(url?: string | null): string | null {
-  if (!url) return null;
-  try {
-    return new URL(url).origin;
-  } catch {
-    return null;
-  }
-}
-
 export function isElementSelectedMessage(
   data: unknown,
 ): data is { type: typeof ELEMENT_SELECTED_TYPE; payload: SelectedElementPayload } {
@@ -269,59 +254,23 @@ export const INSPECTOR_SCRIPT = `(function () {
   window[GLOBAL] = { activate: activate, deactivate: deactivate, __installed: true };
 })();`;
 
-export function injectInspectorIntoIframe(iframe: HTMLIFrameElement): boolean {
+/**
+ * Turns the inspector inside the preview frame on or off.
+ *
+ * postMessage is the only channel there is. The frame is sandboxed without
+ * `allow-same-origin`, so its origin is opaque: `contentDocument` is null,
+ * reaching into `contentWindow` for a direct API call throws, and the script
+ * cannot be appended from out here either — which is why it is part of the
+ * document (`lib/preview/html.ts`) rather than injected into it (F-143).
+ *
+ * `"*"` is the only target an opaque origin can be addressed by. The payload is
+ * a boolean toggle addressed at one frame this app rendered itself, so there is
+ * nothing in it worth withholding.
+ */
+export function setInspectorActive(iframe: HTMLIFrameElement, active: boolean): void {
   try {
-    const win = iframe.contentWindow;
-    const doc = iframe.contentDocument;
-    if (!win || !doc) return false;
-
-    const existing = (win as Window & { [INSPECTOR_GLOBAL]?: InspectorApi })[INSPECTOR_GLOBAL];
-    if (existing?.__installed) return true;
-
-    const prior = doc.getElementById(INSPECTOR_SCRIPT_ID);
-    if (prior) prior.remove();
-
-    const script = doc.createElement('script');
-    script.id = INSPECTOR_SCRIPT_ID;
-    script.textContent = INSPECTOR_SCRIPT;
-    (doc.head || doc.documentElement).appendChild(script);
-
-    const installed = (win as Window & { [INSPECTOR_GLOBAL]?: InspectorApi })[INSPECTOR_GLOBAL];
-    if (installed?.__installed) return true;
-
-    try {
-      const FrameFunction = (win as unknown as { Function: FunctionConstructor }).Function;
-      new FrameFunction(INSPECTOR_SCRIPT)();
-    } catch {
-      return false;
-    }
-    return Boolean((win as Window & { [INSPECTOR_GLOBAL]?: InspectorApi })[INSPECTOR_GLOBAL]);
+    iframe.contentWindow?.postMessage({ type: INSPECTOR_ACTIVE_TYPE, active }, '*');
   } catch {
-    return false;
-  }
-}
-
-export function setInspectorActive(
-  iframe: HTMLIFrameElement,
-  active: boolean,
-  targetOrigin?: string | null,
-): void {
-  const origin = targetOrigin && targetOrigin !== 'null' ? targetOrigin : '*';
-  try {
-    const api = (iframe.contentWindow as (Window & { [INSPECTOR_GLOBAL]?: InspectorApi }) | null)?.[
-      INSPECTOR_GLOBAL
-    ];
-    if (api) {
-      if (active) api.activate();
-      else api.deactivate();
-      return;
-    }
-  } catch {
-    /* cross-origin — fall through to postMessage */
-  }
-  try {
-    iframe.contentWindow?.postMessage({ type: INSPECTOR_ACTIVE_TYPE, active }, origin);
-  } catch {
-    /* iframe may not be ready */
+    /* the frame is not ready yet; the next `load` re-syncs it */
   }
 }

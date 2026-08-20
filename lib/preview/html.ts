@@ -1,12 +1,17 @@
+import { INSPECTOR_SCRIPT, INSPECTOR_SCRIPT_ID } from '@/lib/visual-edits/inspector';
 import { buildImportMap, PREVIEW_DEPS, TAILWIND_BROWSER_URL } from './deps';
 
 /**
  * Builds the document the preview iframe renders.
  *
  * The iframe is sandboxed without allow-same-origin, so this document is the
- * whole world the generated app sees: import map, Tailwind, the bundle, and an
+ * whole world the generated app sees: import map, Tailwind, the bundle, an
  * error bridge that posts failures back to the parent (a sandboxed frame
- * cannot be inspected from outside, so uncaught errors would otherwise vanish).
+ * cannot be inspected from outside, so uncaught errors would otherwise vanish),
+ * and the Visual Edits inspector, for the same reason — the frame's origin is
+ * opaque, so nothing outside can put a script into it after the fact. The
+ * inspector idles until the workspace posts it a `navroop:inspector-active`
+ * message (F-143).
  */
 
 export const PREVIEW_MESSAGE_SOURCE = 'navroop-preview';
@@ -69,6 +74,13 @@ const ERROR_BRIDGE = `
 })();
 `;
 
+/**
+ * The inspector, ready to be turned on. It installs a `message` listener and
+ * nothing else until the workspace activates it, so an unused Visual Edits
+ * toolbar costs the frame one idle listener.
+ */
+const INSPECTOR_TAG = `<script id="${INSPECTOR_SCRIPT_ID}">${escapeClosingScript(INSPECTOR_SCRIPT)}</script>`;
+
 export function buildPreviewSrcdoc(options: {
   code: string;
   css?: string;
@@ -117,6 +129,7 @@ document.getElementById("__preview-app").addEventListener("error", function () {
   }
 });
 </script>
+${INSPECTOR_TAG}
 </body>
 </html>`;
 }
@@ -140,7 +153,10 @@ function injectBridgeIntoHtml(html: string) {
   // `process` just as a bundled one can, and the shim is worthless if it lands
   // after the code that needed it.
   const bridge = `<script>${NODE_GLOBALS_SHIM}</script><script>${ERROR_BRIDGE}</script>`;
-  const ready = `<script>setTimeout(function(){ if (window.__previewPost) window.__previewPost({ type: "ready" }); }, 0);</script>`;
+  // The inspector rides with the ready signal, on the same "must be placed
+  // explicitly, never dropped by a no-match" rule: Visual Edits has to work on a
+  // static-HTML project too, and its only way in is this document.
+  const ready = `<script>setTimeout(function(){ if (window.__previewPost) window.__previewPost({ type: "ready" }); }, 0);</script>${INSPECTOR_TAG}`;
 
   const headOpen = /<head[^>]*>/i.exec(html);
   let withBridge: string;

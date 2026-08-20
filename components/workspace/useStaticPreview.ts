@@ -34,15 +34,29 @@ const EMPTY: StaticPreviewState = {
 
 type StatusResponse = Partial<StaticPreviewState> & { lastReadyUrl?: string | null };
 
+/**
+ * Tracks the *served* preview build for a project.
+ *
+ * This hook does not render anything and no longer owns a frame. What the
+ * reader sees in the Preview tab is `BrowserPreview`, which compiles the
+ * project in this tab; the build this hook watches is the same document built
+ * server-side (`lib/preview/server-bundle.ts` runs the same `assemblePreview`
+ * through the same `buildPreviewSrcdoc`) and served from a distinct preview
+ * origin for the SEO audit, the share link and password-protected preview
+ * deploys.
+ *
+ * It used to write `previewUrl` into `iframeRef.current.src`, where `iframeRef`
+ * pointed at a sandbox-era iframe that has not been rendered since the VMs were
+ * deleted — so every poll and every re-minted token was thrown at `null` and
+ * the freshly signed URL never reached the UI that consumes it (F-142).
+ */
 export function useStaticPreview({
   projectId,
   enabled,
-  iframeRef,
   selectedPage = '/',
 }: {
   projectId: string | null;
   enabled: boolean;
-  iframeRef?: { current: HTMLIFrameElement | null };
   selectedPage?: string;
 }) {
   const [state, setState] = useState<StaticPreviewState>(EMPTY);
@@ -75,23 +89,17 @@ export function useStaticPreview({
     notify.error(PREVIEW_ACCESS_DENIED, { key: `preview-denied-${refusedProjectId}` });
   }, []);
 
-  const applyUrl = useCallback(
-    (url: string | null) => {
-      if (!url || !iframeRef?.current) return;
-      try {
-        const next = new URL(url, window.location.origin);
-        if (selectedPage && selectedPage !== '/') {
-          const suffix = selectedPage.startsWith('/') ? selectedPage : `/${selectedPage}`;
-          next.pathname = next.pathname.replace(/\/$/, '') + suffix;
-        }
-        const href = next.toString();
-        if (iframeRef.current.src !== href) iframeRef.current.src = href;
-      } catch {
-        if (iframeRef.current.src !== url) iframeRef.current.src = url;
-      }
-    },
-    [iframeRef, selectedPage],
-  );
+  /**
+   * A freshly signed URL, kept in state where the top bar's "Open in new tab"
+   * and "Copy link" read it. Preview tokens last two hours
+   * (`PREVIEW_TOKEN_TTL_MS`) and the status poll only runs while a build is
+   * preparing, so without this the share link expired mid-session and the
+   * re-mint that exists to prevent that was discarded.
+   */
+  const applyUrl = useCallback((url: string | null) => {
+    if (!url) return;
+    setState((prev) => (prev.previewUrl === url ? prev : { ...prev, previewUrl: url }));
+  }, []);
 
   const refresh = useCallback(async () => {
     if (!projectId || deniedRef.current === projectId) return EMPTY;
@@ -145,14 +153,18 @@ export function useStaticPreview({
       return;
     }
     const next = await refresh();
-    applyUrl(data.previewUrl ?? next.previewUrl);
+    // The POST mints a URL for the page being looked at; the GET re-reads the
+    // build row and re-signs the project root. Prefer the mint, and hand it back
+    // with the state so the caller sees the link it just asked for.
+    const previewUrl = data.previewUrl ?? next.previewUrl;
+    applyUrl(previewUrl);
     if (next.status === 'FAILED') {
       notify.error(next.error, {
         fallback: PREVIEW_NOT_READY_NOTICE,
         key: `preview-retry-${projectId}`,
       });
     }
-    return next;
+    return { ...next, previewUrl };
   }, [applyUrl, projectId, refresh, selectedPage]);
 
   const issueTokenUrl = useCallback(
@@ -175,15 +187,8 @@ export function useStaticPreview({
 
   useEffect(() => {
     if (!projectId || !enabled) return;
-    let cancelled = false;
-    void refresh().then((next) => {
-      if (cancelled || !next) return;
-      if (next.previewUrl) applyUrl(next.previewUrl);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [applyUrl, enabled, projectId, refresh]);
+    void refresh();
+  }, [enabled, projectId, refresh]);
 
   useEffect(() => {
     if (pollRef.current) {
@@ -192,19 +197,12 @@ export function useStaticPreview({
     }
     if (!projectId || !enabled || !state.preparing) return;
     pollRef.current = setInterval(() => {
-      void refresh().then((next) => {
-        if (next?.previewUrl) applyUrl(next.previewUrl);
-      });
+      void refresh();
     }, 2000);
     return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
+      clearInterval(pollRef.current ?? undefined);
     };
-  }, [applyUrl, enabled, projectId, refresh, state.preparing]);
-
-  useEffect(() => {
-    if (!enabled || !state.previewUrl) return;
-    applyUrl(state.previewUrl);
-  }, [applyUrl, enabled, selectedPage, state.previewUrl]);
+  }, [enabled, projectId, refresh, state.preparing]);
 
   useEffect(() => {
     if (!projectId || !enabled) return;
