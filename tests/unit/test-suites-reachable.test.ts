@@ -41,7 +41,7 @@ const TEST_FILE = /\.(test|spec)\.[cm]?tsx?$/;
 
 /**
  * Build output, dependency trees, and caches. Everything else is walked, including
- * `components/`, `hooks/`, `app/`, `lib/`, `prisma/`, `scripts/` and `packages/`.
+ * `components/`, `hooks/`, `app/`, `lib/`, `prisma/` and `scripts/`.
  */
 const SKIP_DIRS = new Set([
   'node_modules',
