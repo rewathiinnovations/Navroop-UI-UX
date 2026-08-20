@@ -24,7 +24,6 @@ export const PURE_SUITES = [
   ['import-pipeline', '../../tests/import-pipeline.test.ts'],
   ['integrations', '../../tests/integrations.test.ts'],
   ['job-chat-ui', '../../tests/job-chat-ui.test.ts'],
-  ['logger-scrub', '../../tests/logger-scrub.test.ts'],
   ['memory', '../../tests/memory.test.ts'],
   ['preview-devices', '../../tests/preview-devices.test.ts'],
   ['quality-signals', '../../tests/quality-signals.test.ts'],

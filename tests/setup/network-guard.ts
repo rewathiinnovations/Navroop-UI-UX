@@ -1,4 +1,16 @@
+import { EventEmitter } from 'node:events';
+import http from 'node:http';
+import https from 'node:https';
+
+/** Permanently allowed: the RFC 2606 example hosts the suites use as stand-ins. */
 const ALLOWED_HOSTS = new Set(['example.com', 'www.example.com']);
+
+/**
+ * Granted by `allowHost` and cleared after every test by `vitest.setup.ts`. These
+ * used to be added straight into `ALLOWED_HOSTS`, which nothing ever cleared, so one
+ * test's allowance silently applied to every later test in the same worker (F-618).
+ */
+const TEMPORARY_HOSTS = new Set<string>();
 
 let localhostAllowed = false;
 
@@ -38,7 +50,8 @@ export function isLoopbackHost(host: string) {
 function isAllowed(host: string | null) {
   if (!host) return false;
   if (isLoopbackHost(host)) return localhostAllowed;
-  if (ALLOWED_HOSTS.has(normalizeHost(host))) return true;
+  const normalized = normalizeHost(host);
+  if (ALLOWED_HOSTS.has(normalized) || TEMPORARY_HOSTS.has(normalized)) return true;
   return false;
 }
 
@@ -65,6 +78,65 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
 }) as typeof fetch;
 
 /**
+ * `safeFetch` no longer goes through global `fetch`: it pins the socket to the
+ * address the SSRF guard approved and drives `node:http` / `node:https`
+ * directly (F-308). Guarding only `fetch` would therefore have left a hole
+ * wide enough for a unit test to reach the live internet — which is exactly
+ * what it did, as a 15-second hang rather than a refusal.
+ *
+ * A blocked call fails the way an unreachable host fails — an asynchronous
+ * `error` event on the returned request — rather than throwing out of
+ * `http.request`. Callers deep in a library (a tracker flushing an event, say)
+ * already handle a connection error; none of them expect the constructor to
+ * throw.
+ */
+function hostOfRequestArgs(args: unknown[]) {
+  for (const arg of args) {
+    if (typeof arg === 'string' || arg instanceof URL) {
+      const host = hostOf(arg);
+      if (host) return host;
+    } else if (arg && typeof arg === 'object') {
+      const options = arg as { hostname?: unknown; host?: unknown };
+      const raw = options.hostname ?? options.host;
+      if (typeof raw === 'string' && raw) return normalizeHost(raw.replace(/:\d+$/, ''));
+    }
+  }
+  return null;
+}
+
+function blockedRequest(message: string) {
+  const request = new EventEmitter() as EventEmitter & Record<string, unknown>;
+  request.write = () => true;
+  request.end = () => request;
+  request.destroy = () => request;
+  request.setTimeout = () => request;
+  request.setHeader = () => request;
+  request.abort = () => undefined;
+  setImmediate(() => request.emit('error', new Error(message)));
+  return request;
+}
+
+function guardRequestFn<T extends (...args: never[]) => unknown>(label: string, original: T): T {
+  return function guarded(this: unknown, ...args: unknown[]) {
+    const host = hostOfRequestArgs(args);
+    if (host && isLoopbackHost(host) && !localhostAllowed) {
+      return blockedRequest(localhostBlockedMessage(host, host));
+    }
+    if (!isAllowed(host)) {
+      return blockedRequest(
+        `Network guard blocked outbound ${label} request to ${host ?? args[0]}`,
+      );
+    }
+    return (original as (...inner: unknown[]) => unknown).apply(this, args);
+  } as unknown as T;
+}
+
+http.request = guardRequestFn('http', http.request);
+http.get = guardRequestFn('http', http.get);
+https.request = guardRequestFn('https', https.request);
+https.get = guardRequestFn('https', https.get);
+
+/**
  * Opt in to loopback (`localhost`, `127.0.0.0/8`, `::1`, `*.localhost`) for one test.
  * Reset automatically after each test via `vitest.setup.ts`. A missing reason is
  * rejected so the call cannot hide in a bare `allowLocalhost()`.
@@ -82,13 +154,27 @@ export function revokeLocalhost() {
   localhostAllowed = false;
 }
 
-export function allowHost(host: string) {
+/**
+ * Opt in to one non-loopback host for one test. Reset automatically after each test
+ * via `vitest.setup.ts`. A missing reason is rejected, so the opt-in cannot hide.
+ */
+export function allowHost(host: string, reason: string) {
+  if (typeof reason !== 'string' || !reason.trim()) {
+    throw new Error(
+      'allowHost requires a non-empty reason so the opt-in is visible in the test file',
+    );
+  }
   if (isLoopbackHost(host)) {
     throw new Error(
       `Use allowLocalhost('reason') to opt in to localhost; allowHost(${host}) is not enough.`,
     );
   }
-  ALLOWED_HOSTS.add(normalizeHost(host));
+  TEMPORARY_HOSTS.add(normalizeHost(host));
+}
+
+/** Drops every `allowHost` grant. Called from the same `afterEach` as `revokeLocalhost`. */
+export function resetAllowedHosts() {
+  TEMPORARY_HOSTS.clear();
 }
 
 export { originalFetch };

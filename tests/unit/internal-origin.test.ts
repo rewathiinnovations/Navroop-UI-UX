@@ -34,7 +34,9 @@ describe('internal origin check', () => {
   });
 
   it('accepts a value with no APP_URL to compare against', () => {
-    expect(checkInternalOrigin({ NEXT_PUBLIC_APP_URL: 'http://localhost:3000' } as NodeJS.ProcessEnv).ok).toBe(true);
+    expect(
+      checkInternalOrigin({ NEXT_PUBLIC_APP_URL: 'http://localhost:3000' } as NodeJS.ProcessEnv).ok,
+    ).toBe(true);
   });
 
   it('warns rather than errors when unset, leaving the fatal decision to the boot assertion', () => {
@@ -77,6 +79,60 @@ describe('internal origin check', () => {
       } as NodeJS.ProcessEnv).ok,
     ).toBe(false);
   });
+
+  /**
+   * F-764: the check compared `URL.host` only, so a scheme mismatch was certified.
+   * Both consumers named in the module header build URLs from this value: GitHub
+   * rejects an `http` App Manifest callback, and an `http` preview origin sends
+   * signed preview tokens in cleartext.
+   */
+  it('treats a scheme difference as a mismatch even when the host agrees', () => {
+    const result = checkInternalOrigin({
+      NEXT_PUBLIC_APP_URL: 'http://app.example.com',
+      APP_URL: 'https://app.example.com',
+    } as NodeJS.ProcessEnv);
+    expect(result.ok).toBe(false);
+    expect(result.severity).toBe('error');
+    expect(result.ok ? '' : result.error).toMatch(/scheme/);
+  });
+
+  it('treats the reverse scheme difference as a mismatch too', () => {
+    expect(
+      checkInternalOrigin({
+        NEXT_PUBLIC_APP_URL: 'https://app.example.com',
+        APP_URL: 'http://app.example.com',
+      } as NodeJS.ProcessEnv).ok,
+    ).toBe(false);
+  });
+
+  it('rejects a non-https public origin in production', () => {
+    const result = checkInternalOrigin({
+      NODE_ENV: 'production',
+      NEXT_PUBLIC_APP_URL: 'http://app.example.com',
+      APP_URL: 'http://app.example.com',
+    } as NodeJS.ProcessEnv);
+    expect(result.ok).toBe(false);
+    expect(result.ok ? '' : result.error).toMatch(/must be https in production/);
+  });
+
+  it('still allows loopback over http in production, which is how a production image is run locally', () => {
+    expect(
+      checkInternalOrigin({
+        NODE_ENV: 'production',
+        NEXT_PUBLIC_APP_URL: 'http://localhost:3000',
+        APP_URL: 'http://localhost:3000',
+      } as NodeJS.ProcessEnv).ok,
+    ).toBe(true);
+  });
+
+  it('leaves a non-https origin alone outside production', () => {
+    expect(
+      checkInternalOrigin({
+        NEXT_PUBLIC_APP_URL: 'http://app.local',
+        APP_URL: 'http://app.local',
+      } as NodeJS.ProcessEnv).ok,
+    ).toBe(true);
+  });
 });
 
 describe('boot assertion', () => {
@@ -114,12 +170,17 @@ describe('boot assertion', () => {
   });
 
   it('refuses to boot in production when unset', () => {
-    expect(() => assertInternalOrigin({ NODE_ENV: 'production' } as NodeJS.ProcessEnv)).toThrow(/is not set/);
+    expect(() => assertInternalOrigin({ NODE_ENV: 'production' } as NodeJS.ProcessEnv)).toThrow(
+      /is not set/,
+    );
   });
 
   it('refuses to boot in production when the value does not parse', () => {
     expect(() =>
-      assertInternalOrigin({ NODE_ENV: 'production', NEXT_PUBLIC_APP_URL: 'not a url' } as NodeJS.ProcessEnv),
+      assertInternalOrigin({
+        NODE_ENV: 'production',
+        NEXT_PUBLIC_APP_URL: 'not a url',
+      } as NodeJS.ProcessEnv),
     ).toThrow(/not a valid URL/);
   });
 
