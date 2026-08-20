@@ -26,19 +26,32 @@ const fake = vi.hoisted(() => {
   // the value itself.
   const ADMIN_PREFIX = 'fixture-admin-config-key-';
   const ENV_PREFIX = 'fixture-environment-key-';
+  const PERSONAL_PREFIX = 'fixture-personal-key-';
   return {
     ADMIN_PREFIX,
     ENV_PREFIX,
+    PERSONAL_PREFIX,
     rows: new Map<string, string>(),
+    /** Legacy personal ApiKey row served by the prisma mock (F-073). */
+    personalRow: null as { id: string; secret: string } | null,
     clients: [] as Array<{ source: string; client: unknown }>,
     sourceOf(value?: string) {
       if (!value) return 'none';
       if (value.startsWith(ADMIN_PREFIX)) return 'admin-config';
       if (value.startsWith(ENV_PREFIX)) return 'environment';
+      if (value.startsWith(PERSONAL_PREFIX)) return 'personal';
       return 'unrecognised';
     },
   };
 });
+
+const logSpies = vi.hoisted(() => ({
+  log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+  logError: vi.fn(),
+  formatLogLine: vi.fn(() => ''),
+}));
+
+vi.mock('@/lib/logger', () => logSpies);
 
 vi.mock('@/lib/db', () => ({
   prisma: {
@@ -49,7 +62,10 @@ vi.mock('@/lib/db', () => ({
       },
     },
     orgApiKey: { findFirst: async () => null },
-    apiKey: { findFirst: async () => null },
+    apiKey: {
+      findFirst: async ({ where }: { where: { userId?: string } }) =>
+        where?.userId ? fake.personalRow : null,
+    },
   },
 }));
 
@@ -135,9 +151,11 @@ function pageCapture() {
 beforeEach(() => {
   fake.rows.clear();
   fake.clients.length = 0;
+  fake.personalRow = null;
   invalidateSettingsCache();
   ai.generateObject.mockReset();
   ai.generateText.mockReset();
+  logSpies.log.warn.mockClear();
   // The install this defends: the operator configured everything on
   // /admin/config and left the environment empty.
   vi.stubEnv('DEEPSEEK_API_KEY', '');
@@ -166,6 +184,7 @@ describe('AI helpers run on the key saved in Admin → Configuration', () => {
     const result = await analyzeEditIntent({
       prompt: 'change "Start Deploying" to "Go Now"',
       manifest: { files: { 'src/App.tsx': {} } },
+      userId: null,
     });
 
     expect(result.ok).toBe(true);
@@ -223,6 +242,7 @@ describe('AI helpers run on the key saved in Admin → Configuration', () => {
       userMessage: 'add a pricing table',
       projectContext: '',
       skills: [{ id: 'pricing', name: 'Pricing', description: 'pricing sections' }],
+      userId: null,
     });
 
     expect(keySourceOfLastClient()).toBe('admin-config');
@@ -256,6 +276,7 @@ describe('AI helpers run on the key saved in Admin → Configuration', () => {
       stack: 'NEXTJS',
       files: [{ path: 'app/page.tsx', content: 'export default function Page() { return null; }' }],
       staticFindings: [],
+      userId: null,
     });
 
     // A resolution failure would come back as a `tool:ai-review` finding.
@@ -270,45 +291,84 @@ describe('model resolution: admin value, then environment, then the built-in', (
     vi.stubEnv('AI_PRIMARY_MODEL', 'deepseek-v4-flash');
     storeSetting('ai.primaryModel', ADMIN_MODEL);
 
-    expect((await getProviderForModel(LEGACY_MODEL_ID)).actualModel).toBe(ADMIN_MODEL);
+    expect((await getProviderForModel(LEGACY_MODEL_ID, null)).actualModel).toBe(ADMIN_MODEL);
   });
 
   it('falls back to AI_PRIMARY_MODEL when nothing is saved', async () => {
     vi.stubEnv('AI_PRIMARY_MODEL', ADMIN_MODEL);
     clearSetting('ai.primaryModel');
 
-    expect((await getProviderForModel(LEGACY_MODEL_ID)).actualModel).toBe(ADMIN_MODEL);
+    expect((await getProviderForModel(LEGACY_MODEL_ID, null)).actualModel).toBe(ADMIN_MODEL);
   });
 
   it('keeps a DeepSeek model the caller named explicitly', async () => {
-    expect((await getProviderForModel('deepseek-v4-flash')).actualModel).toBe('deepseek-v4-flash');
+    expect((await getProviderForModel('deepseek-v4-flash', null)).actualModel).toBe(
+      'deepseek-v4-flash',
+    );
+  });
+
+  it('logs the substitution when an unknown id is replaced by the configured model (F-082)', async () => {
+    await getProviderForModel(LEGACY_MODEL_ID, null);
+
+    expect(logSpies.log.warn).toHaveBeenCalledWith(
+      'ai.unknown_model_substituted',
+      expect.objectContaining({ requestedModel: LEGACY_MODEL_ID, actualModel: ADMIN_MODEL }),
+    );
+  });
+
+  it('does not log for a model the caller named explicitly', async () => {
+    await getProviderForModel('deepseek-v4-flash', null);
+
+    expect(logSpies.log.warn).not.toHaveBeenCalledWith(
+      'ai.unknown_model_substituted',
+      expect.anything(),
+    );
   });
 });
 
 describe('the cached client tracks the current key', () => {
   it('reuses one client while the key is unchanged', async () => {
-    const first = await getProviderForModel(LEGACY_MODEL_ID);
-    const second = await getProviderForModel(LEGACY_MODEL_ID);
+    const first = await getProviderForModel(LEGACY_MODEL_ID, null);
+    const second = await getProviderForModel(LEGACY_MODEL_ID, null);
 
     expect(second.client).toBe(first.client);
     expect(fake.clients).toHaveLength(1);
   });
 
   it('never serves a client built from a key the admin has replaced', async () => {
-    const before = await getProviderForModel(LEGACY_MODEL_ID);
+    const before = await getProviderForModel(LEGACY_MODEL_ID, null);
     saveAdminKey();
-    const after = await getProviderForModel(LEGACY_MODEL_ID);
+    const after = await getProviderForModel(LEGACY_MODEL_ID, null);
 
     expect(after.client).not.toBe(before.client);
     expect(fake.clients).toHaveLength(2);
   });
 
   it('rebuilds when only the base URL moves', async () => {
-    const before = await getProviderForModel(LEGACY_MODEL_ID);
+    const before = await getProviderForModel(LEGACY_MODEL_ID, null);
     storeSetting('ai.deepseek.baseUrl', 'https://deepseek.proxy.example.com');
-    const after = await getProviderForModel(LEGACY_MODEL_ID);
+    const after = await getProviderForModel(LEGACY_MODEL_ID, null);
 
     expect(after.client).not.toBe(before.client);
+  });
+});
+
+describe('one credential per request subject (F-073)', () => {
+  it('resolves the personal tier when the acting user is threaded through', async () => {
+    fake.personalRow = { id: 'key_1', secret: `${fake.PERSONAL_PREFIX}1` };
+
+    const resolved = await getProviderForModel(LEGACY_MODEL_ID, 'user-1');
+
+    expect(resolved.actualModel).toBe(ADMIN_MODEL);
+    expect(keySourceOfLastClient()).toBe('personal');
+  });
+
+  it('skips the personal tier for a user-less context', async () => {
+    fake.personalRow = { id: 'key_1', secret: `${fake.PERSONAL_PREFIX}1` };
+
+    await getProviderForModel(LEGACY_MODEL_ID, null);
+
+    expect(keySourceOfLastClient()).toBe('admin-config');
   });
 });
 
@@ -318,7 +378,7 @@ describe('with no key anywhere, the helpers name the page to fix', () => {
   });
 
   it('refuses instead of building a keyless client', async () => {
-    await expect(getProviderForModel(LEGACY_MODEL_ID)).rejects.toThrow(
+    await expect(getProviderForModel(LEGACY_MODEL_ID, null)).rejects.toThrow(
       NO_PROVIDER_CONFIGURED_MESSAGE,
     );
     expect(fake.clients).toHaveLength(0);
@@ -328,6 +388,7 @@ describe('with no key anywhere, the helpers name the page to fix', () => {
     const result = await analyzeEditIntent({
       prompt: 'change the hero title',
       manifest: { files: { 'src/App.tsx': {} } },
+      userId: null,
     });
 
     expect(result).toEqual({ ok: false, status: 503, error: NO_PROVIDER_CONFIGURED_MESSAGE });

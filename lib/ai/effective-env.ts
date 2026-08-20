@@ -31,7 +31,7 @@ export async function loadEffectiveProviderEnv(
 ): Promise<Record<string, string | undefined>> {
   const keys: Record<string, string | null> = {};
   for (const row of OVERLAY_KEYS) {
-    keys[row.env] = await getEffectiveApiKey(userId, row.provider);
+    keys[row.env] = await getEffectiveApiKey(userId, row.provider, env);
   }
   const settings = await getSettings(OVERLAY_BASE_URLS.map((row) => row.setting));
   for (const row of OVERLAY_BASE_URLS) {

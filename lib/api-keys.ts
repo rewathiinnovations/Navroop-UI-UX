@@ -62,12 +62,40 @@ export function settingKeyForProvider(id: string): string | undefined {
   return SETTING_KEY_BY_PROVIDER[id];
 }
 
-async function decodeStoredSecret(secret: string) {
+/**
+ * Three distinguishable states (F-071):
+ * - enc:v1 envelope, readable → the plaintext.
+ * - enc:v1 envelope, undecryptable (rotated ENCRYPTION_KEY, tampered row) →
+ *   null, plus an error log naming the row. Callers treat null as "no key",
+ *   so the failure surfaces as provider-not-configured — never as ciphertext
+ *   sent to a vendor as a bearer token.
+ * - bare legacy value → decrypt if it is old-format ciphertext, otherwise
+ *   accept as pre-encryption plaintext (needed until scripts/encrypt-api-keys.ts
+ *   has run against the deployment).
+ */
+async function decodeStoredSecret(
+  row: { id: string; secret: string },
+  context: { provider: string; scope: 'personal' | 'org' },
+): Promise<string | null> {
+  const { decrypt, isEncrypted } = await import('./crypto');
+  if (isEncrypted(row.secret)) {
+    try {
+      return decrypt(row.secret);
+    } catch (error) {
+      const { log } = await import('./logger');
+      log.error('api_keys.secret_undecryptable', {
+        provider: context.provider,
+        scope: context.scope,
+        rowId: row.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  }
   try {
-    const { decrypt } = await import('./crypto');
-    return decrypt(secret);
+    return decrypt(row.secret);
   } catch {
-    return secret;
+    return row.secret;
   }
 }
 
@@ -77,11 +105,15 @@ async function decodeStoredSecret(secret: string) {
  * The last two steps are the settings resolver, so a key saved in
  * Admin → Configuration is picked up by every caller that already used this
  * helper, and an untouched deployment keeps reading its environment variable.
- * Accepts settings ids (`gemini`) and provider ids (`google`).
+ * Accepts settings ids (`gemini`) and provider ids (`google`). The `env`
+ * parameter is the same store `loadEffectiveProviderEnv` overlays onto —
+ * reading `process.env` here directly ignored the env callers thread through
+ * (F-078).
  */
 export async function getEffectiveApiKey(
   userId: string | null | undefined,
   provider: string,
+  env: Record<string, string | undefined> = process.env,
 ): Promise<string | null> {
   const { prisma } = await import('./db');
   const aliases = PROVIDER_ALIASES[provider] ?? [provider];
@@ -89,20 +121,20 @@ export async function getEffectiveApiKey(
   if (userId) {
     const personal = await prisma.apiKey.findFirst({
       where: { userId, provider: { in: aliases } },
-      select: { secret: true },
+      select: { id: true, secret: true },
     });
     if (personal?.secret) {
-      const value = (await decodeStoredSecret(personal.secret)).trim();
+      const value = (await decodeStoredSecret(personal, { provider, scope: 'personal' }))?.trim();
       if (value) return value;
     }
   }
 
   const org = await prisma.orgApiKey.findFirst({
     where: { provider: { in: aliases } },
-    select: { secret: true },
+    select: { id: true, secret: true },
   });
   if (org?.secret) {
-    const value = (await decodeStoredSecret(org.secret)).trim();
+    const value = (await decodeStoredSecret(org, { provider, scope: 'org' }))?.trim();
     if (value) return value;
   }
 
@@ -115,7 +147,7 @@ export async function getEffectiveApiKey(
     }
     // Providers with no registry entry still honour their environment variable.
     const envName = envNameForProvider(id);
-    const value = envName ? process.env[envName]?.trim() : '';
+    const value = envName ? env[envName]?.trim() : '';
     if (value) return value;
   }
   return null;

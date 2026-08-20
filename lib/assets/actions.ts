@@ -3,6 +3,8 @@
 import { prisma } from '@/lib/db';
 import { getSessionUser, type SessionUser } from '@/lib/auth';
 import { fallbackAltText } from '@/lib/assets/keys';
+import { MAX_UPLOAD_BYTES, sniffImageType } from '@/lib/assets/optimize';
+import { allowAssetUpload } from '@/lib/assets/rate-limit';
 import { generateImage, type GenerateAspect } from '@/lib/assets/generate-image';
 import { persistOptimizedAsset } from '@/lib/assets/persist';
 import { searchStockPhoto } from '@/lib/assets/stock-photo';
@@ -166,9 +168,38 @@ export async function uploadProjectAsset(projectId: string, formData: FormData) 
   if (!(file instanceof File) || file.size === 0) {
     return { ok: false as const, error: 'A file is required', status: 400 as const };
   }
+  // Checked before the body is buffered: route handlers are not covered by the
+  // Server Action bodySizeLimit, so this is the only ceiling the upload has.
+  if (file.size > MAX_UPLOAD_BYTES) {
+    return {
+      ok: false as const,
+      error: 'Image is too large — the limit is 10 MB',
+      status: 400 as const,
+    };
+  }
+  // Counted only for requests that passed validation, so a typo cannot burn
+  // the hour's budget — same in-process bucket the ZIP export uses.
+  if (!allowAssetUpload(user.id).allowed) {
+    return {
+      ok: false as const,
+      error: 'Upload limit reached — try again in an hour',
+      status: 429 as const,
+    };
+  }
 
   try {
     const buffer = Buffer.from(await file.arrayBuffer());
+    // The multipart content type is client-supplied; the bytes decide. sharp
+    // would reject most non-images anyway, but a clean 400 beats a decoder
+    // error, and this closes the "sharp accepts it" formats nobody intends
+    // to serve (PDF, SVG) before any decode work happens.
+    if (!sniffImageType(buffer)) {
+      return {
+        ok: false as const,
+        error: 'Upload a PNG, JPEG, WebP or GIF image',
+        status: 400 as const,
+      };
+    }
     const asset = await persistOptimizedAsset({
       projectId,
       buffer,

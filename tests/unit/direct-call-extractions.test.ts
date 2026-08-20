@@ -36,12 +36,14 @@ afterEach(() => {
 
 describe('analyzeEditIntent', () => {
   it('reports a missing prompt or manifest instead of calling the model', async () => {
-    expect(await analyzeEditIntent({ prompt: '', manifest: { files: {} } })).toEqual({
+    expect(await analyzeEditIntent({ prompt: '', manifest: { files: {} }, userId: null })).toEqual({
       ok: false,
       status: 400,
       error: 'prompt and manifest are required',
     });
-    expect(await analyzeEditIntent({ prompt: 'make it blue', manifest: null })).toEqual({
+    expect(
+      await analyzeEditIntent({ prompt: 'make it blue', manifest: null, userId: null }),
+    ).toEqual({
       ok: false,
       status: 400,
       error: 'prompt and manifest are required',
@@ -53,6 +55,7 @@ describe('analyzeEditIntent', () => {
       prompt: 'make the header blue',
       // Numeric-suffixed paths are parser artefacts, not files.
       manifest: { files: { 'src/App/1': {} } },
+      userId: null,
     });
     expect(result).toEqual({ ok: false, status: 400, error: 'No valid files found in manifest' });
   });

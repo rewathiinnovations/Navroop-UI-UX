@@ -1,4 +1,9 @@
 import { prisma } from '@/lib/db';
+import {
+  placeholderReplacements,
+  replaceNeedImageTokens,
+  sweepNeedImageTokens,
+} from '@/lib/assets/need-image';
 import { parseGeneratedFilesLenient } from '@/lib/generation/parse-files';
 import { safeGeneratedFiles } from '@/lib/jobs/settle-generation';
 import { log } from '@/lib/logger';
@@ -51,6 +56,8 @@ export async function upsertImportSource(input: {
  */
 export async function persistImportedSite(input: {
   projectId: string;
+  /** Owner of the import, for image-credit accounting during fulfilment. */
+  userId?: string | null;
   filesXml: string;
 }): Promise<{ fileCount: number }> {
   // `filesXml` is the model's own `<file path="…">` text, one chunk per section
@@ -81,12 +88,71 @@ export async function persistImportedSite(input: {
     throw new Error(IMPORT_NO_FILES_MESSAGE);
   }
 
+  // The import prompt shares BASE_RULES with the streamed path, so the model
+  // asks for pictures the same way: `NEED_IMAGE: description | aspect`. The
+  // streamed writer (`settleStreamedGeneration`) fulfils those tokens and then
+  // sweeps the stragglers before anything is stored; this path used to do
+  // neither, so the literal token shipped inside `src` attributes — in the
+  // preview, the ZIP export and the published site. Same two steps, same
+  // order, same never-fatal stance: a site with a placeholder panel still
+  // beats losing a finished import to an image provider that is down.
+  const resolved = await resolveImportImages({
+    projectId: input.projectId,
+    userId: input.userId,
+    files: safe,
+  });
+  const swept = withoutRawImageTokens(resolved);
+
   await prisma.project.update({
     where: { id: input.projectId },
     // Unconditional COMPLETE, unlike settle's `phase !== 'COMPLETE'` guard: the
     // end state is identical and this path has no prior phase read to reuse.
-    data: { lastCode: toLastCode(safe), phase: 'COMPLETE' },
+    data: { lastCode: toLastCode(swept), phase: 'COMPLETE' },
   });
   await bumpContentVersion(input.projectId);
   return { fileCount };
+}
+
+/**
+ * Same job as `resolveImages` in `lib/jobs/settle-generation.ts`: turn the
+ * model's `NEED_IMAGE:` requests into real pictures, and never let a provider
+ * failure sink a finished import. Dynamic import for the same reason settle
+ * uses one — `@/lib/assets/fulfill` reaches providers and storage at import
+ * time.
+ */
+async function resolveImportImages(input: {
+  projectId: string;
+  userId?: string | null;
+  files: Record<string, string>;
+}): Promise<Record<string, string>> {
+  try {
+    const { fulfillNeedImages } = await import('@/lib/assets/fulfill');
+    const resolved = await fulfillNeedImages({
+      projectId: input.projectId,
+      userId: input.userId,
+      files: Object.entries(input.files).map(([path, content]) => ({ path, content })),
+    });
+    return Object.fromEntries(resolved.map((file) => [file.path, file.content]));
+  } catch (error) {
+    log.warn('import.image_fulfilment_failed', {
+      projectId: input.projectId,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return input.files;
+  }
+}
+
+/**
+ * The floor the streamed path enforces, applied here too: no file is stored
+ * with a raw `NEED_IMAGE: …` in it, whatever shape fulfilment's parser missed.
+ * Placeholder swap only — this never spends image credits.
+ */
+function withoutRawImageTokens(files: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [path, content] of Object.entries(files)) {
+    const leftovers = placeholderReplacements(content);
+    const replaced = leftovers.length > 0 ? replaceNeedImageTokens(content, leftovers) : content;
+    out[path] = sweepNeedImageTokens(replaced);
+  }
+  return out;
 }

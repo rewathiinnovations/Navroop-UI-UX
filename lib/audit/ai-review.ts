@@ -91,6 +91,8 @@ export async function runAiReview(input: {
   directionId?: string | null;
   files: FileSnapshotEntry[];
   staticFindings: CodeFinding[];
+  /** Acting user — credential resolution must match the generation call (F-073). */
+  userId: string | null;
 }): Promise<CodeFinding[]> {
   if (shouldSkipAiReview(input.staticFindings)) {
     console.info('[audit] skipping AI review because static findings >= 20', {
@@ -101,7 +103,10 @@ export async function runAiReview(input: {
   const files = selectFilesForAiReview(input.files, input.staticFindings);
   if (files.length === 0) return [];
   try {
-    const { client, actualModel } = await getProviderForModel(appConfig.ai.defaultModel);
+    const { client, actualModel } = await getProviderForModel(
+      appConfig.ai.defaultModel,
+      input.userId,
+    );
     const stablePrefix = buildStablePromptPrefix(input.stack, input.directionId);
     const listing = files.map((file) => `--- ${file.path} ---\n${file.content}`).join('\n\n');
     const volatile = [

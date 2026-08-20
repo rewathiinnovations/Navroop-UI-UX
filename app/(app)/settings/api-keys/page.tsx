@@ -9,6 +9,7 @@ import { useAuth } from '@/components/app/auth/AuthProvider';
 import { notify } from '@/lib/notify';
 import {
   deleteApiKey,
+  deleteOrgApiKey,
   listPersonalApiKeys,
   setOrgApiKey,
   setPersonalApiKey,
@@ -18,14 +19,20 @@ type PersonalKey = {
   provider: string;
   label: string;
   last4: string | null;
-  hasOrgDefault: boolean;
+  hasOrgDefault?: boolean;
+  /** A row for a provider that is no longer offered — removable, not editable (F-072). */
+  legacy?: boolean;
 };
 
 type OrgKey = {
   provider: string;
   label: string;
   last4: string | null;
+  legacy?: boolean;
 };
+
+const LEGACY_HINT =
+  'No longer offered. This stored key still overrides the workspace configuration — remove it unless that is deliberate.';
 
 function statusLabel(key: PersonalKey) {
   if (key.last4) return `••••${key.last4}`;
@@ -146,6 +153,26 @@ export default function ApiKeysPage() {
     }
   };
 
+  const removeOrg = async (provider: string) => {
+    setSaving(`org-remove:${provider}`);
+    try {
+      const result = await deleteOrgApiKey(provider);
+      if (!result.ok) {
+        notify.error(result.error, { key: `org-key-${provider}` });
+        return;
+      }
+      await Promise.all([loadOrg(), loadPersonal()]);
+      notify.success(`Team default for ${provider} removed.`, { key: `org-key-${provider}` });
+    } catch (cause) {
+      notify.error(cause, {
+        fallback: 'Could not remove the team default',
+        key: `org-key-${provider}`,
+      });
+    } finally {
+      setSaving(null);
+    }
+  };
+
   return (
     <StudioShell variant="workspace">
       <main className="mx-auto max-w-[720px] px-20 py-40">
@@ -181,7 +208,9 @@ export default function ApiKeysPage() {
               <div className="mb-12 flex items-center justify-between gap-12">
                 <div>
                   <h3 className="text-[15px] font-medium text-[var(--studio-fg)]">{key.label}</h3>
-                  <p className="text-[12px] text-[var(--studio-muted)]">{statusLabel(key)}</p>
+                  <p className="text-[12px] text-[var(--studio-muted)]">
+                    {key.legacy ? LEGACY_HINT : statusLabel(key)}
+                  </p>
                 </div>
                 {key.last4 && (
                   <StudioButton
@@ -194,28 +223,30 @@ export default function ApiKeysPage() {
                   </StudioButton>
                 )}
               </div>
-              <div className="flex flex-col gap-12 sm:flex-row sm:items-end">
-                <div className="flex-1">
-                  <StudioField
-                    id={`key-${key.provider}`}
-                    label={`New ${key.label} key`}
-                    type="password"
-                    autoComplete="off"
-                    value={drafts[key.provider] || ''}
-                    onChange={(event) =>
-                      setDrafts((current) => ({ ...current, [key.provider]: event.target.value }))
-                    }
-                    placeholder="Paste a key"
-                  />
+              {!key.legacy && (
+                <div className="flex flex-col gap-12 sm:flex-row sm:items-end">
+                  <div className="flex-1">
+                    <StudioField
+                      id={`key-${key.provider}`}
+                      label={`New ${key.label} key`}
+                      type="password"
+                      autoComplete="off"
+                      value={drafts[key.provider] || ''}
+                      onChange={(event) =>
+                        setDrafts((current) => ({ ...current, [key.provider]: event.target.value }))
+                      }
+                      placeholder="Paste a key"
+                    />
+                  </div>
+                  <StudioButton
+                    type="submit"
+                    variant="ghost"
+                    disabled={saving === `personal:${key.provider}` || !drafts[key.provider]}
+                  >
+                    {saving === `personal:${key.provider}` ? 'Saving…' : 'Save'}
+                  </StudioButton>
                 </div>
-                <StudioButton
-                  type="submit"
-                  variant="ghost"
-                  disabled={saving === `personal:${key.provider}` || !drafts[key.provider]}
-                >
-                  {saving === `personal:${key.provider}` ? 'Saving…' : 'Save'}
-                </StudioButton>
-              </div>
+              )}
             </form>
           ))}
         </div>
@@ -233,37 +264,57 @@ export default function ApiKeysPage() {
                   onSubmit={(event) => saveOrg(event, key.provider)}
                   className="rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] p-16"
                 >
-                  <div className="mb-12">
-                    <h3 className="text-[15px] font-medium text-[var(--studio-fg)]">{key.label}</h3>
-                    <p className="text-[12px] text-[var(--studio-muted)]">
-                      {key.last4 ? `••••${key.last4}` : 'No default set'}
-                    </p>
-                  </div>
-                  <div className="flex flex-col gap-12 sm:flex-row sm:items-end">
-                    <div className="flex-1">
-                      <StudioField
-                        id={`org-key-${key.provider}`}
-                        label={`Team ${key.label} key`}
-                        type="password"
-                        autoComplete="off"
-                        value={orgDrafts[key.provider] || ''}
-                        onChange={(event) =>
-                          setOrgDrafts((current) => ({
-                            ...current,
-                            [key.provider]: event.target.value,
-                          }))
-                        }
-                        placeholder="Paste a team default key"
-                      />
+                  <div className="mb-12 flex items-center justify-between gap-12">
+                    <div>
+                      <h3 className="text-[15px] font-medium text-[var(--studio-fg)]">
+                        {key.label}
+                      </h3>
+                      <p className="text-[12px] text-[var(--studio-muted)]">
+                        {key.legacy
+                          ? LEGACY_HINT
+                          : key.last4
+                            ? `••••${key.last4}`
+                            : 'No default set'}
+                      </p>
                     </div>
-                    <StudioButton
-                      type="submit"
-                      variant="ghost"
-                      disabled={saving === `org:${key.provider}` || !orgDrafts[key.provider]}
-                    >
-                      {saving === `org:${key.provider}` ? 'Saving…' : 'Save'}
-                    </StudioButton>
+                    {key.last4 && (
+                      <StudioButton
+                        type="button"
+                        variant="danger"
+                        disabled={saving === `org-remove:${key.provider}`}
+                        onClick={() => removeOrg(key.provider)}
+                      >
+                        Remove
+                      </StudioButton>
+                    )}
                   </div>
+                  {!key.legacy && (
+                    <div className="flex flex-col gap-12 sm:flex-row sm:items-end">
+                      <div className="flex-1">
+                        <StudioField
+                          id={`org-key-${key.provider}`}
+                          label={`Team ${key.label} key`}
+                          type="password"
+                          autoComplete="off"
+                          value={orgDrafts[key.provider] || ''}
+                          onChange={(event) =>
+                            setOrgDrafts((current) => ({
+                              ...current,
+                              [key.provider]: event.target.value,
+                            }))
+                          }
+                          placeholder="Paste a team default key"
+                        />
+                      </div>
+                      <StudioButton
+                        type="submit"
+                        variant="ghost"
+                        disabled={saving === `org:${key.provider}` || !orgDrafts[key.provider]}
+                      >
+                        {saving === `org:${key.provider}` ? 'Saving…' : 'Save'}
+                      </StudioButton>
+                    </div>
+                  )}
                 </form>
               ))}
             </div>

@@ -17,6 +17,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const rows = new Map<string, string>();
 
+/** Legacy ApiKey/OrgApiKey rows: the tiers that outrank the admin setting (F-074). */
+const keyRows = {
+  personal: null as { id: string; secret: string } | null,
+  org: null as { id: string; secret: string } | null,
+};
+
 vi.mock('@/lib/db', () => ({
   prisma: {
     appSetting: {
@@ -26,6 +32,8 @@ vi.mock('@/lib/db', () => ({
       },
       findMany: async () => [],
     },
+    apiKey: { findFirst: async () => keyRows.personal },
+    orgApiKey: { findFirst: async () => keyRows.org },
   },
 }));
 
@@ -70,6 +78,8 @@ const HEALTH_BODY = { ok: true, checks: { db: 'ok', storage: 'ok' }, version: '0
 
 beforeEach(() => {
   rows.clear();
+  keyRows.personal = null;
+  keyRows.org = null;
   invalidateSettingsCache();
 });
 
@@ -130,6 +140,35 @@ describe('the AI check exercises the saved DeepSeek credential', () => {
     expect(result.ok).toBe(false);
     expect(result.checks[0].depth).toBe('local');
     expect(result.checks[0].message).toContain('No AI provider key is set');
+  });
+
+  it('probes the org key row that generation actually uses, and names the tier (F-074)', async () => {
+    // The audit's failure mode: a stale org row overrides a fresh admin
+    // setting. The old check probed the admin setting and went green while
+    // every build failed 401 on the org key.
+    const ORG_KEY = 'fixture-org-row-key';
+    keyRows.org = { id: 'org_1', secret: ORG_KEY };
+    vi.stubEnv('DEEPSEEK_API_KEY', '');
+    storeSetting('ai.deepseek.apiKey', ADMIN_KEY);
+    const calls = stubFetch(() => ({ status: 200 }));
+
+    const result = await testSettingGroup('ai');
+
+    expect(calls[0].headers.authorization).toBe(`Bearer ${ORG_KEY}`);
+    expect(result.checks[0].message).toContain('overrides Admin → Configuration');
+  });
+
+  it('reports a working org key instead of "no provider" when the admin setting is empty (F-074)', async () => {
+    const ORG_KEY = 'fixture-org-row-key';
+    keyRows.org = { id: 'org_1', secret: ORG_KEY };
+    vi.stubEnv('DEEPSEEK_API_KEY', '');
+    const calls = stubFetch(() => ({ status: 200 }));
+
+    const result = await testSettingGroup('ai');
+
+    expect(result.ok).toBe(true);
+    expect(calls[0].headers.authorization).toBe(`Bearer ${ORG_KEY}`);
+    expect(result.checks[0].message).not.toContain('No AI provider key is set');
   });
 });
 

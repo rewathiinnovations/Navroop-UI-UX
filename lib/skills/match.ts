@@ -24,6 +24,8 @@ export type SkillRanker = (input: {
   userMessage: string;
   projectContext: string;
   skills: { id: string; name: string; description: string }[];
+  /** Acting user — credential resolution must match the generation call (F-073). */
+  userId: string | null;
 }) => Promise<{ id: string; confidence: number }[]>;
 
 export type SelectSkillsDeps = {
@@ -132,8 +134,13 @@ function keywordMatch(
   );
 }
 
-export const defaultSkillRanker: SkillRanker = async ({ userMessage, projectContext, skills }) => {
-  const { client, actualModel } = await getProviderForModel(appConfig.ai.defaultModel);
+export const defaultSkillRanker: SkillRanker = async ({
+  userMessage,
+  projectContext,
+  skills,
+  userId,
+}) => {
+  const { client, actualModel } = await getProviderForModel(appConfig.ai.defaultModel, userId);
   const catalog = skills
     .map((skill) => `- id: ${skill.id}\n  name: ${skill.name}\n  description: ${skill.description}`)
     .join('\n');
@@ -160,6 +167,7 @@ export async function selectSkills(
   userMessage: string,
   projectContext = '',
   deps?: SelectSkillsDeps,
+  userId: string | null = null,
 ): Promise<MatchedSkill[]> {
   try {
     if (!deps?.listEnabled) return [];
@@ -181,6 +189,7 @@ export async function selectSkills(
         userMessage,
         projectContext,
         skills: catalog,
+        userId,
       });
       const byId = new Map(enabled.map((skill) => [skill.id, skill]));
       matched = capMatches(

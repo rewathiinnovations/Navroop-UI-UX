@@ -53,15 +53,22 @@ export function mergeSectionsToCap(sections: ImportSection[], cap = MAX_IMPORT_S
 
 export type SegmentPageInput = {
   capture: PageCapture;
+  /** Acting user — credential resolution must match the generation call (F-073). */
+  userId?: string | null;
   complete?: (input: { image: Buffer; text: string }) => Promise<ImportSection[]>;
 };
 
 export async function segmentPage(input: SegmentPageInput): Promise<ImportSection[]> {
-  const complete = input.complete ?? defaultSegmentComplete;
-  const raw = await complete({
-    image: input.capture.desktopPng,
-    text: input.capture.firecrawlText,
-  });
+  const raw = input.complete
+    ? await input.complete({
+        image: input.capture.desktopPng,
+        text: input.capture.firecrawlText,
+      })
+    : await defaultSegmentComplete({
+        image: input.capture.desktopPng,
+        text: input.capture.firecrawlText,
+        userId: input.userId ?? null,
+      });
   if (!Array.isArray(raw) || raw.length === 0) {
     throw new Error('Segmentation returned no sections');
   }
@@ -71,6 +78,7 @@ export async function segmentPage(input: SegmentPageInput): Promise<ImportSectio
 async function defaultSegmentComplete(input: {
   image: Buffer;
   text: string;
+  userId: string | null;
 }): Promise<ImportSection[]> {
   const { generateObject } = await import('ai');
   const { z } = await import('zod');
@@ -91,7 +99,10 @@ async function defaultSegmentComplete(input: {
       .min(1),
   });
 
-  const { client, actualModel } = await getProviderForModel(appConfig.ai.defaultModel);
+  const { client, actualModel } = await getProviderForModel(
+    appConfig.ai.defaultModel,
+    input.userId,
+  );
   const result = await generateObject({
     model: client(actualModel),
     schema,

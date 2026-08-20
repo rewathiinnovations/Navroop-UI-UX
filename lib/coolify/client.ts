@@ -1,4 +1,4 @@
-import { decrypt } from '@/lib/crypto';
+import { decrypt, isEncrypted } from '@/lib/crypto';
 import { CoolifyApiError, coolifyErrorMessage } from './errors';
 import { getCoolifyCredentials } from './settings';
 
@@ -110,7 +110,9 @@ function normalizeBase(url: string) {
 function tokenForServer(server: CoolifyServerAuth) {
   const raw = server.apiToken.trim();
   try {
-    if (raw.includes('==') || raw.length > 80) {
+    // enc:v1 values are always ciphertext; the includes('==')/length heuristics
+    // only remain for rows written before the envelope existed.
+    if (isEncrypted(raw) || raw.includes('==') || raw.length > 80) {
       return decrypt(raw);
     }
   } catch {

@@ -606,7 +606,7 @@ export async function persistProjectGeneration(id: string, input: GenerationPers
     );
     detachAfterGeneration(id, 'settle_followups', () => maybeSettleFollowups(id));
     detachAfterGeneration(id, 'extract_memories', () =>
-      extractMemoriesAfterGeneration(id, { sourceMessage: input.sourceMessage }),
+      extractMemoriesAfterGeneration(id, { sourceMessage: input.sourceMessage, userId: user.id }),
     );
   }
 

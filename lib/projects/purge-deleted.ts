@@ -32,6 +32,10 @@ export async function purgeDeletedProjects() {
       id: true,
       checkpoints: { select: { snapshotKey: true, snapshotBytes: true } },
       projectAssets: { select: { storageKey: true, sizeBytes: true } },
+      // `storagePrefix` is the only pointer to `previews/{id}/{buildId}/…`
+      // objects, and the delete below cascades these rows away — so this
+      // listing is the last moment the bytes can be reclaimed at all.
+      previewBuilds: { select: { totalBytes: true } },
     },
   });
 
@@ -69,6 +73,7 @@ export async function purgeDeletedProjects() {
       listed = [
         ...(await listKeys(`snapshots/${project.id}/`)),
         ...(await listKeys(`projects/${project.id}/`)),
+        ...(await listKeys(`previews/${project.id}/`)),
       ];
     } catch (error) {
       console.warn('[purge-projects] object listing failed', project.id, error);
@@ -108,7 +113,12 @@ export async function purgeDeletedProjects() {
 
     const bytes =
       project.checkpoints.reduce((sum, row) => sum + (row.snapshotBytes ?? 0), 0) +
-      project.projectAssets.reduce((sum, row) => sum + row.sizeBytes, 0);
+      project.projectAssets.reduce((sum, row) => sum + row.sizeBytes, 0) +
+      // `totalBytes` is the pre-gzip sum the build recorded; the writer
+      // incremented per uploaded (possibly gzipped) body, so this can reclaim
+      // slightly more than was added. `adjustStorageBytes` clamps the ledger
+      // at zero, and over-reclaiming a few percent beats never subtracting.
+      project.previewBuilds.reduce((sum, row) => sum + row.totalBytes, 0);
 
     // Written *before* the delete, on purpose. The cascade below destroys the Deployment and
     // PUBLISH job rows, so this entry becomes the only record naming these ids — the orphan

@@ -114,7 +114,10 @@ async function completeXml(input: {
   projectId: string;
   userId: string;
 }) {
-  const { client, actualModel } = await getProviderForModel(appConfig.ai.defaultModel);
+  const { client, actualModel } = await getProviderForModel(
+    appConfig.ai.defaultModel,
+    input.userId,
+  );
   const enableAnthropicCache = appConfig.ai.defaultModel.startsWith('anthropic/');
   const cached = buildCachedMessages({
     stablePrefix: input.stablePrefix,

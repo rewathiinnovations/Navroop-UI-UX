@@ -86,6 +86,16 @@ function SettingRow({
         {setting.help}
       </p>
 
+      {setting.undecryptable && (
+        <p
+          className="mt-4 max-w-[70ch] text-[13px] leading-5 text-[var(--studio-danger)]"
+          role="alert"
+        >
+          A saved value exists but cannot be decrypted — the encryption key has changed since it was
+          stored. Re-enter the value and save to repair it.
+        </p>
+      )}
+
       <div className="mt-10 flex flex-wrap items-center gap-8">
         {setting.kind === 'select' ? (
           <select

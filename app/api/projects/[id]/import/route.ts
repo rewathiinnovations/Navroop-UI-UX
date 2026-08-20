@@ -176,7 +176,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       // snapshots from lastCode, which is only real if it was written first.
       // Throws IMPORT_NO_FILES_MESSAGE when the XML parses to nothing, so a blank
       // import fails as import_failed instead of succeeding with an empty site.
-      await persistImportedSite({ projectId: project.id, filesXml: result.filesXml });
+      await persistImportedSite({
+        projectId: project.id,
+        userId: user.id,
+        filesXml: result.filesXml,
+      });
       await succeedJob(importJob.id);
       await send({
         type: 'complete',

@@ -13,8 +13,14 @@ export const setApiKeySchema = z.object({
   secret: z.string().trim().min(8, 'Key looks too short'),
 });
 
+/**
+ * Delete accepts any stored provider id, not just the ones currently offered:
+ * legacy rows (`deepseek`, `openai`, `google`) still win credential resolution
+ * and were undeletable while this was the offered-provider enum (F-072).
+ * Deletion is always scoped to the caller (personal) or admin-gated (org).
+ */
 export const deleteApiKeySchema = z.object({
-  provider: settingsProviderSchema,
+  provider: z.string().trim().min(1).max(64),
 });
 
 export function parseWithZod<T>(schema: z.ZodType<T>, data: unknown) {

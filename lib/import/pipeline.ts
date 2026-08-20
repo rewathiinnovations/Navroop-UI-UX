@@ -93,7 +93,7 @@ export async function runUrlImportPipeline(input: UrlImportDeps): Promise<UrlImp
   try {
     sections = await (input.segment
       ? input.segment(capture)
-      : (await import('./segment.ts')).segmentPage({ capture }));
+      : (await import('./segment.ts')).segmentPage({ capture, userId: input.userId }));
     if (!sections.length) throw new Error('No sections');
 
     generated = await (input.generateSections

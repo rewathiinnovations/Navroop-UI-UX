@@ -8,6 +8,7 @@
  * an operator ends up debugging a broken key in production.
  */
 import { DEEPSEEK_DEFAULT_BASE_URL } from '@/lib/ai/providers';
+import { loadEffectiveProviderEnv } from '@/lib/ai/effective-env';
 import { getSetting, getSettings } from './resolve';
 import type { SettingGroupId } from './registry';
 
@@ -126,10 +127,17 @@ async function testConnectors(): Promise<GroupTestResult['checks']> {
  * fired on installs where generation was working. The one diagnostic for the
  * most important credential in the product reported a permanent false
  * negative.
+ *
+ * It then probed `getSetting('ai.deepseek.apiKey')` alone, which cannot see
+ * the org/personal `ApiKey` tiers above it — green on a key generation never
+ * uses, red on one it does (F-074). It now resolves through the same
+ * `loadEffectiveProviderEnv` overlay `clientForEntry` consumes, and names the
+ * tier the credential came from so an unexpected source is visible rather
+ * than merely effective.
  */
 async function testAi(): Promise<GroupTestResult['checks']> {
-  const values = await getSettings(['ai.deepseek.apiKey', 'ai.deepseek.baseUrl']);
-  const key = values['ai.deepseek.apiKey'];
+  const env = await loadEffectiveProviderEnv(null, process.env);
+  const key = env.DEEPSEEK_API_KEY?.trim() || null;
   if (!key) {
     return [
       {
@@ -142,12 +150,22 @@ async function testAi(): Promise<GroupTestResult['checks']> {
     ];
   }
 
+  // `getSetting` merges the DB row with its DEEPSEEK_API_KEY environment
+  // fallback, so equality means "the tier /admin/config already renders a
+  // source badge for". Inequality means a stored ApiKey/OrgApiKey row is
+  // overriding this page — the invisible tier F-074 is about. (Deliberately no
+  // direct process.env read: resolution stays on the one key path.)
+  const settingTier = await getSetting('ai.deepseek.apiKey');
+  const source =
+    key === settingTier
+      ? 'Admin → Configuration or its DEEPSEEK_API_KEY environment fallback (the badge above shows which)'
+      : 'a stored workspace API key row — it overrides Admin → Configuration; remove it under Settings → API keys if that is unexpected';
+
   // Only the credential is checked: `ai.primaryModel` resolves to a registry
   // fallback and could never report anything but "set".
-  const base = (values['ai.deepseek.baseUrl'] || DEEPSEEK_DEFAULT_BASE_URL).replace(/\/+$/, '');
-  return [
-    { label: 'DeepSeek', ...(await probe(`${base}/models`, { authorization: `Bearer ${key}` })) },
-  ];
+  const base = (env.DEEPSEEK_BASE_URL?.trim() || DEEPSEEK_DEFAULT_BASE_URL).replace(/\/+$/, '');
+  const probed = await probe(`${base}/models`, { authorization: `Bearer ${key}` });
+  return [{ label: 'DeepSeek', ...probed, message: `${probed.message} Key source: ${source}.` }];
 }
 
 /**

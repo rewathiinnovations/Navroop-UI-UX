@@ -1,4 +1,5 @@
 import type { OpenAIProvider } from '@ai-sdk/openai';
+import { log } from '@/lib/logger';
 import { clientForEntry } from './client-for-entry';
 import { loadEffectiveProviderEnv } from './effective-env';
 import {
@@ -59,14 +60,30 @@ function clientFor(entry: ProviderEntry, env: Record<string, string | undefined>
   return cachedClient;
 }
 
-export async function getProviderForModel(modelId: string): Promise<ProviderResolution> {
-  const env = await loadEffectiveProviderEnv(null, process.env);
+/**
+ * `userId` is the acting user of the request, or null for a genuinely
+ * user-less context. It must be the SAME subject the generation call resolves
+ * with: hard-coding null here made one request use two credentials against
+ * two quotas, and let the two halves disagree about whether a key exists at
+ * all (F-073).
+ */
+export async function getProviderForModel(
+  modelId: string,
+  userId: string | null,
+): Promise<ProviderResolution> {
+  const env = await loadEffectiveProviderEnv(userId, process.env);
   const bare = modelId.includes('/') ? modelId.split('/').slice(1).join('/') : modelId;
   // An unknown id is not a request for a model: let the chain pick the
   // configured one (`ai.primaryModel` → AI_PRIMARY_MODEL → the built-in).
+  const known = isDeepSeekModel(bare);
   const [entry] = requireUsableProviderChain(env, {
-    requestedModel: isDeepSeekModel(bare) ? bare : undefined,
+    requestedModel: known ? bare : undefined,
   });
+  if (!known) {
+    // Surfaced, not silent (F-082): config defaults still carry legacy vendor
+    // ids, and the substitution used to be invisible on both sides.
+    log.warn('ai.unknown_model_substituted', { requestedModel: modelId, actualModel: entry.model });
+  }
   return { client: clientFor(entry, env), actualModel: entry.model };
 }
 

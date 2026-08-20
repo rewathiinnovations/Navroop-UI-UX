@@ -12,6 +12,7 @@
  */
 import { decrypt, encrypt } from '@/lib/crypto';
 import { prisma } from '@/lib/db';
+import { log } from '@/lib/logger';
 import { last4FromSecret } from '@/lib/api-keys';
 import {
   BOOTSTRAP_ENV_VARS,
@@ -52,15 +53,27 @@ function parseStored(raw: string | null | undefined): StoredValue | null {
   }
 }
 
-function readStored(stored: StoredValue | null): string | null {
-  if (!stored) return null;
-  if (!stored.encrypted) return stored.value.trim() || null;
+type StoredRead = {
+  value: string | null;
+  /** A row exists but its ciphertext cannot be read — "not readable" is not "not set". */
+  undecryptable: boolean;
+};
+
+function readStored(stored: StoredValue | null, key: string): StoredRead {
+  if (!stored) return { value: null, undecryptable: false };
+  if (!stored.encrypted) return { value: stored.value.trim() || null, undecryptable: false };
   try {
-    return decrypt(stored.value).trim() || null;
-  } catch {
-    // A rotated AUTH_SECRET/ENCRYPTION_KEY makes old ciphertext unreadable.
-    // Fall through to the environment rather than crashing the request.
-    return null;
+    return { value: decrypt(stored.value).trim() || null, undecryptable: false };
+  } catch (error) {
+    // A rotated ENCRYPTION_KEY makes old ciphertext unreadable. Fall through to
+    // the environment rather than crashing the request — but loudly: a stored
+    // secret silently reverting to env leaves downstream failures as the only
+    // symptom (F-076). Key name only, never the value.
+    log.error('settings.secret_undecryptable', {
+      key,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return { value: null, undecryptable: true };
   }
 }
 
@@ -91,20 +104,30 @@ export async function getSetting(key: string): Promise<string | null> {
   if (hit && hit.expiresAt > Date.now()) return hit.value;
 
   let stored: StoredValue | null = null;
+  let readFailed = false;
   try {
     const row = await prisma.appSetting.findUnique({
       where: { key: rowKey(key) },
       select: { value: true },
     });
     stored = parseStored(row?.value);
-  } catch {
+  } catch (error) {
     // Database unreachable — the environment fallback is what keeps a
-    // half-booted instance serving instead of erroring on every read.
+    // half-booted instance serving instead of erroring on every read. But a
+    // value resolved from a failed read must not be pinned for 30 s: one blip
+    // would silently switch credentials for every caller (F-075).
+    readFailed = true;
+    log.error('settings.db_read_failed', {
+      key,
+      error: error instanceof Error ? error.message : String(error),
+    });
     stored = null;
   }
 
-  const value = readStored(stored) ?? envValue(entry) ?? entry.fallback?.trim() ?? null;
-  cache.set(key, { value, expiresAt: Date.now() + CACHE_MS });
+  const value = readStored(stored, key).value ?? envValue(entry) ?? entry.fallback?.trim() ?? null;
+  if (!readFailed) {
+    cache.set(key, { value, expiresAt: Date.now() + CACHE_MS });
+  }
   return value;
 }
 
@@ -127,8 +150,8 @@ export async function hasSettings(keys: readonly string[]): Promise<boolean> {
   return keys.every((key) => Boolean(values[key]));
 }
 
-function sourceFor(entry: SettingEntry, stored: StoredValue | null): SettingSource {
-  if (readStored(stored)) return 'db';
+function sourceFor(entry: SettingEntry, read: StoredRead): SettingSource {
+  if (read.value) return 'db';
   if (envValue(entry)) return 'env';
   if (entry.fallback?.trim()) return 'fallback';
   return 'unset';
@@ -149,6 +172,11 @@ export type DescribedSetting = {
   /** Display-only hint for secrets, e.g. `••••••••cdef`. */
   masked: string | null;
   configured: boolean;
+  /**
+   * A stored value exists but cannot be decrypted (rotated ENCRYPTION_KEY).
+   * Rendered as "re-enter this value", never as merely absent (F-076).
+   */
+  undecryptable: boolean;
 };
 
 /**
@@ -173,8 +201,9 @@ export async function describeSettings(): Promise<{
 
   const settings = SETTINGS.map((entry): DescribedSetting => {
     const stored = parseStored(storedByKey.get(entry.key));
-    const source = sourceFor(entry, stored);
-    const resolved = readStored(stored) ?? envValue(entry) ?? entry.fallback?.trim() ?? null;
+    const read = readStored(stored, entry.key);
+    const source = sourceFor(entry, read);
+    const resolved = read.value ?? envValue(entry) ?? entry.fallback?.trim() ?? null;
     const secret = isSecret(entry);
     return {
       key: entry.key,
@@ -189,6 +218,7 @@ export async function describeSettings(): Promise<{
       value: secret ? null : resolved,
       masked: secret && resolved ? `••••••••${last4FromSecret(resolved)}` : null,
       configured: Boolean(resolved),
+      undecryptable: read.undecryptable,
     };
   });
 

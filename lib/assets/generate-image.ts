@@ -1,7 +1,11 @@
 import { getEffectiveApiKey } from '@/lib/api-keys';
 import { fallbackAltText } from '@/lib/assets/keys';
 import { persistOptimizedAsset, type PersistedAsset } from '@/lib/assets/persist';
-import { generateWithImageWorker, imageWorkerConfig } from '@/lib/assets/image-worker';
+import {
+  generateWithImageWorker,
+  imageWorkerConfig,
+  imageWorkerPrompt,
+} from '@/lib/assets/image-worker';
 import { logGenerationEvent } from '@/lib/usage-costs';
 
 export const NO_IMAGE_PROVIDER_ERROR =
@@ -184,9 +188,15 @@ export async function generateImage(input: GenerateImageInput): Promise<Generate
     throw new Error(worker ? WORKER_FAILED_ERROR : NO_IMAGE_PROVIDER_ERROR);
   }
 
+  // The same subject-level no-text treatment the worker path gets: gpt-image-1
+  // and Imagen invent lettering for the same subjects the worker does, so the
+  // bare description ("storefront of an artisan pizzeria") produces the exact
+  // garbled signage `imageWorkerPrompt`'s module comment measured. The asset
+  // row and alt text keep the user's own description.
+  const styledPrompt = imageWorkerPrompt(prompt, input.aspectRatio);
   const buffer = openai
-    ? await generateWithOpenAI(openai, prompt, input.aspectRatio)
-    : await generateWithImagen(google as string, prompt, input.aspectRatio);
+    ? await generateWithOpenAI(openai, styledPrompt, input.aspectRatio)
+    : await generateWithImagen(google as string, styledPrompt, input.aspectRatio);
 
   return storeGenerated(input, prompt, buffer, openai ? 'openai' : 'imagen');
 }

@@ -10,6 +10,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const findUnique = vi.fn();
 const findMany = vi.fn().mockResolvedValue([]);
 
+const logSpies = vi.hoisted(() => ({
+  log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+  logError: vi.fn(),
+  formatLogLine: vi.fn(() => ''),
+}));
+
+vi.mock('@/lib/logger', () => logSpies);
+
 vi.mock('@/lib/db', () => ({
   prisma: {
     appSetting: {
@@ -20,9 +28,10 @@ vi.mock('@/lib/db', () => ({
 }));
 
 // The suite reassigns process.env between cases, so the key that lib/crypto
-// derives from is pinned here rather than inherited from the shell.
+// derives from is pinned here rather than inherited from the shell. It must be
+// ENCRYPTION_KEY: getKey() no longer falls back to AUTH_SECRET (F-715).
 const TEST_KEY_MATERIAL = ['settings-resolve', 'test-value', 'at-least-32-bytes'].join('-');
-process.env.AUTH_SECRET = TEST_KEY_MATERIAL;
+process.env.ENCRYPTION_KEY = TEST_KEY_MATERIAL;
 
 const { encrypt } = await import('@/lib/crypto');
 const { getSetting, invalidateSettingsCache, describeSettings } =
@@ -33,7 +42,7 @@ function storedRow(value: string, encrypted = false) {
   return { value: JSON.stringify({ value: encrypted ? encrypt(value) : value, encrypted }) };
 }
 
-const ORIGINAL_ENV = { ...process.env, AUTH_SECRET: TEST_KEY_MATERIAL };
+const ORIGINAL_ENV = { ...process.env, ENCRYPTION_KEY: TEST_KEY_MATERIAL };
 
 beforeEach(() => {
   invalidateSettingsCache();
@@ -41,6 +50,7 @@ beforeEach(() => {
   findUnique.mockResolvedValue(null);
   findMany.mockReset();
   findMany.mockResolvedValue([]);
+  logSpies.log.error.mockClear();
 });
 
 afterEach(() => {
@@ -104,14 +114,47 @@ describe('secret storage', () => {
     expect(await getSetting('ai.deepseek.apiKey')).toBe('sk-deepseek-secret');
   });
 
-  it('falls back to the environment when stored ciphertext cannot be decrypted', async () => {
-    // What a rotated AUTH_SECRET looks like: the row is present but unreadable.
+  it('falls back to the environment when stored ciphertext cannot be decrypted, and logs the key', async () => {
+    // What a rotated ENCRYPTION_KEY looks like: the row is present but unreadable.
     process.env.DEEPSEEK_API_KEY = 'from-env';
     findUnique.mockResolvedValue({
       value: JSON.stringify({ value: 'not-valid-ciphertext', encrypted: true }),
     });
 
     expect(await getSetting('ai.deepseek.apiKey')).toBe('from-env');
+    // F-076: a present-but-corrupt value must never *silently* become the env value.
+    expect(logSpies.log.error).toHaveBeenCalledWith(
+      'settings.secret_undecryptable',
+      expect.objectContaining({ key: 'ai.deepseek.apiKey' }),
+    );
+  });
+});
+
+describe('database failures are served but never cached (F-075)', () => {
+  it('does not pin a value resolved from a failed read for 30 seconds', async () => {
+    process.env.RESEND_API_KEY = 'from-env';
+    findUnique.mockRejectedValueOnce(new Error('connection reset'));
+    findUnique.mockResolvedValue(storedRow('from-db'));
+
+    // The blip is served from the environment…
+    expect(await getSetting('email.resend.apiKey')).toBe('from-env');
+    // …and logged…
+    expect(logSpies.log.error).toHaveBeenCalledWith(
+      'settings.db_read_failed',
+      expect.objectContaining({ key: 'email.resend.apiKey' }),
+    );
+    // …but the very next read reaches the recovered database instead of a
+    // 30-second cache of the downgraded value.
+    expect(await getSetting('email.resend.apiKey')).toBe('from-db');
+  });
+
+  it('still caches a successful resolution', async () => {
+    findUnique.mockResolvedValueOnce(storedRow('from-db'));
+    findUnique.mockResolvedValue(storedRow('changed-later'));
+
+    expect(await getSetting('email.resend.apiKey')).toBe('from-db');
+    expect(await getSetting('email.resend.apiKey')).toBe('from-db');
+    expect(findUnique).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -130,6 +173,23 @@ describe('describeSettings', () => {
     expect(row?.value).toBeNull();
     expect(row?.masked).toBe('••••••••1234');
     expect(JSON.stringify(settings)).not.toContain('sk-ant-abcd1234');
+  });
+
+  it('marks a stored-but-unreadable secret as undecryptable, not merely absent (F-076)', async () => {
+    process.env.DEEPSEEK_API_KEY = 'from-env';
+    findMany.mockResolvedValue([
+      {
+        key: 'setting:ai.deepseek.apiKey',
+        value: JSON.stringify({ value: 'not-valid-ciphertext', encrypted: true }),
+      },
+    ]);
+
+    const { settings } = await describeSettings();
+    const row = settings.find((setting) => setting.key === 'ai.deepseek.apiKey');
+
+    expect(row?.undecryptable).toBe(true);
+    // The resolution direction is unchanged: env still serves the request.
+    expect(row?.source).toBe('env');
   });
 
   it('reports where each value came from', async () => {

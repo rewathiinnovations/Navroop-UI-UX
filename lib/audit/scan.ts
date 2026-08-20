@@ -32,6 +32,8 @@ export async function runCodeScan(input: {
   sandbox: SandboxRunner | null;
   seoFindings: SeoFinding[];
   directionId?: string | null;
+  /** Acting user — credential resolution must match the generation call (F-073). */
+  userId: string | null;
 }): Promise<{ findings: CodeFinding[]; metrics: CodeMetrics }> {
   const staticFindings = await runStaticAnalysis(input.stack, input.sandbox);
   const bundle = await runBundleMeasure(
@@ -46,6 +48,7 @@ export async function runCodeScan(input: {
     directionId: input.directionId,
     files: input.files,
     staticFindings: beforeAi,
+    userId: input.userId,
   });
   const findings = [...beforeAi, ...ai];
   return {

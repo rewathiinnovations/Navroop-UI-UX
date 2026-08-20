@@ -68,6 +68,8 @@ export type AnalyzeEditIntentInput = {
   prompt: unknown;
   manifest: unknown;
   model?: string;
+  /** Acting user — credential resolution must match the generation call (F-073). */
+  userId: string | null;
 };
 
 export type AnalyzeEditIntentResult =
@@ -75,8 +77,8 @@ export type AnalyzeEditIntentResult =
 
 type ManifestLike = { files?: Record<string, unknown> };
 
-async function selectModel(model: string) {
-  const { client, actualModel } = await getProviderForModel(model);
+async function selectModel(model: string, userId: string | null) {
+  const { client, actualModel } = await getProviderForModel(model, userId);
   return client(actualModel);
 }
 
@@ -130,7 +132,7 @@ export async function analyzeEditIntent(
 
   try {
     const result = await generateObject({
-      model: await selectModel(model),
+      model: await selectModel(model, input.userId),
       schema: searchPlanSchema,
       messages: [
         {

@@ -18,6 +18,7 @@ export async function POST(request: NextRequest) {
     prompt: body.prompt,
     manifest: body.manifest,
     model: typeof body.model === 'string' ? body.model : undefined,
+    userId: auth.user.id,
   });
 
   if (!result.ok) {

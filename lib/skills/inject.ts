@@ -29,12 +29,16 @@ async function listEnabledForMatch() {
 export async function injectMatchedSkills(
   userMessage: string,
   projectContext = '',
+  userId: string | null = null,
 ): Promise<InjectedSkills> {
   const empty: InjectedSkills = { block: '', names: [], skills: [] };
   try {
-    const matched = await selectSkills(userMessage, projectContext, {
-      listEnabled: listEnabledForMatch,
-    });
+    const matched = await selectSkills(
+      userMessage,
+      projectContext,
+      { listEnabled: listEnabledForMatch },
+      userId,
+    );
     if (matched.length === 0) return empty;
 
     const rows = await prisma.skill.findMany({
