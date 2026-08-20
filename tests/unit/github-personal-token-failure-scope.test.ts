@@ -68,6 +68,25 @@ function pushDb() {
   };
 }
 
+/**
+ * The Git Data API sequence `pushViaGitDataApi` walks against an existing repo
+ * whose `main` does not exist yet: ref read 404s, then blob → tree → commit →
+ * ref creation. Failures are injected at the endpoint that should fail, because
+ * the sandbox-git seam these tests used to fail through is gone (F-224) and the
+ * API path is the only push there is.
+ */
+function fakeGithub(fail?: { url: string; status: number; message: string }) {
+  return async (url: string) => {
+    if (fail && url.includes(fail.url)) {
+      return new Response(JSON.stringify({ message: fail.message }), { status: fail.status });
+    }
+    if (url.endsWith('/git/ref/heads/main')) {
+      return new Response(JSON.stringify({ message: 'Not Found' }), { status: 404 });
+    }
+    return new Response(JSON.stringify({ sha: 'c0ffee' }), { status: 201 });
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   db.executeRaw.mockResolvedValue(1);
@@ -80,7 +99,7 @@ describe('a rejected personal token is recorded against that member', () => {
     const { pushProjectToGitHubForUser } = await import('@/lib/github/push');
 
     const result = await pushProjectToGitHubForUser(pushDb(), USER, PROJECT_ROW.id, {
-      trySandboxGit: async () => {
+      githubFetch: async () => {
         throw new Error('Bad credentials');
       },
     });
@@ -95,7 +114,7 @@ describe('a rejected personal token is recorded against that member', () => {
     const { pushProjectToGitHubForUser } = await import('@/lib/github/push');
 
     await pushProjectToGitHubForUser(pushDb(), USER, PROJECT_ROW.id, {
-      trySandboxGit: async () => {
+      githubFetch: async () => {
         throw new Error('Bad credentials');
       },
     });
@@ -112,9 +131,11 @@ describe('a rejected personal token is recorded against that member', () => {
     const { pushProjectToGitHubForUser } = await import('@/lib/github/push');
 
     await pushProjectToGitHubForUser(pushDb(), USER, PROJECT_ROW.id, {
-      trySandboxGit: async () => {
-        throw new Error('Could not create git tree');
-      },
+      githubFetch: fakeGithub({
+        url: '/git/trees',
+        status: 500,
+        message: 'Could not create git tree',
+      }),
     });
 
     expect(db.integrationUpdateMany).not.toHaveBeenCalled();
@@ -125,7 +146,7 @@ describe('a rejected personal token is recorded against that member', () => {
     const { pushProjectToGitHubForUser } = await import('@/lib/github/push');
 
     const result = await pushProjectToGitHubForUser(pushDb(), USER, PROJECT_ROW.id, {
-      trySandboxGit: async () => true,
+      githubFetch: fakeGithub(),
     });
 
     expect(result.ok).toBe(true);

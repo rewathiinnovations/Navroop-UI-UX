@@ -4,9 +4,7 @@ import React from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
 
 export interface CodeApplicationState {
-  stage: 'analyzing' | 'installing' | 'applying' | 'complete' | null;
-  packages?: string[];
-  installedPackages?: string[];
+  stage: 'analyzing' | 'applying' | 'complete' | null;
   filesGenerated?: string[];
   message?: string;
 }

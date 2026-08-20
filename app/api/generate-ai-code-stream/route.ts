@@ -20,11 +20,10 @@ const FENCE = '```';
 import { conversationStateFor } from '@/lib/generation/conversation-state';
 import { shouldSendGeneratedCode } from '@/lib/generation/complete-frame';
 import { StreamedFileTracker } from '@/lib/generation/stream-file-tracker';
-import { StreamedPackageTracker } from '@/lib/generation/stream-package-tracker';
-import { selectFileContext } from '@/lib/generation/selective-context';
+import { fileContextTokenCap, selectFileContext } from '@/lib/generation/selective-context';
 import { buildStablePromptPrefix, buildVolatilePromptSuffix } from '@/lib/stack-prompts';
 import { resolveRequestGenerationProfile } from '@/lib/stack-resolve';
-import { packageNameFromImport, shouldSkipPackageInstall, stackShapeMismatch } from '@/lib/stacks';
+import { stackShapeMismatch } from '@/lib/stacks';
 import { loadAssetManifest } from '@/lib/assets/load-manifest';
 import { injectMatchedSkills } from '@/lib/skills/inject';
 import { buildMemoryBlock } from '@/lib/memory/build-context';
@@ -912,6 +911,7 @@ async function generateAiCodeStream(request: NextRequest) {
               files: backendFiles,
               userMessage: prompt,
               recentlyModifiedPaths: recentPaths,
+              tokenCap: await fileContextTokenCap(),
             });
             console.log(
               `[generate-ai-code-stream] Selective context: ${selected.fullPaths.length} full, ${selected.pathOnly.length} path-only, ~${selected.estimatedTokens} tokens`,
@@ -932,6 +932,7 @@ async function generateAiCodeStream(request: NextRequest) {
               files: context.currentFiles as Record<string, string>,
               userMessage: prompt,
               recentlyModifiedPaths: recentPaths,
+              tokenCap: await fileContextTokenCap(),
             });
             contextParts.push(selected.formatted);
             contextParts.push(
@@ -1025,9 +1026,6 @@ async function generateAiCodeStream(request: NextRequest) {
 
         console.log('\n[generate-ai-code-stream] Starting streaming response...\n');
 
-        // Track packages that need to be installed
-        const packagesToInstall: string[] = [];
-
         // DeepSeek is the only provider; the chain below supplies the client.
         const actualModel = model;
 
@@ -1113,8 +1111,6 @@ async function generateAiCodeStream(request: NextRequest) {
               const streamedFiles = new StreamedFileTracker();
               let isInTag = false;
               let conversationalBuffer = '';
-              const streamedPackages = new StreamedPackageTracker();
-              packagesToInstall.length = 0;
               streamedReply.streamAttempts += 1;
 
               // Stream the response and parse in real-time
@@ -1178,24 +1174,6 @@ async function generateAiCodeStream(request: NextRequest) {
                   text: text,
                   raw: true,
                 });
-
-                // Package tags, for edits only (an initial build installs nothing).
-                // The tracker consumes what it has matched and holds back a bounded
-                // tail — see StreamedPackageTracker for the buffer that used to grow
-                // here to a second full copy of the reply, re-scanned per chunk.
-                if (isEdit) {
-                  for (const packageName of streamedPackages.push(text)) {
-                    if (!packagesToInstall.includes(packageName)) {
-                      packagesToInstall.push(packageName);
-                      console.log(`[generate-ai-code-stream] Package detected: ${packageName}`);
-                      await sendProgress({
-                        type: 'package',
-                        name: packageName,
-                        message: `Package detected: ${packageName}`,
-                      });
-                    }
-                  }
-                }
 
                 // Files the tracker finished on this chunk. It owns the fence
                 // bookkeeping and the path check — see StreamedFileTracker for the
@@ -1264,55 +1242,6 @@ async function generateAiCodeStream(request: NextRequest) {
                 });
               }
 
-              // Also parse <packages> tag for multiple packages - ONLY for edits
-              if (isEdit) {
-                const packagesRegex = /<packages>([\s\S]*?)<\/packages>/g;
-                let packagesMatch;
-                while ((packagesMatch = packagesRegex.exec(generatedCode)) !== null) {
-                  const packagesContent = packagesMatch[1].trim();
-                  const packagesList = packagesContent
-                    .split(/[\n,]+/)
-                    .map((pkg) => pkg.trim())
-                    .filter((pkg) => pkg.length > 0);
-
-                  for (const packageName of packagesList) {
-                    if (!packagesToInstall.includes(packageName)) {
-                      packagesToInstall.push(packageName);
-                      console.log(
-                        `[generate-ai-code-stream] Package from <packages> tag: ${packageName}`,
-                      );
-                      await sendProgress({
-                        type: 'package',
-                        name: packageName,
-                        message: `Package detected: ${packageName}`,
-                      });
-                    }
-                  }
-                }
-              }
-
-              // Function to extract packages from import statements
-              function extractPackagesFromCode(content: string): string[] {
-                const packages: string[] = [];
-                // Match ES6 imports
-                const importRegex =
-                  /import\s+(?:(?:\{[^}]*\}|\*\s+as\s+\w+|\w+)(?:\s*,\s*(?:\{[^}]*\}|\*\s+as\s+\w+|\w+))*\s+from\s+)?['"]([^'"]+)['"]/g;
-                let importMatch;
-
-                while ((importMatch = importRegex.exec(content)) !== null) {
-                  const importPath = importMatch[1];
-                  if (!shouldSkipPackageInstall(projectStack, importPath)) {
-                    const packageName = packageNameFromImport(importPath);
-
-                    if (!packages.includes(packageName)) {
-                      packages.push(packageName);
-                    }
-                  }
-                }
-
-                return packages;
-              }
-
               // Parse files and send progress for each. The block parser carries
               // llamacoder's tolerances for how models actually break the fence
               // format — a glued opener, the path tag on the next line, a split
@@ -1325,24 +1254,6 @@ async function generateAiCodeStream(request: NextRequest) {
                 }
                 files.push({ path: safe.path, content });
                 jobProgress?.addFile(safe.path, content);
-
-                // Extract packages from file content - ONLY for edits
-                if (isEdit) {
-                  const filePackages = extractPackagesFromCode(content);
-                  for (const pkg of filePackages) {
-                    if (!packagesToInstall.includes(pkg)) {
-                      packagesToInstall.push(pkg);
-                      console.log(
-                        `[generate-ai-code-stream] Package detected from imports: ${pkg}`,
-                      );
-                      await sendProgress({
-                        type: 'package',
-                        name: pkg,
-                        message: `Package detected from imports: ${pkg}`,
-                      });
-                    }
-                  }
-                }
 
                 // Send progress for each file (reusing componentCount from streaming)
                 if (filePath.includes('components/')) {
@@ -2159,7 +2070,6 @@ Provide the complete file content without any truncation. Include all necessary 
           files: files.length,
           components: componentCount,
           model,
-          packagesToInstall: packagesToInstall.length > 0 ? packagesToInstall : undefined,
           warnings: truncationWarnings.length > 0 ? truncationWarnings : undefined,
           skillNames: injectedSkills.names,
           // Present only when the build check failed and the policy allows a repair

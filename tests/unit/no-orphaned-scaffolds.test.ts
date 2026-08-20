@@ -130,4 +130,26 @@ describe('the sandbox subsystem left no ambient residue', () => {
     expect(live).not.toMatch(/sandbox ID/i);
     expect(live).not.toContain('context?.sandboxId');
   });
+
+  /**
+   * F-224. `lib/github/sandbox-git.ts` was the "preferred" push path: it ran
+   * `git init` / `git add -A` / `git commit` inside the generation sandbox and
+   * then put the user's `repo`-scoped token straight into the `git push` argv,
+   * discarding every exit code but the last behind a silent catch. It survived
+   * the sandbox deletion and `lib/github/push.ts` still called it first — dead
+   * only because nothing assigns `globalThis.activeSandbox` any more. One
+   * assignment anywhere re-armed a credential leak, so the module is gone and
+   * the Git Data API path is the only push there is.
+   */
+  it('keeps no sandbox-side git push path', () => {
+    const self = posix.join('tests', 'unit', 'no-orphaned-scaffolds.test.ts');
+    expect(existsSync(join(ROOT, 'lib/github/sandbox-git.ts'))).toBe(false);
+    const offenders = ['app', 'lib', 'components', 'scripts', 'tests']
+      .flatMap((dir) => walk(dir))
+      .filter((file) => file !== self)
+      .filter((file) =>
+        /trySandboxGit|globalThis\.activeSandbox/.test(readFileSync(join(ROOT, file), 'utf8')),
+      );
+    expect(offenders).toEqual([]);
+  });
 });

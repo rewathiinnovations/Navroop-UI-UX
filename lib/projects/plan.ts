@@ -4,7 +4,6 @@ import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { getSessionUser, type SessionUser } from '@/lib/auth';
 import { clientForEntry } from '@/lib/ai/client-for-entry';
-import { loadEffectiveProviderEnv } from '@/lib/ai/effective-env';
 import { completeWithProviderFailover } from '@/lib/ai/plan-complete';
 import {
   jobErrorCodeForProviderFailure,
@@ -177,12 +176,12 @@ async function defaultCompletePlan(input: {
   // Planning selects and pays with the same keys as building: the effective-env
   // overlay (personal key -> org key -> process.env). Before this, the chain and
   // clients here saw process.env alone, so an admin-UI-only deployment could
-  // build but never plan.
-  const providerEnv = await loadEffectiveProviderEnv(peekActor()?.id ?? null, process.env);
+  // build but never plan. The helper owns that resolution now and hands the
+  // store it selected from back as `ctx.env` (F-083).
   const failover = await completeWithProviderFailover({
-    env: providerEnv,
+    userId: peekActor()?.id ?? null,
     run: async (entry, ctx) => {
-      const client = clientForEntry(entry, providerEnv);
+      const client = clientForEntry(entry, ctx.env);
       const model = client(entry.model);
       const cached = input.stablePrefix
         ? buildCachedMessages({

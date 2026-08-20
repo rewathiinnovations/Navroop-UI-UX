@@ -627,26 +627,11 @@ function AISandboxPage({
       // Show progress component instead of individual messages
       setCodeApplicationState({ stage: 'analyzing' });
 
-      // Get pending packages from tool calls. The other side of this window
-      // handshake is generation-runtime.ts, which writes it with the same shape.
-      const packageHandshake = window as unknown as { pendingPackages?: string[] };
-      const pendingPackages = (packageHandshake.pendingPackages || []).filter(
-        (pkg) => pkg && typeof pkg === 'string',
-      );
-      if (pendingPackages.length > 0) {
-        console.log('[applyGeneratedCode] Sending packages from tool calls:', pendingPackages);
-        // Clear pending packages after use
-        // Shared handshake with generation-runtime (window.pendingPackages).
-        // eslint-disable-next-line react-hooks/immutability
-        packageHandshake.pendingPackages = [];
-      }
-
       // Stream is owned by GenerationProvider so leaving the workspace does not abort it
       const effectiveSandboxData = overrideSandboxData || sandboxData;
       await startApply({
         code,
         isEdit,
-        packages: pendingPackages,
         sandboxId: effectiveSandboxData?.sandboxId,
       });
 
@@ -878,61 +863,14 @@ function AISandboxPage({
               sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
             />
 
-            {/* Package installation overlay - shows when installing packages or applying code */}
+            {/* Progress overlay: the reply is parsed, then the files are written */}
             {codeApplicationState.stage && codeApplicationState.stage !== 'complete' && (
               <div className="absolute inset-0 bg-[var(--studio-bg)]/95 backdrop-blur-sm flex items-center justify-center z-10">
                 <div className="text-center max-w-md">
-                  <div className="mb-6">
-                    {/* Animated icon based on stage */}
-                    {codeApplicationState.stage === 'installing' ? (
-                      <div className="w-16 h-16 mx-auto">
-                        <svg className="w-full h-full animate-spin" fill="none" viewBox="0 0 24 24">
-                          <circle
-                            className="opacity-25"
-                            cx="12"
-                            cy="12"
-                            r="10"
-                            stroke="currentColor"
-                            strokeWidth="4"
-                          ></circle>
-                          <path
-                            className="opacity-75"
-                            fill="currentColor"
-                            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                          ></path>
-                        </svg>
-                      </div>
-                    ) : null}
-                  </div>
-
                   <h3 className="text-lg font-semibold text-[var(--studio-fg)] mb-2">
                     {codeApplicationState.stage === 'analyzing' && 'Analyzing code...'}
-                    {codeApplicationState.stage === 'installing' && 'Installing packages...'}
                     {codeApplicationState.stage === 'applying' && 'Applying changes...'}
                   </h3>
-
-                  {/* Package list during installation */}
-                  {codeApplicationState.stage === 'installing' && codeApplicationState.packages && (
-                    <div className="mb-4">
-                      <div className="flex flex-wrap gap-2 justify-center">
-                        {codeApplicationState.packages.map((pkg, index) => (
-                          <span
-                            key={index}
-                            className={`px-2 py-1 text-xs rounded-full transition-all ${
-                              codeApplicationState.installedPackages?.includes(pkg)
-                                ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400'
-                                : 'bg-[var(--studio-skeleton)] text-[var(--studio-muted)]'
-                            }`}
-                          >
-                            {pkg}
-                            {codeApplicationState.installedPackages?.includes(pkg) && (
-                              <span className="ml-1">✓</span>
-                            )}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
 
                   {/* Files being generated */}
                   {codeApplicationState.stage === 'applying' &&
@@ -945,8 +883,6 @@ function AISandboxPage({
                   <p className="text-sm text-[var(--studio-muted)] mt-2">
                     {codeApplicationState.stage === 'analyzing' &&
                       'Parsing generated code and detecting dependencies...'}
-                    {codeApplicationState.stage === 'installing' &&
-                      'This may take a moment while npm installs the required packages...'}
                     {codeApplicationState.stage === 'applying' &&
                       'Writing files to your sandbox environment...'}
                   </p>

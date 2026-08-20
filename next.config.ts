@@ -4,14 +4,10 @@ import type { NextConfig } from 'next';
 const nextConfig: NextConfig = {
   output: 'standalone',
   // Lighthouse uses `await import(requirePath)` which Turbopack cannot bundle.
-  // @daytona/sdk dynamically requires form-data for file uploads; bundled, that
-  // require fails at runtime ("not available in the node runtime") and every
-  // Daytona build dies at the first file write. Keep both external.
   serverExternalPackages: [
     'lighthouse',
     'chrome-launcher',
     'lighthouse-logger',
-    'form-data',
     // Native binary with per-platform optional deps — bundling it breaks the
     // server-side preview build.
     'esbuild',

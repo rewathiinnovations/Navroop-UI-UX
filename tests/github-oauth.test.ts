@@ -187,7 +187,6 @@ async function main() {
     assert(!('accessTokenEncrypted' in before), 'status never includes token field');
 
     const pushNone = await pushProjectToGitHubForUser(prisma, user, project.id, {
-      trySandboxGit: async () => false,
       getFiles: () => ({ 'src/App.jsx': 'export default function App(){return null}' }),
     });
     assert(
@@ -219,7 +218,6 @@ async function main() {
     const github = mockGithub();
     const first = await pushProjectToGitHubForUser(prisma, user, project.id, {
       githubFetch: github.githubFetch,
-      trySandboxGit: async () => false,
       getFiles: () => ({
         'src/App.jsx': 'export default function App(){return null}',
         'src/main.jsx': 'import App from "./App"',
@@ -244,7 +242,6 @@ async function main() {
 
     const second = await pushProjectToGitHubForUser(prisma, user, project.id, {
       githubFetch: github.githubFetch,
-      trySandboxGit: async () => false,
       getFiles: () => ({
         'src/App.jsx': 'export default function App(){return 1}',
         'src/main.jsx': 'import App from "./App"',
@@ -293,7 +290,6 @@ async function main() {
     });
     const failedPush = await pushProjectToGitHubForUser(prisma, user, project.id, {
       githubFetch: failingFetch,
-      trySandboxGit: async () => false,
       getFiles: () => ({ 'src/App.jsx': 'x' }),
     });
     const afterFail = await prisma.project.findUnique({ where: { id: project.id } });

@@ -820,7 +820,6 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
       return {
         generatedCode: '',
         explanation: '',
-        packagesToInstall: [],
         skillNames: [],
         alreadyRunning: true,
       };
@@ -838,7 +837,7 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
       isStreaming: false,
       isThinking: false,
     }));
-    return { generatedCode: '', explanation: '', packagesToInstall: [], skillNames: [] };
+    return { generatedCode: '', explanation: '', skillNames: [] };
   }
 
   if (response.status === 402) {
@@ -872,7 +871,6 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
   const decoder = new TextDecoder();
   let generatedCode = '';
   let explanation = '';
-  let packagesToInstall: string[] = [];
   let skillNames: string[] = [];
   let buildFix: GenerateResult['buildFix'] = null;
   let buffer = '';
@@ -947,11 +945,6 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
             components: [...prev.components, { name: data.name, path: data.path, completed: true }],
             currentComponent: data.index,
           }));
-        } else if (data.type === 'package') {
-          setGenerationProgressState((prev) => ({
-            ...prev,
-            status: data.message || `Installing ${data.name}`,
-          }));
         } else if (data.type === 'complete') {
           sawTerminalFrame = true;
           // The frame carries the reply only when the client cannot already hold
@@ -964,7 +957,6 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
             state.generationProgress.streamedCode,
           );
           explanation = data.explanation || '';
-          packagesToInstall = data.packagesToInstall || [];
           if (Array.isArray(data.skillNames) && data.skillNames.length > 0) {
             skillNames = data.skillNames.filter(
               (name: unknown): name is string => typeof name === 'string',
@@ -982,10 +974,6 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
                     typeof data.buildFix.signature === 'string' ? data.buildFix.signature : null,
                 }
               : null;
-          if (packagesToInstall.length > 0 && typeof window !== 'undefined') {
-            (window as unknown as { pendingPackages?: string[] }).pendingPackages =
-              packagesToInstall;
-          }
           patchGenerationState({ lastGeneratedCode: generatedCode || null });
           setGenerationProgressState((prev) => {
             // The stream is over, so a block still marked open is just the last
@@ -1072,7 +1060,6 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
     return {
       generatedCode: '',
       explanation: '',
-      packagesToInstall: [],
       skillNames: [],
       streamDropped: true,
     };
@@ -1088,7 +1075,7 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
     status: 'Generation complete!',
   }));
 
-  return { generatedCode, explanation, packagesToInstall, skillNames, buildFix };
+  return { generatedCode, explanation, skillNames, buildFix };
 }
 
 /**

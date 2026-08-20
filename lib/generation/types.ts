@@ -165,7 +165,6 @@ export type StartGenerationInput = {
 export type StartApplyInput = {
   code: string;
   isEdit?: boolean;
-  packages?: string[];
   sandboxId?: string | null;
 };
 
@@ -179,7 +178,6 @@ export type BuildFixRequest = {
 export type GenerateResult = {
   generatedCode: string;
   explanation: string;
-  packagesToInstall: string[];
   alreadyRunning?: boolean;
   skillNames?: string[];
   /**

@@ -69,7 +69,6 @@ describe('a refused send hands the typed text back', () => {
     const reused: GenerateResult = {
       generatedCode: '',
       explanation: '',
-      packagesToInstall: [],
       skillNames: [],
       alreadyRunning: true,
     };

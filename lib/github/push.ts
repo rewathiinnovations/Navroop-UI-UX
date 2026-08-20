@@ -9,7 +9,6 @@ import { buildRepoFiles } from '@/lib/deploy/repo-files';
 import { getCurrentProjectFiles } from './current-files';
 import { createPrivateRepo, pushViaGitDataApi, type GithubFetch } from './git-data';
 import { uniqueRepoName } from './repo-name';
-import { trySandboxGitPush } from './sandbox-git';
 
 export { CONNECT_FIRST_MESSAGE };
 
@@ -53,7 +52,6 @@ export type PushDeps = {
   getFiles?: (project: {
     lastCode: string | null;
   }) => Promise<Record<string, string>> | Record<string, string>;
-  trySandboxGit?: (input: { token: string; fullName: string }) => Promise<boolean>;
   /**
    * Explicit opt-in to replace the repository contents and force-move `main`
    * (F-210). Default false: the push is a child commit over the current head
@@ -173,12 +171,8 @@ export async function pushProjectToGitHubForUser(
     }
   }
 
-  const tryGit = deps.trySandboxGit ?? trySandboxGitPush;
   try {
-    const pushedViaGit = await tryGit({ token, fullName });
-    if (!pushedViaGit) {
-      await pushViaGitDataApi({ githubFetch, token, fullName, files, force: deps.force === true });
-    }
+    await pushViaGitDataApi({ githubFetch, token, fullName, files, force: deps.force === true });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Could not push to GitHub';
     await noteGitHubAuthFailure(user.id, message);

@@ -13,7 +13,7 @@ import {
  * The server ran `runBuildValidation` on every reply with files, decided whether
  * a repair pass was warranted, and put the instruction on the `complete` frame
  * as `buildFix`. The client's `complete` handler read `generatedCode`,
- * `explanation`, `packagesToInstall` and `skillNames` — and not `buildFix`. The
+ * `explanation` and `skillNames` — and not `buildFix`. The
  * only reader took it off `applyResult.finalData`, and `runApplyStream` returns
  * `{ finalData: null }` by design, so `buildFix?.instruction` was permanently
  * undefined. Symmetrically the route read `buildFixAttempt` / `buildFixSignature`
