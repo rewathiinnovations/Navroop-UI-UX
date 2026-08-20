@@ -356,7 +356,10 @@ now the document people will read, and it was wrong in three places.
   carry the same rem/Firecrawl assumptions (`bg-white`, `hover:bg-black-alpha-3`, `rounded-sm`), so
   correcting it is a design-system pass rather than a one-line fix.
 
-### N-023 [MEDIUM] `/admin/servers` reports Coolify as "not configured" when the token merely cannot be decrypted
+### N-028 [MEDIUM] `/admin/servers` reports Coolify as "not configured" when the token merely cannot be decrypted
+
+> Renumbered from a second `N-023` on 2026-08-21 — this file carried the id twice (see N-046). The
+> other `N-023` (the dead `Tabs.tsx` component) keeps the id; nothing referenced either entry.
 
 - Location: `getDeploySettings` reads `Boolean(creds.token)` (legacy deploy panel), while
   `lib/coolify/servers.ts` already carries the correct `tokenUnreadable` shape.
@@ -420,7 +423,267 @@ now the document people will read, and it was wrong in three places.
   would leave a rose button with an orange hover and focus ring.
 - **The real fix is mechanical, and it is a design decision, not a merge one.** An accent needs
   relative luminance **L ≤ 0.162** to clear 4.5:1 on both `#ffffff` and `#f7f7f8`. `#c74a12` sits
-  just above that line. A slightly darker orange in the same hue family clears both axes *and*
+  just above that line. A slightly darker orange in the same hue family clears both axes _and_
   satisfies the brand rule; picking it is a one-commit revert of this entry.
 - Distinct from F-769, which pins `design-system/MASTER.md` to citing the `--heat-` token and
   `#fa5d19` (`brand-authority.test.ts`, green) and says nothing about `--studio-accent`.
+
+## Discovered while closing the last 13 open rows (close-out wave, 2026-08-21)
+
+Six fix agents closed F-224, F-083, F-090, F-094, F-173, F-261, F-262, F-447, F-660, F-780, F-785,
+F-786 and F-573; a seventh (`LastTwoGaps`) then closed the two residuals those agents had
+deliberately deferred rather than silently dropped — the avatar upload rate limit (F-173) and the
+unpinned verify-step numbers (N-042). Everything below was found on the way. Ids resume at `N-029`
+because `N-026` and `N-027` were already taken by the merge-resolution pass; the second `N-023`
+collision is itself recorded here as N-046 and has been renumbered to `N-028`.
+
+Advisory, not a defect, so it gets no id: `DeadTheatre` deleted ~60 fully-covered lines under
+`lib/**` (`stream-package-tracker.ts` and two `lib/stacks.ts` helpers) along with their tests, while
+`vitest.config.ts` floors statements/lines at 48 against a last-measured 48.50. `--coverage` was
+forbidden this round (concurrent runs corrupt `coverage/.tmp`), so nobody could measure it. Whoever
+runs the coverage gate should expect a small drop and re-baseline per the exception already
+documented in `vitest.config.ts` if it trips.
+
+### N-029 [HIGH] The templates thumbnail route did no content sniffing at all, and checked its bounds after buffering
+
+- Location: `app/api/admin/templates/[id]/thumbnail/route.ts` (pre-fix), `storeThumbnailBuffer`
+- Two defects in one path. The 32-byte / 4 MB bounds were compared against `buffer.byteLength`
+  **after** `Buffer.from(await file.arrayBuffer())` had already materialised the whole body, so the
+  cap read the bytes it was meant to refuse. And nothing anywhere looked at the bytes: an HTML
+  payload named `.png` returned **200**, and `storeThumbnailBuffer` uploaded it verbatim with
+  `contentType: 'image/png'`. The result is a stored object served as an image from our own origin
+  under an admin-chosen key — the same shape as F-173 on the avatar path, but with a persisted,
+  publicly-reachable artefact at the end of it.
+- Confidence: Confirmed empirically, not by inspection. The pre-fix 200 is the first red in
+  `tests/unit/thumbnail-upload-guards.test.ts` (3 failed | 2 passed before the fix).
+- **Fixed in this wave** (with F-173, `UploadPushGuards`). Bounds now read off `file.size` before
+  buffering via new `MAX_THUMBNAIL_BYTES` / `MIN_THUMBNAIL_BYTES` in `lib/assets/optimize.ts`
+  (replacing the inline `4_000_000` literal), plus `sniffImageType` after. 5/5 green.
+
+### N-030 [HIGH] `deploy-client.ts` serialised a non-string tree entry into the inline `content` field, shipping binary mangled with no error
+
+- Location: `lib/github/deploy-client.ts` `pushFiles` (pre-fix), the `entries.map` tree build
+- Every entry went into the single `/git/trees` POST body as `content`, a UTF-8 text field. A
+  non-string payload was serialised into it anyway. GitHub accepted the request, the publish job
+  reported success, and the committed file differed from the generated one. No error was raised at
+  any layer.
+- Confidence: Confirmed empirically. With the pre-fix `pushFiles` restored, a `{ base64 }` entry
+  produced **no `/git/blobs` call at all** — `expected [] to have length 1` — while the push still
+  resolved to `'commit1'`. That silence is the finding.
+- **Fixed in this wave** (F-261). Binary is encoded rather than refused: a `{ base64 }` entry becomes
+  `POST /git/blobs { content, encoding: 'base64' }` in path order and contributes a tree entry with
+  `sha`. Text keeps the single-request inline path. `tests/unit/push-limits.test.ts` 10/10.
+
+### N-031 [HIGH] On the default storage driver, every image on a published site 404'd while the job reported success
+
+- Location: `lib/storage` `driver()` (returns `'local'` unless `storage.driver` is set to `'s3'`),
+  `lib/assets/manifest.ts`, `lib/assets/fulfill.ts`, `lib/publish/files.ts:65` `collectPublishFiles`
+- This is F-262's root cause, filed separately because the _invisibility_ is the defect. Asset URLs
+  reach the generated markup verbatim — the manifest lists `ProjectAsset.url` for the model to reuse
+  and `fulfill.ts` substitutes the same string for a `NEED_IMAGE` token. On the **local** driver that
+  URL is app-relative `/uploads/{storageKey}`. The deployed site therefore asked _its own_ origin for
+  a path that host had never heard of. Publish shipped only the checkpoint snapshot text, so the
+  files were not there, every image 404'd, and the job still recorded success.
+- **On the `s3` driver the URL is an absolute public-bucket URL the site fetches itself**, so the
+  break was invisible to anyone who had configured S3 — which is why it survived to wave 6. The
+  default configuration was the broken one.
+- Confidence: Confirmed against real data. All 25 `ProjectAsset` rows in the dev database are of
+  shape `/uploads/…`, `url` always ends with `storageKey`, zero traversals.
+- **Fixed in this wave** (F-262) by `lib/publish/assets.ts` + `StackDefinition.publicDir`.
+
+### N-032 [MEDIUM] A `sharp` or storage failure in `uploadAvatar` escaped as an unhandled server-action throw
+
+- Location: `lib/profile/actions.ts` `uploadAvatar` (pre-fix)
+- Separate from F-173's missing guards: even a well-formed upload that failed to decode or store
+  threw out of the action. A `'use server'` throw surfaces to the client as a generic render error
+  the form cannot display, and the raw text went with it — the failing test saw
+  `'S3 endpoint unreachable at 10.0.0.4'` reach the caller.
+- **Fixed in this wave** (F-173). Decode/upload is wrapped and returns a typed
+  `{ ok: false, error, status }` refusal; the real message goes to `console.error` (the file's
+  existing convention) and the sentence the form shows names no internals.
+
+### N-033 [MEDIUM] `secret-scan.ts` tree mode scans gitignored files, so wiring it into a gate would be permanently red on every developer machine
+
+- Location: `scripts/secret-scan.ts` default (tree) mode
+- The obvious fix for F-785 — wire the existing tree mode into `VERIFY_STEPS` — produces a step that
+  can never be green. Tree mode walks the working tree **including gitignored files** and reports
+  `.env.local:4` firecrawl-api-key, `:11` and `:17` provider-key-sk, exit 1. This is almost certainly
+  why tree mode had never been wired into anything.
+- Why it matters beyond the one step: a gate that is red on every machine is a gate that gets
+  deleted. The input set had to change before the step could exist.
+- **Fixed in this wave** (F-785) by adding a `--tracked` mode reading `git ls-files -z --cached` —
+  every file under version control, which is exactly what a `--no-verify` commit deposited, and from
+  which ignored paths are absent by construction. Tree mode was **not** weakened; it is correct for
+  its own purpose as a local audit. No ignore rule was added and no path was exempted.
+
+### N-034 [MEDIUM] The gitleaks second pass would have reintroduced the same permanent red on any machine with gitleaks installed
+
+- Location: `scripts/secret-scan.ts`, the gitleaks pass, previously gated on `mode !== 'staged'`
+- Because the guard named only `'staged'`, **any** new non-staged mode inherited
+  `gitleaks detect --no-git --source <cwd>`, which reads ignored files. So `--tracked` would have
+  been clean on its own rules and then red again on the second pass. Invisible on this machine only
+  because gitleaks is not installed — it would have appeared for the first developer who had it.
+- This is the more instructive half of N-033: the first fix was correct and would still have shipped
+  a permanently-red gate, via a code path nobody was running.
+- **Fixed in this wave** (F-785). The pass is now scoped to the default mode only, with the reason
+  stated at the call site and in `docs/release.md`.
+
+### N-035 [LOW] `prettier . --check` reports 809 differing files — the deferred repo-wide reformat
+
+- Location: repo-wide. `.prettierrc.json`, `.prettierignore` and `prettier` as a devDependency all
+  exist, and `lint-staged` formats staged files — so this is not the "no config" case, it is worse:
+  the config exists and the tree it has been applied to is not the whole repository.
+- **809 files** differ as of `345a0a8`. Adding a `prettier --check` verify step means reformatting
+  all 809 in one commit: it conflicts with every branch in flight, buries real changes in whitespace
+  for a year of `git blame`, and leaves the gate red for the entire window between adding the step
+  and landing the reformat.
+- **Open, deliberately.** This is the `WONTFIX` half of F-785's split disposition. The honest
+  sequence is: reformat first, in its own commit, on a quiet tree; add the step second. Declined in
+  writing at `docs/release.md:72` with the figure and the commit it was measured at, so it is a
+  stated decision rather than an omission.
+
+### N-036 [MEDIUM] ZIP export has the identical missing-asset gap, and F-262's fix does not reach it
+
+- Location: `lib/export/collect.ts` `collectExportFiles`, `app/api/projects/[id]/export/route.ts:65`
+- Confidence: Confirmed — `asset`, `Asset` and `uploads` return **zero** matches across
+  `lib/export/collect.ts`, `files.ts` and `archive.ts`.
+- The export collector ships snapshot text only, so a downloaded ZIP's `/uploads/…` references
+  resolve to nothing on the user's machine. It is a different collector from
+  `collectPublishFiles`, so `lib/publish/assets.ts` does not apply to it.
+- Static preview is **not** affected: `/preview-static/{projectId}` is served by this app, so the
+  relative URL resolves against the app origin.
+- **Open.** The fix is small now that `collectPublishAssets` and `publishAssetPath` exist, but the
+  ZIP has no `publicDir` to key off — where an asset belongs in a downloaded archive is a product
+  decision, not a mechanical port.
+
+### N-037 [MEDIUM] `duplicateProject` silently produces a project whose published site has no images
+
+- Location: `lib/projects/actions.ts:647-649` and `duplicateProject` at `:653`
+- Confidence: Confirmed — read the comment and the copy list. `ProjectAsset` rows are deliberately
+  **not** copied (their `storageKey`s are owned by the source; copying would double-count storage and
+  let either project's purge delete the other's objects) while `lastCode` **is** copied, carrying the
+  `/uploads/…` URLs.
+- The comment's claim — "The asset URLs inside `lastCode` still resolve" — is true inside the app and
+  false for a deploy. `collectPublishAssets` finds no rows for those URLs, so the duplicate publishes
+  with no images and no complaint. F-262 made the original correct and left the copy broken.
+- **Open, and it needs a decision rather than a quiet redesign**: a shared `storageKey` with a
+  refcount, or resolving assets across the ownership boundary. Either changes the purge contract.
+
+### N-038 [LOW] A referenced `/uploads/…` path with no `ProjectAsset` row behind it still ships silently broken
+
+- Location: `lib/publish/assets.ts` `collectPublishAssets` — the dangling-reference case
+- Deliberately not made a publish failure: a model can write an arbitrary `/uploads/…` string, and
+  failing every publish that contains one would be a worse failure mode than the hole it closes.
+  Reachable via a deleted asset, or via N-037.
+- **Open.** Worth revisiting only if N-037 is fixed; until then the two share a cause.
+
+### N-039 [MEDIUM] The whole workspace preview-and-progress branch is unreachable UI
+
+- Location: `components/workspace/GenerationWorkspace.tsx:854-940` — everything inside
+  `if (sandboxData?.url)`: the iframe, the analyzing/applying overlay, the manual-refresh button, and
+  the copy "Writing files to your sandbox environment…"
+- Confidence: Confirmed by tracing the writer, not by assuming. `setSandboxData` is exposed on the
+  provider context (`components/app/generation/GenerationProvider.tsx:42,72`) and backed by a real
+  setter (`lib/generation/generation-runtime.ts:132`), but **nothing calls it** — no writer exists
+  anywhere under `app/`, `lib/`, `components/` or `hooks/` since the sandbox subsystem was dropped.
+  So `sandboxData` is permanently `null` and the branch never renders.
+- `DeadTheatre` removed only the F-090 install theatre from inside it rather than guessing at a
+  larger deletion, which is the right call — this is a distinct dead-UI finding.
+- **Open.** Wants its own ticket: the decision is whether the workspace should have a live preview
+  frame at all now, which is product scope, not a sweep.
+
+### N-040 [LOW] Dead sandbox residue still reads as live configuration in two places
+
+- Location: `lib/stacks.ts:18-25` — `e2b: string` with a `'code-interpreter-v1'` template id per
+  stack; `lib/jobs/types.ts:54-56` and `:326-328` — `parseResourceIds` still parses
+  `sandboxAttempts` / `sandboxSkipped` / `sandboxProviderConfigId` out of the `Job.resourceIds` blob
+- Confidence: Confirmed — read all five line ranges. Nothing has written any of those keys since
+  migration `20260819010000_drop_sandbox_columns`.
+- Both read as live registry policy and live job telemetry respectively, which is the same trap
+  F-224 and F-573 were about: dead code that instructs the next reader to preserve it.
+- **Open, and unowned.** Flagged by `StaleGuidance`, relayed to `DeadTheatre`, and outside both
+  slices. Distinct from N-041, which was in `DeadTheatre`'s reach and is fixed.
+
+### N-041 [LOW] `next.config.ts` justified a `serverExternalPackages` entry with a deleted SDK's requirements
+
+- Location: `next.config.ts:6-9` (pre-fix) — `'form-data'` in `serverExternalPackages`, with the
+  comment "@daytona/sdk dynamically requires form-data … every Daytona build dies at the first file
+  write"
+- A live-reading justification for an SDK that no longer exists. Worse, the entry could not have been
+  doing anything: `form-data` is absent from `package.json` **and** from `node_modules`
+  (`existsSync('node_modules/form-data') === false`) and no source imports it, so it could not affect
+  bundling either way.
+- **Fixed in this wave** (folded into F-224 by `DeadTheatre` after `StaleGuidance` handed it over).
+  Entry and comment removed; the comment now names only Lighthouse. Verified by me at
+  `next.config.ts:1-14` — `form-data` and `Daytona` are both gone.
+
+### N-042 [LOW] Verify step counts and ordinals are asserted in prose across four documents and were pinned by no test
+
+- Location: `AGENTS.md:104`, `CLAUDE.md:88`, `docs/release.md:170` and the Playwright table at
+  `docs/release.md:335-336`
+- `tests/unit/docs-accuracy.test.ts` pinned the `docs/release.md` step _list_ against `VERIFY_STEPS`
+  and the presence of a pointer, but neither the stated _count_ nor any _ordinal_. So every number
+  about the gate that appears in prose drifted freely, in two files that are auto-loaded agent
+  context.
+- It was not hypothetical drift. Inserting `secret-scan` at position 3 (F-785) silently falsified
+  four separate claims, and only the two counts were noticed at the time:
+  - `AGENTS.md` and `CLAUDE.md` said "thirteen steps" — corrected to fourteen with the step itself.
+  - `docs/release.md:335-336` called `playwright-critical` "`verify` step 9" and
+    `playwright-authenticated` "step 10". **Both were off by one and stayed wrong**, because nothing
+    compared an ordinal to the id named on the same line. Now 10 and 11.
+  - `docs/release.md:170` still said "the twelve steps under it" — two behind, so it had already
+    survived one earlier step addition undetected.
+- **Fixed, weakness included** (LastTwoGaps). `docs-accuracy.test.ts` gained two tests: every stated
+  "N steps" claim on a verify line in `DOC_FILES` must equal `VERIFY_STEPS.length`, and
+  `AGENTS.md`/`CLAUDE.md` must each still state one so the scan cannot pass vacuously; and every
+  "`verify` step N" ordinal must match the step id named on the same line. That second test is what
+  found the two stale ordinals. The count in those two files is now **derived from
+  `VERIFY_STEPS.length` rather than asserted by prose** — the structural fix, not just a corrected
+  number. Verified by me: `VERIFY_STEPS` has 14 ids, `docs/release.md:335-336` reads 11 and 10, and
+  `docs-accuracy` is 24/24 green.
+- Narrower than F-580 (`NOT-BUILT`), which covers the same class for three cron lists and four
+  coverage-floor copies. This closes the verify-step slice of it; the rest is still unowned.
+
+### N-043 [LOW] `lib/assets/image-worker.ts` reads a response body with no byte ceiling
+
+- Location: `lib/assets/image-worker.ts:145` — `Buffer.from(await response.arrayBuffer())`
+- Found by the F-173 sweep of every upload-adjacent `arrayBuffer()` call. Unbounded, but the URL is
+  an admin-configured infrastructure endpoint with a 60s abort, not a user-reachable upload path.
+- **Open, and deliberately left alone rather than silently included**: F-173 named size and content
+  type on _user_ upload paths. The other four sites audited in the same sweep
+  (`lib/import/rehost-assets.ts:128`, `lib/assets/download.ts:55`, `lib/security/pinned-fetch.ts`,
+  `lib/backup/client.ts`) are all genuinely bounded — recorded here so the sweep's negative result is
+  on the record too.
+
+### N-044 [LOW] The admin API 403s over `127.0.0.1` while `localhost` works
+
+- Location: session/origin binding; observed against `:3001`
+- `GET /api/admin/health` returns 403 on `127.0.0.1:3001` and 200 on `localhost:3001`. Pre-existing,
+  unrelated to any diff in this wave; noticed while verifying F-786's disclosure in a browser.
+- **Open.** Low impact (a developer-only papercut) but it makes local admin-API scripting depend on
+  which spelling of loopback the operator typed, which is the kind of thing that costs an hour once.
+
+### N-045 [LOW] A new settings-registry entry is only half-landed until `docker-compose.yml` forwards its env var
+
+- Location: `lib/settings/registry.ts`, `docker-compose.yml` `environment:`,
+  `tests/unit/env-example-contract.test.ts`
+- Adding `ai.fileContextTokenCap` (F-094) turned that contract test red, because it requires every
+  registry env fallback to be forwarded under `environment:`. Reported to the owner by a peer running
+  the full suite, not caught by the authoring agent's focused run.
+- Recorded because the test worked exactly as designed — this is the contract catching an incomplete
+  change, and it is the only thing standing between a new admin setting and a container that silently
+  cannot see its env fallback.
+- **Fixed in this wave**: `NAVROOP_FILE_CONTEXT_TOKEN_CAP: ${NAVROOP_FILE_CONTEXT_TOKEN_CAP:-}`
+  added beside `AI_PROVIDER_CONCURRENCY` at `docker-compose.yml:82` (verified by me). Suite 11/11.
+
+### N-046 [LOW] This file carried the id `N-023` twice
+
+- Location: `audit/NEW-FINDINGS.md` — the dead `Tabs.tsx` entry and the `/admin/servers`
+  `tokenUnreadable` entry both filed as `N-023`, by two agents in different waves
+- The whole point of the `N-` range is that ids do not collide, and 27 entries in, one pair did. No
+  cross-reference to either existed anywhere in `audit/`, `.cursor/`, `docs/`, `AGENTS.md` or
+  `CLAUDE.md`, so nothing was pointing at the wrong entry — but a citation written tomorrow would
+  have been ambiguous with no way to tell.
+- **Fixed in this pass.** The `/admin/servers` entry (the later of the two) is now `N-028`, with a
+  note at its heading recording the renumber. `Tabs.tsx` keeps `N-023`. All ids `N-001`…`N-046` are
+  now unique.
