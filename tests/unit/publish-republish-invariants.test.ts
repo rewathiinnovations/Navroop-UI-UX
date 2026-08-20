@@ -131,6 +131,10 @@ function spyDeps(): { deps: PublishDeps; seen: Seen } {
     async collectFiles() {
       return { 'app/page.tsx': 'export default () => null;' };
     },
+    // No project images in these cases; `tests/unit/publish-assets.test.ts` owns that.
+    async collectAssets() {
+      return {};
+    },
     async pickServer() {
       return SERVER;
     },

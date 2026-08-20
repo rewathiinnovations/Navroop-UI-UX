@@ -13,7 +13,7 @@ import {
 import { pickCoolifyServer, serverAuth } from '@/lib/coolify/servers';
 import { upsertARecord } from '@/lib/cloudflare/dns';
 import { applyPrimaryRedirects, type RedirectOutcome } from '@/lib/domains/redirects';
-import { ensureDeployRepo, pushFiles } from '@/lib/github/deploy-client';
+import { ensureDeployRepo, pushFiles, type PushFileEntry } from '@/lib/github/deploy-client';
 import { getRootDomain } from '@/lib/integrations/store';
 import { getStack } from '@/lib/stacks';
 import { buildRepoFiles } from '@/lib/deploy/repo-files';
@@ -31,6 +31,7 @@ import {
   PUBLISH_UNREPORTED_RETRY_MS,
   PUBLISH_UNREPORTED_STATUS_READS,
 } from './constants';
+import { collectPublishAssets, type PublishAssetFile } from './assets';
 import { collectPublishFiles, publishJobErrorCode, withoutNeverPublishedPaths } from './files';
 import { injectPreviewFiles } from './preview-inject';
 import { coolifyAppName, dnsLabel, deployRepoName } from './naming';
@@ -70,6 +71,17 @@ export type PublishServer = {
  */
 export type PublishDeps = {
   collectFiles: (projectId: string) => Promise<Record<string, string>>;
+  /**
+   * The project's images, keyed by the repo path that makes the deployed site serve them
+   * at the URL the generated markup already points at (F-262). Injected for the same
+   * reason `collectFiles` is: the assembly below is what has to be provable, and a
+   * failure here must fail the publish rather than ship a page full of broken images.
+   */
+  collectAssets: (input: {
+    projectId: string;
+    stack: string;
+    files: Record<string, string>;
+  }) => Promise<Record<string, PublishAssetFile>>;
   pickServer: () => Promise<PublishServer>;
   rootDomain: (workspaceId: string) => Promise<string>;
   /** Find-or-create; the returned id and `created` flag feed the F-202 ownership guard. */
@@ -81,7 +93,7 @@ export type PublishDeps = {
    */
   pushFiles: (
     repoFullName: string,
-    files: Record<string, string>,
+    files: Record<string, PushFileEntry>,
     message: string,
     workspaceId: string,
     branch: string,
@@ -130,6 +142,7 @@ export type PublishDeps = {
 
 export const livePublishDeps: PublishDeps = {
   collectFiles: collectPublishFiles,
+  collectAssets: collectPublishAssets,
   pickServer: pickCoolifyServer,
   rootDomain: getRootDomain,
   ensureRepo: ensureDeployRepo,
@@ -336,7 +349,7 @@ export async function runPublishJob(jobId: string, deps: PublishDeps = livePubli
   };
 
   try {
-    let files: Record<string, string> = {};
+    let files: Record<string, PushFileEntry> = {};
     const stack = getStack(project.stack);
     let slug = deployment.slug;
     let server: PublishServer = await prisma.coolifyServer.findUniqueOrThrow({
@@ -358,22 +371,33 @@ export async function runPublishJob(jobId: string, deps: PublishDeps = livePubli
     // tree is decoration), so the last thing before a file becomes a commit has to be the
     // filter. Nothing `buildRepoFiles` adds is on that list.
     //
+    // Project images come last, and only after the text set is final: whether an asset is
+    // referenced is decided by what the commit actually contains, and its repo path is
+    // whatever makes the deployed site answer the URL already written into that text
+    // (F-262). They are the only entries in the set that are not text.
+    //
     // The preview gate goes on top of all of it. The gate follows
     // `Deployment.passwordHash`, not the request: hardcoding `password: null` here meant
     // every publish of a node stack shipped a middleware with the Basic-Auth branch
     // stripped out while the UI kept reporting `hasPassword: true`. The plaintext never
     // reaches the deploy repo — it lives on the Coolify application as PREVIEW_PASSWORD.
-    const collectForPublish = async () => {
+    const collectForPublish = async (): Promise<Record<string, PushFileEntry>> => {
       const generated = await deps.collectFiles(job.projectId);
-      const repoFiles = withoutNeverPublishedPaths(
-        buildRepoFiles(stack.id, generated, { projectName: project.name }),
-      );
-      if (kind !== 'PREVIEW') return repoFiles;
-      return injectPreviewFiles(repoFiles, {
+      const repoFiles = buildRepoFiles(stack.id, generated, { projectName: project.name });
+      const text =
+        kind === 'PREVIEW'
+          ? injectPreviewFiles(repoFiles, {
+              stack: stack.id,
+              deployType: stack.deployType,
+              passwordProtected: Boolean(deployment.passwordHash),
+            })
+          : repoFiles;
+      const assets = await deps.collectAssets({
+        projectId: job.projectId,
         stack: stack.id,
-        deployType: stack.deployType,
-        passwordProtected: Boolean(deployment.passwordHash),
+        files: text,
       });
+      return withoutNeverPublishedPaths({ ...text, ...assets });
     };
 
     await step('limit', async () => {});

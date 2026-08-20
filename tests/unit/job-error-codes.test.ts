@@ -49,6 +49,8 @@ const EXPECTED_CODES = [
   'provider_resting',
   'request_rejected',
   'repo_conflict',
+  'asset_unpublishable',
+  'push_refused',
   'project_lock_lost',
   'import_failed',
   'stack_mismatch',
@@ -334,6 +336,19 @@ describe('job error code copy', () => {
     const cause = recoveryCauseLine('credit_charge_failed');
     expect(cause).toMatch(/try again/i);
     expect(cause.toLowerCase()).not.toContain('used up');
+  });
+
+  // A push that never left the building is not a provider failure. Before this code it was
+  // filed as `provider_error`, so a site too large for one commit told the user the AI
+  // service did not respond and offered a retry that refuses identically (F-261).
+  it('a refused push shows the recorded file names and offers no retry', () => {
+    const cause = recoveryCauseLine('push_refused');
+    expect(cause).not.toBe(recoveryCauseLine('provider_error'));
+    expect(cause.toLowerCase()).not.toContain('ai service');
+    expect(offersRecoveryRetry({ kind: 'PUBLISH', errorCode: 'push_refused' })).toBe(false);
+    // The specific sentence wins: only it can name which files to shrink.
+    const recorded = '"hero.webp" is 30.0 MB. GitHub blocks a single file over 100 MB';
+    expect(recoveryCauseLine('push_refused', recorded)).toBe(recorded);
   });
 
   // Both audit twins filed a deleted project as `provider_error`, so /admin/jobs read

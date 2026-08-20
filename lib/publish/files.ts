@@ -1,11 +1,17 @@
 import { prisma } from '@/lib/db';
 import { captureFileSnapshot, readSnapshot, SnapshotReadError } from '@/lib/checkpoints/snapshot';
 import type { JobErrorCode } from '@/lib/jobs/types';
+import { PublishAssetError } from './assets';
+import { PushRefusedError } from '@/lib/github/push-limits';
 import { PublishRepoConflictError } from './repo-guard';
 
 export function publishJobErrorCode(error: unknown): JobErrorCode {
   if (error instanceof SnapshotReadError) return 'snapshot_unreadable';
   if (error instanceof PublishRepoConflictError) return 'repo_conflict';
+  if (error instanceof PublishAssetError) return 'asset_unpublishable';
+  // A leaf import: `lib/github/push-limits.ts` holds the guards and the error, so mapping
+  // the refusal here does not pull the whole deploy client (and its fetch and crypto) in.
+  if (error instanceof PushRefusedError) return 'push_refused';
   return 'provider_error';
 }
 
@@ -32,13 +38,16 @@ function isNeverPublishedPath(path: string): boolean {
  *
  * `toMap` applies the same rule to each source as it is read; this applies it to the set
  * that is actually about to become a commit, after the stack scaffold and the host files
- * have been laid under and over it. Publish calls it there because `collectFiles` is an
- * injectable dependency and the commit is built from explicit Git Data tree entries — a
- * `.gitignore` inside the tree is decoration, so the filter has to be the last thing that
- * runs, not something a caller can bypass.
+ * have been laid under and over it and the project's images beside it. Publish calls it
+ * there because `collectFiles` is an injectable dependency and the commit is built from
+ * explicit Git Data tree entries — a `.gitignore` inside the tree is decoration, so the
+ * filter has to be the last thing that runs, not something a caller can bypass.
+ *
+ * Generic in the entry type because that final set is no longer all text: a published
+ * image is bytes, and the deny list is about the path either way.
  */
-export function withoutNeverPublishedPaths(files: Record<string, string>) {
-  const kept: Record<string, string> = {};
+export function withoutNeverPublishedPaths<T>(files: Record<string, T>) {
+  const kept: Record<string, T> = {};
   for (const [path, content] of Object.entries(files)) {
     if (!isNeverPublishedPath(path)) kept[path] = content;
   }

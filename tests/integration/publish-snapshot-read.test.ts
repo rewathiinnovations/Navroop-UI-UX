@@ -45,6 +45,9 @@ function refusingDeps(server: PublishServer): PublishDeps {
     async collectFiles() {
       throw new SnapshotReadError(SNAPSHOT_KEY, new Error('Access Denied'));
     },
+    // Never reached: `collectFiles` throws first, and the assets are collected from the
+    // finished text set.
+    collectAssets: unused as PublishDeps['collectAssets'],
     async pickServer() {
       return server;
     },

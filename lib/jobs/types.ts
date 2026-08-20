@@ -111,6 +111,17 @@ export type JobErrorCode =
   // id does not prove this project created it (F-202). The recorded message names the
   // repo and the way forward, so this code is in `RECORDED_CAUSE_CODES`.
   | 'repo_conflict'
+  // Publish refused to ship a site whose markup points at a `ProjectAsset` it could not
+  // read — gone from storage, or unreadable because storage said no (F-262). Distinct from
+  // `snapshot_unreadable`: the project's code was read fine, and the recorded message names
+  // the exact image, so this code is in `RECORDED_CAUSE_CODES`.
+  | 'asset_unpublishable'
+  // Publish refused to build the commit at all: the file set is past what one GitHub push
+  // takes (too many files, one oversized file, or more inline text than the 7 MB tree body
+  // holds), or a text file carries bytes that cannot survive the wire intact. GitHub was
+  // never called, so this is not `provider_error`; the recorded message names the files and
+  // their sizes, which is why the code is in `RECORDED_CAUSE_CODES` (F-261).
+  | 'push_refused'
   // The run held the project lock, then a renewal proved it no longer did — expired, or
   // taken by another writer. Distinct from `cancelled`: nobody asked for this stop, and the
   // run refused to write rather than persist under a lock that no longer protected the

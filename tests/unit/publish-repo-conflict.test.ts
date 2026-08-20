@@ -101,6 +101,9 @@ function spyDeps(repo: { repoId: string; created: boolean }): { deps: PublishDep
     async collectFiles() {
       return { 'app/page.tsx': 'export default () => null;' };
     },
+    async collectAssets() {
+      return {};
+    },
     async pickServer() {
       return SERVER;
     },

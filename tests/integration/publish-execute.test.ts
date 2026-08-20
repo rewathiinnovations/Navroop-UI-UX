@@ -4,6 +4,8 @@ import { testPrismaClient } from '../setup/db';
 import type { CreateApplicationInput, DeploymentHealth } from '@/lib/coolify/client';
 import { getJob, insertJobRaw, updateJobFields } from '@/lib/jobs/store';
 import { runPublishJob, type PublishDeps, type PublishServer } from '@/lib/publish/execute';
+import type { PublishAssetFile } from '@/lib/publish/assets';
+import type { PushFileEntry } from '@/lib/github/deploy-client';
 import { DEFAULT_DEPLOY_BRANCH } from '@/lib/publish/constants';
 import { coolifyAppName, deployRepoName, dnsLabel } from '@/lib/publish/naming';
 import { PUBLISH_STEPS } from '@/lib/publish/steps';
@@ -191,7 +193,7 @@ type PublishSpy = {
     pushedPaths: string[];
     /** The ref the push wrote. Must be the branch Coolify is told to build (F-253). */
     pushedBranch: string | null;
-    pushedFiles: Record<string, string>;
+    pushedFiles: Record<string, PushFileEntry>;
     createApp: CreateApplicationInput | null;
     dnsLabel: string | null;
     dnsIp: string | null;
@@ -213,6 +215,8 @@ function publishSpy(
   server: PublishServer,
   options: {
     files?: Record<string, string>;
+    /** Project images, keyed by repo path, as `collectPublishAssets` would have resolved them. */
+    assets?: Record<string, PublishAssetFile>;
     appUuid?: string;
     dnsRecordId?: string;
     health?: DeploymentHealth;
@@ -235,6 +239,7 @@ function publishSpy(
   const calls: string[] = [];
   const counts: Record<keyof PublishDeps, number> = {
     collectFiles: 0,
+    collectAssets: 0,
     pickServer: 0,
     rootDomain: 0,
     ensureRepo: 0,
@@ -271,6 +276,10 @@ function publishSpy(
     async collectFiles() {
       record('collectFiles');
       return options.files ?? { 'app/page.tsx': 'export default function Page() { return null; }' };
+    },
+    async collectAssets() {
+      record('collectAssets');
+      return options.assets ?? {};
     },
     async pickServer() {
       record('pickServer');
@@ -354,6 +363,19 @@ function publishSpy(
   return { deps, calls, counts, seen };
 }
 
+/**
+ * A pushed entry read as text. Since F-262 the commit also carries the project's images,
+ * which are `{ base64 }` and have no text form — asserting on one as a string would
+ * compare against `undefined` and pass for the wrong reason.
+ */
+function pushedText(spy: PublishSpy, path: string): string {
+  const entry = spy.seen.pushedFiles[path];
+  if (typeof entry !== 'string') {
+    throw new Error(`${path} was not pushed as text: ${JSON.stringify(entry)}`);
+  }
+  return entry;
+}
+
 function stepStatuses(steps: Array<{ key: string; status: string }> | null | undefined) {
   return Object.fromEntries((steps ?? []).map((step) => [step.key, step.status]));
 }
@@ -407,6 +429,9 @@ describe('runPublishJob — the shipped ten-step loop', () => {
 
     expect(spy.calls).toEqual([
       'collectFiles',
+      // Immediately after the code, and before anything external: which images the site
+      // needs is decided by the file set that is about to become the commit (F-262).
+      'collectAssets',
       'pickServer',
       'rootDomain',
       'ensureRepo',
@@ -764,12 +789,16 @@ describe('runPublishJob — the shipped ten-step loop', () => {
 
     const spy = publishSpy(seeded.server, {
       files: {
-        'app/page.tsx': 'export default function Page() { return null; }',
+        'app/page.tsx':
+          'export default function Page() { return <img src="/uploads/p/hero.webp" />; }',
         // The deny list has to survive the merge: `collectFiles` is injectable and the
         // commit is built from explicit tree entries, so a `.gitignore` in the tree
         // cannot stop this reaching GitHub.
         '.env.local': 'API_KEY=not-real',
       },
+      // The image the page above points at. It has to survive the scaffold merge and the
+      // deny-list pass, and it is the one entry in the commit that is not text (F-262).
+      assets: { 'public/uploads/p/hero.webp': { base64: 'd2VicA==' } },
     });
     await runPublishJob(jobId, spy.deps);
 
@@ -781,14 +810,15 @@ describe('runPublishJob — the shipped ten-step loop', () => {
     expect(spy.seen.pushedPaths).toContain('next.config.mjs');
     expect(spy.seen.pushedPaths).toContain('tsconfig.json');
     // The generated file still wins over its scaffold counterpart.
-    expect(spy.seen.pushedFiles['app/page.tsx']).toBe(
-      'export default function Page() { return null; }',
-    );
+    expect(pushedText(spy, 'app/page.tsx')).toContain('/uploads/p/hero.webp');
     expect(spy.seen.pushedPaths).not.toContain('.env.local');
+    // Bytes, not text: the transport turns this into a base64 blob rather than an inline
+    // tree entry, which is the only way a webp survives a JSON string field.
+    expect(spy.seen.pushedFiles['public/uploads/p/hero.webp']).toEqual({ base64: 'd2VicA==' });
 
-    const manifest = JSON.parse(spy.seen.pushedFiles['package.json']) as { name?: string };
+    const manifest = JSON.parse(pushedText(spy, 'package.json')) as { name?: string };
     expect(manifest.name).toBe(expectedSlug('scaffold'));
-    expect(spy.seen.pushedFiles.Dockerfile).toContain('FROM node:');
+    expect(pushedText(spy, 'Dockerfile')).toContain('FROM node:');
   });
 
   it('refuses a second runner on a job that is already in flight', async () => {

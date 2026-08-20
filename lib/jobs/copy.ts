@@ -111,6 +111,15 @@ const CAUSE_LINES: Record<JobErrorCode, string> = {
   // to proceed (replace via the typed confirmation, or rename the project).
   repo_conflict:
     'A repository with this name already exists and was not created by this project, so publish refused to overwrite it.',
+  // In `RECORDED_CAUSE_CODES`: the recorded sentence names the image and whether it is gone
+  // or merely unreadable, which is the difference between re-uploading it and waiting.
+  asset_unpublishable:
+    'One of the images this site uses could not be published, so publish stopped rather than deploy a page with a broken image.',
+  // In `RECORDED_CAUSE_CODES`: the recorded sentence names the files and their sizes, which
+  // is the only form of this message anyone can act on. Must not mention the AI — nothing
+  // was generated wrong, and GitHub was never called (F-261).
+  push_refused:
+    "This project's files are too large to publish in one commit, so publish stopped before sending them.",
   // Says "nothing was saved" because that is what the run did: it refused to write under a
   // lock it had lost rather than overwrite whatever took the project (F-730). Try again is
   // offered — whatever took it is finished by the time this is read.
@@ -148,6 +157,13 @@ const RECORDED_CAUSE_CODES = new Set<string>([
   // The refusal sentence built by `repoConflictMessage` names the colliding repository
   // and both remedies; the generic line above cannot.
   'repo_conflict',
+  // `PublishAssetError` names the image URL, why it could not be read, and what to do about
+  // it. The generic line above cannot say which of a site's images is the problem.
+  'asset_unpublishable',
+  // The refusal built by `assertPushableFiles` names the offending files, their sizes and
+  // the ceiling. It also covers the not-a-text-file case, which the size-shaped generic
+  // line above would describe wrongly.
+  'push_refused',
 ]);
 
 /** True when the job recorded a sentence more specific than the curated cause line. */
@@ -218,6 +234,9 @@ const NO_RETRY_CODES = new Set<string>([
   // Retrying re-runs the same guard against the same repository and refuses identically;
   // the remedies are the typed "Replace existing repository" confirmation or a rename.
   'repo_conflict',
+  // Retrying pushes the same file set and refuses identically; the remedy is to remove or
+  // shrink the files the recorded message names.
+  'push_refused',
   // There is nothing left to retry against: the project row is gone.
   'project_deleted',
 ]);

@@ -172,6 +172,9 @@ function publishSpy(
     async collectFiles() {
       return { 'app/page.tsx': 'export default function Page() { return null; }' };
     },
+    async collectAssets() {
+      return {};
+    },
     async pickServer() {
       return server;
     },

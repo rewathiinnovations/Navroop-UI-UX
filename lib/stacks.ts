@@ -40,8 +40,6 @@ export type StackDefinition = {
   sandboxTemplate: SandboxTemplate;
   /** Filenames the apply pipeline must not overwrite. */
   configFiles: string[];
-  /** Packages already provided by the scaffold — skip reinstall. */
-  frameworkPackages: string[];
   /** Extensions get-sandbox-files should list. */
   listExtensions: string[];
   /** Default entry file for the file manifest. */
@@ -50,6 +48,14 @@ export type StackDefinition = {
   buildCommand: string | null;
   /** Static output directory for Coolify. Null for node deploys. */
   outputDir: string | null;
+  /**
+   * Directory in the repo whose contents the deployed build serves at the site root, so
+   * a file placed at `{publicDir}/x` answers `/x`. Empty when the repo root already is
+   * the web root — a `public/` prefix there would become part of the URL instead of
+   * being stripped from it. Publish reads this to place `ProjectAsset` images where the
+   * generated markup already points (F-262).
+   */
+  publicDir: string;
   deployType: 'static' | 'node';
   /** Node start command. Null for static. */
   startCommand: string | null;
@@ -89,11 +95,12 @@ const STACKS: Record<StackId, StackDefinition> = {
       'postcss.config.js',
       'postcss.config.mjs',
     ],
-    frameworkPackages: ['react', 'react-dom', 'next'],
     listExtensions: ['.tsx', '.ts', '.jsx', '.js', '.css', '.json'],
     entryPoint: 'app/page.tsx',
     buildCommand: 'npm run build',
     outputDir: null,
+    // `next start` serves `public/` at the web root.
+    publicDir: 'public',
     deployType: 'node',
     startCommand: 'npm start',
     dockerfile: null,
@@ -124,11 +131,12 @@ const STACKS: Record<StackId, StackDefinition> = {
       'tsconfig.json',
       'postcss.config.js',
     ],
-    frameworkPackages: ['react', 'react-dom'],
     listExtensions: ['.tsx', '.ts', '.jsx', '.js', '.css', '.json'],
     entryPoint: 'src/main.tsx',
     buildCommand: 'npm run build',
     outputDir: 'dist',
+    // Vite copies `public/` into `dist/`, which is the nginx html root.
+    publicDir: 'public',
     deployType: 'static',
     startCommand: null,
     dockerfile: null,
@@ -149,11 +157,12 @@ const STACKS: Record<StackId, StackDefinition> = {
     fileExtension: '.html',
     sandboxTemplate: GENERIC_NODE_SANDBOX,
     configFiles: ['package.json', 'package-lock.json'],
-    frameworkPackages: [],
     listExtensions: ['.html', '.css', '.js'],
     entryPoint: 'index.html',
     buildCommand: null,
     outputDir: '.',
+    // The Dockerfile copies the repo root itself into the nginx html root.
+    publicDir: '',
     deployType: 'static',
     startCommand: null,
     dockerfile: null,
@@ -217,26 +226,6 @@ export function getStackConfigFiles(stack: string): string[] {
 export function isStackConfigFile(stack: string, filePath: string): boolean {
   const fileName = filePath.replace(/\\/g, '/').split('/').pop() || '';
   return getStack(stack).configFiles.includes(fileName);
-}
-
-/**
- * True when this import is relative, aliased, or a per-stack framework package
- * already provided by the scaffold. Never applies the React skip list to other stacks.
- */
-export function shouldSkipPackageInstall(stack: string, importPath: string): boolean {
-  if (importPath.startsWith('.') || importPath.startsWith('/') || importPath.startsWith('@/')) {
-    return true;
-  }
-  const packageName = importPath.startsWith('@')
-    ? importPath.split('/').slice(0, 2).join('/')
-    : importPath.split('/')[0];
-  return getStack(stack).frameworkPackages.includes(packageName);
-}
-
-export function packageNameFromImport(importPath: string): string {
-  return importPath.startsWith('@')
-    ? importPath.split('/').slice(0, 2).join('/')
-    : importPath.split('/')[0];
 }
 
 export function getStackListExtensions(stack: string): string[] {

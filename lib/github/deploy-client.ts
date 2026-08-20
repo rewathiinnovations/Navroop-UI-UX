@@ -25,6 +25,24 @@ import {
 } from '@/lib/publish/constants';
 import { log } from '@/lib/logger';
 import { readCacheJson, writeCacheJson } from '@/lib/runtime/data-dir';
+import { assertPushableFiles, type PushFileEntry } from '@/lib/github/push-limits';
+
+/**
+ * Re-exported so publish assembly has one import for the push contract; the guards and the
+ * limits themselves live in `lib/github/push-limits.ts`, which is a leaf (no prisma, no
+ * fetch) so `publishJobErrorCode` can map the refusal without pulling this module in.
+ */
+export {
+  assertPushableFiles,
+  isBinaryPushEntry,
+  MAX_PUSH_ENTRIES,
+  MAX_PUSH_FILE_BYTES,
+  MAX_PUSH_INLINE_BYTES,
+  MAX_PUSH_TOTAL_BYTES,
+  PushRefusedError,
+  pushEntryByteLength,
+  type PushFileEntry,
+} from '@/lib/github/push-limits';
 
 const GITHUB_API = 'https://api.github.com';
 const API_VERSION = '2022-11-28';
@@ -322,7 +340,14 @@ export async function ensureDeployRepo(
 }
 
 /**
- * One commit via the git trees API with inline file content (not one blob call per file).
+ * One commit via the git trees API. Text files ride inline in the tree request (not one
+ * blob call per file); binary files cannot — the inline `content` field is a JSON string
+ * that GitHub reads as UTF-8, so a webp handed to it would be stored mangled. Those are
+ * uploaded as base64 blobs first and referenced by sha.
+ *
+ * `assertPushableFiles` refuses an unpushable set *before* the ref read, so a site too
+ * large for one commit fails with a sentence naming the files instead of whatever GitHub
+ * answers after the bytes have been sent (F-261).
  *
  * `branch` is the branch Coolify is told to build. It used to be absent and the ref was
  * hardcoded to `main`, so a `Deployment.repoBranch` holding anything else would have had
@@ -330,7 +355,7 @@ export async function ensureDeployRepo(
  */
 export async function pushFiles(
   repoFullName: string,
-  files: Record<string, string>,
+  files: Record<string, PushFileEntry>,
   message: string,
   workspaceId = DEFAULT_WORKSPACE_ID,
   branch = DEFAULT_DEPLOY_BRANCH,
@@ -339,6 +364,7 @@ export async function pushFiles(
   if (entries.length === 0) {
     throw new GithubAppError('No project files to push', 400);
   }
+  assertPushableFiles(entries);
 
   const ref = await githubInstallationJson<{ object?: { sha?: string }; message?: string }>(
     workspaceId,
@@ -364,26 +390,40 @@ export async function pushFiles(
     );
   }
 
-  const tree = await githubInstallationJson<{ sha?: string; message?: string }>(
+  // Blobs first, in path order: a tree entry can only carry a sha once the blob exists.
+  // Sequential on purpose — a handful of assets per site, and a burst of parallel writes
+  // is what GitHub's secondary rate limit is for.
+  const tree: Array<Record<string, string>> = [];
+  for (const [path, entry] of entries) {
+    if (typeof entry === 'string') {
+      tree.push({ path, mode: '100644', type: 'blob', content: entry });
+      continue;
+    }
+    const blob = await githubInstallationJson<{ sha?: string; message?: string }>(
+      workspaceId,
+      `/repos/${repoFullName}/git/blobs`,
+      { method: 'POST', body: JSON.stringify({ content: entry.base64, encoding: 'base64' }) },
+    );
+    if (!blob.ok || !blob.data.sha) {
+      throw new GithubAppError(
+        blob.data.message || `Could not upload ${path}`,
+        blob.status,
+        blob.data,
+      );
+    }
+    tree.push({ path, mode: '100644', type: 'blob', sha: blob.data.sha });
+  }
+
+  const treeResult = await githubInstallationJson<{ sha?: string; message?: string }>(
     workspaceId,
     `/repos/${repoFullName}/git/trees`,
-    {
-      method: 'POST',
-      body: JSON.stringify({
-        tree: entries.map(([path, content]) => ({
-          path,
-          mode: '100644',
-          type: 'blob',
-          content,
-        })),
-      }),
-    },
+    { method: 'POST', body: JSON.stringify({ tree }) },
   );
-  if (!tree.ok || !tree.data.sha) {
+  if (!treeResult.ok || !treeResult.data.sha) {
     throw new GithubAppError(
-      tree.data.message || 'Could not create the git tree',
-      tree.status,
-      tree.data,
+      treeResult.data.message || 'Could not create the git tree',
+      treeResult.status,
+      treeResult.data,
     );
   }
 
@@ -394,7 +434,7 @@ export async function pushFiles(
       method: 'POST',
       body: JSON.stringify({
         message,
-        tree: tree.data.sha,
+        tree: treeResult.data.sha,
         parents: parentSha ? [parentSha] : [],
       }),
     },
