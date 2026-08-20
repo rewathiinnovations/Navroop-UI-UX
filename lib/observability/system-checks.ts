@@ -1,5 +1,6 @@
 import { systemChecksDigestEmail } from '../email/templates/observability';
 import { resolveSendAdminEmail } from './alerts';
+import { pingDeadManSwitch } from './dead-man-switch';
 import { getObservabilityStore } from './store';
 import type { CronRunRow, SendAdminEmail, SystemCheckRow } from './types';
 
@@ -13,7 +14,9 @@ import type { CronRunRow, SendAdminEmail, SystemCheckRow } from './types';
  * mapping: no monitored name without a route, and no scheduled route left unmonitored.
  *
  * `system-checks-digest` is the one scheduled route deliberately absent: it is the sender, so
- * it cannot report its own silence. That needs an external dead-man's-switch ping — see the
+ * it cannot report its own silence. That is covered from outside instead — every digest run
+ * pings the monitor at `observability.deadManUrl`, and the monitor alerting on a missing ping
+ * is what detects the digest going dark. See `lib/observability/dead-man-switch.ts` and the
  * cron table in `docs/coolify.md`.
  */
 export const CRON_STALE_MS: Record<string, number> = {
@@ -75,15 +78,14 @@ export async function sendSystemChecksDigest(
     now?: Date;
     runs?: CronRunRow[];
     sendAdminEmail?: SendAdminEmail;
+    fetchImpl?: typeof fetch;
+    deadManUrl?: string | null;
   } = {},
 ) {
   const now = deps.now ?? new Date();
   const runs = deps.runs ?? (await getObservabilityStore().listLatestCronRunPerName());
   const rows = evaluateSystemChecks(runs, now);
   const problems = rows.filter((row) => row.stale || row.ok === false);
-  if (problems.length === 0) {
-    return { ok: true as const, detail: null, sent: false, problems, lines: [] as string[] };
-  }
   const lines = problems.map((row) => {
     const label = JOB_LABEL[row.name] || row.name;
     if (!row.lastRunAt) return `${label} (${row.name}) has never run`;
@@ -91,15 +93,31 @@ export async function sendSystemChecksDigest(
       return `${label} (${row.name}) failed${row.detail ? `: ${row.detail}` : ''}`;
     return `${label} (${row.name}) is stale (last run ${row.lastRunAt})`;
   });
-  await resolveSendAdminEmail(deps.sendAdminEmail)(systemChecksDigestEmail({ lines }));
-  // `ok: true`: the digest's job is to report, and it reported. The unhealthy checks it found
-  // are each already red in their own `CronRun` row, so failing this run too would blame the
-  // messenger and put a second red row in front of the operator for the same incident.
+  if (lines.length > 0) {
+    await resolveSendAdminEmail(deps.sendAdminEmail)(systemChecksDigestEmail({ lines }));
+  }
+
+  // After the reporting work, and on every run including the quiet one — the quiet run is the
+  // common case, so a ping only on the noisy path would leave the monitor expecting nothing
+  // and detecting nothing. This call is the only evidence outside this process that the digest
+  // still runs at all; see lib/observability/dead-man-switch.ts.
+  const deadMan = await pingDeadManSwitch({ url: deps.deadManUrl, fetchImpl: deps.fetchImpl });
+
+  // A failed ping is this cron's own work left undone, the same way a failed Sentry flush is
+  // the heartbeat cron's. It is deliberately not the "blame the messenger" case below: the
+  // problems the digest *found* are already red in their own `CronRun` rows and do not fail
+  // this run, but a heartbeat that never left the building means the operator's last line of
+  // defence is silently disarmed, and nothing else in the product can notice that.
+  const deadManDetail =
+    deadMan.state === 'failed' ? `monitoring heartbeat failed: ${deadMan.detail}` : null;
+  const problemDetail = problems.length > 0 ? `${problems.length} check(s) need attention` : null;
+
   return {
-    ok: true as const,
-    detail: `${problems.length} check(s) need attention`,
-    sent: true,
+    ok: deadMan.state !== 'failed',
+    detail: [problemDetail, deadManDetail].filter(Boolean).join('; ') || null,
+    sent: lines.length > 0,
     problems,
     lines,
+    deadMan,
   };
 }

@@ -20,17 +20,45 @@ export function resetSentryEnvMigrateForTests() {
   ran = false;
 }
 
+type LoggerModule = {
+  log: { info: (event: string, extra?: Record<string, unknown>) => void };
+};
+
+/**
+ * The default sink for this module's two log lines.
+ *
+ * Detached on purpose — a log line must not decide whether boot succeeds — but
+ * detached still has to mean logged. This used to end in `.catch(() => undefined)`,
+ * in the very module whose swallowed second write produced the 2026-08-18
+ * `.data/config/observability.json` incident (F-634). A logger that cannot load now
+ * falls through to stderr with the event name attached, so the line is degraded
+ * rather than gone.
+ *
+ * `loadLogger` is dynamic to keep `lib/logger` out of this module's import graph, and
+ * injectable so the failure path is reachable from a test.
+ */
+export function logMigrateEvent(
+  event: string,
+  extra?: Record<string, unknown>,
+  loadLogger: () => Promise<LoggerModule> = () => import('../logger'),
+) {
+  return loadLogger()
+    .then(({ log: logger }) => logger.info(event, extra))
+    .catch((error: unknown) => {
+      console.error(`[observability] ${event} — structured logger unavailable`, {
+        ...extra,
+        loggerError: error instanceof Error ? error.message : String(error),
+      });
+    });
+}
+
 /** First boot: if no Sentry Integration and legacy SENTRY_DSN is set, migrate it. Then the env var is ignored. */
 export async function migrateEnvSentry(deps: MigrateDeps = {}) {
   if (ran && !deps.getExisting && !deps.createMigrated) {
     return { migrated: false, ignored: false };
   }
   const env = deps.env ?? process.env;
-  const log =
-    deps.log ??
-    ((event: string, extra?: Record<string, unknown>) => {
-      void import('../logger').then(({ log: logger }) => logger.info(event, extra)).catch(() => undefined);
-    });
+  const log = deps.log ?? logMigrateEvent;
   const dsn = env.SENTRY_DSN?.trim() || env.NEXT_PUBLIC_SENTRY_DSN?.trim() || '';
   const getExisting =
     deps.getExisting ??

@@ -1,12 +1,12 @@
 import { prisma } from '@/lib/db';
 import { getProviderHealth } from '@/lib/ai/circuit';
 import { loadOrphanReport } from '@/lib/jobs/orphans';
-import { getEffectivePlan } from '@/lib/plans/limits';
 import { WORKSPACE_ROW_ID } from '@/lib/storage/usage';
 import { currentRelease, parseReleaseHistory } from '@/lib/deploy/release';
 import { loadErrorTrackingPanel, loadSystemChecks } from '@/lib/observability/admin';
 import { describeDataDir } from '@/lib/health/check';
 import { getDataDirStatus } from '@/lib/runtime/data-dir';
+import { loadInvariantReport } from '@/lib/db-invariants';
 import { getSelfIdentity } from '@/lib/runtime/self';
 
 function since(days: number) {
@@ -30,12 +30,12 @@ export async function getAdminHealth() {
     last24h,
     last7d,
     integrations,
-    plan,
     deployErrors,
     integrationErrors,
     orphans,
     errorTracking,
     systemChecks,
+    dbInvariants,
   ] = await Promise.all([
     windowCounts(since(1)),
     windowCounts(since(7)),
@@ -43,7 +43,6 @@ export async function getAdminHealth() {
       where: { workspaceId: WORKSPACE_ROW_ID },
       select: { kind: true, status: true, lastCheckedAt: true, lastError: true },
     }),
-    getEffectivePlan(WORKSPACE_ROW_ID),
     prisma.deployment.groupBy({
       by: ['lastError'],
       where: { status: 'FAILED', updatedAt: { gte: since(7) }, lastError: { not: null } },
@@ -58,6 +57,7 @@ export async function getAdminHealth() {
     loadOrphanReport(),
     loadErrorTrackingPanel(),
     loadSystemChecks(),
+    loadInvariantReport(),
   ]);
 
   const codes = new Map<string, number>();
@@ -109,6 +109,9 @@ export async function getAdminHealth() {
     providers: getProviderHealth(),
     errorTracking,
     systemChecks,
+    // `null` means the probe itself could not run, which is not the same
+    // answer as "all four present" and is rendered as its own state.
+    dbInvariants,
     dataDir: (() => {
       const status = describeDataDir(getDataDirStatus());
       const created = status.volumeCreatedAt ? Date.parse(status.volumeCreatedAt) : NaN;

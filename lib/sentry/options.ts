@@ -1,5 +1,11 @@
+import { log } from '../logger';
 import { applyImmediateNoiseSettings, observabilityBeforeSend } from '../observability/noise';
-import { captureBootRuntimeConfig, readRuntimeConfig } from '../observability/runtime-config';
+import type { RuntimeConfigRead } from '../observability/runtime-config';
+import {
+  captureBootRuntimeConfigState,
+  readRuntimeConfig,
+  runtimeConfigPath,
+} from '../observability/runtime-config';
 
 export function sentryDsn() {
   const config = readRuntimeConfig();
@@ -30,20 +36,52 @@ export function shouldInitSentry(input?: {
   return Boolean(sentryDsn());
 }
 
+/**
+ * Whether `Sentry.init` ran in this process, and if not, why. `dsnConfigured` on
+ * `/api/health` reads the file live, so it goes green the moment a broken config is
+ * repaired — over a process that stays blind until it restarts (F-738).
+ *
+ * `not_captured` means no boot read happened here: the edge runtime, or a test. It is not
+ * evidence of anything, in the same way `describeDataDir`'s `not_checked` is not.
+ */
+export type SentryInitState =
+  'initialised' | 'skipped_absent' | 'skipped_unreadable' | 'skipped_disabled' | 'not_captured';
+
+export function describeSentryInit(read: RuntimeConfigRead | null): SentryInitState {
+  if (!read) return 'not_captured';
+  if (read.state === 'absent') return 'skipped_absent';
+  if (read.state === 'unreadable') return 'skipped_unreadable';
+  return shouldInitSentry({ config: read.config }) ? 'initialised' : 'skipped_disabled';
+}
+
 export function buildSentryInitOptions() {
-  const config = captureBootRuntimeConfig();
-  if (!shouldInitSentry({ config })) return null;
-  if (config) {
-    applyImmediateNoiseSettings({
-      ignoreList: config.ignoreList,
-      fingerprintLimit: config.fingerprintLimit,
-      fingerprintWindowSec: config.fingerprintWindowSec,
-    });
+  const read = captureBootRuntimeConfigState();
+  if (read.state !== 'ok' || !shouldInitSentry({ config: read.config })) {
+    // An absent file is the ordinary "Sentry is not connected" state and the startup check
+    // reports it. A file that could not be read is different: error reporting is off for
+    // the life of this process because of a filesystem problem, and before F-738 nothing
+    // said so at the point where the decision was taken.
+    if (read.state === 'unreadable') {
+      log.error('sentry.init_skipped_unreadable_config', {
+        path: runtimeConfigPath(),
+        code: read.code,
+        error: read.message,
+        detail:
+          'Sentry.init was skipped because the observability config file could not be read. Error tracking is off until this container is restarted with a readable file.',
+      });
+    }
+    return null;
   }
+  const config = read.config;
+  applyImmediateNoiseSettings({
+    ignoreList: config.ignoreList,
+    fingerprintLimit: config.fingerprintLimit,
+    fingerprintWindowSec: config.fingerprintWindowSec,
+  });
   return {
-    dsn: config!.dsn,
-    environment: config!.environment || sentryEnvironment(),
-    tracesSampleRate: config!.performance === false ? 0 : config!.tracesSampleRate,
+    dsn: config.dsn,
+    environment: config.environment || sentryEnvironment(),
+    tracesSampleRate: config.performance === false ? 0 : config.tracesSampleRate,
     beforeSend: observabilityBeforeSend,
     sendDefaultPii: false,
   };

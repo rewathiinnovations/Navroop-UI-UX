@@ -15,9 +15,11 @@ import AdminPage from '@/components/admin/AdminPage';
 import AdminTabs, { type AdminTab } from '@/components/admin/AdminTabs';
 import StatTile from '@/components/admin/StatTile';
 import StatusBanner from '@/components/admin/StatusBanner';
+import { handleAdminForbidden } from '@/lib/admin/forbidden';
 import { notify, toMessage } from '@/lib/notify';
 import StudioButton from '@/components/app/studio/StudioButton';
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { formatAdminDate, formatAdminDateTime } from '../format-admin-date';
 import type { getAdminHealth } from '@/lib/health/admin';
 
@@ -61,7 +63,8 @@ type HealthPayload = {
     status: 'Healthy' | 'Degraded' | 'Not reporting';
     lastSuccessfulSendAt: string | null;
     lastConfirmedReceiptAt: string | null;
-    quota: { used: number; limit: number; resetsAt: string | null } | null;
+    /** `null` limit: Sentry reports no per-project rate limit, so there is no ratio. */
+    quota: { used: number; limit: number | null; resetsAt: string | null } | null;
     dropped24h: Array<{ reason: string; count: number }>;
     topIssues: Array<{ id: string; title: string; count: number }>;
     dsnProjectId: string | null;
@@ -76,6 +79,22 @@ type HealthPayload = {
     stale: boolean;
     detail: string | null;
   }>;
+  /**
+   * The four migration-only invariants, probed against the connected database
+   * (F-352). `null` means the probe could not run — not the same answer as
+   * "all four present", and rendered as its own state.
+   */
+  dbInvariants?: {
+    checkedAt: string;
+    probes: Array<{
+      name: string;
+      table: string;
+      matters: string;
+      present: boolean;
+      malformed: boolean;
+    }>;
+    broken: string[];
+  } | null;
   dataDir?: {
     state: 'ok' | 'not_checked' | 'unwritable';
     message: string;
@@ -115,6 +134,7 @@ type _HealthPayloadMatchesServer = Assert<
 >;
 
 export default function HealthDashboard() {
+  const router = useRouter();
   const [data, setData] = useState<HealthPayload | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -132,7 +152,7 @@ export default function HealthDashboard() {
       try {
         const response = await fetch('/api/admin/health');
         if (response.status === 403) {
-          window.location.replace('/dashboard');
+          handleAdminForbidden(router);
           return;
         }
         const payload = await response.json();
@@ -151,7 +171,7 @@ export default function HealthDashboard() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [router]);
 
   const cards = data
     ? [
@@ -385,24 +405,28 @@ export default function HealthDashboard() {
           {data.errorTracking.quota ? (
             <div className="mt-14">
               <p className="text-[12px] uppercase tracking-[0.08em] text-[var(--studio-faint)]">
-                Quota {data.errorTracking.quota.used} / {data.errorTracking.quota.limit}
+                {data.errorTracking.quota.limit === null
+                  ? `Accepted ${data.errorTracking.quota.used} · no per-project quota configured in Sentry`
+                  : `Quota ${data.errorTracking.quota.used} / ${data.errorTracking.quota.limit}`}
                 {data.errorTracking.quota.resetsAt
                   ? ` · resets ${formatAdminDate(data.errorTracking.quota.resetsAt)}`
                   : ''}
               </p>
-              <div className="mt-6 h-8 overflow-hidden rounded-12 bg-[var(--studio-bg)]">
-                <div
-                  className="h-full bg-[var(--studio-accent)]"
-                  style={{
-                    width: `${Math.min(
-                      100,
-                      data.errorTracking.quota.limit > 0
-                        ? (data.errorTracking.quota.used / data.errorTracking.quota.limit) * 100
-                        : 0,
-                    )}%`,
-                  }}
-                />
-              </div>
+              {/* No limit means no ratio: a full bar for an unlimited project read as
+                  "quota exhausted", which is what mailed every admin daily (F-723). */}
+              {data.errorTracking.quota.limit !== null && data.errorTracking.quota.limit > 0 ? (
+                <div className="mt-6 h-8 overflow-hidden rounded-12 bg-[var(--studio-bg)]">
+                  <div
+                    className="h-full bg-[var(--studio-accent)]"
+                    style={{
+                      width: `${Math.min(
+                        100,
+                        (data.errorTracking.quota.used / data.errorTracking.quota.limit) * 100,
+                      )}%`,
+                    }}
+                  />
+                </div>
+              ) : null}
             </div>
           ) : (
             <p className="mt-10 text-[13px] text-[var(--studio-muted)]">
@@ -456,8 +480,8 @@ export default function HealthDashboard() {
               onClick={async () => {
                 setTestBusy(true);
                 setTestMessage('');
-                // The route waits up to 60s for Sentry to acknowledge, so the
-                // pending toast is what tells the admin it is still working.
+                // The route now waits at most 10s for Sentry to acknowledge, so an
+                // unconfirmed send is a normal outcome rather than a timeout.
                 const toastId = notify.loading('Sending a test event to Sentry…');
                 try {
                   const response = await fetch('/api/admin/health/sentry-test', { method: 'POST' });
@@ -469,7 +493,9 @@ export default function HealthDashboard() {
                   }
                   const detail = payload.received
                     ? 'Test event received by Sentry.'
-                    : 'Test event was sent but not received within 60 seconds.';
+                    : payload.confirmError
+                      ? `Test event sent. Sentry could not be asked whether it arrived: ${payload.confirmError}`
+                      : 'Test event sent. Sentry had not confirmed it within 10 seconds — reopen Health in a minute to check.';
                   notify.settle(toastId, payload.received ? 'success' : 'warning', detail);
                   setTestMessage(detail);
                 } catch (cause) {
@@ -576,6 +602,38 @@ export default function HealthDashboard() {
               </li>
             )}
           </ul>
+          <p className="mt-16 text-[12px] font-medium uppercase tracking-wide text-[var(--studio-muted)]">
+            Database invariants
+          </p>
+          {data && data.dbInvariants === null ? (
+            <p className="mt-8 text-[13px] text-[var(--studio-danger)]">
+              Could not be checked. This is not the same as being present.
+            </p>
+          ) : (
+            <ul className="mt-8 space-y-8">
+              {(data?.dbInvariants?.probes || []).map((row) => (
+                <li
+                  key={row.name}
+                  className={
+                    row.present && !row.malformed
+                      ? 'text-[13px] text-[var(--studio-fg)]'
+                      : 'text-[13px] text-[var(--studio-danger)]'
+                  }
+                >
+                  <span className="font-medium">{row.name}</span>
+                  {` — ${row.table}`}
+                  {row.present
+                    ? row.malformed
+                      ? ` — present but not the shape the migration created: ${row.matters}`
+                      : ' — present'
+                    : ` — MISSING: ${row.matters}`}
+                </li>
+              ))}
+              {!loading && data?.dbInvariants && data.dbInvariants.probes.length === 0 && (
+                <li className="text-[13px] text-[var(--studio-muted)]">Nothing to check.</li>
+              )}
+            </ul>
+          )}
         </AdminCard>
       ),
     },
@@ -619,7 +677,7 @@ export default function HealthDashboard() {
 
       <div className="grid grid-cols-1 gap-12 sm:grid-cols-2 xl:grid-cols-5">
         {(loading && !data
-          ? Array.from({ length: 10 }, (_, i) => ({ label: '…', value: '—' }))
+          ? Array.from({ length: 10 }, () => ({ label: '…', value: '—' }))
           : cards
         ).map((card, index) => (
           <StatTile

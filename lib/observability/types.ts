@@ -1,4 +1,4 @@
-export type ObservabilityCheckKind = 'heartbeat' | 'quota' | 'dsn_config';
+export type ObservabilityCheckKind = 'heartbeat' | 'quota' | 'dsn_config' | 'db_invariants';
 
 export type ObservabilityCheckRow = {
   id: string;
@@ -56,7 +56,8 @@ export type SentryDropped = { reason: string; count: number };
 export type SentryProjectStats = {
   accepted: number;
   dropped: SentryDropped[];
-  quota: { used: number; limit: number; resetsAt: string | null };
+  /** `null` when Sentry reports no per-project rate limit: unknown, not exhausted. */
+  quota: { used: number; limit: number | null; resetsAt: string | null };
   topIssues: Array<{ id: string; title: string; count: number }>;
 };
 
@@ -71,7 +72,7 @@ export type ErrorTrackingPanel = {
   status: ErrorTrackingStatus;
   lastSuccessfulSendAt: string | null;
   lastConfirmedReceiptAt: string | null;
-  quota: { used: number; limit: number; resetsAt: string | null } | null;
+  quota: { used: number; limit: number | null; resetsAt: string | null } | null;
   dropped24h: SentryDropped[];
   topIssues: Array<{ id: string; title: string; count: number }>;
   dsnProjectId: string | null;

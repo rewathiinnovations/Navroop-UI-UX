@@ -8,7 +8,13 @@ import { evaluateSystemChecks } from './system-checks';
 import type { ErrorTrackingPanel, ObservabilityStore, SentryApi, SentryDropped } from './types';
 
 const TEST_FINGERPRINT = 'observability-test';
-const TEST_TIMEOUT_MS = 60_000;
+/**
+ * How long the admin request waits for Sentry to acknowledge the test event. It waited
+ * 60s, longer than the Traefik/Coolify default, so the admin got a gateway timeout and
+ * learned nothing — the one question the button exists to answer (F-761). An unconfirmed
+ * send is now an answer of its own: the event id is returned either way.
+ */
+const TEST_CONFIRM_WAIT_MS = 10_000;
 const TEST_POLL_MS = 2_000;
 
 export function buildErrorTrackingPanel(input: {
@@ -18,7 +24,7 @@ export function buildErrorTrackingPanel(input: {
   releaseSha: string;
   lastSuccessfulSendAt: string | null;
   lastConfirmedReceiptAt: string | null;
-  quota: { used: number; limit: number; resetsAt: string | null } | null;
+  quota: { used: number; limit: number | null; resetsAt: string | null } | null;
   dropped24h: SentryDropped[];
   topIssues: Array<{ id: string; title: string; count: number }>;
 }): ErrorTrackingPanel {
@@ -30,7 +36,15 @@ export function buildErrorTrackingPanel(input: {
     Date.parse(input.lastConfirmedReceiptAt) < Date.parse(input.lastSuccessfulSendAt)
   ) {
     status = 'Degraded';
-  } else if (input.quota && input.quota.limit > 0 && input.quota.used / input.quota.limit >= 0.8) {
+  } else if (
+    input.quota &&
+    input.quota.limit !== null &&
+    input.quota.limit > 0 &&
+    input.quota.used / input.quota.limit >= 0.8
+  ) {
+    status = 'Degraded';
+  } else if (input.dropped24h.some((row) => row.count > 0)) {
+    // Events reaching Sentry and being discarded there is not a healthy project (F-632).
     status = 'Degraded';
   }
 
@@ -148,12 +162,36 @@ export async function sendObservabilityTestEvent(deps: TestEventDeps = {}) {
   await flush(5_000);
 
   const started = now();
-  while (now() - started < TEST_TIMEOUT_MS) {
-    const issue = await findIssue(TEST_FINGERPRINT);
-    if (issue) {
-      return { received: true, eventId: eventId ?? null, lastSeen: issue.lastSeen };
+  let confirmError: string | null = null;
+  for (;;) {
+    let issue: { id: string; lastSeen: string } | null = null;
+    try {
+      issue = await findIssue(TEST_FINGERPRINT);
+    } catch (error) {
+      // The Sentry API rejects on failure (F-631). "We could not ask" is not "the event
+      // did not arrive", so it is reported as its own reason rather than as a miss.
+      confirmError = error instanceof Error ? error.message : String(error);
+      break;
     }
+    if (issue) {
+      return {
+        outcome: 'received' as const,
+        received: true,
+        eventId: eventId ?? null,
+        lastSeen: issue.lastSeen,
+        waitedMs: now() - started,
+        confirmError: null,
+      };
+    }
+    if (now() - started + TEST_POLL_MS >= TEST_CONFIRM_WAIT_MS) break;
     await sleep(TEST_POLL_MS);
   }
-  return { received: false, eventId: eventId ?? null, lastSeen: null };
+  return {
+    outcome: 'sent_unconfirmed' as const,
+    received: false,
+    eventId: eventId ?? null,
+    lastSeen: null,
+    waitedMs: now() - started,
+    confirmError,
+  };
 }

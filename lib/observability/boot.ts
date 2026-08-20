@@ -1,9 +1,6 @@
-import type { ObservabilityRuntimeConfig } from './runtime-config';
-import {
-  readRuntimeConfig,
-  runtimeConfigDiffers,
-  writeRuntimeConfig,
-} from './runtime-config';
+import { log } from '../logger';
+import type { ObservabilityRuntimeConfig, RuntimeConfigRead } from './runtime-config';
+import { readRuntimeConfigState, runtimeConfigDiffers, writeRuntimeConfig } from './runtime-config';
 
 export type ConnectedSentry = {
   status: string;
@@ -23,7 +20,9 @@ export type ConnectedSentry = {
   };
 };
 
-export function runtimeConfigFromIntegration(row: ConnectedSentry | null): ObservabilityRuntimeConfig | null {
+export function runtimeConfigFromIntegration(
+  row: ConnectedSentry | null,
+): ObservabilityRuntimeConfig | null {
   if (!row || row.status !== 'CONNECTED') {
     return {
       enabled: false,
@@ -57,28 +56,49 @@ export function runtimeConfigFromIntegration(row: ConnectedSentry | null): Obser
   };
 }
 
-/** After DB is available: rewrite the volume file when it drifted from the Integration row. */
-export async function reconcileRuntimeConfig(deps: {
-  getConnected?: () => Promise<ConnectedSentry | null>;
-  read?: () => ObservabilityRuntimeConfig | null;
-  write?: (config: ObservabilityRuntimeConfig) => void;
-} = {}) {
+/**
+ * After DB is available: rewrite the volume file when it drifted from the Integration row.
+ *
+ * The read is the three-state one (F-738). "Could not read the file" and "there is no
+ * file" both end in a rewrite — the Integration row is the source of truth and the volume
+ * is a cache — but only one of them means something was wrong with the volume, and the
+ * two-state read could not tell the caller which happened.
+ */
+export async function reconcileRuntimeConfig(
+  deps: {
+    getConnected?: () => Promise<ConnectedSentry | null>;
+    read?: () => RuntimeConfigRead;
+    write?: (config: ObservabilityRuntimeConfig) => void;
+  } = {},
+) {
   const getConnected =
     deps.getConnected ??
     (async () => {
+      // Dynamic so this module stays importable from boot before the DB client is wanted.
       const { getIntegration } = await import('../integrations/store');
       const { DEFAULT_WORKSPACE_ID } = await import('../publish/constants');
       const row = await getIntegration(DEFAULT_WORKSPACE_ID, 'SENTRY');
       if (!row) return null;
       return { status: row.status, config: row.config };
     });
-  const read = deps.read ?? readRuntimeConfig;
+  const read = deps.read ?? readRuntimeConfigState;
   const write = deps.write ?? writeRuntimeConfig;
   const connected = await getConnected();
   const next = runtimeConfigFromIntegration(connected);
   const current = read();
-  if (!next) return { rewrote: false as const };
-  if (!runtimeConfigDiffers(current, next)) return { rewrote: false as const };
+  const unreadable = current.state === 'unreadable';
+  if (!next) return { rewrote: false as const, unreadable };
+  if (!runtimeConfigDiffers(current.state === 'ok' ? current.config : null, next)) {
+    return { rewrote: false as const, unreadable };
+  }
   write(next);
-  return { rewrote: true as const, projectId: next.projectId };
+  if (unreadable) {
+    // The read failure itself is logged by `readRuntimeConfigState`; this line is the
+    // other half of the story, and the half an operator needs: it is fixed now.
+    log.info('observability.runtime_config_repaired', {
+      projectId: next.projectId,
+      previousError: current.message,
+    });
+  }
+  return { rewrote: true as const, projectId: next.projectId, unreadable };
 }

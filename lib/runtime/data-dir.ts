@@ -28,7 +28,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { userInfo as osUserInfo } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 export const DEFAULT_DATA_DIR = '/data';
@@ -39,6 +39,24 @@ export const LARGE_OP_MIN_FREE_BYTES = 2 * 1024 * 1024 * 1024;
 export const FREE_SPACE_WARN_RATIO = 0.2;
 export const FREE_SPACE_ALERT_RATIO = 0.1;
 export const TMP_MAX_AGE_MS = 60 * 60 * 1000;
+
+/**
+ * Written inside a `withTmpDir` working directory for as long as the operation owns it.
+ *
+ * A directory's mtime moves when an entry is added or removed, not while an existing file is
+ * appended to — and `pg_dump --file` creates the dump once and then writes into it for the
+ * rest of the run. So the hourly sweep read a two-hour dump as two hours idle and deleted it
+ * out from under the running process (F-727). A cleaner may never remove a path another
+ * process is holding open, so it looks for this marker instead of guessing from mtimes.
+ */
+export const TMP_INFLIGHT_MARKER = '.inflight';
+
+/**
+ * How long a marked directory is believed. The marker is removed in a `finally`, so one
+ * survives only when the owning process was killed; past this the volume matters more than a
+ * dump that has been running for a day.
+ */
+export const TMP_INFLIGHT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 export type VolumeIdFile = {
   id: string;
@@ -132,7 +150,11 @@ export function resetDataDirForTests() {
   lastStatus = null;
 }
 
-function emptyStatus(path: string, error: string | null, extra: Partial<DataDirStatus> = {}): DataDirStatus {
+function emptyStatus(
+  path: string,
+  error: string | null,
+  extra: Partial<DataDirStatus> = {},
+): DataDirStatus {
   return {
     checked: true,
     path,
@@ -167,7 +189,9 @@ function describeUnwritable(
   user: { uid?: number; username?: string },
 ) {
   const code =
-    error && typeof error === 'object' && 'code' in error ? String((error as { code?: string }).code) : '';
+    error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: string }).code)
+      : '';
   const who =
     user.uid != null && user.uid >= 0
       ? `non-root user (uid ${user.uid}${user.username ? ` / ${user.username}` : ''})`
@@ -217,24 +241,59 @@ function withDisk(status: DataDirStatus, disk: DataDirDisk | null): DataDirStatu
   };
 }
 
+/**
+ * The volume's identity, or `null` when the volume genuinely has none yet.
+ *
+ * Absent is the only benign case, so it is the only one that returns `null`. Everything else
+ * — EACCES, EISDIR, a half-written file from a crash, JSON that does not parse — throws
+ * (F-728). It used to be one blanket `catch`, and the caller answers `null` by minting a
+ * fresh id and writing it over the top: the real id is gone, and every health surface then
+ * reports a lost mount that never happened, with nothing left to investigate it with.
+ */
 function readVolumeIdFile(root: string): VolumeIdFile | null {
+  const path = volumeIdPath(root);
+  let text: string;
   try {
-    const raw = JSON.parse(readFileSync(volumeIdPath(root), 'utf8')) as unknown;
-    if (!raw || typeof raw !== 'object') return null;
-    const id = typeof (raw as { id?: unknown }).id === 'string' ? (raw as { id: string }).id.trim() : '';
-    const createdAt =
-      typeof (raw as { createdAt?: unknown }).createdAt === 'string'
-        ? (raw as { createdAt: string }).createdAt
-        : '';
-    if (!id || !createdAt) return null;
-    return { id, createdAt };
-  } catch {
-    return null;
+    text = readFileSync(path, 'utf8');
+  } catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+    if (code === 'ENOENT') return null;
+    throw new Error(
+      `The volume id file ${path} exists but could not be read (${code || 'unknown error'}).`,
+    );
   }
+
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text) as unknown;
+  } catch {
+    throw new Error(`The volume id file ${path} is not readable JSON.`);
+  }
+  const fields = raw && typeof raw === 'object' ? raw : {};
+  const id = 'id' in fields && typeof fields.id === 'string' ? fields.id.trim() : '';
+  const createdAt =
+    'createdAt' in fields && typeof fields.createdAt === 'string' ? fields.createdAt : '';
+  if (!id || !createdAt) {
+    throw new Error(`The volume id file ${path} is missing its id or createdAt.`);
+  }
+  return { id, createdAt };
 }
 
+/**
+ * Temp file then rename, the way `writeCacheJson` does it: a write interrupted halfway
+ * leaves the previous identity in place rather than a truncated file that the next boot
+ * would have to refuse.
+ */
 function writeVolumeIdFile(root: string, record: VolumeIdFile) {
-  writeFileSync(volumeIdPath(root), `${JSON.stringify(record, null, 2)}\n`, { encoding: 'utf8' });
+  const path = volumeIdPath(root);
+  const temp = `${path}.${process.pid}.tmp`;
+  try {
+    writeFileSync(temp, `${JSON.stringify(record, null, 2)}\n`, { encoding: 'utf8' });
+    renameSync(temp, path);
+  } catch (error) {
+    rmSync(temp, { force: true });
+    throw error;
+  }
 }
 
 /**
@@ -255,11 +314,29 @@ export function ensureDataDir(deps: EnsureDataDirDeps = {}): DataDirStatus {
   } catch (error) {
     const message = describeUnwritable(root, error, user);
     logError(message);
-    lastStatus = withDisk(emptyStatus(root, message, { previousVolumeId: deps.previousVolumeId ?? null }), readDisk(root, deps.disk));
+    lastStatus = withDisk(
+      emptyStatus(root, message, { previousVolumeId: deps.previousVolumeId ?? null }),
+      readDisk(root, deps.disk),
+    );
     return lastStatus;
   }
 
-  let record = readVolumeIdFile(root);
+  let record: VolumeIdFile | null;
+  try {
+    record = readVolumeIdFile(root);
+  } catch (error) {
+    // The volume is writable — this is not `describeUnwritable`'s ownership story. Reporting
+    // the real reason and stopping is the whole point: the alternative is a new id written
+    // over an identity we could not read (F-728).
+    const message = `${error instanceof Error ? error.message : String(error)} Refusing to replace it: a new id would report a lost volume that did not happen.`;
+    logError(message);
+    lastStatus = withDisk(
+      emptyStatus(root, message, { previousVolumeId: deps.previousVolumeId ?? null }),
+      readDisk(root, deps.disk),
+    );
+    return lastStatus;
+  }
+
   if (!record) {
     record = { id: randomUUID(), createdAt: (deps.now ?? new Date()).toISOString() };
     try {
@@ -316,7 +393,11 @@ export async function persistVolumeIdentity(deps: PersistVolumeIdentityDeps = {}
   const warn = deps.warn ?? ((message: string) => console.warn(`[data-dir] ${message}`));
   const currentId = status.volumeId;
   if (!currentId) {
-    return { changed: false as const, previousId: null as string | null, currentId: null as string | null };
+    return {
+      changed: false as const,
+      previousId: null as string | null,
+      currentId: null as string | null,
+    };
   }
 
   const previousId = (await (deps.getPrevious ?? defaultGetPreviousVolumeId)()) ?? null;
@@ -334,9 +415,44 @@ export async function persistVolumeIdentity(deps: PersistVolumeIdentityDeps = {}
   return { changed, previousId, currentId };
 }
 
-export function assertFreeSpaceForLargeOp(status: DataDirStatus = getDataDirStatus()) {
-  if (status.freeBytes == null) return;
-  if (status.freeBytes < LARGE_OP_MIN_FREE_BYTES) {
+/**
+ * Free bytes on the filesystem that actually backs `path`.
+ *
+ * When the volume is not mounted, `/data` does not exist and writes to it land on the
+ * filesystem underneath — so the nearest existing ancestor is the one the precondition is
+ * about, not an unknown.
+ */
+function probeFreeBytes(path: string): number | null {
+  let current = path;
+  for (;;) {
+    const disk = readDisk(current);
+    if (disk) return disk.freeBytes;
+    const parent = dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+}
+
+/**
+ * The 2 GB precondition for a dump, a restore or an export.
+ *
+ * It used to return early whenever `status.freeBytes` was null, and the cached status is
+ * unprobed until `ensureDataDir()` has run *in this process* — which only `instrumentation.ts`
+ * does. So every `tsx scripts/…` backup, restore and `pre-migrate` ran the guard as a no-op on
+ * exactly the paths most likely to fill the volume (F-726). Unknown free space is now a
+ * refusal, not a pass: a large operation that cannot see the disk is the one to stop.
+ */
+export function assertFreeSpaceForLargeOp(
+  status: DataDirStatus = getDataDirStatus(),
+  probeFree: (path: string) => number | null = probeFreeBytes,
+) {
+  const freeBytes = status.freeBytes ?? probeFree(status.path);
+  if (freeBytes == null) {
+    throw new Error(
+      `Free space on ${status.path} could not be determined, so this operation is refused. At least 2 GB must be free.`,
+    );
+  }
+  if (freeBytes < LARGE_OP_MIN_FREE_BYTES) {
     throw new Error(
       `Not enough free space on ${status.path} to run this operation. At least 2 GB must be free.`,
     );
@@ -349,12 +465,20 @@ export function sweepTmp(deps: { root?: string; now?: Date; maxAgeMs?: number } 
   const now = (deps.now ?? new Date()).getTime();
   const maxAge = deps.maxAgeMs ?? TMP_MAX_AGE_MS;
   let removed = 0;
-  if (!existsSync(dir)) return { removed };
+  let keptInFlight = 0;
+  if (!existsSync(dir)) return { removed, keptInFlight };
   for (const name of readdirSync(dir)) {
     const full = join(dir, name);
     try {
       const info = statSync(full);
-      if (now - info.mtimeMs < maxAge) continue;
+      // A marked directory is held open by another process (F-727). Its mtime says nothing
+      // about progress — `pg_dump` writes into a file it created once — so the marker, not
+      // the clock, decides, until the owner has been gone long enough to have died with it.
+      const inFlight = existsSync(join(full, TMP_INFLIGHT_MARKER));
+      if (now - info.mtimeMs < (inFlight ? TMP_INFLIGHT_MAX_AGE_MS : maxAge)) {
+        if (inFlight) keptInFlight += 1;
+        continue;
+      }
       rmSync(full, { recursive: true, force: true });
       removed += 1;
     } catch (error) {
@@ -365,13 +489,23 @@ export function sweepTmp(deps: { root?: string; now?: Date; maxAgeMs?: number } 
       });
     }
   }
-  return { removed };
+  return { removed, keptInFlight };
 }
 
-export async function withTmpDir<T>(fn: (dir: string) => Promise<T>, root = getDataDir()): Promise<T> {
+export async function withTmpDir<T>(
+  fn: (dir: string) => Promise<T>,
+  root = getDataDir(),
+): Promise<T> {
   const parent = tmpDir(root);
   mkdirSync(parent, { recursive: true });
   const dir = mkdtempSync(join(parent, 'op-'));
+  // Written before any work starts and removed with the directory: the hourly sweep must
+  // never delete a dump or a download that a process still has open.
+  writeFileSync(
+    join(dir, TMP_INFLIGHT_MARKER),
+    `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`,
+    { encoding: 'utf8' },
+  );
   try {
     return await fn(dir);
   } finally {
@@ -427,12 +561,19 @@ export function writeCacheJson(name: string, value: unknown): CacheWriteResult {
   }
 }
 
-export async function maybeAlertLowSpace(deps: {
-  status?: DataDirStatus;
-  send?: (mail: { subject: string; html: string; text: string; emailClass?: 'security' }) => Promise<void>;
-  getAlerted?: () => Promise<boolean>;
-  setAlerted?: (alerted: boolean) => Promise<void>;
-} = {}) {
+export async function maybeAlertLowSpace(
+  deps: {
+    status?: DataDirStatus;
+    send?: (mail: {
+      subject: string;
+      html: string;
+      text: string;
+      emailClass?: 'security';
+    }) => Promise<void>;
+    getAlerted?: () => Promise<boolean>;
+    setAlerted?: (alerted: boolean) => Promise<void>;
+  } = {},
+) {
   const status = deps.status ?? getDataDirStatus();
   if (!status.alertLowSpace || status.freeRatio == null || status.freeBytes == null) {
     try {
@@ -458,7 +599,9 @@ export async function maybeAlertLowSpace(deps: {
     ? await deps.getAlerted()
     : Boolean(
         (
-          await (await import('../db')).prisma.appSetting.findUnique({
+          await (
+            await import('../db')
+          ).prisma.appSetting.findUnique({
             where: { key: VOLUME_LOW_SPACE_ALERT_KEY },
           })
         )?.value,
@@ -523,7 +666,9 @@ export async function runTmpSweep(
     return { sent: false as const };
   });
   if ('alertFlagStale' in alert && alert.alertFlagStale) {
-    errors.push('low-space alert flag could not be cleared, so a later low-disk email would be suppressed');
+    errors.push(
+      'low-space alert flag could not be cleared, so a later low-disk email would be suppressed',
+    );
   }
 
   return {

@@ -1,7 +1,7 @@
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   captureBootRuntimeConfig,
   readRuntimeConfig,
@@ -16,7 +16,11 @@ import {
   observabilityBeforeSend,
   resetImmediateNoiseSettings,
 } from '../../lib/observability/noise';
-import { migrateEnvSentry, resetSentryEnvMigrateForTests } from '../../lib/observability/migrate-env';
+import {
+  logMigrateEvent,
+  migrateEnvSentry,
+  resetSentryEnvMigrateForTests,
+} from '../../lib/observability/migrate-env';
 import { reconcileRuntimeConfig } from '../../lib/observability/boot';
 import { shouldInitSentry } from '../../lib/sentry/options';
 import {
@@ -182,7 +186,10 @@ describe('sentry connect Path A', () => {
     const pending = sentryRestartBanner({ activeProjectId: '111', configuredProjectId: '456789' });
     expect(pending.restartRequired).toBe(true);
     expect(pending.message).toBe(SENTRY_COPY.restartRequired);
-    const cleared = sentryRestartBanner({ activeProjectId: '456789', configuredProjectId: '456789' });
+    const cleared = sentryRestartBanner({
+      activeProjectId: '456789',
+      configuredProjectId: '456789',
+    });
     expect(cleared.restartRequired).toBe(false);
   });
 });
@@ -298,6 +305,48 @@ describe('legacy SENTRY_DSN migrate-once', () => {
     expect(second.ignored).toBe(true);
     expect(created).toHaveLength(1);
   });
+
+  /**
+   * F-634: the default sink was
+   * `void import('../logger').then(…).catch(() => undefined)` — a bare swallow in the
+   * module whose swallowed second write caused the 2026-08-18 observability.json
+   * incident. A broken logger meant the migrate/ignore decision was recorded nowhere.
+   */
+  it('records the event on stderr when the structured logger cannot load', async () => {
+    const logged: Array<{ event: string; extra?: Record<string, unknown> }> = [];
+    await logMigrateEvent(
+      'sentry.env_migrated',
+      { dsnHost: 'o1.ingest.example.com' },
+      async () => ({
+        log: {
+          info(event, extra) {
+            logged.push({ event, extra });
+          },
+        },
+      }),
+    );
+    expect(logged).toEqual([
+      { event: 'sentry.env_migrated', extra: { dsnHost: 'o1.ingest.example.com' } },
+    ]);
+
+    const errors: unknown[][] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      errors.push(args);
+    });
+    try {
+      await logMigrateEvent('sentry.env_ignored', { reason: 'integration exists' }, () =>
+        Promise.reject(new Error('logger module is broken')),
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    expect(errors).toHaveLength(1);
+    expect(String(errors[0]?.[0])).toContain('sentry.env_ignored');
+    expect(errors[0]?.[1]).toMatchObject({
+      reason: 'integration exists',
+      loggerError: 'logger module is broken',
+    });
+  });
 });
 
 describe('local boot without Sentry', () => {
@@ -319,7 +368,12 @@ describe('sentry OAuth helpers', () => {
     expect(sentryOAuthRedirectUrl('https://app.navroop.app')).toBe(
       'https://app.navroop.app/api/integrations/sentry/callback',
     );
-    expect(SENTRY_OAUTH_SCOPES).toEqual(['project:read', 'project:write', 'org:read', 'event:admin']);
+    expect(SENTRY_OAUTH_SCOPES).toEqual([
+      'project:read',
+      'project:write',
+      'org:read',
+      'event:admin',
+    ]);
   });
 });
 

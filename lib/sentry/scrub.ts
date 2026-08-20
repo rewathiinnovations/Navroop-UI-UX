@@ -1,4 +1,30 @@
-const SENSITIVE_KEY = /token|secret|password|key|pem/i;
+/**
+ * Credential-shaped property names. This is the *union* of what this module matched
+ * and what `lib/coolify/errors.ts` matched independently (F-684). Before the merge the
+ * Coolify path redacted `authorization`, `auth`, `credential` and `passwd` while the
+ * logger and the audit log — the two destinations retained longest — wrote them in the
+ * clear, because none of those names contains `token`, `secret`, `password`, `key` or
+ * `pem` as a substring. `authorization` only ever survived by accident, when its value
+ * happened to begin with "Bearer " and the free-text pass caught it.
+ *
+ * Keep in step with `CREDENTIAL_KEY`'s intent: over-redacting a flag is the safe
+ * failure, leaking a secret is not.
+ */
+const SENSITIVE_KEY = /token|secret|password|passwd|key|pem|authorization|credential/i;
+
+/**
+ * Bare `auth` as its own name segment — `auth`, `x-auth`, `authToken` — but not a word
+ * that merely starts with it. `authorName` is a person, and redacting a whole field on
+ * a three-letter substring is how a log becomes unreadable.
+ */
+const BARE_AUTH = /(?:^|[^a-zA-Z])auth(?![a-z])/;
+
+function isSensitiveKey(key: string) {
+  if (SENSITIVE_KEY.test(key)) return true;
+  // Split camelCase so `xAuthHeader` is seen as segments, like `x_auth_header`.
+  return BARE_AUTH.test(key.replace(/([a-z])([A-Z])/g, '$1_$2'));
+}
+
 const SENSITIVE_HEADERS = new Set(['authorization', 'cookie', 'set-cookie', 'x-api-key']);
 const FILTERED = '[Filtered]';
 
@@ -55,7 +81,7 @@ export function redactText(value: string): string {
 }
 
 function scrubValue(key: string, value: unknown): unknown {
-  if (SENSITIVE_KEY.test(key)) return FILTERED;
+  if (isSensitiveKey(key)) return FILTERED;
   if (typeof value === 'string') {
     if (key === 'url' || key === 'query_string' || key === 'referrer') return scrubQuery(value);
     // Every other string gets the text redactor, so secrets survive in no
@@ -75,8 +101,27 @@ export function scrubSensitive(value: unknown): unknown {
 }
 
 function scrubObject(input: Record<string, unknown>): Record<string, unknown> {
+  // An environment variable arrives as `{ key: 'PREVIEW_PASSWORD', value: '…' }`, so
+  // the credential name is in the *sibling* `key` and the property holding the secret
+  // is called `value` — a name no matcher would flag. `lib/coolify/errors.ts` carried
+  // this rule alone (F-684); it belongs with the redactor, because Coolify env
+  // payloads are exactly what reaches the logger and the audit log.
+  const isEnvPair = typeof input.key === 'string' && 'value' in input;
+  const credentialEnvPair = isEnvPair && isSensitiveKey(input.key as string);
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(input)) {
+    if (credentialEnvPair && key === 'value') {
+      out[key] = FILTERED;
+      continue;
+    }
+    // In this shape `key` holds a variable *name*, not a credential, so it must not be
+    // redacted for being called "key" — that would turn every env pair into
+    // `{ key: '[Filtered]', value: '[Filtered]' }` and lose which variable it was.
+    // Still runs the free-text pass, so a name that somehow embeds a secret is caught.
+    if (isEnvPair && key === 'key') {
+      out[key] = redactText(value as string);
+      continue;
+    }
     out[key] = scrubValue(key, value);
   }
   return out;

@@ -2,6 +2,8 @@ import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CRON_STALE_MS } from '../../lib/observability/system-checks';
+import { DEAD_MAN_SETTING_KEY } from '../../lib/observability/dead-man-switch';
+import { SETTINGS } from '../../lib/settings/registry';
 
 /**
  * Both directions of the monitor↔route↔schedule mapping.
@@ -108,5 +110,11 @@ describe('cron monitor coverage', () => {
     for (const name of SELF_MONITORING_EXEMPT) {
       expect(docs).toContain(name);
     }
+    // Prose alone left the operator with nothing to configure. The digest now pings
+    // `observability.deadManUrl` on every run (F-784) and the *absence* of that ping is the
+    // only thing that can detect the digest going dark — so the instruction is worthless
+    // unless it names the field to paste the monitor's URL into.
+    expect(docs).toContain('Monitoring heartbeat URL');
+    expect(SETTINGS.some((entry) => entry.key === DEAD_MAN_SETTING_KEY)).toBe(true);
   });
 });

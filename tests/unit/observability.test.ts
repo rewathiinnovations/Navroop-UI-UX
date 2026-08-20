@@ -236,6 +236,114 @@ describe('observability quota', () => {
     expect(result.quotaWarning).toBe(true);
     expect(emails.some((mail) => /85/.test(mail.text) && /Boom A/.test(mail.text))).toBe(true);
   });
+
+  /**
+   * F-632: `droppedWarning` was computed, written into the check `detail`, returned — and
+   * told to nobody. `ok` was `!mismatch && !quotaWarning`, so a project actively throwing
+   * errors away recorded a healthy run and emailed no one. Sentry dropping events is the
+   * thing this check exists to notice.
+   */
+  it('alerts and fails the run when Sentry is dropping events under an unknown quota', async () => {
+    const store = memoryStore();
+    const emails: Array<{ subject: string; text: string }> = [];
+    const result = await runObservabilityQuotaCheck({
+      credentials: { authToken: 'token', orgSlug: 'navroop', projectSlug: 'app' },
+      now: new Date('2026-08-17T12:00:00.000Z'),
+      store,
+      sentryApi: {
+        getProjectStats: async () => ({
+          accepted: 40,
+          dropped: [{ reason: 'rate_limit', count: 17 }],
+          // No per-project rate limit configured, so there is no ratio to warn about —
+          // the drop is the only signal, and it used to be the one nobody heard.
+          quota: { used: 40, limit: null, resetsAt: null },
+          topIssues: [{ id: '1', title: 'Boom A', count: 40 }],
+        }),
+        findIssueByFingerprint: async () => null,
+      },
+      sendAdminEmail: async (mail) => {
+        emails.push(mail);
+      },
+    });
+    expect(result.droppedWarning).toBe(true);
+    expect(result.quotaWarning).toBe(false);
+    expect(result.ok).toBe(false);
+    expect(emails).toHaveLength(1);
+    expect(emails[0].text).toMatch(/rate_limit/);
+    expect(emails[0].text).toMatch(/17/);
+    expect(store.checks.at(-1)).toMatchObject({ kind: 'quota', ok: false });
+  });
+
+  it('does not alert on outcomes that are not drops, so the signal stays meaningful', async () => {
+    const store = memoryStore();
+    const emails: Array<{ subject: string }> = [];
+    const result = await runObservabilityQuotaCheck({
+      credentials: { authToken: 'token', orgSlug: 'navroop', projectSlug: 'app' },
+      now: new Date('2026-08-17T12:00:00.000Z'),
+      store,
+      sentryApi: {
+        getProjectStats: async () => ({
+          accepted: 40,
+          dropped: [{ reason: 'filtered', count: 9 }],
+          quota: { used: 40, limit: null, resetsAt: null },
+          topIssues: [],
+        }),
+        findIssueByFingerprint: async () => null,
+      },
+      sendAdminEmail: async (mail) => {
+        emails.push(mail);
+      },
+    });
+    expect(result.droppedWarning).toBe(false);
+    expect(result.ok).toBe(true);
+    expect(emails).toHaveLength(0);
+  });
+
+  /**
+   * F-723: this check runs daily and had no dedupe at all — unlike `heartbeat.ts`, which
+   * requires two consecutive failures — so a standing condition mailed every admin every
+   * day until they filtered the sender, and by then a new alert would not be read either.
+   * Mail on entering the condition; the `CronRun` row stays red for as long as it holds.
+   */
+  it('mails once per condition, not once per day, and again after it clears', async () => {
+    const store = memoryStore();
+    const emails: Array<{ subject: string }> = [];
+    const run = (day: number, used: number) =>
+      runObservabilityQuotaCheck({
+        credentials: { authToken: 'token', orgSlug: 'navroop', projectSlug: 'app' },
+        now: new Date(`2026-08-${String(day).padStart(2, '0')}T12:00:00.000Z`),
+        store,
+        sentryApi: {
+          getProjectStats: async () => ({
+            accepted: used,
+            dropped: [],
+            quota: { used, limit: 100, resetsAt: null },
+            topIssues: [],
+          }),
+          findIssueByFingerprint: async () => null,
+        },
+        sendAdminEmail: async (mail) => {
+          emails.push(mail);
+        },
+      });
+
+    const first = await run(17, 85);
+    expect(first.quotaWarning).toBe(true);
+    expect(emails).toHaveLength(1);
+
+    const second = await run(18, 90);
+    // Still over the threshold, so the run still fails — it just does not mail again.
+    expect(second.quotaWarning).toBe(true);
+    expect(second.ok).toBe(false);
+    expect(emails).toHaveLength(1);
+
+    const recovered = await run(19, 10);
+    expect(recovered.ok).toBe(true);
+    expect(emails).toHaveLength(1);
+
+    await run(20, 95);
+    expect(emails).toHaveLength(2);
+  });
 });
 
 describe('observability startup and health', () => {
@@ -243,6 +351,9 @@ describe('observability startup and health', () => {
     const store = memoryStore();
     const warnings: string[] = [];
     const emails: Array<{ text: string; emailClass?: string }> = [];
+    // F-739 gates the email on an `AppSetting` marker. Injected here so this stays a unit
+    // test: the default reads the row through Prisma.
+    let marker: string | null = null;
     const result = await runObservabilityStartup({
       nodeEnv: 'production',
       dsn: '',
@@ -253,6 +364,10 @@ describe('observability startup and health', () => {
       warn: (message) => warnings.push(message),
       sendAdminEmail: async (mail) => {
         emails.push(mail);
+      },
+      getAlerted: async () => marker,
+      setAlerted: async (value) => {
+        marker = value;
       },
     });
     expect(result.ran).toBe(true);
@@ -351,7 +466,14 @@ describe('error tracking panel and test event', () => {
     expect(panel.status).toBe('Degraded');
   });
 
-  it('reports received vs not within 60s against a mock Sentry API', async () => {
+  /**
+   * F-761: the confirmation poll used to run for a full 60s inside the admin request —
+   * longer than the Traefik/Coolify default, so the admin got a gateway timeout and
+   * learned nothing about the event they had just sent. The wait is now capped well under
+   * any proxy budget, and "sent but not yet confirmed" is reported as its own outcome
+   * with the event id, instead of being indistinguishable from "did not arrive".
+   */
+  it('returns as soon as Sentry confirms the event', async () => {
     const received = await sendObservabilityTestEvent({
       captureMessage: () => 'evt_test',
       flush: async () => true,
@@ -359,8 +481,12 @@ describe('error tracking panel and test event', () => {
       sleep: async () => undefined,
       now: () => 0,
     });
+    expect(received.outcome).toBe('received');
     expect(received.received).toBe(true);
+    expect(received.eventId).toBe('evt_test');
+  });
 
+  it('caps the in-request wait and reports sent-but-unconfirmed with the event id', async () => {
     let elapsed = 0;
     const missed = await sendObservabilityTestEvent({
       captureMessage: () => 'evt_test',
@@ -371,8 +497,29 @@ describe('error tracking panel and test event', () => {
       },
       now: () => elapsed,
     });
+    expect(missed.outcome).toBe('sent_unconfirmed');
     expect(missed.received).toBe(false);
-    expect(elapsed).toBeGreaterThanOrEqual(60_000);
+    // The admin still learns the event id, which is what makes the answer useful.
+    expect(missed.eventId).toBe('evt_test');
+    expect(missed.confirmError).toBeNull();
+    // Polled at least once, and never held the request anywhere near a proxy timeout.
+    expect(elapsed).toBeGreaterThan(0);
+    expect(missed.waitedMs).toBeLessThanOrEqual(10_000);
+    expect(elapsed).toBeLessThanOrEqual(10_000);
+  });
+
+  it('separates "could not ask Sentry" from "the event did not arrive"', async () => {
+    const unknown = await sendObservabilityTestEvent({
+      captureMessage: () => 'evt_test',
+      flush: async () => true,
+      findIssueByFingerprint: async () => {
+        throw new Error('Sentry API HTTP 401');
+      },
+      sleep: async () => undefined,
+      now: () => 0,
+    });
+    expect(unknown.outcome).toBe('sent_unconfirmed');
+    expect(unknown.confirmError).toContain('401');
   });
 });
 
@@ -700,6 +847,43 @@ describe('uptime probe', () => {
       }),
     ).rejects.toThrow(/502/);
   });
+
+  /**
+   * F-724: Node's fetch has no default request timeout, so an origin that accepts the
+   * connection and never answers hung the probe for the life of the process. `withCronRun`
+   * writes its row only when the body settles, so the one monitor whose entire output is
+   * the verdict went silent exactly when the site was in trouble. A hang is now a failed
+   * check that names the budget.
+   */
+  it('passes an abort signal so a half-open origin cannot hang the probe', async () => {
+    let signal: AbortSignal | null | undefined;
+    await checkSiteUptime({
+      url: 'https://navroop.test',
+      fetchFn: async (_input, init) => {
+        signal = (init as RequestInit | undefined)?.signal as AbortSignal | null | undefined;
+        return new Response('{}', { status: 200 });
+      },
+    });
+    expect(signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('fails the check with a timeout detail instead of hanging', async () => {
+    const result = await checkSiteUptime({
+      url: 'https://navroop.test',
+      timeoutMs: 25,
+      // A host that accepts the request and never answers: settle only when aborted.
+      fetchFn: (_input, init) => {
+        const { promise, reject } = Promise.withResolvers<Response>();
+        const signal = (init as RequestInit | undefined)?.signal as AbortSignal | undefined;
+        signal?.addEventListener('abort', () => reject(signal.reason));
+        return promise;
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe(0);
+    expect(result.detail).toContain('timeout after 25ms');
+    expect(result.detail).toContain('https://navroop.test/api/health');
+  });
 });
 
 describe('certificate check', () => {
@@ -748,6 +932,44 @@ describe('certificate check', () => {
     const result = await checkSiteCertificate({ url: 'not a url' });
     expect(result.ok).toBe(false);
     expect(result.detail).toContain('not a valid URL');
+  });
+
+  /**
+   * F-740: `new Date(cert.valid_to)` on a string this Node build cannot parse gives NaN,
+   * and `NaN < 14 days` is false — so the check that exists to warn before expiry
+   * returned `{ ok: true, detail: 'certificate valid until Invalid Date' }` and the site
+   * went down behind a green check-certs row. Absent or unreadable is never healthy.
+   */
+  it('does not report an unparseable expiry date as healthy', async () => {
+    const result = await checkSiteCertificate({
+      url: 'https://navroop.test',
+      connect: fakeConnect('not-a-date'),
+    });
+    expect(result.ok).toBe(false);
+    // The operator needs the raw string: it is what the peer actually sent.
+    expect(result.detail).toContain('not-a-date');
+    expect(result.detail).not.toContain('Invalid Date');
+  });
+
+  it('checks a TLS port other than 443 rather than skipping it as a pass', async () => {
+    const seen: Array<{ host?: string; port?: number }> = [];
+    const connect = ((options: { host?: string; port?: number }, onConnect: () => void) => {
+      seen.push(options);
+      const soon = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toUTCString();
+      const socket = {
+        getPeerCertificate: () => ({ valid_to: soon }),
+        end: () => undefined,
+        destroy: () => undefined,
+        on: () => socket,
+      };
+      setImmediate(onConnect);
+      return socket;
+    }) as unknown as typeof tls.connect;
+
+    const result = await checkSiteCertificate({ url: 'https://navroop.test:8443', connect });
+    expect(seen[0]?.port).toBe(8443);
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('certificate expires');
   });
 });
 

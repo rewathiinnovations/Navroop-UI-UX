@@ -1,12 +1,24 @@
-import { readRuntimeConfig } from '../observability/runtime-config';
+import { getBootRuntimeConfigState, readRuntimeConfigState } from '../observability/runtime-config';
 import { getDataDirStatus, type DataDirStatus } from '../runtime/data-dir';
-import { sentryDsn, sentryEnvironment } from '../sentry/options';
+import {
+  describeSentryInit,
+  sentryDsn,
+  sentryEnvironment,
+  type SentryInitState,
+} from '../sentry/options';
 
 export type HealthCheckName = 'db' | 'storage';
 export type HealthCheckStatus = 'ok' | 'fail';
 
 export type HealthObservabilityFile = {
   present: boolean;
+  /**
+   * `unreadable` is not `absent`: a permission change or a truncated write stops Sentry
+   * from initialising, and reading that as "never connected" sends the operator after the
+   * wrong incident (F-738). Same three-state shape as `describeDataDir`.
+   */
+  state: 'ok' | 'absent' | 'unreadable';
+  error: string | null;
   projectId: string | null;
   matchesIntegration: boolean | null;
 };
@@ -52,6 +64,13 @@ export type HealthResult = {
   uptime: number;
   sentry: {
     dsnConfigured: boolean;
+    /**
+     * Whether `Sentry.init` actually ran in this process, which `dsnConfigured` cannot
+     * say: the DSN is read live, so a config file that was unreadable at boot and is
+     * readable now reports a configured DSN over a process that has been blind since it
+     * started (F-738). Only a restart changes this value.
+     */
+    initState: SentryInitState;
     releaseSha: string;
     environment: string;
   };
@@ -68,6 +87,7 @@ export type HealthDeps = {
   sentryDsnConfigured?: boolean;
   releaseSha?: string;
   sentryEnvironment?: string;
+  sentryInitState?: SentryInitState;
   dataDir?: DataDirStatus;
   observabilityFile?: HealthObservabilityFile;
 };
@@ -91,21 +111,28 @@ export async function runHealthChecks(deps: HealthDeps): Promise<HealthResult> {
     checks.storage = 'fail';
   }
 
-  const runtime = readRuntimeConfig();
+  const runtime = readRuntimeConfigState();
   return {
     ok: checks.db === 'ok' && checks.storage === 'ok',
     checks,
     version: deps.version ?? process.env.npm_package_version ?? '0.1.0',
-    uptime: Math.max(0, Math.floor(((deps.now ?? Date.now()) - (deps.startedAt ?? startedAt)) / 1000)),
+    uptime: Math.max(
+      0,
+      Math.floor(((deps.now ?? Date.now()) - (deps.startedAt ?? startedAt)) / 1000),
+    ),
     sentry: {
       dsnConfigured: deps.sentryDsnConfigured ?? Boolean(sentryDsn()),
-      releaseSha: deps.releaseSha ?? (process.env.GIT_SHA || process.env.SOURCE_COMMIT || 'unknown'),
+      initState: deps.sentryInitState ?? describeSentryInit(getBootRuntimeConfigState()),
+      releaseSha:
+        deps.releaseSha ?? (process.env.GIT_SHA || process.env.SOURCE_COMMIT || 'unknown'),
       environment: deps.sentryEnvironment ?? sentryEnvironment(),
     },
     dataDir: describeDataDir(deps.dataDir ?? getDataDirStatus()),
     observabilityFile: deps.observabilityFile ?? {
-      present: Boolean(runtime),
-      projectId: runtime?.projectId ?? null,
+      present: runtime.state === 'ok',
+      state: runtime.state,
+      error: runtime.state === 'unreadable' ? runtime.message : null,
+      projectId: runtime.state === 'ok' ? runtime.config.projectId : null,
       matchesIntegration: null,
     },
   };

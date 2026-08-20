@@ -54,6 +54,31 @@ describe('createSentryApi failure is a rejection, not zeros', () => {
       SentryApiError,
     );
   });
+
+  /**
+   * F-724: Node's fetch has no default request timeout. A Sentry endpoint that accepts the
+   * connection and never answers used to hang the daily quota cron for the life of the
+   * process, and `withCronRun` writes its row only when the body settles — so the check
+   * left no trace at all. A hang is now a bounded, named failure.
+   */
+  it('bounds every request and reports a hung endpoint as a timeout', async () => {
+    const seenSignals: Array<AbortSignal | null | undefined> = [];
+    const api = createSentryApi(
+      creds,
+      (_input, init) => {
+        const { promise, reject } = Promise.withResolvers<Response>();
+        const signal = (init as RequestInit | undefined)?.signal as AbortSignal | undefined;
+        seenSignals.push(signal);
+        signal?.addEventListener('abort', () => reject(signal.reason));
+        return promise;
+      },
+      { timeoutMs: 25 },
+    );
+    await expect(api.findIssueByFingerprint('navroop-heartbeat')).rejects.toThrowError(
+      /timed out after 25ms/,
+    );
+    expect(seenSignals[0]).toBeInstanceOf(AbortSignal);
+  });
 });
 
 describe('quota check on Sentry API failure', () => {

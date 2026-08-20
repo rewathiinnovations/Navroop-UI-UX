@@ -13,6 +13,12 @@
 
 import { toast, type Id, type ToastOptions, type UpdateOptions } from 'react-toastify';
 import { appConfig } from '@/config/app.config';
+import {
+  isNetworkFailure,
+  OFFLINE_MESSAGE,
+  reportNetworkFailure,
+  reportNetworkSuccess,
+} from '@/lib/net/connection';
 
 const DEFAULT_DURATION = appConfig.ui.toastDuration;
 
@@ -43,6 +49,11 @@ export function toMessage(
   error: unknown,
   fallback = 'Something went wrong. Please try again.',
 ): string {
+  // Before the `Error` branch: "Failed to fetch" is a readable sentence and was
+  // therefore printed verbatim, which is how an offline browser produced a queue
+  // of toasts naming a browser API instead of the one fact the user could act on
+  // (F-446).
+  if (isNetworkFailure(error)) return OFFLINE_MESSAGE;
   if (typeof error === 'string') return error.trim() || fallback;
   if (error instanceof Error) return error.message || fallback;
   if (error && typeof error === 'object') {
@@ -113,7 +124,19 @@ export async function fetchJson<T = unknown>(
   input: RequestInfo | URL,
   init?: RequestInit,
 ): Promise<T> {
-  const response = await fetch(input, init);
+  // The one place every `fetchJson` caller learns whether the server was
+  // reachable at all, so the offline banner does not need its own probe.
+  let response: Response;
+  try {
+    response = await fetch(input, init);
+  } catch (error) {
+    if (isNetworkFailure(error)) {
+      reportNetworkFailure();
+      throw new Error(OFFLINE_MESSAGE);
+    }
+    throw error;
+  }
+  reportNetworkSuccess();
 
   let body: unknown = null;
   const text = await response.text();

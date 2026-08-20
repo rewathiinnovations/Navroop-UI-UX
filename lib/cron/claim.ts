@@ -35,6 +35,17 @@ export function cronClaimKey(name: string) {
  */
 export const DEFAULT_CRON_CLAIM_STALE_MS = 15 * 60 * 1000;
 
+/**
+ * The one claim every database dump takes, whichever door it came through (F-722).
+ *
+ * Not a cron name: `handleCron('backup-db')` covers the scheduled route only, and the
+ * "Back up now" button, `tsx scripts/backup-db.ts` and the `pre-migrate` boot backup never
+ * reach it. Two dumps into `/data/tmp` double peak disk use on the volume the 2 GB
+ * precondition exists to protect. Same budget as the cron that wraps it, so neither layer
+ * expires while the other still believes the work is alive.
+ */
+export const DB_BACKUP_CLAIM = 'backup-db-dump';
+
 export const CRON_CLAIM_STALE_MS: Record<string, number> = {
   'reap-jobs': 5 * 60 * 1000,
   'check-domains': 5 * 60 * 1000,
@@ -47,6 +58,7 @@ export const CRON_CLAIM_STALE_MS: Record<string, number> = {
   'cleanup-orphans': 30 * 60 * 1000,
   'backup-db': 60 * 60 * 1000,
   'verify-storage': 60 * 60 * 1000,
+  [DB_BACKUP_CLAIM]: 60 * 60 * 1000,
 };
 
 export function cronClaimStaleMs(name: string) {

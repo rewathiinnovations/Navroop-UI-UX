@@ -11,9 +11,17 @@
  *
  * This file is rebuilt from the Sentry Integration row. Never write file → DB.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import { getDataDir } from '../runtime/data-dir';
+import { log } from '../logger';
 
 export type ObservabilityRuntimeConfig = {
   enabled: boolean;
@@ -34,8 +42,7 @@ export type ObservabilityRuntimeConfig = {
 const UNWRITABLE_MESSAGE =
   'Observability config path is not writable. Mount a volume at DATA_DIR (default /data) so /data/config/observability.json can be written.';
 
-let bootCaptured = false;
-let bootConfig: ObservabilityRuntimeConfig | null = null;
+let bootRead: RuntimeConfigRead | null = null;
 
 export function runtimeConfigPath() {
   const fromEnv = process.env.OBSERVABILITY_CONFIG_PATH?.trim();
@@ -85,16 +92,58 @@ function normalize(raw: unknown): ObservabilityRuntimeConfig | null {
   };
 }
 
-/** Synchronous. Returns null if the file is absent or malformed. Never throws. */
-export function readRuntimeConfig(): ObservabilityRuntimeConfig | null {
+/**
+ * Three answers, not two: the file is there, the file is absent, or the file could not be
+ * read. A blanket `catch { return null }` reported an EACCES, a truncated write and
+ * malformed JSON as "Sentry was never connected" — `buildSentryInitOptions` then returned
+ * null, `Sentry.init` was never called, and nothing said so (F-738).
+ */
+export type RuntimeConfigRead =
+  | { state: 'ok'; config: ObservabilityRuntimeConfig }
+  | { state: 'absent' }
+  | { state: 'unreadable'; message: string; code?: string };
+
+let lastReportedReadError = '';
+
+export function readRuntimeConfigState(): RuntimeConfigRead {
+  const path = runtimeConfigPath();
+  let text: string;
   try {
-    const path = runtimeConfigPath();
-    if (!existsSync(path)) return null;
-    const text = readFileSync(path, 'utf8');
-    return normalize(JSON.parse(text));
-  } catch {
-    return null;
+    if (!existsSync(path)) return { state: 'absent' };
+    text = readFileSync(path, 'utf8');
+  } catch (error) {
+    return reportUnreadable(path, error);
   }
+  try {
+    const config = normalize(JSON.parse(text));
+    if (!config) return reportUnreadable(path, new Error('config file is not a JSON object'));
+    lastReportedReadError = '';
+    return { state: 'ok', config };
+  } catch (error) {
+    return reportUnreadable(path, error);
+  }
+}
+
+function reportUnreadable(path: string, error: unknown): RuntimeConfigRead {
+  const message = error instanceof Error ? error.message : String(error);
+  const code =
+    error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
+      ? error.code
+      : undefined;
+  // `readRuntimeConfig` is called on every `sentryDsn()`, so the line is emitted once per
+  // distinct failure rather than per call. `log.error`, never `logError`: capturing this to
+  // Sentry would need the very config that could not be read.
+  if (message !== lastReportedReadError) {
+    lastReportedReadError = message;
+    log.error('observability.runtime_config_unreadable', { path, code, error: message });
+  }
+  return { state: 'unreadable', message, code };
+}
+
+/** Synchronous. Returns null if the file is absent or unreadable. Never throws. */
+export function readRuntimeConfig(): ObservabilityRuntimeConfig | null {
+  const read = readRuntimeConfigState();
+  return read.state === 'ok' ? read.config : null;
 }
 
 export function writeRuntimeConfig(config: ObservabilityRuntimeConfig) {
@@ -120,13 +169,16 @@ export function writeRuntimeConfig(config: ObservabilityRuntimeConfig) {
     mkdirSync(dir, { recursive: true });
     writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
     renameSync(tmp, path);
-  } catch {
+  } catch (error) {
     try {
       unlinkSync(tmp);
     } catch {
       /* ignore */
     }
-    throw new Error(`${UNWRITABLE_MESSAGE} Path: ${path}`);
+    // The errno is the whole diagnosis — EACCES is a permission fix, ENOSPC is a full
+    // volume, EROFS is a read-only mount — and the generic message discarded it (F-738).
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new Error(`${UNWRITABLE_MESSAGE} Path: ${path}. Cause: ${cause}`, { cause: error });
   }
 }
 
@@ -145,21 +197,33 @@ export function disableRuntimeConfig() {
   });
 }
 
+/**
+ * The boot read is captured once because it decides, for the life of the process, whether
+ * `Sentry.init` ran. It keeps the whole three-state answer: "the file could not be read"
+ * is the state a caller has to be able to report, and collapsing it to `null` is what let
+ * an EACCES read as "Sentry was never connected" (F-738).
+ */
+export function captureBootRuntimeConfigState(): RuntimeConfigRead {
+  if (!bootRead) bootRead = readRuntimeConfigState();
+  return bootRead;
+}
+
 export function captureBootRuntimeConfig() {
-  if (!bootCaptured) {
-    bootConfig = readRuntimeConfig();
-    bootCaptured = true;
-  }
-  return bootConfig;
+  const read = captureBootRuntimeConfigState();
+  return read.state === 'ok' ? read.config : null;
+}
+
+export function getBootRuntimeConfigState() {
+  return bootRead;
 }
 
 export function getBootRuntimeConfig() {
-  return bootCaptured ? bootConfig : null;
+  return bootRead?.state === 'ok' ? bootRead.config : null;
 }
 
 export function resetRuntimeConfigForTests() {
-  bootCaptured = false;
-  bootConfig = null;
+  bootRead = null;
+  lastReportedReadError = '';
 }
 
 export function runtimeConfigDiffers(
@@ -180,6 +244,10 @@ export function runtimeConfigDiffers(
     file.fingerprintWindowSec !== next.fingerprintWindowSec ||
     file.orgSlug !== next.orgSlug ||
     file.projectSlug !== next.projectSlug ||
+    // `writeRuntimeConfig` persists the region, so leaving it out of the comparison meant
+    // an org moved to another Sentry region kept the stale value forever and every API
+    // call kept going to the wrong host (F-738).
+    file.region !== next.region ||
     JSON.stringify(file.ignoreList) !== JSON.stringify(next.ignoreList)
   );
 }

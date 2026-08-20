@@ -1,7 +1,6 @@
 import * as Sentry from '@sentry/nextjs';
 import { log, logError } from '../logger';
 import { setSentryActionContext } from '../sentry/context';
-import { shouldCaptureException } from './noise';
 
 export function trackStart(
   event: string,
@@ -17,7 +16,10 @@ export function trackStart(
   log.info(event, fields);
 }
 
-export function trackSuccess(event: string, fields: Record<string, unknown> & { action: string; durationMs?: number }) {
+export function trackSuccess(
+  event: string,
+  fields: Record<string, unknown> & { action: string; durationMs?: number },
+) {
   setSentryActionContext(fields);
   log.info(event, fields);
 }
@@ -29,17 +31,18 @@ export function trackFailure(
   deps?: { captureException?: typeof Sentry.captureException },
 ) {
   setSentryActionContext(fields);
-  logError(event, error, fields);
   const status = typeof fields.status === 'number' ? fields.status : undefined;
-  if (status === 402 || status === 409 || status === 404) return;
-  if (!shouldCaptureException(error)) return;
-  const capture = deps?.captureException ?? Sentry.captureException;
-  capture(error, {
+  // One capture road: `logError` owns the Sentry call and the noise filter (F-735), so a
+  // failure logged anywhere in the repo reaches the tracker exactly once. This function
+  // keeps only the policy Sentry cannot know — the expected-status codes.
+  logError(event, error, fields, {
+    capture: !(status === 402 || status === 409 || status === 404),
     tags: {
       action: fields.action,
       stack: typeof fields.stack === 'string' ? fields.stack : undefined,
       workspaceId: typeof fields.workspaceId === 'string' ? fields.workspaceId : undefined,
     },
     extra: { step: fields.step, ...fields },
+    captureException: deps?.captureException,
   });
 }

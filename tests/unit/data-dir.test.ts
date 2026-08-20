@@ -1,4 +1,13 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -8,10 +17,11 @@ import {
   readRuntimeConfig,
   resetRuntimeConfigForTests,
   runtimeConfigPath,
-  writeRuntimeConfig,
 } from '../../lib/observability/runtime-config';
 import {
   LARGE_OP_MIN_FREE_BYTES,
+  TMP_INFLIGHT_MARKER,
+  TMP_INFLIGHT_MAX_AGE_MS,
   VOLUME_ID_SETTING_KEY,
   assertFreeSpaceForLargeOp,
   cachePath,
@@ -21,13 +31,25 @@ import {
   persistVolumeIdentity,
   resetDataDirForTests,
   sweepTmp,
+  volumeIdPath,
   withTmpDir,
+  type DataDirStatus,
 } from '../../lib/runtime/data-dir';
 
 const VALID_DSN = 'https://publickey@o123.ingest.sentry.io/456789';
 
 function tempRoot() {
   return mkdtempSync(join(tmpdir(), 'navroop-data-'));
+}
+
+/** `assertFreeSpaceForLargeOp`'s verdict as a string, so a refusal can be read by reason. */
+function freeSpaceVerdict(status: DataDirStatus) {
+  try {
+    assertFreeSpaceForLargeOp(status);
+    return 'ok';
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
 }
 
 describe('persistent data dir', () => {
@@ -235,6 +257,121 @@ describe('persistent data dir', () => {
     expect(existsSync(captured)).toBe(false);
   });
 
+  /**
+   * F-727. `pg_dump --file` creates the dump once and then writes into it, and a directory's
+   * mtime only moves when an entry is added or removed — so an `op-…` directory holding a
+   * two-hour dump still reads as two hours idle. The hourly sweep used to delete it out from
+   * under the running process, which fails the backup with an I/O error and mails every admin.
+   */
+  it('spares a working directory that is still in flight, and takes it back after a day', () => {
+    ensureDataDir();
+    const inFlight = join(root, 'tmp', 'op-inflight');
+    const abandoned = join(root, 'tmp', 'op-abandoned');
+    for (const dir of [inFlight, abandoned]) {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, TMP_INFLIGHT_MARKER), '{}');
+      writeFileSync(join(dir, 'db.dump'), 'x');
+    }
+    const twoHoursAgo = (Date.now() - 2 * 60 * 60 * 1000) / 1000;
+    utimesSync(inFlight, twoHoursAgo, twoHoursAgo);
+    const wayPastAnyDump = (Date.now() - TMP_INFLIGHT_MAX_AGE_MS - 60_000) / 1000;
+    utimesSync(abandoned, wayPastAnyDump, wayPastAnyDump);
+
+    const result = sweepTmp({ now: new Date() });
+    expect(existsSync(inFlight)).toBe(true);
+    expect(result.keptInFlight).toBe(1);
+    // Nothing may hold the volume forever: an owner that died still gets cleaned up.
+    expect(existsSync(abandoned)).toBe(false);
+  });
+
+  it('marks the withTmpDir directory in flight for as long as the work runs', async () => {
+    ensureDataDir();
+    await withTmpDir(async (dir) => {
+      expect(existsSync(join(dir, TMP_INFLIGHT_MARKER))).toBe(true);
+      const backdated = (Date.now() - 2 * 60 * 60 * 1000) / 1000;
+      utimesSync(dir, backdated, backdated);
+      sweepTmp({ now: new Date() });
+      expect(existsSync(dir)).toBe(true);
+    });
+  });
+
+  /**
+   * F-726. `getDataDirStatus()` carries `freeBytes: null` until `ensureDataDir()` has run in
+   * *this* process, and only `instrumentation.ts` calls it — so every `tsx scripts/…` backup,
+   * restore and pre-migrate ran the 2 GB precondition as a no-op on exactly the paths most
+   * likely to fill the volume.
+   */
+  it('probes the disk itself when nothing has probed the volume in this process', () => {
+    resetDataDirForTests();
+    const unprobed = getDataDirStatus();
+    expect(unprobed.checked).toBe(false);
+    expect(unprobed.freeBytes).toBeNull();
+
+    expect(() => assertFreeSpaceForLargeOp(unprobed, () => LARGE_OP_MIN_FREE_BYTES - 1)).toThrow(
+      /2 GB/i,
+    );
+    // The real probe reads the real volume: whatever it says, it is not "unknown".
+    expect(freeSpaceVerdict(unprobed)).not.toMatch(/could not be determined/i);
+  });
+
+  it('refuses a large op outright when free space cannot be determined', () => {
+    resetDataDirForTests();
+    expect(() => assertFreeSpaceForLargeOp(getDataDirStatus(), () => null)).toThrow(
+      /could not be determined/i,
+    );
+  });
+
+  it('falls back to the nearest mounted parent when the volume is not mounted yet', () => {
+    process.env.DATA_DIR = join(root, 'never-mounted', 'data');
+    resetDataDirForTests();
+    // Writes to an unmounted /data land on the filesystem underneath it, so that is the
+    // filesystem the precondition is about.
+    expect(freeSpaceVerdict(getDataDirStatus())).not.toMatch(/could not be determined/i);
+  });
+
+  /**
+   * F-728. A blanket `catch → null` made a truncated or unreadable `.volume-id` look absent,
+   * and the next line minted a fresh id over it: the volume's real identity is destroyed, and
+   * `/admin/health` sends an operator to investigate a lost mount that never happened.
+   */
+  it('refuses to replace a volume-id file it could not read', () => {
+    ensureDataDir();
+    const path = volumeIdPath(root);
+    const truncated = '{"id":"11111111-2222-3333-4444-5555555';
+    writeFileSync(path, truncated);
+    resetDataDirForTests();
+
+    const status = ensureDataDir({ logError: (message) => logs.push(message) });
+    expect(readFileSync(path, 'utf8')).toBe(truncated);
+    expect(status.volumeId).toBeNull();
+    expect(status.writable).toBe(false);
+    expect(status.error).toMatch(/volume id/i);
+    expect(logs.join('\n')).toMatch(/volume id/i);
+  });
+
+  it('does not report a lost volume from an unreadable id file', async () => {
+    const first = ensureDataDir();
+    writeFileSync(volumeIdPath(root), 'not json at all');
+    resetDataDirForTests();
+    ensureDataDir({ logError: (message) => logs.push(message) });
+
+    const persisted = await persistVolumeIdentity({
+      getPrevious: async () => first.volumeId,
+      setPrevious: async () => undefined,
+      warn: (message) => logs.push(message),
+    });
+    expect(persisted.changed).toBe(false);
+    expect(logs.join('\n')).not.toMatch(/fresh volume or a lost mount/i);
+  });
+
+  it('writes the volume id file atomically, leaving no partial file behind', () => {
+    ensureDataDir();
+    const leftovers = readdirSync(root).filter((name) => name.startsWith('.volume-id.'));
+    expect(leftovers).toEqual([]);
+    const raw = readFileSync(volumeIdPath(root), 'utf8');
+    expect(JSON.parse(raw)).toMatchObject({ id: expect.any(String) });
+  });
+
   it('refuses a large op when free space is under 2 GB', () => {
     ensureDataDir({
       disk: { freeBytes: LARGE_OP_MIN_FREE_BYTES - 1, totalBytes: 20 * 1024 * 1024 * 1024 },
@@ -245,7 +382,9 @@ describe('persistent data dir', () => {
 
   it('defaults observability.json under DATA_DIR/config', () => {
     expect(getDataDir()).toBe(root);
-    expect(runtimeConfigPath().replace(/\\/g, '/')).toBe(`${root.replace(/\\/g, '/')}/config/observability.json`);
+    expect(runtimeConfigPath().replace(/\\/g, '/')).toBe(
+      `${root.replace(/\\/g, '/')}/config/observability.json`,
+    );
   });
 
   it('rebuilds a missing observability.json from the Integration row', async () => {
@@ -288,7 +427,9 @@ describe('persistent data dir', () => {
 
   it('never uses DATA_DIR for checkpoints, images, backups, or secrets', () => {
     expect(VOLUME_ID_SETTING_KEY).toBe('runtime.volumeId');
-    expect(cachePath('github-tokens.json').replace(/\\/g, '/')).toMatch(/\/cache\/github-tokens\.json$/);
+    expect(cachePath('github-tokens.json').replace(/\\/g, '/')).toMatch(
+      /\/cache\/github-tokens\.json$/,
+    );
     const source = readFileSync(join(process.cwd(), 'lib/runtime/data-dir.ts'), 'utf8');
     expect(source).toMatch(/reconstructible from Postgres or object storage/);
     expect(source).not.toMatch(/snapshots\//);

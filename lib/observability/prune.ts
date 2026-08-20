@@ -1,4 +1,5 @@
 import { prisma } from '../db';
+import { positiveNumberSetting } from '../settings/numbers';
 
 /**
  * How long an observability receipt is worth keeping.
@@ -12,7 +13,14 @@ import { prisma } from '../db';
 export const OBSERVABILITY_RETENTION_DAYS = 30;
 
 export async function pruneObservabilityHistory(now = new Date()) {
-  const cutoff = new Date(now.getTime() - OBSERVABILITY_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+  // `app.observabilityRetentionDays` on /admin/config; the constant above is the default
+  // (F-793). How much history to keep for hand inspection is an operator preference —
+  // nothing in the product reads past a day.
+  const days = await positiveNumberSetting(
+    'app.observabilityRetentionDays',
+    OBSERVABILITY_RETENTION_DAYS,
+  );
+  const cutoff = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
   // The newest row per name survives regardless of age, because that is the row
   // `evaluateSystemChecks` reads: deleting it would turn an honest "stale since <date>" into
   // "never-run", which is the same lie about a cron's history that this cleanup exists to

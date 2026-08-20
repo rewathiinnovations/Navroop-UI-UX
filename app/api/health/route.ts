@@ -2,7 +2,7 @@ import { prisma } from '@/lib/db';
 import { currentRelease } from '@/lib/deploy/release';
 import { runHealthChecks } from '@/lib/health/check';
 import { getIntegration } from '@/lib/integrations/store';
-import { readRuntimeConfig } from '@/lib/observability/runtime-config';
+import { readRuntimeConfigState } from '@/lib/observability/runtime-config';
 import { DEFAULT_WORKSPACE_ID } from '@/lib/publish/constants';
 import { sentryDsn, sentryEnvironment } from '@/lib/sentry/options';
 import { headStorage } from '@/lib/storage';
@@ -10,7 +10,10 @@ import { headStorage } from '@/lib/storage';
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  const runtime = readRuntimeConfig();
+  // The three-state read, not the boolean one: an unreadable config file stops Sentry
+  // initialising and must not be reported as "never connected" (F-738).
+  const runtimeRead = readRuntimeConfigState();
+  const runtime = runtimeRead.state === 'ok' ? runtimeRead.config : null;
   let matchesIntegration: boolean | null = null;
   try {
     const row = await getIntegration(DEFAULT_WORKSPACE_ID, 'SENTRY');
@@ -34,6 +37,8 @@ export async function GET() {
     sentryEnvironment: sentryEnvironment(),
     observabilityFile: {
       present: Boolean(runtime),
+      state: runtimeRead.state,
+      error: runtimeRead.state === 'unreadable' ? runtimeRead.message : null,
       projectId: runtime?.projectId ?? null,
       matchesIntegration,
     },
