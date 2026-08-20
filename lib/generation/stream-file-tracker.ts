@@ -29,7 +29,8 @@ export type StreamedFile = { path: string; content: string };
  *   chunk that ended one file and opened the next dropped the first entirely.
  *
  * Paths are validated here rather than at the far end: a kept build is written
- * with `filesToLastCode`, which stores whatever key it is handed.
+ * with `toLastCode` (`lib/projects/last-code.ts`), which stores whatever key it
+ * is handed.
  */
 export class StreamedFileTracker {
   private buffer = '';

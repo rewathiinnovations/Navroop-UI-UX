@@ -298,15 +298,62 @@ export function filesFromReply(input: string): Record<string, string> {
   return out;
 }
 
+/** `<file path="…">` openers — the shape a URL import produces, not a generation. */
+const FILE_PATH_ATTR_RE = /<file path="([^"]+)">/g;
+
+/**
+ * The paths a reply named, whichever of the two shapes it used.
+ *
+ * A generation reply is fenced `{path=…}` output; a URL import hands back
+ * `<file path="…">` XML (`lib/import/persist.ts` reads it with
+ * `parseGeneratedFilesLenient`). The apply path ran only `filesFromReply` over
+ * both, so retrying a failed import closed with "Successfully applied 0 files"
+ * for an import that had in fact written the whole site (F-054).
+ *
+ * Fenced blocks win when present: a generation that happens to *quote* a
+ * `<file path=…>` tag inside a code block must not have that counted as a file.
+ */
+export function appliedPathsFromReply(input: string): string[] {
+  const fenced = Object.keys(filesFromReply(input));
+  if (fenced.length > 0) return fenced;
+  const tagged: string[] = [];
+  for (const match of input.matchAll(FILE_PATH_ATTR_RE)) {
+    const path = match[1].trim().replace(LEADING_DOT_SLASH_RE, '');
+    if (path && !tagged.includes(path)) tagged.push(path);
+  }
+  return tagged;
+}
+
 /** Prose with the file blocks removed — what the chat shows the user. */
 export function explanationFromReply(input: string): string {
   // BLOCK_RE, not a lookalike. The old inline pattern read an unclosed block's
   // *next* opener as its own closing fence — precisely the reply BLOCK_RE exists
   // to handle — and left the following file's code sitting in the transcript as
-  // prose. Nothing calls this in production yet; the next reader who wires chat
-  // to it inherits the same scan as everyone else.
+  // prose. `chatTextFromConversation` is the production caller.
   return normalizedReply(input)
     .replace(new RegExp(BLOCK_RE, 'g'), '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+/** A `<file path=…>` block, closed or cut off by the end of the frame. */
+const FILE_BLOCK_RE = /<file\b[^>]*>[\s\S]*?(?:<\/file>|$)/g;
+/** `<package>` / `<packages>` are instructions to the applier, never speech. */
+const PACKAGE_BLOCK_RE = /<(package|packages)\b[^>]*>[\s\S]*?(?:<\/\1>|$)/g;
+
+/**
+ * A `conversation` frame → the prose that belongs in the transcript.
+ *
+ * The client used to append the frame only when its text contained none of `<file`,
+ * `import React`, `export default`, `className=`. The intent — keep pasted source out of
+ * chat — is right, but a substring match over the whole frame discards the answer to
+ * "why did you use a default export here?", with no chat line and no log. On the
+ * chat-answer path the `conversation` frame *is* the reply, so the run finished having
+ * said nothing at all (F-050).
+ *
+ * Structure decides instead of vocabulary: strip the code, keep the prose. An empty
+ * result means the frame was only code, which is the one case the old filter got right.
+ */
+export function chatTextFromConversation(input: string): string {
+  return explanationFromReply(input.replace(PACKAGE_BLOCK_RE, '').replace(FILE_BLOCK_RE, ''));
 }

@@ -44,10 +44,6 @@ export type BuildCheckResult = {
 const MAX_OUTPUT_CHARS = 20_000;
 const MAX_ERRORS = 10;
 
-/** Compilers say this when the build itself failed, not when code merely logs "error". */
-const BUILD_FAILED =
-  /Failed to compile|Build failed|error during build|Type error:|SyntaxError|Module not found/i;
-
 /**
  * The bundler itself failing rather than the code failing — a missing or
  * unspawnable esbuild binary. Reported, never treated as a code fault: the

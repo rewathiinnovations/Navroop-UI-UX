@@ -112,7 +112,9 @@ const STACKS: Record<StackId, StackDefinition> = {
     // Exact upstream Open Lovable Vite/React dev script.
     devCommand: 'vite --host',
     installCommand: 'npm install',
-    fileExtension: '.jsx',
+    // The scaffold this stack actually ships is TypeScript: `src/main.tsx` with a non-null
+    // assertion, plus a tsconfig.json. This said `.jsx` and `src/main.jsx` (F-098).
+    fileExtension: '.tsx',
     sandboxTemplate: GENERIC_NODE_SANDBOX,
     configFiles: [
       'tailwind.config.js',
@@ -123,8 +125,8 @@ const STACKS: Record<StackId, StackDefinition> = {
       'postcss.config.js',
     ],
     frameworkPackages: ['react', 'react-dom'],
-    listExtensions: ['.jsx', '.js', '.tsx', '.ts', '.css', '.json'],
-    entryPoint: 'src/main.jsx',
+    listExtensions: ['.tsx', '.ts', '.jsx', '.js', '.css', '.json'],
+    entryPoint: 'src/main.tsx',
     buildCommand: 'npm run build',
     outputDir: 'dist',
     deployType: 'static',

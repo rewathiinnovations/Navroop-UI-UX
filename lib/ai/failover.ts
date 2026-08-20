@@ -1,4 +1,5 @@
-import { EmptyCompletionError } from './empty-completion';
+import { CircuitOpenError } from './circuit';
+import { EmptyCompletionError, StreamStalledError } from './empty-completion';
 import { ProviderNotConfiguredError, providerDisplayName, type ProviderName } from './providers';
 
 export type ProviderFailureKind =
@@ -124,6 +125,9 @@ export function shouldFailover(error: unknown) {
 
 export function jobErrorCodeForProviderFailure(error: unknown) {
   if (error instanceof ProviderNotConfiguredError) return 'provider_not_configured' as const;
+  // The app declined to call the provider rather than the provider failing: its own code,
+  // so /admin/jobs does not file a self-imposed rest under a vendor outage (F-031).
+  if (error instanceof CircuitOpenError) return 'provider_resting' as const;
   if (error instanceof EmptyCompletionError) return 'no_files_generated' as const;
   const kind = classifyProviderFailure(error);
   if (kind === 'quota') return 'provider_quota_exhausted' as const;
@@ -136,6 +140,13 @@ export function jobErrorCodeForProviderFailure(error: unknown) {
 
 export function providerFailureMessage(error: unknown, provider?: ProviderName | null) {
   if (error instanceof ProviderNotConfiguredError) return error.message;
+  // Both carry a sentence written for the person reading it, and both would otherwise be
+  // classified `unavailable` and described as the service being down — which is wrong for a
+  // breaker we opened ourselves (F-031) and imprecise for a stream that was accepted and
+  // then went quiet (F-030).
+  if (error instanceof CircuitOpenError || error instanceof StreamStalledError) {
+    return error.message;
+  }
   const kind = classifyProviderFailure(error);
   if (kind === 'quota') {
     return 'DeepSeek is out of quota — try again later, or check the plan and billing details on the DeepSeek account.';
@@ -157,8 +168,13 @@ export function providerFailureMessage(error: unknown, provider?: ProviderName |
     }
     return 'DeepSeek rejected the API key. Ask an administrator to set or fix DEEPSEEK_API_KEY in Admin → Configuration, then try again.';
   }
-  const detail = messageOf(error).trim();
-  return detail || 'The AI service is down — try again in a few minutes.';
+  // Deliberately not `messageOf(error)`: an unclassified provider error's own text
+  // became the user-facing sentence *and* `Job.errorMessage`, which any signed-in
+  // member can read — and that text is where a Prisma connection string or the
+  // provider's echo of our request metadata shows up (F-079). The detail is not
+  // lost: every caller reaches here from a catch that has already handed the error
+  // to `trackFailure`/`logError`, which logs it and captures it with the request id.
+  return 'The AI service is down — try again in a few minutes.';
 }
 
 export function retryAfterMs(error: unknown, attempt = 0) {

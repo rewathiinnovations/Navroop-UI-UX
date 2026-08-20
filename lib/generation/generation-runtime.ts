@@ -15,8 +15,21 @@ import {
   type StartGenerationInput,
 } from './types';
 import { sanitizeGenerationPath } from './parse-files';
+import { completedCodeFromFrame } from './complete-frame';
 import { emitLockConflict, parseLockConflict } from '@/lib/projects/lock-client';
 import { PROJECT_FILES_CHANGED_EVENT } from '@/lib/preview/events';
+import { generationRequestErrorMessage } from './request-error';
+import { chatTextFromConversation } from './parse-blocks';
+import { recoveryCauseLine } from '@/lib/jobs/copy';
+import {
+  RESUME_LOST_LINE,
+  RESUME_NOTICE,
+  RESUME_TIMEOUT_LINE,
+  applyResumedFiles,
+  resumeStatusLine,
+  resumeStep,
+  type ResumeSnapshot,
+} from './stream-resume';
 
 type Listener = () => void;
 type JobHandler = (job: RuntimeJob) => Promise<void>;
@@ -221,21 +234,40 @@ export type StreamedFence = {
   closed: boolean;
 };
 
+/** What a scan saw, plus where the next one may pick up. */
+export type StreamedFenceScan = {
+  fences: StreamedFence[];
+  /**
+   * Resume offset: the position the scan reached after the last *closed* fence.
+   * Everything before it is immutable, so the next chunk can be parsed from here
+   * instead of from zero.
+   */
+  cursor: number;
+};
+
 /**
- * The blocks visible in accumulated stream text — closed ones plus, at the end,
- * the one still being written. Pure, so the streaming rail is testable without
- * a stream or a component.
+ * The blocks visible in accumulated stream text from `from` onwards — closed
+ * ones plus, at the end, the one still being written. Pure, so the streaming
+ * rail is testable without a stream or a component.
  *
  * A body ends at the first line-leading fence after it, exactly as the previous
  * closed-fence regex ended it, so a finished block's body is byte-for-byte what
  * it was before. Only the end of the text produces `closed: false`.
+ *
+ * `from` is what stops this being quadratic. It used to run from zero on every
+ * chunk, walking every byte of the reply and doing an `indexOf` per fence, so a
+ * build's parsing cost grew with the square of its own output (F-040). A closed
+ * fence can never change, so resuming past the last one yields exactly the
+ * fences a full scan would have yielded after it.
  */
-export function scanStreamedFences(text: string): StreamedFence[] {
+export function scanStreamedFencesFrom(text: string, from: number): StreamedFenceScan {
   const opener = new RegExp(FENCE_OPEN_RE, 'g');
   const probe = new RegExp(OPENER_AT_RE);
   const fences: StreamedFence[] = [];
   let open: StreamedFence | null = null;
   let match: RegExpExecArray | null;
+  let cursor = from;
+  opener.lastIndex = from;
 
   while ((match = opener.exec(text)) !== null) {
     const bodyStart = match.index + match[0].length;
@@ -257,10 +289,18 @@ export function scanStreamedFences(text: string): StreamedFence[] {
     // for its BLOCK_RE. Resume on the newline instead and re-match the opener.
     probe.lastIndex = endIndex + FENCE_END.length;
     opener.lastIndex = probe.test(text) ? endIndex + 1 : endIndex + FENCE_END.length;
+    // The next scan starts exactly where this one resumed, so it re-derives the
+    // same fences from here on and never revisits the closed ones.
+    cursor = opener.lastIndex;
   }
 
   if (open) fences.push(open);
-  return fences;
+  return { fences, cursor };
+}
+
+/** Whole-text scan, for a reply that arrived complete rather than in chunks. */
+export function scanStreamedFences(text: string): StreamedFence[] {
+  return scanStreamedFencesFrom(text, 0).fences;
 }
 
 /**
@@ -282,9 +322,16 @@ export function applyStreamedCode(
   text: string,
 ): GenerationProgressState {
   const newStreamedCode = prev.streamedCode + text;
+  // Only closed fences are immutable, so the scan resumes past the last one
+  // instead of re-parsing the whole reply on every chunk (F-040). Clamped
+  // because `streamedCode` is reset to '' when a run starts, and a cursor left
+  // pointing into the previous reply would skip the new one entirely.
+  const scanFrom = Math.min(Math.max(prev.lastProcessedPosition, 0), prev.streamedCode.length);
+  const scan = scanStreamedFencesFrom(newStreamedCode, scanFrom);
   const updatedState: GenerationProgressState = {
     ...prev,
     streamedCode: newStreamedCode,
+    lastProcessedPosition: scan.cursor,
     isStreaming: true,
     isThinking: false,
     status: 'Generating code...',
@@ -298,7 +345,7 @@ export function applyStreamedCode(
   let openFile: GenerationFile | null = null;
   let closedPath: string | null = null;
 
-  for (const fence of scanStreamedFences(newStreamedCode)) {
+  for (const fence of scan.fences) {
     // A finished file cannot change, so skip the work of rebuilding it on every
     // chunk. This also decides `edited` below: the check ran first here before
     // this change too, which made the old `existingFileIndex >= 0` test — the
@@ -583,6 +630,127 @@ export async function executeGenerationJob(job: RuntimeJob) {
   }
 }
 
+/** The build a job row was last seen in, as the recovery poll reports it. */
+type PolledJob = { status: string; errorCode: string | null; errorMessage: string | null };
+
+/**
+ * The neutral line for a dropped stream whose job the poll could not read: we do not know
+ * whether the build finished, and the detached worker may still be running.
+ */
+export const STREAM_DROPPED_NOTICE =
+  'The connection to the build dropped — checking whether it finished. Reload the project in a moment to see where it got to.';
+
+/**
+ * What chat says when the SSE stream ended without a terminal frame.
+ *
+ * The old code hard-failed every early end with "Failed to generate recreation" — clone
+ * vocabulary that means nothing to someone who typed a prompt, and a discard of the
+ * reason the job row already carries (F-037). A transport drop is not a generation
+ * failure: the build is finishing, finished, or failed for a knowable reason, so say
+ * which from the job the poll returned.
+ */
+export function streamDropLine(job: PolledJob | null): string {
+  if (!job) return STREAM_DROPPED_NOTICE;
+  if (job.status === 'SUCCEEDED') {
+    return 'The connection dropped, but the build finished — reload the project to see it.';
+  }
+  if (job.status === 'QUEUED' || job.status === 'RUNNING') {
+    return 'The connection to the build dropped — it is still running, so reload the project in a moment.';
+  }
+  // FAILED / ABANDONED / CANCELLED with a cause we have curated copy for.
+  return recoveryCauseLine(job.errorCode, job.errorMessage) || STREAM_DROPPED_NOTICE;
+}
+
+/** One poll of the job row, with the partial files the reattach loop replays (F-092). */
+async function pollForResume(projectId: string): Promise<ResumeSnapshot | null> {
+  try {
+    const response = await fetch(`/api/projects/${projectId}/job?files=1`);
+    if (!response.ok) return null;
+    const data = (await response.json()) as {
+      job?:
+        | (PolledJob & {
+            currentStep?: string | null;
+            lastStep?: string | null;
+            heartbeatAt?: string | null;
+          })
+        | null;
+      partialFiles?: Array<{ path?: unknown; content?: unknown }>;
+    };
+    if (!data.job) return null;
+    const files = (data.partialFiles ?? [])
+      .filter(
+        (file): file is { path: string; content: string } =>
+          typeof file?.path === 'string' && typeof file?.content === 'string',
+      )
+      .map((file) => ({ path: file.path, content: file.content }));
+    return {
+      status: data.job.status ?? null,
+      currentStep: data.job.currentStep ?? null,
+      lastStep: data.job.lastStep ?? null,
+      heartbeatAt: data.job.heartbeatAt ?? null,
+      files,
+      errorCode: data.job.errorCode ?? null,
+      errorMessage: data.job.errorMessage ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Reattaches to the build after the stream dropped, and keeps reporting until it settles
+ * (F-092).
+ *
+ * This used to be a single poll that printed one line and stopped, so the rest of the
+ * build happened with the panel frozen on whatever the last frame had said. There are no
+ * event ids to resume the byte stream from, but the job row carries every file written so
+ * far, the step it is on and a heartbeat — so the loop replays those until the job settles,
+ * its heartbeat goes stale, or the same 25-minute ceiling the workspace poller uses is
+ * reached. It never throws and never writes a project status: the verdict is the server's.
+ */
+async function resumeAfterDrop(): Promise<string> {
+  const projectId = state.projectId;
+  if (!projectId) return STREAM_DROPPED_NOTICE;
+  addGenerationMessage(RESUME_NOTICE, 'system');
+  const startedMs = Date.now();
+
+  for (;;) {
+    const snapshot = await pollForResume(projectId);
+    const decision = resumeStep({ snapshot, elapsedMs: Date.now() - startedMs });
+
+    if (decision.action === 'settled' && snapshot) {
+      // Land the last files the build wrote before saying how it ended, so the panel and
+      // the closing line agree.
+      setGenerationProgressState((prev) => ({
+        ...applyResumedFiles(prev, snapshot.files, ''),
+        isGenerating: false,
+        status: '',
+      }));
+      return streamDropLine({
+        status: decision.status,
+        errorCode: snapshot.errorCode,
+        errorMessage: snapshot.errorMessage,
+      });
+    }
+    if (decision.action !== 'replay') {
+      setGenerationProgressState((prev) => ({ ...prev, isGenerating: false, status: '' }));
+      if (decision.action === 'settled') return STREAM_DROPPED_NOTICE;
+      if (decision.reason === 'timeout') return RESUME_TIMEOUT_LINE;
+      if (decision.reason === 'stale-heartbeat') return RESUME_LOST_LINE;
+      return STREAM_DROPPED_NOTICE;
+    }
+
+    if (snapshot) {
+      setGenerationProgressState((prev) =>
+        applyResumedFiles(prev, snapshot.files, resumeStatusLine(snapshot)),
+      );
+    }
+    await sleep(decision.delayMs);
+  }
+}
+
 async function runGenerateStream(input: StartGenerationInput): Promise<GenerateResult> {
   const controller = getAbortController();
   patchGenerationState({
@@ -691,9 +859,13 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
   }
 
   if (!response.ok || !response.body) {
-    throw new Error(
-      response.ok ? 'Failed to generate code' : `HTTP error! status: ${response.status}`,
-    );
+    if (response.ok) throw new Error('Failed to generate code');
+    // The route answers JSON on every pre-stream refusal — 401, 400, 503
+    // PROVIDER_NOT_CONFIGURED, 429 QUEUE_TIMEOUT, 500 GENERATION_FAILED. Throwing
+    // `HTTP error! status: N` discarded the sentence the server wrote, including the one
+    // that names the page to fix (F-008).
+    const body = await response.json().catch(() => null);
+    throw new Error(generationRequestErrorMessage(response.status, body));
   }
 
   const reader = response.body.getReader();
@@ -704,6 +876,11 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
   let skillNames: string[] = [];
   let buildFix: GenerateResult['buildFix'] = null;
   let buffer = '';
+  // A `complete` or `error` frame is the server's verdict on this run. Without one, the
+  // read loop ended on a transport failure (a slept laptop, a proxy cutting an idle SSE
+  // connection, a redeploy) while the detached worker kept streaming server-side — so
+  // the client must not PATCH a status it cannot know (F-036).
+  let sawTerminalFrame = false;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -749,18 +926,13 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
             thinkingDuration: data.duration,
           }));
         } else if (data.type === 'conversation') {
-          let text = data.text || '';
-          text = text.replace(/<package>[^<]*<\/package>/g, '');
-          text = text.replace(/<packages>[^<]*<\/packages>/g, '');
-          if (
-            !text.includes('<file') &&
-            !text.includes('import React') &&
-            !text.includes('export default') &&
-            !text.includes('className=') &&
-            text.trim().length > 0
-          ) {
-            addGenerationMessage(text.trim(), 'ai');
-          }
+          // Strip the code, keep the prose. The old substring filter dropped the whole
+          // frame if it contained `<file`, `import React`, `export default` or
+          // `className=`, so an answer that merely named a default export or a Tailwind
+          // class was discarded with no chat line — and on the chat-answer path this
+          // frame *is* the reply, so the run finished having said nothing (F-050).
+          const prose = chatTextFromConversation(data.text || '');
+          if (prose) addGenerationMessage(prose, 'ai');
         } else if (data.type === 'stream' && data.raw) {
           setGenerationProgressState((prev) => applyStreamedCode(prev, data.text));
         } else if (data.type === 'app') {
@@ -781,7 +953,16 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
             status: data.message || `Installing ${data.name}`,
           }));
         } else if (data.type === 'complete') {
-          generatedCode = data.generatedCode || '';
+          sawTerminalFrame = true;
+          // The frame carries the reply only when the client cannot already hold
+          // it — a reused completion, a failover retry, or a reply the route
+          // rewrote after streaming it. Otherwise this is exactly the text the
+          // `stream` frames accumulated, so it is read back rather than received
+          // a second time (F-043).
+          generatedCode = completedCodeFromFrame(
+            data.generatedCode,
+            state.generationProgress.streamedCode,
+          );
           explanation = data.explanation || '';
           packagesToInstall = data.packagesToInstall || [];
           if (Array.isArray(data.skillNames) && data.skillNames.length > 0) {
@@ -806,29 +987,33 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
               packagesToInstall;
           }
           patchGenerationState({ lastGeneratedCode: generatedCode || null });
-          // Fallback rail for a reply whose blocks never reached the live pass (a
-          // reused completion, or a provider that sent no `raw` frames). The same
-          // scan the rail uses, so both agree where a block ends, and gated by the
-          // same path check, so neither can name a file the persist path refuses.
-          const parsedFiles: GenerationFile[] = generatedCode
-            ? scanStreamedFences(generatedCode).flatMap((fence) =>
-                sanitizeGenerationPath(fence.path).ok
-                  ? [
-                      {
-                        path: fence.path,
-                        content: fence.body,
-                        type: fileTypeFromPath(fence.path),
-                        completed: true,
-                      },
-                    ]
-                  : [],
-              )
-            : [];
           setGenerationProgressState((prev) => {
             // The stream is over, so a block still marked open is just the last
             // file the reply got to. Close it out; the count then describes what
             // the rail actually shows, which the old two-way expression did not.
-            const files = prev.files.length > 0 ? finalizeStreamedFiles(prev.files) : parsedFiles;
+            //
+            // The fallback rail below is for a reply whose blocks never reached
+            // the live pass (a reused completion, or a provider that sent no
+            // `raw` frames). It re-scans the whole reply, so it is built only
+            // when it is actually needed — it used to run on every generation
+            // and be thrown away. The same scan the rail uses, so both agree
+            // where a block ends, and gated by the same path check, so neither
+            // can name a file the persist path refuses.
+            const files =
+              prev.files.length > 0
+                ? finalizeStreamedFiles(prev.files)
+                : scanStreamedFences(generatedCode).flatMap((fence) =>
+                    sanitizeGenerationPath(fence.path).ok
+                      ? [
+                          {
+                            path: fence.path,
+                            content: fence.body,
+                            type: fileTypeFromPath(fence.path),
+                            completed: true,
+                          },
+                        ]
+                      : [],
+                  );
             return {
               ...prev,
               // `complete` with zero files is now a real outcome, not a failure:
@@ -869,14 +1054,28 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
     }
   }
 
-  if (!generatedCode) {
-    setJobStatus('error', 'Failed to generate recreation');
+  if (!generatedCode && !sawTerminalFrame) {
+    // The stream ended with no `complete` and no `error` — a transport drop, not a
+    // generation failure. The detached worker is still persisting the site and settling
+    // the job server-side, so PATCHing `error` here would overwrite a verdict this tab
+    // cannot see (F-036). Stop this tab's heartbeat, write no status, then *reattach*:
+    // the loop replays the job's persisted files and step until it settles (F-092).
+    stopHeartbeat();
+    patchGenerationState({ status: 'idle' });
     setGenerationProgressState((prev) => ({
       ...prev,
-      isGenerating: false,
       isStreaming: false,
+      isThinking: false,
     }));
-    throw new Error('Failed to generate recreation');
+    const line = await resumeAfterDrop();
+    addGenerationMessage(line, 'system');
+    return {
+      generatedCode: '',
+      explanation: '',
+      packagesToInstall: [],
+      skillNames: [],
+      streamDropped: true,
+    };
   }
 
   setGenerationProgressState((prev) => ({

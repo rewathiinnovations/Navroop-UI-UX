@@ -38,13 +38,23 @@ export type TruncationRecoveryOutcome = {
  * must bind {@link bindStreamErrorCapture}'s `onError` on the `streamText` options and pass
  * the attached result here, so the rejection surfaces as a throw instead of empty text
  * silently overwriting a real file.
+ *
+ * `count` is the per-job cap tracker's `addChunk` (F-042). Recovery is a second
+ * generation: one call per truncated file, each bounded only by its own `maxOutputTokens`,
+ * so nothing bounded the sum and a reply with several truncated files could spend N times
+ * `maxTokensPerJob` without the cap firing. Returning an error from `count` aborts the
+ * drain immediately, the way the main stream loop aborts on `capTracker.addChunk`, rather
+ * than charging the whole file first and checking afterwards.
  */
 export async function collectRecoveredStreamText(
   result: StreamFailureSource & { textStream?: AsyncIterable<string> },
+  count?: (chunk: string) => Error | null,
 ): Promise<string> {
   let text = '';
   for await (const chunk of result.textStream ?? []) {
     text += chunk ?? '';
+    const abort = count?.(chunk ?? '');
+    if (abort) throw abort;
   }
   const failure = await surfaceStreamFailure(result);
   if (failure != null) throw failure;

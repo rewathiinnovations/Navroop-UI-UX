@@ -1,12 +1,20 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useReducer, useRef, type UIEvent } from 'react';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import {
+  lazy,
+  memo,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  type UIEvent,
+} from 'react';
 import { AlertTriangle, ArrowDownToLine, Check } from 'lucide-react';
 import { summarizeStreamingFiles } from '@/lib/generation/generation-runtime';
 import type { DroppedGenerationPath, GenerationFile } from '@/lib/generation/types';
-import { cn } from '@/lib/utils';
+import { cn } from '@/utils/cn';
 import { streamProgressLabel } from './BuildingIndicator';
 
 /**
@@ -17,6 +25,18 @@ import { streamProgressLabel } from './BuildingIndicator';
 
 /** Anything closer than this to the bottom still counts as "at the bottom". */
 const FOLLOW_SLACK_PX = 24;
+
+/**
+ * The syntax highlighter, in its own chunk.
+ *
+ * `lazy` + `import()` keeps the ~1 MB refractor payload out of the workspace
+ * route's first client chunk (F-639); the chunk is fetched only when a file is
+ * first shown. Declared at module scope, so it is a stable component type rather
+ * than one created during render. The Suspense fallback renders the raw code, so
+ * the body is never blank while the chunk loads — and on the server, where the
+ * lazy import cannot resolve, the same fallback is what renders.
+ */
+const StreamedCodeBlock = lazy(() => import('./StreamedCodeBlock'));
 
 export type StreamingPanelSelection = {
   /** The body tracks whichever file the stream is writing. */
@@ -84,6 +104,7 @@ export function codeLanguage(path: string): string {
 const DROP_REASONS: Record<string, string> = {
   absolute_path: 'absolute path',
   path_traversal: 'path escapes the project',
+  invalid_path: 'quote in path',
   duplicate_path: 'duplicate path',
   empty: 'blank or malformed path',
   too_large: 'file too large',
@@ -92,7 +113,7 @@ const DROP_REASONS: Record<string, string> = {
   unterminated: 'never closed',
 };
 
-export default function StreamingCodePanel({
+function StreamingCodePanel({
   files,
   activePath,
   droppedPaths = [],
@@ -249,19 +270,18 @@ export default function StreamingCodePanel({
 
         <div ref={bodyRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-auto">
           {shown ? (
-            <SyntaxHighlighter
-              language={codeLanguage(shown.path)}
-              style={vscDarkPlus}
-              customStyle={{
-                margin: 0,
-                padding: '1rem',
-                fontSize: '0.875rem',
-                background: 'transparent',
-              }}
-              showLineNumbers
+            <Suspense
+              fallback={
+                // The code with no colours until the highlighter chunk lands —
+                // and on the server, where the lazy import cannot resolve. Never
+                // a blank pane.
+                <pre className="m-0 whitespace-pre-wrap break-words p-16 font-mono text-[14px] leading-5 text-white/80">
+                  {shown.content}
+                </pre>
+              }
             >
-              {shown.content}
-            </SyntaxHighlighter>
+              <StreamedCodeBlock language={codeLanguage(shown.path)} code={shown.content} />
+            </Suspense>
           ) : streamedText ? (
             // Tail, not the whole reply: this re-renders on every chunk, and the
             // reader only ever sees the bottom anyway.
@@ -278,3 +298,14 @@ export default function StreamingCodePanel({
     </div>
   );
 }
+
+/**
+ * Memoised because the workspace root re-renders on every state change it owns —
+ * ~40 `useState` hooks, several of which tick during a build — and this panel
+ * re-renders a syntax-highlighted file body each time (F-641). Its props change
+ * only when the stream does, so every other render is skipped.
+ *
+ * Callers must keep `files` referentially stable when nothing streamed; passing
+ * a fresh `[]` per render defeats this.
+ */
+export default memo(StreamingCodePanel);

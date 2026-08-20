@@ -18,6 +18,13 @@ vi.mock('@/lib/assets/persist', () => persist);
 
 vi.mock('@/lib/usage-costs', () => ({ logGenerationEvent: vi.fn() }));
 
+/**
+ * The alt-text call is a metered provider call of its own (F-127) — its own
+ * module, its own tests. Mocked here so this file makes no provider or spend
+ * call it is not about.
+ */
+vi.mock('@/lib/assets/alt-text', () => ({ generateAltText: vi.fn(async () => 'alt') }));
+
 /** No worker configured — the finding's trigger: keys present, worker unset. */
 vi.mock('@/lib/settings/resolve', () => ({ getSettings: vi.fn(async () => ({})) }));
 
@@ -67,8 +74,7 @@ beforeEach(() => {
         { status: 200 },
       );
     }
-    // Alt-text calls (chat/completions, generateContent) fail closed: the
-    // fallback alt path is not what this file tests.
+    // Nothing else should reach the network from this path.
     return new Response('nope', { status: 500 });
   });
 });

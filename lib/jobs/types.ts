@@ -46,7 +46,11 @@ export type JobResourceIds = {
   coolifyDeploymentUuid?: string | null;
   dnsRecordId?: string | null;
   cloudflareZoneId?: string | null;
-  compensation?: 'rolled_back' | 'kept_live' | null;
+  /**
+   * How the abandon sweep left this job's resources. `partial` means at least one is still
+   * up: the marker is not terminal, so the next sweep retries it (F-046).
+   */
+  compensation?: 'rolled_back' | 'kept_live' | 'partial' | null;
   sandboxAttempts?: SandboxAttemptRecord[] | null;
   sandboxSkipped?: SandboxSkippedRecord[] | null;
   sandboxProviderConfigId?: string | null;
@@ -97,12 +101,30 @@ export type JobErrorCode =
   | 'snapshot_unreadable'
   | 'provider_not_configured'
   | 'provider_quota_exhausted'
+  // The breaker we opened ourselves after repeated failures — the app declined to call the
+  // provider, which is neither a vendor outage nor a misconfiguration, and clears on its
+  // own. It used to arrive as `provider_error` behind "The AI service did not respond".
+  | 'provider_resting'
   | 'request_rejected'
   | 'import_failed'
   // Publish refused to force-push over an existing deploy-org repository whose recorded
   // id does not prove this project created it (F-202). The recorded message names the
   // repo and the way forward, so this code is in `RECORDED_CAUSE_CODES`.
   | 'repo_conflict'
+  // The run held the project lock, then a renewal proved it no longer did — expired, or
+  // taken by another writer. Distinct from `cancelled`: nobody asked for this stop, and the
+  // run refused to write rather than persist under a lock that no longer protected the
+  // write (F-730).
+  | 'project_lock_lost'
+  // Nothing to do with the AI: a bookkeeping job (`withRecordedJob` — EXPORT,
+  // DOMAIN_VERIFY, TEMPLATE_THUMBNAIL) whose work threw. Every one of them used to be
+  // filed as `provider_error`, so /admin/jobs grouped a storage or DNS outage under the
+  // AI provider and pointed the operator at DeepSeek (F-047).
+  | 'internal_error'
+  // The project row was gone by the time the detached work ran — deleted while its audit
+  // sat queued. Both audit twins filed this as `provider_error`, so /admin/jobs blamed the
+  // AI provider for a row that no longer exists and sent the operator to DeepSeek (F-821).
+  | 'project_deleted'
   | 'stack_mismatch';
 
 export type PartialFile = { path: string; content: string };
@@ -295,10 +317,6 @@ export function parseResourceIds(value: unknown): JobResourceIds | null {
     sandboxProviderConfigId: row.sandboxProviderConfigId ?? null,
     providerAttempts: row.providerAttempts ?? null,
   };
-}
-
-export function filesToLastCode(files: PartialFile[]) {
-  return files.map((file) => `<file path="${file.path}">\n${file.content}\n</file>`).join('\n');
 }
 
 export function parsePartialFiles(value: unknown): PartialFile[] {

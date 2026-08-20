@@ -1,4 +1,3 @@
-import { appConfig } from '@/config/app.config';
 import { getDefaultCircuit, type CircuitBreaker } from './circuit';
 import { executeWithFailover, type ProviderRunResult } from './run';
 import { requireUsableProviderChain, type ProviderEntry } from './providers';

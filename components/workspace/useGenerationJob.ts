@@ -8,6 +8,12 @@ import {
   shouldStopClientPoll,
   watchdogStopIsStale,
 } from '@/lib/jobs/poll';
+import {
+  connectionState,
+  isNetworkFailure,
+  reportNetworkFailure,
+  reportNetworkSuccess,
+} from '@/lib/net/connection';
 import type { PublicGenerationJob } from '@/lib/jobs/types';
 
 /**
@@ -57,7 +63,21 @@ export function useGenerationJob({
 
   const refresh = useCallback(async () => {
     if (!projectId) return null;
-    const response = await fetch(`/api/projects/${projectId}/job`);
+    let response: Response;
+    try {
+      response = await fetch(`/api/projects/${projectId}/job`);
+    } catch (error) {
+      // An offline browser rejected here with a TypeError nothing caught, so the
+      // whole poll loop died on the first failed tick: the workspace kept its
+      // spinner and never watched the build again, even after the connection came
+      // back (F-446). The caller reschedules; the banner says why.
+      if (isNetworkFailure(error)) {
+        reportNetworkFailure();
+        return null;
+      }
+      throw error;
+    }
+    reportNetworkSuccess();
     if (!response.ok) return null;
     const data = (await response.json()) as { job?: PublicGenerationJob | null };
     const next = data.job ?? null;
@@ -108,6 +128,19 @@ export function useGenerationJob({
         return;
       }
       const startedAtMs = watchStartedAtMs(next, startedAtRef.current ?? Date.now());
+      // Offline, nothing here knows anything about the job: `refresh` returned
+      // null because the request never left. Handing the watchdog a missing
+      // heartbeat would make it call a healthy build dead, so the tick just
+      // reschedules and the offline banner carries the explanation (F-446).
+      if (connectionState() === 'offline') {
+        timer = window.setTimeout(
+          () => {
+            void tick();
+          },
+          nextPollIntervalMs(Date.now() - startedAtMs),
+        );
+        return;
+      }
       // A QUEUED build has no heartbeat at all — the first one is written when it starts
       // — so handing it to the watchdog called every queued build stale on the very first
       // poll and opened the recovery panel on work that had not begun. Waiting for a

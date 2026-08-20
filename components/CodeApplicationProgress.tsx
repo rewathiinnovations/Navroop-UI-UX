@@ -1,5 +1,7 @@
+'use client';
+
 import React from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
 
 export interface CodeApplicationState {
   stage: 'analyzing' | 'installing' | 'applying' | 'complete' | null;
@@ -14,6 +16,10 @@ interface CodeApplicationProgressProps {
 }
 
 export default function CodeApplicationProgress({ state }: CodeApplicationProgressProps) {
+  // The CSS reduced-motion escape hatch in reset.css only neutralises CSS
+  // animations; motion drives inline transforms, so it has to opt out itself.
+  const reduceMotion = useReducedMotion();
+
   if (!state.stage || state.stage === 'complete') return null;
 
   return (
@@ -29,8 +35,10 @@ export default function CodeApplicationProgress({ state }: CodeApplicationProgre
         <div className="flex items-center gap-3">
           {/* Rotating loading indicator */}
           <motion.div
-            animate={{ rotate: 360 }}
-            transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
+            animate={reduceMotion ? undefined : { rotate: 360 }}
+            transition={
+              reduceMotion ? undefined : { duration: 1, repeat: Infinity, ease: 'linear' }
+            }
             className="w-4 h-4"
           >
             <svg className="w-full h-full" viewBox="0 0 24 24" fill="none">

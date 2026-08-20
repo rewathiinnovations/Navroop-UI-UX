@@ -2,6 +2,7 @@ import { NO_PROVIDER_CONFIGURED_MESSAGE } from '../ai/providers';
 import { IMPORT_NO_FILES_MESSAGE } from '../import/copy';
 import { BLOCKED_ACCESS_MESSAGE } from '../import/error-messages';
 import { CREDIT_DENIAL_MESSAGES } from '../plans/messages';
+import { LOCK_LOST_MESSAGE } from '../projects/lock-messages';
 import { URL_GUARD_MESSAGES } from '../security/url-guard-messages';
 import type { JobErrorCode } from './types';
 
@@ -27,6 +28,14 @@ export function recoveryHeading(kind?: string | null): string {
 export const RECOVERY_HEADING = RECOVERY_HEADINGS.BUILD;
 export const PUBLISH_RECOVERY_HEADING = RECOVERY_HEADINGS.PUBLISH;
 export const PUBLISH_ROLLBACK_LINE = 'Incomplete work was cleaned up';
+/**
+ * The half-cleaned case. Naming it is the whole point: the previous copy said "cleaned up"
+ * whatever the providers answered, so a Coolify app that was still running and still
+ * billing was reported as removed (F-046). The daily orphan sweep is the backstop, hence
+ * the day.
+ */
+export const PUBLISH_PARTIAL_ROLLBACK_LINE =
+  'Some of the incomplete work could not be removed yet — it is still running and will be cleaned up automatically within a day';
 export const PUBLISH_KEPT_LIVE_LINE = 'Your previous live site is still running';
 export const KEEP_BUILT_LABEL = 'Keep what was built';
 export const KEEP_IMPORTED_LABEL = 'Keep what was imported';
@@ -86,6 +95,10 @@ const CAUSE_LINES: Record<JobErrorCode, string> = {
   provider_not_configured: NO_PROVIDER_CONFIGURED_MESSAGE,
   provider_quota_exhausted:
     'DeepSeek is out of quota — try again later, or check the plan and billing details on the DeepSeek account.',
+  // In `RECORDED_CAUSE_CODES`: the recorded sentence says how many minutes are left, which
+  // this generic line cannot. It must not say the service is down — the service was never
+  // called, and the rest clears by itself, which is why Try again stays offered.
+  provider_resting: 'The AI is resting after several failures in a row — try again shortly.',
   request_rejected:
     'The AI could not accept this request — it may be too large or against the content policy. Try a shorter prompt.',
   // One code for every hard URL-import abort (blocked page, login wall, SSRF,
@@ -98,6 +111,17 @@ const CAUSE_LINES: Record<JobErrorCode, string> = {
   // to proceed (replace via the typed confirmation, or rename the project).
   repo_conflict:
     'A repository with this name already exists and was not created by this project, so publish refused to overwrite it.',
+  // Says "nothing was saved" because that is what the run did: it refused to write under a
+  // lock it had lost rather than overwrite whatever took the project (F-730). Try again is
+  // offered — whatever took it is finished by the time this is read.
+  project_lock_lost: LOCK_LOST_MESSAGE,
+  // Deliberately vague about the subsystem and deliberately silent about the AI: this is
+  // the code for a bookkeeping job (export, domain check, thumbnail) whose work threw, and
+  // the recorded `errorMessage` is what /admin/jobs shows the operator.
+  internal_error: 'Something on our side failed while doing this — try again',
+  // Reached only from /admin/jobs: the project it belonged to is gone, so no chat or
+  // recovery panel exists to render this. It must not say the AI failed (F-821).
+  project_deleted: 'This project was deleted before the work finished',
 };
 
 /**
@@ -114,6 +138,8 @@ const CAUSE_LINES: Record<JobErrorCode, string> = {
 const RECORDED_CAUSE_CODES = new Set<string>([
   'provider_not_configured',
   'provider_quota_exhausted',
+  // `CircuitOpenError`'s message names the minutes left, which the static line cannot.
+  'provider_resting',
   // The member-cap refusal is raised by `consumeCredits` with the one sentence that names
   // the remedy ("ask an admin to raise it"). Before this code existed the refusal came
   // through as `credits_exhausted`, which replaced that sentence with "This month's credits
@@ -192,6 +218,8 @@ const NO_RETRY_CODES = new Set<string>([
   // Retrying re-runs the same guard against the same repository and refuses identically;
   // the remedies are the typed "Replace existing repository" confirmation or a rename.
   'repo_conflict',
+  // There is nothing left to retry against: the project row is gone.
+  'project_deleted',
 ]);
 
 export function offersRecoveryRetry(input: {

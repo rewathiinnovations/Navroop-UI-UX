@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { keepPartialBuild, resolveRecoveryTarget, retryAbandonedJob } from '@/lib/jobs/recovery';
+import { dispatchRecoveryRetry, recoveryRetryIntent } from '@/lib/jobs/recovery-retry';
 
 /**
  * What a recovery click is allowed to do.
@@ -299,5 +300,72 @@ describe('retryAbandonedJob', () => {
     expect(lifecycle.createOrReuseJob).toHaveBeenCalledWith(
       expect.objectContaining({ attempt: 1, creditsChargedAt: JOB.creditsChargedAt }),
     );
+  });
+});
+
+/**
+ * F-033: for BUILD/FOLLOWUP, `recoveryRetryIntent` returned
+ * `{ action: 'build', prompt: input.inputPrompt || '' }` with no guard for an empty
+ * prompt — unlike the PLAN and IMPORT branches directly above it. `dispatchRecoveryRetry`
+ * then created the retry job first and only started the build `if (result.prompt)`, so a
+ * FOLLOWUP whose `inputPrompt` was null produced a QUEUED row nothing would ever start:
+ * it occupied `one_active_job_per_project`, `applyPhaseForStart` set the phase to BUILDING
+ * (chat input locked), and it sat there until the 11-minute queued-stale reaper. The button
+ * appeared to do nothing.
+ */
+describe('Try again on a build with no stored prompt (F-033)', () => {
+  it('declines with an explanation instead of promising a build', () => {
+    for (const kind of ['BUILD', 'FOLLOWUP']) {
+      const intent = recoveryRetryIntent({ kind, errorCode: 'provider_error', inputPrompt: null });
+      expect(intent.action, kind).toBe('none');
+      expect(intent.action === 'none' && intent.nextStep, kind).toMatch(/prompt/i);
+    }
+    expect(
+      recoveryRetryIntent({ kind: 'BUILD', errorCode: 'provider_error', inputPrompt: '   ' })
+        .action,
+    ).toBe('none');
+  });
+
+  it('still retries a build that has its prompt', () => {
+    expect(
+      recoveryRetryIntent({
+        kind: 'BUILD',
+        errorCode: 'provider_error',
+        inputPrompt: '  a bakery site ',
+      }),
+    ).toEqual({ action: 'build', prompt: 'a bakery site' });
+  });
+
+  it('creates no job row when the intent declined', async () => {
+    const createRetryJob = vi.fn();
+    await dispatchRecoveryRetry(
+      recoveryRetryIntent({ kind: 'FOLLOWUP', errorCode: 'timeout', inputPrompt: null }),
+      {
+        startImport: vi.fn(),
+        startPlan: vi.fn(),
+        startBuild: vi.fn(),
+        createRetryJob,
+      },
+    );
+    expect(createRetryJob).not.toHaveBeenCalled();
+  });
+
+  it('the server refuses rather than creating a job it cannot start', async () => {
+    // Belt and braces: `retryAbandonedJob` computed `job.inputPrompt || planContext || ''`
+    // and returned ok with that empty string. For a FOLLOWUP there is no plan context to
+    // fall back on, so the row it created was unstartable.
+    store.getJob.mockResolvedValue({
+      ...JOB,
+      kind: 'FOLLOWUP',
+      inputPrompt: null,
+      filesWritten: 0,
+      partialFiles: [],
+    });
+
+    const result = await retryAbandonedJob('job-1', 'key-1');
+
+    expect(result).toMatchObject({ ok: false, status: 400 });
+    expect(result.ok === false && result.error).toMatch(/prompt/i);
+    expect(lifecycle.createOrReuseJob).not.toHaveBeenCalled();
   });
 });

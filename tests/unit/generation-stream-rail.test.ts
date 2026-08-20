@@ -4,6 +4,7 @@ import {
   applyStreamedCode,
   finalizeStreamedFiles,
   scanStreamedFences,
+  scanStreamedFencesFrom,
   summarizeStreamingFiles,
 } from '@/lib/generation/generation-runtime';
 import {
@@ -196,6 +197,98 @@ describe('scanStreamedFences', () => {
       [`${fence}tsx{path=a.tsx}`, 'const a = 1;', fence, `${fence}bash`, 'npm i', fence].join('\n'),
     );
     expect(fences).toEqual([{ path: 'a.tsx', body: 'const a = 1;', closed: true }]);
+  });
+});
+
+describe('scanStreamedFencesFrom (F-040: the scan does not re-read closed fences)', () => {
+  /** A reply of `count` closed files, each body `size` chars, in first-seen order. */
+  function reply(count: number, size: number): string {
+    const parts: string[] = [];
+    for (let i = 0; i < count; i += 1) {
+      parts.push(`${fence}tsx{path=src/File${i}.tsx}`, 'x'.repeat(size), fence);
+    }
+    return parts.join('\n');
+  }
+
+  it('resumes past the last closed fence instead of from zero', () => {
+    const text = reply(3, 20);
+    const full = scanStreamedFencesFrom(text, 0);
+    expect(full.fences.filter((f) => f.closed)).toHaveLength(3);
+    // A second scan from the reported cursor finds no already-closed fence again:
+    // everything before it is immutable and must not be revisited.
+    const resumed = scanStreamedFencesFrom(text, full.cursor);
+    expect(resumed.fences).toEqual([]);
+    // The cursor sits at or past the final closing fence, never beyond the text.
+    expect(full.cursor).toBeGreaterThan(text.lastIndexOf(`${fence}`));
+    expect(full.cursor).toBeLessThanOrEqual(text.length);
+  });
+
+  it('an open trailing block does not advance the cursor, so it is re-read next chunk', () => {
+    const closed = `${fence}tsx{path=a.tsx}\nconst a = 1;\n${fence}\n`;
+    const withOpen = `${closed}${fence}tsx{path=b.tsx}\nconst b`;
+    const first = scanStreamedFencesFrom(withOpen, 0);
+    // The open block is reported but the cursor stays at the close of `a.tsx`.
+    expect(first.fences.map((f) => f.closed)).toEqual([true, false]);
+    expect(first.cursor).toBeLessThan(closed.length + `${fence}tsx{path=b.tsx}`.length);
+    // When the open block closes, resuming from the cursor still finds it.
+    const finished = `${withOpen} = 2;\n${fence}`;
+    const resumed = scanStreamedFencesFrom(finished, first.cursor);
+    expect(resumed.fences).toEqual([{ path: 'b.tsx', body: 'const b = 2;', closed: true }]);
+  });
+
+  it('total bytes scanned across a chunked build is linear, not quadratic', () => {
+    // 40 files streamed one block at a time — the shape the audit measured. With a
+    // cursor, each chunk re-reads only the block being written; from zero it would
+    // re-read the whole accumulated reply every time (O(n^2)).
+    const count = 40;
+    const size = 200;
+    const blocks: string[] = [];
+    const full = reply(count, size);
+    // Rebuild the same reply as one-block chunks so the offsets line up.
+    for (let i = 0; i < count; i += 1) {
+      const prefix = i === 0 ? '' : '\n';
+      blocks.push(`${prefix}${fence}tsx{path=src/File${i}.tsx}\n${'x'.repeat(size)}\n${fence}`);
+    }
+
+    let accumulated = '';
+    let cursor = 0;
+    let cursorScanBytes = 0;
+    let fromZeroScanBytes = 0;
+    for (const chunk of blocks) {
+      accumulated += chunk;
+      cursorScanBytes += accumulated.length - cursor;
+      fromZeroScanBytes += accumulated.length;
+      cursor = scanStreamedFencesFrom(accumulated, cursor).cursor;
+    }
+
+    const total = full.length;
+    // The cursor scan traverses on the order of the reply once; the from-zero scan
+    // traverses it ~count/2 times. Assert the cursor path is within a small
+    // multiple of a single pass, and dramatically below the quadratic path.
+    expect(cursorScanBytes).toBeLessThan(total * 3);
+    expect(fromZeroScanBytes).toBeGreaterThan(total * 15);
+    expect(cursorScanBytes * 5).toBeLessThan(fromZeroScanBytes);
+  });
+
+  it('feeding the whole build one block per chunk matches a single full scan', () => {
+    const count = 12;
+    const size = 30;
+    const parts: string[] = [];
+    for (let i = 0; i < count; i += 1) {
+      parts.push(`${fence}tsx{path=src/File${i}.tsx}\n${'y'.repeat(size)}\n${fence}`);
+    }
+    const oneShot = scanStreamedFences(parts.join('\n')).filter((f) => f.closed);
+
+    let accumulated = '';
+    let cursor = 0;
+    const seen: string[] = [];
+    parts.forEach((block, index) => {
+      accumulated += index === 0 ? block : `\n${block}`;
+      const scan = scanStreamedFencesFrom(accumulated, cursor);
+      for (const f of scan.fences) if (f.closed) seen.push(f.path);
+      cursor = scan.cursor;
+    });
+    expect(seen).toEqual(oneShot.map((f) => f.path));
   });
 });
 

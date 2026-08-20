@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/db';
 import { log } from '@/lib/logger';
+import { LOCK_LOST_MESSAGE } from './lock-messages';
 
 export type LockReason = 'generation' | 'publish' | 'import' | 'audit';
 
@@ -17,6 +18,26 @@ export type AcquireResult = AcquireOk | AcquireFail;
 export type LockOpOk = { ok: true };
 export type LockOpFail = { ok: false; error: string };
 export type LockOpResult = LockOpOk | LockOpFail;
+
+/**
+ * A hold that ended before its work did: the renewal that keeps `lockExpiresAt` in the
+ * future proved the project is no longer ours, so anything this scope still had in flight
+ * must not be written. Distinct from `AcquireFail`, which is a refusal *before* any work.
+ */
+export type LockLost = { ok: false; lockLost: true; error: string };
+
+/** Re-exported so `lock.ts` consumers do not need a second import for the sentence. */
+export { LOCK_LOST_MESSAGE };
+
+/** The reason an aborted `LockHold.lost` signal carries. */
+export class ProjectLockLostError extends Error {
+  readonly projectId: string;
+  constructor(projectId: string) {
+    super(LOCK_LOST_MESSAGE);
+    this.name = 'ProjectLockLostError';
+    this.projectId = projectId;
+  }
+}
 
 const DEFAULT_TTL_MINUTES = 15;
 
@@ -157,21 +178,83 @@ export async function bumpContentVersion(projectId: string): Promise<void> {
   `;
 }
 
-export function beginLockHeartbeat(projectId: string, userId: string, intervalMs = 60_000) {
+export type LockLostDetail = {
+  projectId: string;
+  /** `not_held` — the renew UPDATE matched no row. `renew_unavailable` — see below. */
+  reason: 'not_held' | 'renew_unavailable';
+};
+
+export type LockHeartbeatOptions = {
+  intervalMs?: number;
+  /**
+   * Called once, just before the heartbeat stops itself, when the lock is provably no
+   * longer ours. Same shape as `JobHeartbeatOptions.onInactive`, for the same reason: the
+   * renewal write is the one place that already observes the row every tick, so it is the
+   * cheapest honest place to notice.
+   */
+  onLost?: (detail: LockLostDetail) => void;
+};
+
+export function beginLockHeartbeat(
+  projectId: string,
+  userId: string,
+  options: number | LockHeartbeatOptions = {},
+) {
+  const { intervalMs = 60_000, onLost } =
+    typeof options === 'number' ? { intervalMs: options, onLost: undefined } : options;
+  // A thrown renew is a database blip and must not abort a running generation — but once
+  // every attempt for a whole TTL has failed, `lockExpiresAt` is in the past, another
+  // writer is entitled to take the project, and "keep going quietly" is the F-730 bug
+  // rather than tolerance. At the defaults that is the finding's own trigger: 15 ticks.
+  const failuresBeforeLost = Math.max(1, Math.ceil((DEFAULT_TTL_MINUTES * 60_000) / intervalMs));
+  let consecutiveFailures = 0;
+  let stopped = false;
+
+  const declareLost = (reason: LockLostDetail['reason']) => {
+    if (stopped) return;
+    // Error, not warn: the lock exists to stop two writers producing one `Project.lastCode`
+    // (the NAV-03 note below), so losing it while work is in flight is an invariant breach.
+    log.error('lock.lost', { projectId, reason });
+    // Stopped before the callback so a throwing consumer cannot leave the interval renewing
+    // a lock we do not hold.
+    stop();
+    onLost?.({ projectId, reason });
+  };
+
   const timer = setInterval(() => {
-    renewLock(projectId, userId).catch((error) => {
-      log.warn('lock.renew_failed', {
-        projectId,
-        error: error instanceof Error ? error.message : String(error),
+    renewLock(projectId, userId)
+      .then((result) => {
+        if (result.ok) {
+          consecutiveFailures = 0;
+          return;
+        }
+        // The UPDATE matched no row: the hold expired, or someone else took it. Either way
+        // this process no longer owns the project. Discarding this result is what made a
+        // lost lock silent — the interval kept firing and the run kept writing (F-730).
+        declareLost('not_held');
+      })
+      .catch((error) => {
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= failuresBeforeLost) {
+          declareLost('renew_unavailable');
+          return;
+        }
+        log.warn('lock.renew_failed', {
+          projectId,
+          consecutiveFailures,
+          error: error instanceof Error ? error.message : String(error),
+        });
       });
-    });
   }, intervalMs);
   timer.unref?.();
-  return {
-    stop() {
-      clearInterval(timer);
-    },
-  };
+
+  function stop() {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(timer);
+  }
+
+  return { stop };
 }
 
 /** Releasing is cleanup: a failure here must not replace the error from the work. */
@@ -207,6 +290,17 @@ const releaseNothing = async () => undefined;
 export type LockHold = {
   /** True when a live hold of ours was already in place, so this scope owns nothing. */
   reentered: boolean;
+  /**
+   * Aborted, with a `ProjectLockLostError`, the moment a renewal proves this hold is gone.
+   * Long work — a generation streams for minutes and writes `Project.lastCode` at the end —
+   * must pass this into whatever it can cancel and check it before its final write, because
+   * from that moment on a second run is entitled to write the same row (F-730).
+   *
+   * Never aborted on re-entry: that scope owns no heartbeat, so it has nothing to observe.
+   * The outer hold is the one renewing and the one whose signal fires, and its work
+   * encloses this one.
+   */
+  lost: AbortSignal;
   /** Idempotent, so it is safe from both a `finally` and an error path. */
   release: () => Promise<void>;
 };
@@ -221,12 +315,23 @@ export async function holdProjectLock(
   // Re-entry owns nothing: no heartbeat of our own — the original holder is already
   // renewing, and a second timer would push out an expiry we have no claim on — and no
   // release, so the outer hold's reason, `lockedAt` and expiry come out as they went in.
-  if (acquired.reentered) return { ok: true, reentered: true, release: releaseNothing };
-  const heartbeat = beginLockHeartbeat(projectId, userId);
+  if (acquired.reentered) {
+    return {
+      ok: true,
+      reentered: true,
+      lost: new AbortController().signal,
+      release: releaseNothing,
+    };
+  }
+  const lostLock = new AbortController();
+  const heartbeat = beginLockHeartbeat(projectId, userId, {
+    onLost: () => lostLock.abort(new ProjectLockLostError(projectId)),
+  });
   let released = false;
   return {
     ok: true,
     reentered: false,
+    lost: lostLock.signal,
     release: async () => {
       if (released) return;
       released = true;
@@ -240,17 +345,23 @@ export async function holdProjectLock(
  * Runs `work` while holding the project lock, then gives the lock back — unless the lock
  * was already ours on the way in, in which case the release is a no-op and the original
  * holder keeps it untouched. See `LockHold` for why that exception is load-bearing.
+ *
+ * `work` is handed the hold's `lost` signal so it can stop early, and a run that finished
+ * under a lock it no longer held is reported as `LockLost` rather than as a success: its
+ * writes were not protected, so the caller must not tell the user they landed (F-730).
  */
 export async function withProjectLock<T>(
   projectId: string,
   userId: string,
   reason: LockReason,
-  work: () => Promise<T>,
-): Promise<{ ok: true; value: T } | AcquireFail> {
+  work: (lost: AbortSignal) => Promise<T>,
+): Promise<{ ok: true; value: T } | AcquireFail | LockLost> {
   const hold = await holdProjectLock(projectId, userId, reason);
   if (!hold.ok) return hold;
   try {
-    return { ok: true, value: await work() };
+    const value = await work(hold.lost);
+    if (hold.lost.aborted) return { ok: false, lockLost: true, error: LOCK_LOST_MESSAGE };
+    return { ok: true, value };
   } finally {
     await hold.release();
   }

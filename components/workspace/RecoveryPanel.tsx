@@ -4,6 +4,7 @@ import {
   filesWrittenLabel,
   keepActionLabel,
   PUBLISH_KEPT_LIVE_LINE,
+  PUBLISH_PARTIAL_ROLLBACK_LINE,
   PUBLISH_ROLLBACK_LINE,
   recoveryCauseLine,
   recoveryHeading,
@@ -46,7 +47,7 @@ export default function RecoveryPanel({
   variant?: 'generation' | 'publish';
   kind?: string | null;
   steps?: JobStep[] | null;
-  compensation?: 'rolled_back' | 'kept_live' | null;
+  compensation?: 'rolled_back' | 'kept_live' | 'partial' | null;
   liveUrl?: string | null;
   buildLogUrl?: string | null;
   resourceIds?: JobResourceIds | null;
@@ -90,13 +91,23 @@ export default function RecoveryPanel({
       {variant === 'publish' && compensation === 'rolled_back' ? (
         <p className="mt-8 text-[13px] text-[var(--studio-muted)]">{PUBLISH_ROLLBACK_LINE}</p>
       ) : null}
+      {variant === 'publish' && compensation === 'partial' ? (
+        <p className="mt-8 text-[13px] text-[var(--studio-danger)]">
+          {PUBLISH_PARTIAL_ROLLBACK_LINE}
+        </p>
+      ) : null}
       {variant === 'publish' && compensation === 'kept_live' ? (
         <p className="mt-8 text-[13px] text-[var(--studio-muted)]">
           {PUBLISH_KEPT_LIVE_LINE}
           {liveUrl ? (
             <>
               {' '}
-              <a href={liveUrl} target="_blank" rel="noreferrer" className="text-[var(--studio-accent)]">
+              <a
+                href={liveUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="text-[var(--studio-accent)]"
+              >
                 {liveUrl}
               </a>
             </>
@@ -104,7 +115,9 @@ export default function RecoveryPanel({
         </p>
       ) : null}
       {filesWritten > 0 && kind !== 'IMPORT' && kind !== 'PLAN' ? (
-        <p className="mt-4 text-[13px] text-[var(--studio-muted)]">{filesWrittenLabel(filesWritten)}</p>
+        <p className="mt-4 text-[13px] text-[var(--studio-muted)]">
+          {filesWrittenLabel(filesWritten)}
+        </p>
       ) : null}
       <div className="mt-12 flex flex-wrap gap-8">
         {filesWritten > 0 && onKeep && kind !== 'IMPORT' && kind !== 'PLAN' ? (

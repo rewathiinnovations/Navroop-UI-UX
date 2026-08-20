@@ -10,6 +10,7 @@ import {
   hasExistingSite,
   hasStoredSite,
   sendOutcomeForStream,
+  SEND_FAILED,
   shouldRequestFollowUpPlan,
   SEND_REFUSED_ALREADY_RUNNING,
   type ChatMode,
@@ -24,39 +25,32 @@ import { persistProject } from '@/lib/projects/persist-client';
 import { decidePendingPromptAction } from '@/lib/projects/pending-prompt';
 import { projectDisplayName } from '@/lib/projects/prompt';
 import { takeProjectArm } from '@/lib/projects/start-from-prompt';
-import { shouldRequestSandbox } from '@/lib/workspace/sandbox-request';
 import { streamProjectImport } from '@/lib/import/client';
 import { retryProjectPlan } from '@/lib/projects/plan-client';
 import { DEFAULT_IMPORT_MODE, resolveImportMode, type ImportMode } from '@/lib/import/mode';
 import { useGeneration } from '@/components/app/generation/GenerationProvider';
 import { applyPageCopy, shouldAddApplyChat } from '@/lib/generation/apply-page-copy';
 import { getGenerationState, surfacePreviewNotice } from '@/lib/generation/generation-runtime';
-import { filesFromReply } from '@/lib/generation/parse-blocks';
-import { isActiveGenerationStatus, type BuildFixRequest } from '@/lib/generation/types';
+import { appliedPathsFromReply } from '@/lib/generation/parse-blocks';
+import { screenshotErrorMessage } from '@/lib/generation/screenshot-error';
+import {
+  type BrandingData,
+  type BuildFixRequest,
+  type ChatMessage,
+  // Not re-declared here. The local `interface SandboxData` was a byte-identical shadow of
+  // this one, and the values it typed all come from the provider, which is typed with the
+  // shared interface — so the shadow could drift out of step with the thing it described
+  // without a single type error (F-097).
+  type SandboxData,
+} from '@/lib/generation/types';
 import { streamingFilesLabel } from './BuildingIndicator';
-import { notify } from '@/lib/notify';
+import { toMessage } from '@/lib/notify';
 
-interface SandboxData {
-  sandboxId: string;
-  url: string;
-  [key: string]: any;
-}
-
-interface ChatMessage {
-  content: string;
-  type: 'user' | 'ai' | 'system' | 'file-update' | 'command' | 'error';
-  timestamp: Date;
-  metadata?: {
-    scrapedUrl?: string;
-    scrapedContent?: any;
-    generatedCode?: string;
-    appliedFiles?: string[];
-    commandType?: 'input' | 'output' | 'error' | 'success';
-    brandingData?: any;
-    sourceUrl?: string;
-  };
-}
-
+/**
+ * Stays local, unlike `ChatMessage` and `SandboxData`: there is no shared counterpart to
+ * import (F-097). It describes the shape this component hands to its own conversation
+ * context from the importer's result, and nothing outside this file consumes it.
+ */
 interface ScrapeData {
   success: boolean;
   content?: string;
@@ -64,11 +58,44 @@ interface ScrapeData {
   title?: string;
   source?: string;
   screenshot?: string;
-  structured?: any;
-  metadata?: any;
+  structured?: unknown;
+  metadata?: unknown;
   message?: string;
   error?: string;
 }
+
+/**
+ * Firecrawl's branding object as `/api/extract-brand-styles` returns it. A
+ * superset of the shared `BrandingData`, because the brand-extension prompt
+ * below also reads `colors.link`, `typography.fontStacks`, `components.input`,
+ * `designSystem` and `images`, none of which that shared type declares. The
+ * overlapping fields are not restated here so there stays one source of truth.
+ */
+type BrandGuidelines = BrandingData & {
+  colors?: BrandingData['colors'] & { link?: string };
+  typography?: BrandingData['typography'] & {
+    fontStacks?: { body?: string[]; heading?: string[] };
+  };
+  components?: BrandingData['components'] & {
+    input?: { borderColor?: string; borderRadius?: string };
+  };
+  designSystem?: { framework?: string; componentLibrary?: string };
+  images?: { logo?: string; favicon?: string };
+};
+
+interface BrandExtractResponse {
+  success: boolean;
+  error?: string;
+  url?: string;
+  styleName?: string;
+  guidelines?: BrandGuidelines;
+}
+
+/**
+ * The denial a 402 attaches to its Error (`lib/import/client.ts`), taken from the
+ * chat metadata that renders it so the two cannot drift apart.
+ */
+type CreditDenial = NonNullable<NonNullable<ChatMessage['metadata']>['creditDenial']>;
 
 function AISandboxPage({
   githubConnected = false,
@@ -84,7 +111,6 @@ function AISandboxPage({
   const generation = useGeneration();
   const {
     sandboxData,
-    setSandboxData,
     messages: chatMessages,
     setChatMessages,
     addChatMessage,
@@ -105,9 +131,8 @@ function AISandboxPage({
     status: generationJobStatus,
   } = generation;
   const [loading, setLoading] = useState(false);
-  const [status, setStatus] = useState({ text: 'Not connected', active: false });
-  const [responseArea, setResponseArea] = useState<string[]>([]);
-  const [structureContent, setStructureContent] = useState('No sandbox created yet');
+  const [, setStatus] = useState({ text: 'Not connected', active: false });
+  const [structureContent] = useState('No sandbox created yet');
   const [promptInput, setPromptInput] = useState('');
   const [aiChatInput, setAiChatInput] = useState('');
   const [aiEnabled] = useState(true);
@@ -125,32 +150,28 @@ function AISandboxPage({
     const modelParam = searchParams.get('model');
     return appConfig.ai.availableModels.includes(modelParam || '') ? modelParam! : '';
   });
-  const [urlOverlayVisible, setUrlOverlayVisible] = useState(false);
-  const [urlInput, setUrlInput] = useState('');
-  const [urlStatus, setUrlStatus] = useState<string[]>([]);
+  const [, setUrlInput] = useState('');
+  const [, setUrlStatus] = useState<string[]>([]);
   const [showHomeScreen, setShowHomeScreen] = useState(true);
-  const [homeScreenFading, setHomeScreenFading] = useState(false);
+  const [, setHomeScreenFading] = useState(false);
   const [homeUrlInput, setHomeUrlInput] = useState('');
   const [homeContextInput, setHomeContextInput] = useState('');
   const [activeTab, setActiveTab] = useState<'generation' | WorkspaceView>('preview');
-  const [showStyleSelector, setShowStyleSelector] = useState(false);
   const [selectedStyle, setSelectedStyle] = useState<string | null>(null);
-  const [showLoadingBackground, setShowLoadingBackground] = useState(false);
+  const [, setShowLoadingBackground] = useState(false);
   const [urlScreenshot, setUrlScreenshot] = useState<string | null>(null);
   const [isScreenshotLoaded, setIsScreenshotLoaded] = useState(false);
   const [isCapturingScreenshot, setIsCapturingScreenshot] = useState(false);
   const [screenshotError, setScreenshotError] = useState<string | null>(null);
   const [isPreparingDesign, setIsPreparingDesign] = useState(false);
-  const [targetUrl, setTargetUrl] = useState<string>('');
-  const [sidebarScrolled, setSidebarScrolled] = useState(false);
-  const [screenshotCollapsed, setScreenshotCollapsed] = useState(false);
+  const [, setTargetUrl] = useState<string>('');
   const [loadingStage, setLoadingStage] = useState<'gathering' | 'planning' | 'generating' | null>(
     null,
   );
   const [isStartingNewGeneration, setIsStartingNewGeneration] = useState(false);
   const [sandboxFiles, setSandboxFiles] = useState<Record<string, string>>({});
   const [hasInitialSubmission, setHasInitialSubmission] = useState<boolean>(false);
-  const [fileStructure, setFileStructure] = useState<string>('');
+  const [, setFileStructure] = useState<string>('');
 
   /**
    * True once the mount fetch below has been refused (403 for a member on a
@@ -235,7 +256,7 @@ function AISandboxPage({
   }, [projectId, projectIdFromPath]);
 
   const [conversationContext, setConversationContext] = useState<{
-    scrapedWebsites: Array<{ url: string; content: any; timestamp: Date }>;
+    scrapedWebsites: Array<{ url: string; content: unknown; timestamp: Date }>;
     generatedComponents: Array<{ name: string; path: string; content: string }>;
     appliedCode: Array<{ files: string[]; timestamp: Date }>;
     currentProject: string;
@@ -262,15 +283,11 @@ function AISandboxPage({
   const pendingRestoreCodeRef = useRef<string | null>(null);
   const sendModeRef = useRef<ChatMode>('build');
 
-  // Clear old conversation data on component mount and create/restore sandbox
+  // Clear old conversation data on component mount and restore the saved project
   useEffect(() => {
     let isMounted = true;
-    let sandboxCreated = false; // Track if sandbox was created in this effect
 
     const initializePage = async () => {
-      // Prevent double execution in React StrictMode
-      if (sandboxCreated) return;
-
       // First check URL parameters (from home page navigation)
       const urlParam = searchParams.get('url');
       const templateParam = searchParams.get('template');
@@ -538,22 +555,6 @@ function AISandboxPage({
     setStatus({ text, active });
   };
 
-  const log = (message: string, type: 'info' | 'error' | 'command' = 'info') => {
-    setResponseArea((prev) => [...prev, `[${type}] ${message}`]);
-  };
-
-  const handleSurfaceError = (_errors: any[]) => {
-    // Function kept for compatibility but Vite errors are now handled by template
-
-    // Focus the input
-    const textarea = document.querySelector('textarea') as HTMLTextAreaElement;
-    if (textarea) {
-      textarea.focus();
-    }
-  };
-
-  const sandboxCreationRef = useRef<boolean>(false);
-
   const saveCurrentProject = async (overrides?: {
     sandboxId?: string;
     previewUrl?: string;
@@ -621,22 +622,23 @@ function AISandboxPage({
     buildFix?: BuildFixRequest | null,
   ) => {
     setLoading(true);
-    log('Applying AI-generated code...');
 
     try {
       // Show progress component instead of individual messages
       setCodeApplicationState({ stage: 'analyzing' });
 
-      // Get pending packages from tool calls
-      const pendingPackages = ((window as any).pendingPackages || []).filter(
-        (pkg: any) => pkg && typeof pkg === 'string',
+      // Get pending packages from tool calls. The other side of this window
+      // handshake is generation-runtime.ts, which writes it with the same shape.
+      const packageHandshake = window as unknown as { pendingPackages?: string[] };
+      const pendingPackages = (packageHandshake.pendingPackages || []).filter(
+        (pkg) => pkg && typeof pkg === 'string',
       );
       if (pendingPackages.length > 0) {
         console.log('[applyGeneratedCode] Sending packages from tool calls:', pendingPackages);
         // Clear pending packages after use
         // Shared handshake with generation-runtime (window.pendingPackages).
         // eslint-disable-next-line react-hooks/immutability
-        (window as any).pendingPackages = [];
+        packageHandshake.pendingPackages = [];
       }
 
       // Stream is owned by GenerationProvider so leaving the workspace does not abort it
@@ -703,10 +705,11 @@ function AISandboxPage({
       // its else arm closed every successful build with "Code application may
       // have partially succeeded. Check the preview." — telling the user to
       // doubt a result that was fine, on every single turn.
-      const appliedFiles = Object.keys(filesFromReply(code));
+      // Whichever shape the caller handed over: a generation reply is fenced
+      // `{path=…}` output, a retried URL import is `<file path=…>` XML (F-054).
+      const appliedFiles = appliedPathsFromReply(code);
       await fetchSandboxFiles();
       const applyCopy = applyPageCopy({ filesCreated: appliedFiles });
-      log(applyCopy.message, applyCopy.warning ? 'error' : 'info');
       const lastChat = getGenerationState().messages.at(-1)?.content;
       if (shouldAddApplyChat(lastChat, applyCopy.message)) {
         addChatMessage(
@@ -715,9 +718,13 @@ function AISandboxPage({
           !isEdit && appliedFiles.length > 0 ? { appliedFiles } : undefined,
         );
       }
-    } catch (error: any) {
-      if (error?.name === 'AbortError') return;
-      log(`Failed to apply code: ${error.message}`, 'error');
+    } catch (error: unknown) {
+      // An abort is the person's own Stop button, not a failure worth reporting.
+      if (error instanceof Error && error.name === 'AbortError') return;
+      // The only report this failure gets. It used to go to `log()`, which
+      // appended to a state array nothing rendered, so a failed apply told the
+      // user nothing at all (F-058).
+      addChatMessage(`Failed to apply code: ${toMessage(error, 'Apply failed.')}`, 'system');
     } finally {
       setLoading(false);
       // Clear isEdit flag after applying code
@@ -759,38 +766,6 @@ function AISandboxPage({
       console.error('[fetchSandboxFiles] Error fetching files:', error);
     }
   };
-
-  //           }, 2000);
-  //         } else {
-  //           addChatMessage(`Failed to restart Vite: ${data.error}`, 'error');
-  //         }
-  //       } else {
-  //         addChatMessage('Failed to restart Vite server', 'error');
-  //       }
-  //     } catch (error) {
-  //       console.error('[restartViteServer] Error:', error);
-  //       addChatMessage(`Error restarting Vite: ${error instanceof Error ? error.message : 'Unknown error'}`, 'error');
-  //     }
-  //   };
-
-  //   const applyCode = async () => {
-  //     const code = promptInput.trim();
-  //     if (!code) {
-  //       log('Please enter some code first', 'error');
-  //       addChatMessage('No code to apply. Please generate code first.', 'system');
-  //       return;
-  //     }
-  //
-  //     // Prevent double clicks
-  //     if (loading) {
-  //       console.log('[applyCode] Already loading, skipping...');
-  //       return;
-  //     }
-  //
-  //     // Determine if this is an edit based on whether we have applied code before
-  //     const isEdit = conversationContext.appliedCode.length > 0;
-  //     await applyGeneratedCode(code, isEdit);
-  //   };
 
   const renderMainContent = () => {
     // The Code view during a build. `isGenerating` alone is enough: a build that
@@ -1051,7 +1026,7 @@ function AISandboxPage({
 
     if (!aiEnabled) {
       addChatMessage('AI is disabled. Please enable it first.', 'system');
-      return;
+      return SEND_FAILED;
     }
 
     const source = options?.source && options.source !== 'chat' ? options.source : undefined;
@@ -1078,7 +1053,7 @@ function AISandboxPage({
       const id = projectId || projectIdFromPath;
       if (!id) {
         addChatMessage('Project is not ready for planning yet.', 'system');
-        return;
+        return SEND_FAILED;
       }
       try {
         const response = await fetch(`/api/projects/${id}/plan/followup`, {
@@ -1089,11 +1064,12 @@ function AISandboxPage({
         const data = await response.json().catch(() => null);
         if (!response.ok) {
           addChatMessage((data && data.error) || 'Could not start a plan.', 'system');
-          return;
+          return SEND_FAILED;
         }
         addChatMessage('Plan ready. Review and approve to apply these changes.', 'ai');
-      } catch (error: any) {
-        addChatMessage(`Error: ${error.message}`, 'system');
+      } catch (error: unknown) {
+        addChatMessage(`Error: ${toMessage(error, 'Could not start a plan.')}`, 'system');
+        return SEND_FAILED;
       }
       return;
     }
@@ -1177,37 +1153,32 @@ function AISandboxPage({
         addChatMessage(SEND_REFUSED_ALREADY_RUNNING, 'system');
         return outcome;
       }
+      if (streamResult.streamDropped) {
+        // The connection dropped with no terminal frame. The runtime already put an
+        // honest system line in chat and wrote no status — the build may still be
+        // finishing server-side, so do not claim completion or apply anything; the job
+        // poll takes over from here (F-036).
+        setActiveTab('preview');
+        return outcome;
+      }
       const generatedCode = streamResult.generatedCode;
       const explanation = streamResult.explanation;
 
       if (generatedCode) {
-        // Parse files from generated code for metadata
-        const fileRegex = /<file path="([^"]+)">([^]*?)<\/file>/g;
-        const generatedFiles = [];
-        let match;
-        while ((match = fileRegex.exec(generatedCode)) !== null) {
-          generatedFiles.push(match[1]);
-        }
-
-        // Show appropriate message based on edit mode
-        if (isEdit && generatedFiles.length > 0) {
-          // For edits, show which file(s) were edited
-          const editedFileNames = generatedFiles.map((f) => f.split('/').pop()).join(', ');
-          addChatMessage(explanation || `Updated ${editedFileNames}`, 'ai', {
-            appliedFiles: [generatedFiles[0]], // Only show the first edited file
-            skillNames: streamResult.skillNames,
-          });
-        } else {
-          // For new generation, show all files
-          addChatMessage(explanation || 'Code generated!', 'ai', {
-            appliedFiles: generatedFiles,
-            skillNames: streamResult.skillNames,
+        // The model's own words, when it wrote any, and nothing else: the closing
+        // "what was applied" sentence belongs to `applyPageCopy` below, which is
+        // what it exists for. This used to scan the reply with
+        // /<file path="…">/ for a file list — the reply is fenced `{path=…}`
+        // output, never `<file>` XML, so the list was always empty, the edit
+        // branch was dead, and every turn closed with a bare "Code generated!"
+        // immediately followed by a second, real closing line (F-053).
+        if (explanation) {
+          addChatMessage(explanation, 'ai', {
+            ...(streamResult.skillNames?.length ? { skillNames: streamResult.skillNames } : {}),
           });
         }
 
         setPromptInput(generatedCode);
-        // Don't show the Generated Code panel by default
-        // setLeftPanelVisible(true);
 
         // Applying writes the files to the project and the preview recompiles
         // from them, so there is nothing to boot or wait for first. This used
@@ -1233,12 +1204,18 @@ function AISandboxPage({
         // Switch to preview but keep files for display
         setActiveTab('preview');
       }, 1000); // Reduced from 3000ms to 1000ms
-    } catch (error: any) {
-      if (error?.name === 'AbortError') return;
+    } catch (error: unknown) {
+      // An abort is the person's own Stop button: the prompt did reach the model, so
+      // it does not go back in the box. Everything else — a 402, a 409, a 503, an
+      // offline browser — never sent it, and the returned refusal is what hands the
+      // typed text back to the input (F-006).
+      if (error instanceof Error && error.name === 'AbortError') return;
+      const message = toMessage(error, 'Generation failed.');
       setChatMessages((prev) => prev.filter((msg) => msg.content !== 'Thinking...'));
-      addChatMessage(`Error: ${error.message}`, 'system');
-      markError(error.message);
+      addChatMessage(`Error: ${message}`, 'system');
+      markError(message);
       setActiveTab('preview');
+      return SEND_FAILED;
     }
   };
 
@@ -1258,347 +1235,6 @@ function AISandboxPage({
     return () => clearTimeout(timer);
   }, [initialPhase, projectId]);
 
-  //   const clearChatHistory = () => {
-  //     setChatMessages([{
-  //       content: 'Chat history cleared. How can I help you?',
-  //       type: 'system',
-  //       timestamp: new Date()
-  //     }]);
-  //   };
-  //
-
-  //   const cloneWebsite = async () => {
-  //     let url = urlInput.trim();
-  //     if (!url) {
-  //       setUrlStatus(prev => [...prev, 'Please enter a URL']);
-  //       return;
-  //     }
-  //
-  //     if (!url.match(/^https?:\/\//i)) {
-  //       url = 'https://' + url;
-  //     }
-  //
-  //     setUrlStatus([`Using: ${url}`, 'Starting to scrape...']);
-  //
-  //     setUrlOverlayVisible(false);
-  //
-  //     // Remove protocol for cleaner display
-  //     const cleanUrl = url.replace(/^https?:\/\//i, '');
-  //     addChatMessage(`Starting to clone ${cleanUrl}...`, 'system');
-  //
-  //     // Capture screenshot immediately and switch to preview tab
-  //     captureUrlScreenshot(url);
-  //
-  //     try {
-  //       addChatMessage('Scraping website content...', 'system');
-  //       const scrapeResponse = await fetch('/api/scrape-url-enhanced', {
-  //         method: 'POST',
-  //         headers: { 'Content-Type': 'application/json' },
-  //         body: JSON.stringify({ url })
-  //       });
-  //
-  //       if (!scrapeResponse.ok) {
-  //         throw new Error(`Scraping failed: ${scrapeResponse.status}`);
-  //       }
-  //
-  //       const scrapeData = await scrapeResponse.json();
-  //
-  //       if (!scrapeData.success) {
-  //         throw new Error(scrapeData.error || 'Failed to scrape website');
-  //       }
-  //
-  //       addChatMessage(`Scraped ${scrapeData.content.length} characters from ${url}`, 'system');
-  //
-  //       // Clear preparing design state and switch to generation tab
-  //       setIsPreparingDesign(false);
-  //       setActiveTab('generation');
-  //
-  //       setConversationContext(prev => ({
-  //         ...prev,
-  //         scrapedWebsites: [...prev.scrapedWebsites, {
-  //           url,
-  //           content: scrapeData,
-  //           timestamp: new Date()
-  //         }],
-  //         currentProject: `Clone of ${url}`
-  //       }));
-  //
-  //       // Start sandbox creation in parallel with code generation
-  //       let sandboxPromise: Promise<any> | null = null;
-  //       if (!sandboxData) {
-  //         addChatMessage('Creating sandbox while generating your React app...', 'system');
-  //         sandboxPromise = createSandbox(true);
-  //       }
-  //
-  //       addChatMessage('Analyzing and generating React recreation...', 'system');
-  //
-  //       const recreatePrompt = `I scraped this website and want you to recreate it as a modern React application.
-  //
-  // URL: ${url}
-  //
-  // SCRAPED CONTENT:
-  // ${scrapeData.content}
-  //
-  // ${homeContextInput ? `ADDITIONAL CONTEXT/REQUIREMENTS FROM USER:
-  // ${homeContextInput}
-  //
-  // Please incorporate these requirements into the design and implementation.` : ''}
-  //
-  // REQUIREMENTS:
-  // 1. Create a COMPLETE React application with App.jsx as the main component
-  // 2. App.jsx MUST import and render all other components
-  // 3. Recreate the main sections and layout from the scraped content
-  // 4. ${homeContextInput ? `Apply the user's context/theme: "${homeContextInput}"` : `Use a modern dark theme with excellent contrast:
-  //    - Background: #0a0a0a
-  //    - Text: #ffffff
-  //    - Links: #60a5fa
-  //    - Accent: #3b82f6`}
-  // 5. Make it fully responsive
-  // 6. Include hover effects and smooth transitions
-  // 7. Create separate components for major sections (Header, Hero, Features, etc.)
-  // 8. Use semantic HTML5 elements
-  //
-  // IMPORTANT CONSTRAINTS:
-  // - DO NOT use React Router or any routing libraries
-  // - Use regular <a> tags with href="#section" for navigation, NOT Link or NavLink components
-  // - This is a single-page application, no routing needed
-  // - ALWAYS create src/App.jsx that imports ALL components
-  // - Each component should be in src/components/
-  // - Use Tailwind CSS for ALL styling (no custom CSS files)
-  // - Make sure the app actually renders visible content
-  // - Create ALL components that you reference in imports
-  //
-  // IMAGE HANDLING RULES:
-  // - When the scraped content includes images, USE THE ORIGINAL IMAGE URLS whenever appropriate
-  // - Keep existing images from the scraped site (logos, product images, hero images, icons, etc.)
-  // - Use the actual image URLs provided in the scraped content, not placeholders
-  // - Only use placeholder images or generic services when no real images are available
-  // - For company logos and brand images, ALWAYS use the original URLs to maintain brand identity
-  // - If scraped data contains image URLs, include them in your img tags
-  // - Example: If you see "https://example.com/logo.png" in the scraped content, use that exact URL
-  //
-  // Focus on the key sections and content, making it clean and modern while preserving visual assets.`;
-  //
-  //       setGenerationProgress(prev => ({
-  //         isGenerating: true,
-  //         status: 'Initializing AI...',
-  //         components: [],
-  //         currentComponent: 0,
-  //         streamedCode: '',
-  //         isStreaming: true,
-  //         isThinking: false,
-  //         thinkingText: undefined,
-  //         thinkingDuration: undefined,
-  //         // Keep previous files until new ones are generated
-  //         files: prev.files || [],
-  //         currentFile: undefined,
-  //         lastProcessedPosition: 0
-  //       }));
-  //
-  //       // Switch to generation tab when starting
-  //       setActiveTab('generation');
-  //
-  //       const aiResponse = await fetch('/api/generate-ai-code-stream', {
-  //         method: 'POST',
-  //         headers: { 'Content-Type': 'application/json' },
-  //         body: JSON.stringify({
-  //           prompt: recreatePrompt,
-  //           model: aiModel,
-  //           context: {
-  //             sandboxId: sandboxData?.id,
-  //             structure: structureContent,
-  //             conversationContext: conversationContext
-  //           }
-  //         })
-  //       });
-  //
-  //       if (!aiResponse.ok) {
-  //         throw new Error(`AI generation failed: ${aiResponse.status}`);
-  //       }
-  //
-  //       const reader = aiResponse.body?.getReader();
-  //       const decoder = new TextDecoder();
-  //       let generatedCode = '';
-  //       let explanation = '';
-  //
-  //       if (reader) {
-  //         while (true) {
-  //           const { done, value } = await reader.read();
-  //           if (done) break;
-  //
-  //           const chunk = decoder.decode(value);
-  //           const lines = chunk.split('\n');
-  //
-  //           for (const line of lines) {
-  //             if (line.startsWith('data: ')) {
-  //               try {
-  //                 const data = JSON.parse(line.slice(6));
-  //
-  //                 if (data.type === 'status') {
-  //                   setGenerationProgress(prev => ({ ...prev, status: data.message }));
-  //                 } else if (data.type === 'thinking') {
-  //                   setGenerationProgress(prev => ({
-  //                     ...prev,
-  //                     isThinking: true,
-  //                     thinkingText: (prev.thinkingText || '') + data.text
-  //                   }));
-  //                 } else if (data.type === 'thinking_complete') {
-  //                   setGenerationProgress(prev => ({
-  //                     ...prev,
-  //                     isThinking: false,
-  //                     thinkingDuration: data.duration
-  //                   }));
-  //                 } else if (data.type === 'conversation') {
-  //                   // Add conversational text to chat only if it's not code
-  //                   let text = data.text || '';
-  //
-  //                   // Remove package tags from the text
-  //                   text = text.replace(/<package>[^<]*<\/package>/g, '');
-  //                   text = text.replace(/<packages>[^<]*<\/packages>/g, '');
-  //
-  //                   // Filter out any XML tags and file content that slipped through
-  //                   if (!text.includes('<file') && !text.includes('import React') &&
-  //                       !text.includes('export default') && !text.includes('className=') &&
-  //                       text.trim().length > 0) {
-  //                     addChatMessage(text.trim(), 'ai');
-  //                   }
-  //                 } else if (data.type === 'stream' && data.raw) {
-  //                   setGenerationProgress(prev => ({
-  //                     ...prev,
-  //                     streamedCode: prev.streamedCode + data.text,
-  //                     lastProcessedPosition: prev.lastProcessedPosition || 0
-  //                   }));
-  //                 } else if (data.type === 'component') {
-  //                   setGenerationProgress(prev => ({
-  //                     ...prev,
-  //                     status: `Generated ${data.name}`,
-  //                     components: [...prev.components, {
-  //                       name: data.name,
-  //                       path: data.path,
-  //                       completed: true
-  //                     }],
-  //                     currentComponent: prev.currentComponent + 1
-  //                   }));
-  //                 } else if (data.type === 'complete') {
-  //                   generatedCode = data.generatedCode;
-  //                   explanation = data.explanation;
-  //
-  //                   // Save the last generated code
-  //                   setConversationContext(prev => ({
-  //                     ...prev,
-  //                     lastGeneratedCode: generatedCode
-  //                   }));
-  //                 }
-  //               } catch (e) {
-  //                 console.error('Error parsing streaming data:', e);
-  //               }
-  //             }
-  //           }
-  //         }
-  //       }
-  //
-  //       setGenerationProgress(prev => ({
-  //         ...prev,
-  //         isGenerating: false,
-  //         isStreaming: false,
-  //         status: 'Generation complete!',
-  //         isEdit: prev.isEdit
-  //       }));
-  //
-  //       if (generatedCode) {
-  //         addChatMessage('AI recreation generated!', 'system');
-  //
-  //         // Add the explanation to chat if available
-  //         if (explanation && explanation.trim()) {
-  //           addChatMessage(explanation, 'ai');
-  //         }
-  //
-  //         setPromptInput(generatedCode);
-  //         // Don't show the Generated Code panel by default
-  //         // setLeftPanelVisible(true);
-  //
-  //         // Wait for sandbox creation if it's still in progress
-  //         let activeSandboxData = sandboxData;
-  //         if (sandboxPromise) {
-  //           addChatMessage('Waiting for sandbox to be ready...', 'system');
-  //           try {
-  //             const newSandboxData = await sandboxPromise;
-  //             if (newSandboxData) {
-  //               activeSandboxData = newSandboxData;
-  //             }
-  //             // Remove the waiting message
-  //             setChatMessages(prev => prev.filter(msg => msg.content !== 'Waiting for sandbox to be ready...'));
-  //           } catch (error: any) {
-  //             addChatMessage('Sandbox creation failed. Cannot apply code.', 'system');
-  //             throw error;
-  //           }
-  //         }
-  //
-  //         // Only apply code if we have sandbox data
-  //         if (activeSandboxData) {
-  //           // First application for cloned site should not be in edit mode
-  //           await applyGeneratedCode(generatedCode, false);
-  //         }
-  //
-  //         addChatMessage(
-  //           `Successfully recreated ${url} as a modern React app${homeContextInput ? ` with your requested context: "${homeContextInput}"` : ''}! The scraped content is now in my context, so you can ask me to modify specific sections or add features based on the original site.`,
-  //           'ai',
-  //           {
-  //             scrapedUrl: url,
-  //             scrapedContent: scrapeData,
-  //             generatedCode: generatedCode
-  //           }
-  //         );
-  //
-  //         setUrlInput('');
-  //         setUrlStatus([]);
-  //         setHomeContextInput('');
-  //
-  //         // Clear generation progress and all screenshot/design states
-  //         setGenerationProgress(prev => ({
-  //           ...prev,
-  //           isGenerating: false,
-  //           isStreaming: false,
-  //           status: 'Generation complete!'
-  //         }));
-  //
-  //         // Clear screenshot and preparing design states to prevent them from showing on next run
-  //         setUrlScreenshot(null);
-  //         setIsPreparingDesign(false);
-  //         setTargetUrl('');
-  //         setScreenshotError(null);
-  //         setLoadingStage(null); // Clear loading stage
-  //         setShowLoadingBackground(false); // Clear loading background
-  //
-  //         setTimeout(() => {
-  //           // Switch back to preview tab but keep files
-  //           setActiveTab('preview');
-  //         }, 1000); // Show completion briefly then switch
-  //       } else {
-  //         throw new Error('Failed to generate recreation');
-  //       }
-  //
-  //     } catch (error: any) {
-  //       addChatMessage(`Failed to clone website: ${error.message}`, 'system');
-  //       setUrlStatus([]);
-  //       setIsPreparingDesign(false);
-  //       // Clear all states on error
-  //       setUrlScreenshot(null);
-  //       setTargetUrl('');
-  //       setScreenshotError(null);
-  //       setLoadingStage(null);
-  //       setGenerationProgress(prev => ({
-  //         ...prev,
-  //         isGenerating: false,
-  //         isStreaming: false,
-  //         status: '',
-  //         // Keep files to display in sidebar
-  //         files: prev.files
-  //       }));
-  //       setActiveTab('preview');
-  //     }
-  //   };
-
   const captureUrlScreenshot = async (url: string) => {
     setIsCapturingScreenshot(true);
     setScreenshotError(null);
@@ -1609,8 +1245,12 @@ function AISandboxPage({
         body: JSON.stringify({ url }),
       });
 
-      const data = await response.json();
-      if (data.success && data.screenshot) {
+      // `.catch(() => null)`, and the status read before the body: an error page
+      // that is not JSON used to throw here and land in the catch below, which
+      // told the user the network had failed while the server was the thing that
+      // broke (F-057).
+      const data = await response.json().catch(() => null);
+      if (response.ok && data?.success && data.screenshot) {
         setIsScreenshotLoaded(false); // Reset loaded state for new screenshot
         setUrlScreenshot(data.screenshot);
         // Set preparing design state
@@ -1623,19 +1263,16 @@ function AISandboxPage({
           setActiveTab('preview');
         }
       } else {
-        setScreenshotError(data.error || 'Failed to capture screenshot');
+        setScreenshotError(screenshotErrorMessage({ status: response.status, body: data }));
       }
     } catch (error) {
       console.error('Failed to capture screenshot:', error);
-      setScreenshotError('Network error while capturing screenshot');
+      // Only a request that never completed. Everything the server answered is
+      // classified above, by its status.
+      setScreenshotError(screenshotErrorMessage({ status: null, body: null }));
     } finally {
       setIsCapturingScreenshot(false);
     }
-  };
-
-  const handleHomeScreenSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    await startGeneration();
   };
 
   /**
@@ -1731,7 +1368,7 @@ function AISandboxPage({
         // Screenshot is already being captured in parallel above
 
         let scrapeData: ScrapeData | undefined;
-        let brandGuidelines: any;
+        let brandGuidelines: BrandExtractResponse | undefined;
         let importedCode: string | undefined;
 
         if (brandExtensionMode) {
@@ -1752,15 +1389,16 @@ function AISandboxPage({
             throw new Error('Failed to extract brand styles');
           }
 
-          brandGuidelines = await extractResponse.json();
+          const extracted: BrandExtractResponse = await extractResponse.json();
+          brandGuidelines = extracted;
 
-          if (!brandGuidelines.success) {
-            throw new Error(brandGuidelines.error || 'Failed to extract brand styles');
+          if (!extracted.success) {
+            throw new Error(extracted.error || 'Failed to extract brand styles');
           }
 
           // Display branding summary with visual UI
           addChatMessage(`Acquired branding format from ${cleanUrl}`, 'system', {
-            brandingData: brandGuidelines.guidelines,
+            brandingData: extracted.guidelines,
             sourceUrl: cleanUrl,
           });
           addChatMessage(
@@ -1838,8 +1476,9 @@ function AISandboxPage({
             currentProject: `Custom build using ${url} brand`,
           }));
 
-          // Extract comprehensive brand data
-          const branding = brandGuidelines.guidelines;
+          // Extract comprehensive brand data. Defaulted because the endpoint can
+          // answer `success: true` with no guidelines object at all.
+          const branding: BrandGuidelines = brandGuidelines.guidelines ?? {};
 
           // Build detailed brand instruction string
           const brandInstructions = `
@@ -1896,7 +1535,13 @@ ASSETS:
 ${branding.images?.logo ? `- Logo Available: Yes (use carefully if needed)` : '- Logo: Not available'}
 ${branding.images?.favicon ? `- Favicon: ${branding.images.favicon}` : ''}`;
 
-          prompt = `I want you to build a NEW React component/application based on these brand guidelines and the user's requirements.
+          // Deliberately says nothing about React, filenames or CSS policy: the server's
+          // `buildStablePromptPrefix` already states the file shape for this project's real
+          // stack, and this message contradicting it is what F-099 was. Note this branch is
+          // currently unreachable from the product — nothing writes `brandExtensionMode` — so
+          // whether it and `/api/extract-brand-styles` should exist at all is the F-448
+          // unreachable-surface decision, not this row's.
+          prompt = `I want you to build something NEW based on these brand guidelines and the user's requirements.
 
 <branding-format source="${url}">
 ${brandInstructions}
@@ -1916,7 +1561,7 @@ CRITICAL REQUIREMENTS:
 - DO create a COMPLETELY NEW component that fulfills the user's request
 - The user wants: "${brandExtensionPrompt}"
 - Build ONLY what the user requested - nothing more
-- App.jsx should render ONLY the requested component - no extra Header/Footer/Hero unless specifically requested
+- The root component should render ONLY the requested component - no extra Header/Footer/Hero unless specifically requested
 - Make it a minimal, focused implementation of the user's request
 
 STYLING REQUIREMENTS:
@@ -1928,9 +1573,8 @@ STYLING REQUIREMENTS:
 - Style input fields with the exact border color and border radius
 - Match the brand's ${branding.colorScheme || 'light'} color scheme
 - Apply the brand personality: ${branding.personality?.tone || 'professional'} tone with ${branding.personality?.energy || 'medium'} energy
-- Use Tailwind CSS with inline color values matching the brand palette EXACTLY
-- If fonts need to be imported, add @import or @font-face rules to index.css
-- Create custom CSS classes in index.css for complex shadows/effects that can't be done with Tailwind
+- Use the brand palette values exactly, through the styling system the rules above specify
+- If fonts need importing, add the @import or @font-face rule to the project's stylesheet
 
 FONT SETUP:
 ${
@@ -1943,9 +1587,9 @@ ${
 }
 
 COMPONENT STRUCTURE:
-- src/index.css - Include brand fonts, custom shadows/effects, and base styling
-- src/App.jsx - Should ONLY render the requested component (e.g., just <PricingPage /> if user wants pricing)
-- src/components/[RequestedComponent].jsx - The actual component fulfilling the user's request
+- Use the file layout the stack rules above give. Do not invent a different one.
+- The root component renders ONLY the requested component (e.g. just <PricingPage /> if the user wants pricing).
+- One component file per thing the user asked for, plus the project's stylesheet for brand fonts and any effect the styling system cannot express.
 
 TECHNICAL REQUIREMENTS:
 - Create a WORKING, self-contained application
@@ -2007,7 +1651,15 @@ Focus on building something NEW, minimal, and functional that perfectly matches 
             }
           }
 
-          prompt = `I want to recreate the ${url} website as a complete React application based on the scraped content below.
+          // No stack, no filenames, no styling policy in here. The server assembles the
+          // system prompt for *this project's* stack (`buildStablePromptPrefix`: BASE_RULES +
+          // SEO rules + the per-stack file shape), so this message only has to describe the
+          // job. It used to say "a complete React application", name `src/App.jsx` and
+          // `src/index.css`, and tell the model to write custom CSS classes — which is the
+          // opposite of BASE_RULES' Tailwind-only rule, and which handed a NEXTJS or
+          // STATIC_HTML project instructions for a stack it is not, so `stackShapeMismatch`
+          // failed the build at settle time (F-099).
+          prompt = `I want to recreate the ${url} website based on the scraped content below.
 
 ${JSON.stringify(scrapeData, null, 2)}
 
@@ -2021,17 +1673,13 @@ Please incorporate these requirements into the design and implementation.`
 }
 
 IMPORTANT INSTRUCTIONS:
-- Create a COMPLETE, working React application
 - Implement ALL sections and features from the original site
-- Use Tailwind CSS for all styling (no custom CSS files)
 - Make it responsive and modern
 - Ensure all text content matches the original
-- Create proper component structure
-- Make sure the app actually renders visible content
 - Create ALL components that you reference in imports
 ${filteredContext ? "- Apply the user's context/theme requirements throughout the application" : ''}
 
-Focus on the key sections and content, making it clean and modern.`;
+Focus on the key sections and content, making it clean and modern. Follow the stack, file layout and styling rules given above — do not invent a different project shape.`;
         }
 
         const activeSandbox = createdSandbox || getGenerationState().sandboxData;
@@ -2114,18 +1762,23 @@ Focus on the key sections and content, making it clean and modern.`;
           // Switch back to preview tab but keep files
           setActiveTab('preview');
         }, 1000); // Show completion briefly then switch
-      } catch (error: any) {
-        if (error?.name === 'AbortError') return;
-        if (error?.creditDenial) {
-          addChatMessage(error.creditDenial.message, 'error', { creditDenial: error.creditDenial });
+      } catch (error: unknown) {
+        // An abort is the person's own Stop button, not a failure to report.
+        if (error instanceof Error && error.name === 'AbortError') return;
+        // A 402 arrives as an Error carrying its denial, which is what renders the
+        // credit panel in chat instead of a bare error line.
+        const denial = (error as { creditDenial?: CreditDenial } | null)?.creditDenial;
+        const message = toMessage(error, 'Import failed');
+        if (denial) {
+          addChatMessage(denial.message, 'error', { creditDenial: denial });
         } else {
-          addChatMessage(error.message || 'Import failed', 'error');
+          addChatMessage(message, 'error');
         }
         setUrlStatus([]);
         setIsPreparingDesign(false);
         setIsStartingNewGeneration(false); // Clear new generation flag on error
         setLoadingStage(null);
-        markError(error.message);
+        markError(message);
       }
     }, 500);
   };

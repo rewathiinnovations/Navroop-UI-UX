@@ -37,6 +37,7 @@ vi.mock('@/lib/signals/collect', () => ({
   maybeSettleFollowups: async () => {
     if (settleFailure.fail) throw new Error('followup settle blew up');
   },
+  recordGenerationKept: async () => undefined,
 }));
 
 let lines: string[];

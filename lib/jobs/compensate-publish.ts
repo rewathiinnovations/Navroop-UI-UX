@@ -24,7 +24,13 @@ export async function compensateAbandonedPublish(
 ) {
   const job = await getJob(jobId);
   if (!job || job.kind !== 'PUBLISH') return null;
-  if (job.resourceIds?.compensation) return job.resourceIds.compensation;
+  // A settled rollback runs once. `partial` is not settled: at least one resource this job
+  // created is still up, so the next abandon sweep gets to try again rather than reading
+  // the marker as "done" and leaving a container running for the 24 hours the orphan cron
+  // needs to reach it (F-046).
+  if (job.resourceIds?.compensation && job.resourceIds.compensation !== 'partial') {
+    return job.resourceIds.compensation;
+  }
 
   const kind = parseKindFromPrompt(job.inputPrompt);
   const deployment = kind
@@ -50,7 +56,7 @@ export async function compensateAbandonedPublish(
     adapters: options?.adapters,
   });
 
-  const compensation = result.rolledBack ? 'rolled_back' : 'kept_live';
+  const compensation = result.outcome;
   const toreDownCoolify = result.compensated.includes('coolify');
   const toreDownDns = result.compensated.includes('dns');
 

@@ -130,6 +130,19 @@ describe('parseBuildErrors', () => {
     expect(first.file).toBe('app/page.tsx');
     expect(first.line).toBe(12);
   });
+
+  it('carries the location Next.js prints on the line above the diagnostic', () => {
+    // The fixture is verbatim `next build` output. `Failed to compile.` is a
+    // diagnostic line with no location, and the location arrives on its own
+    // line before the `Type error:` message — the case `pendingLocation` exists
+    // for. This fixture sat unused until F-803 turned the rule back on.
+    const errors = parseBuildErrors(NEXT_TYPE_ERROR);
+    const typeError = errors.find((error) => error.kind === 'type');
+    expect(typeError).toBeDefined();
+    expect(typeError?.message).toContain("Property 'titel' does not exist");
+    expect(typeError?.file).toBe('app/page.tsx');
+    expect(typeError?.line).toBe(12);
+  });
 });
 
 describe('buildErrorSignature', () => {

@@ -6,6 +6,7 @@ export type ParseFilesErrorCode =
   | 'duplicate_path'
   | 'absolute_path'
   | 'path_traversal'
+  | 'invalid_path'
   | 'too_large'
   | 'binary'
   | 'invalid_json';
@@ -67,6 +68,11 @@ export function sanitizeGenerationPath(
 ): { ok: true; path: string } | { ok: false; code: ParseFilesErrorCode } {
   const trimmed = raw.trim().replace(/\\/g, '/');
   if (!trimmed) return { ok: false, code: 'empty' };
+  // A `"` ends the attribute in `<file path="…">`, the shape `toLastCode` writes
+  // and `getCurrentProjectFiles` reads, so a quote-bearing path silently splits
+  // the stored blob at the wrong offset and the file after it is swallowed. No
+  // legitimate project path contains one, so this is a rejection, not an escape.
+  if (trimmed.includes('"')) return { ok: false, code: 'invalid_path' };
   if (trimmed.split('/').some((segment) => segment === '')) {
     return { ok: false, code: 'empty' };
   }

@@ -14,7 +14,6 @@ import {
 import { getCurrentProjectFiles } from '@/lib/github/current-files';
 import { log } from '@/lib/logger';
 import { toLastCode } from '@/lib/projects/last-code';
-import { bumpContentVersion } from '@/lib/projects/lock';
 import { failJob, succeedJob } from './lifecycle';
 import { getJob } from './store';
 
@@ -30,6 +29,7 @@ const PATH_REJECTION_CODES: Partial<Record<ParseFilesErrorCode, true>> = {
   empty: true,
   absolute_path: true,
   path_traversal: true,
+  invalid_path: true,
 };
 
 /**
@@ -159,6 +159,58 @@ async function resolveImages(input: {
   }
 }
 
+/** A concurrent writer kept winning the compare-and-set; the merge is not lost, only unsaved. */
+const MAX_SITE_WRITE_ATTEMPTS = 5;
+
+/**
+ * Merge `files` over the current site and bump `contentVersion`, in one guarded
+ * statement.
+ *
+ * The write and the version bump used to be two statements with no compare-and-set. An
+ * `await resolveImages(...)` — a call out to an image provider that can take many
+ * seconds — sits between the read of `lastCode` and this write, so a concurrent writer
+ * (checkpoint restore, keep-partial, import persist) landing in that window was
+ * overwritten wholesale, and a crash between the two statements left new code carrying a
+ * stale version so the stale-view banner never fired for other viewers (F-044). The
+ * project lock mostly serialises this, but `acquireLock` is re-entrant for one user by
+ * design, so two operations by the same person are not serialised by it.
+ *
+ * `seen` is the reading the caller merged onto. The update only lands if the row still
+ * carries that `contentVersion`; a writer that slipped in first makes `count` zero, so
+ * we re-read and merge `files` onto the base that actually won — nobody's write is lost.
+ */
+export async function writeMergedSite(
+  projectId: string,
+  files: Record<string, string>,
+  seen: { lastCode: string | null; contentVersion: number },
+): Promise<void> {
+  let base = seen;
+  for (let attempt = 0; attempt < MAX_SITE_WRITE_ATTEMPTS; attempt += 1) {
+    const existing = getCurrentProjectFiles({ lastCode: base.lastCode });
+    const merged = withoutRawImageTokens({ ...existing, ...files });
+    const { count } = await prisma.project.updateMany({
+      where: { id: projectId, contentVersion: base.contentVersion },
+      data: {
+        lastCode: toLastCode(merged),
+        contentVersion: { increment: 1 },
+        // Files present is the whole condition for reaching this write, so the site is
+        // finished — COMPLETE is always correct here.
+        phase: 'COMPLETE',
+      },
+    });
+    if (count > 0) return;
+    const fresh = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { lastCode: true, contentVersion: true },
+    });
+    if (!fresh) throw new Error(`Project ${projectId} vanished while saving its site`);
+    base = fresh;
+  }
+  throw new Error(
+    'Another change to this project kept landing first, so this build was not saved. Try again.',
+  );
+}
+
 export type StreamSettleInput = {
   jobId: string;
   producedFiles: number;
@@ -253,7 +305,7 @@ export async function settleStreamedGeneration(
 
   const project = await prisma.project.findUnique({
     where: { id: job.projectId },
-    select: { lastCode: true, phase: true },
+    select: { lastCode: true, contentVersion: true },
   });
   const checkpointCount = await prisma.checkpoint.count({ where: { projectId: job.projectId } });
   let hasSite = Boolean(project?.lastCode) || checkpointCount > 0;
@@ -309,22 +361,16 @@ export async function settleStreamedGeneration(
       userId: job.userId,
       files: streamedFiles,
     });
-    // Merge over what is already there, never replace it. An edit returns only
-    // the files it changed — storing just those would delete the rest of the
-    // site. Writing at all is the point: this used to run only when the
-    // project had no site yet, so every edit after the first build streamed
-    // in, reported SUCCEEDED, and was thrown away. The chat said the change
-    // was made and the site never moved.
-    const existing = getCurrentProjectFiles({ lastCode: project?.lastCode ?? null });
-    const merged = withoutRawImageTokens({ ...existing, ...resolvedFiles });
-    await prisma.project.update({
-      where: { id: job.projectId },
-      data: {
-        lastCode: toLastCode(merged),
-        ...(project?.phase !== 'COMPLETE' ? { phase: 'COMPLETE' as const } : {}),
-      },
+    // Merge over what is already there, never replace it. An edit returns only the files
+    // it changed — storing just those would delete the rest of the site. The write and
+    // the version bump are one guarded statement (writeMergedSite), keyed on the
+    // `contentVersion` read above so a writer that slipped in during resolveImages is not
+    // silently overwritten. `project` is non-null here: reaching this write means the row
+    // exists (it was read above and a concurrent delete would fail the update, not this).
+    await writeMergedSite(job.projectId, resolvedFiles, {
+      lastCode: project?.lastCode ?? null,
+      contentVersion: project?.contentVersion ?? 0,
     });
-    await bumpContentVersion(job.projectId);
     hasSite = true;
   }
 

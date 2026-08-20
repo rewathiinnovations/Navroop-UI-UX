@@ -10,7 +10,6 @@ import { testPrismaClient } from './setup/db.ts';
 import { hashPassword } from '../lib/password.ts';
 import { acquireLock } from '../lib/projects/lock.ts';
 import { consumeCredits } from '../lib/plans/limits.ts';
-import { WORKSPACE_ROW_ID } from '../lib/storage/usage.ts';
 import {
   CLIENT_POLL_CEILING_MS,
   CLIENT_STALE_HEARTBEAT_MS,
@@ -52,6 +51,12 @@ function assert(cond: unknown, name: string) {
 const suffix = `${Date.now()}_${Math.random().toString(16).slice(2)}`;
 const ownerEmail = `job-owner-${suffix}@example.com`;
 
+// Scope every workspace write to a row this suite owns, so the credit-delta assertions
+// below never touch the singleton `default` workspace that publish-execute,
+// publish-compensate-resume and sentry-runtime-file (all in parallel worker files) read
+// and write. Before this, those suites raced this one's creditsUsed writes (F-606).
+const WORKSPACE_ROW_ID = `ws_generation_jobs`;
+
 const now = new Date('2026-08-17T12:00:00.000Z');
 assert(
   shouldStopClientPoll({
@@ -87,6 +92,11 @@ assert(instanceA === instanceB, 'instance id is stable for the process lifetime'
 
 try {
   await ensureDefaultPlan(prisma);
+  await prisma.workspace.upsert({
+    where: { id: WORKSPACE_ROW_ID },
+    create: { id: WORKSPACE_ROW_ID, storageBytes: 0, creditsUsed: 0 },
+    update: { creditsUsed: 0, creditAlert80Sent: false },
+  });
   const passwordHash = await hashPassword('JobTest123');
   const owner = await prisma.user.create({
     data: { email: ownerEmail, name: 'Job Owner', passwordHash, role: 'MEMBER' },

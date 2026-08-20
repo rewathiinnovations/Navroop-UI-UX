@@ -11,9 +11,7 @@ import {
   providerFailureMessage,
   shouldFailover,
 } from '@/lib/ai/failover';
-import { modelIdForEntry } from '@/lib/ai/providers';
 import { ProviderRunError, type ProviderAttempt } from '@/lib/ai/run';
-import { appConfig } from '@/config/app.config';
 import { buildUiUxProMaxBrief } from '@/lib/ui-ux-pro-max/build-design-brief';
 import { looksLikeUrl } from '@/lib/projects/prompt';
 import { parseWithZod, refinePlanSchema, followUpPlanSchema } from '@/lib/projects/schema';
@@ -29,6 +27,8 @@ import { buildMemoryBlock } from '@/lib/memory/build-context';
 import { revertApprovedPlan } from '@/lib/projects/plan-compensate';
 import { planRetryKind } from '@/lib/projects/plan-retry';
 import { peekConversationState } from '@/lib/generation/conversation-state';
+import { logError } from '@/lib/logger';
+import { recordJobStepFailure } from '@/lib/jobs/step-failure';
 
 type ActionErr = {
   ok: false;
@@ -74,8 +74,17 @@ const planContentSchema = z.object({
 });
 
 const actorStore = new AsyncLocalStorage<SessionUser>();
-let planCompleterOverride: PlanCompleter | null = null;
-let lastGenerationStart: GenerationStart | null = null;
+
+/**
+ * The plan-completer seam, scoped to one async context.
+ *
+ * It used to be `let planCompleterOverride` behind an exported `setPlanCompleter`: a
+ * mutable module global that replaced the AI call for **every** user of the process, set
+ * by anything that imported this file and never automatically unset (F-813). An
+ * `AsyncLocalStorage` makes the substitution last exactly as long as the callback, so a
+ * test that forgets to clear it cannot leak into concurrent traffic.
+ */
+const planCompleterStore = new AsyncLocalStorage<PlanCompleter>();
 
 export function runWithActor<T>(user: SessionUser, fn: () => T): T {
   return actorStore.run(user, fn);
@@ -85,9 +94,9 @@ export function peekActor(): SessionUser | undefined {
   return actorStore.getStore();
 }
 
-/** Acceptance-script seam. Production uses the shared AI provider. */
-export function setPlanCompleter(fn: PlanCompleter | null) {
-  planCompleterOverride = fn;
+/** Test seam. Production never enters it, so production always uses the AI provider. */
+export function runWithPlanCompleter<T>(completer: PlanCompleter, fn: () => T): T {
+  return planCompleterStore.run(completer, fn);
 }
 
 function unauthorized(): ActionErr {
@@ -173,15 +182,12 @@ async function defaultCompletePlan(input: {
   const failover = await completeWithProviderFailover({
     env: providerEnv,
     run: async (entry, ctx) => {
-      const modelId = modelIdForEntry(entry);
       const client = clientForEntry(entry, providerEnv);
       const model = client(entry.model);
-      const enableAnthropicCache = modelId.startsWith('anthropic/');
       const cached = input.stablePrefix
         ? buildCachedMessages({
             stablePrefix: input.stablePrefix,
             volatileUser: `${input.systemPrompt.replace(input.stablePrefix, '').trim()}\n\n${userPrompt}`,
-            enableAnthropicCache,
           })
         : null;
       try {
@@ -235,8 +241,9 @@ async function defaultCompletePlan(input: {
 }
 
 async function completePlan(promptContext: string, systemPrompt: string, stablePrefix?: string) {
-  if (planCompleterOverride) {
-    const content = await planCompleterOverride({ promptContext, systemPrompt, stablePrefix });
+  const override = planCompleterStore.getStore();
+  if (override) {
+    const content = await override({ promptContext, systemPrompt, stablePrefix });
     return {
       content,
       provider: null as string | null,
@@ -251,12 +258,11 @@ export function combineBuildContext(initialPrompt: string, content: PlanContent)
   return `${initialPrompt}\n\nApproved plan:\n${JSON.stringify(content)}`;
 }
 
-export function peekLastGenerationStart() {
-  return lastGenerationStart;
-}
-
 async function startLoggedGeneration(input: GenerationStart) {
-  lastGenerationStart = input;
+  // No module-level copy of `input` is kept. It used to be assigned to a
+  // `lastGenerationStart` global read only by an unwired acceptance script, which held the
+  // full user prompt plus the approved plan JSON in memory for the life of the process
+  // (F-813). The durable, per-project record is the GenerationEvent row written below.
   await logGenerationEvent({
     projectId: input.projectId,
     userId: input.userId,
@@ -373,7 +379,11 @@ export async function generatePlan(
     try {
       memoryBlock = (await buildMemoryBlock(projectId)).block;
     } catch (error) {
-      console.warn('[memory] plan block failed', error);
+      // Memory is documented as always-on and inside the cacheable prefix. When it
+      // vanishes the plan is generated without the workspace's durable context *and* the
+      // prefix bytes change, so the prompt cache misses too — neither of which is visible
+      // from stdout. It reaches Sentry with the project id now (F-814).
+      logError('plan.memory_block_failed', error, { projectId });
     }
     const stablePrefix = buildStablePromptPrefix(project.stack, directionId, { memoryBlock });
     const injected = await injectMatchedSkills(sourceMessage, promptContext, project.ownerId);
@@ -425,14 +435,28 @@ export async function generatePlan(
       });
       throw error;
     }
-    const latest = await prisma.projectPlan.findFirst({
-      where: { projectId },
-      orderBy: { version: 'desc' },
-      select: { version: true },
-    });
-    const version = latest ? latest.version + 1 : 1;
-
+    /**
+     * The version is allocated inside the transaction that inserts it, serialized by a
+     * transaction-scoped advisory lock keyed on the project — the shape `withLimit` uses
+     * for the plan ceilings. `MAX(version)` used to be read outside, so two concurrent
+     * generations for one project read the same number and both inserted it (F-810), and
+     * the `PENDING → SUPERSEDED` sweep raced separately, leaving two pending plans. Both
+     * statements are now under the one lock, so the newest plan is the only pending one
+     * and `orderBy: { version: 'desc' }` — which `approvePlan`, `getLatestPlan` and
+     * template creation all rely on — picks a single unambiguous row.
+     *
+     * A future `@@unique([projectId, version])` would still be worth adding: it would turn
+     * any writer that bypasses this path into an error at the insert instead of a silently
+     * ambiguous ordering, and would let the allocation retry on conflict rather than
+     * serialize. It needs a migration, so the lock carries the invariant for now.
+     */
     const created = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`plan-version:${projectId}`}))`;
+      const latest = await tx.projectPlan.findFirst({
+        where: { projectId },
+        orderBy: { version: 'desc' },
+        select: { version: true },
+      });
       await tx.projectPlan.updateMany({
         where: { projectId, status: 'PENDING' },
         data: { status: 'SUPERSEDED' },
@@ -440,7 +464,7 @@ export async function generatePlan(
       return tx.projectPlan.create({
         data: {
           projectId,
-          version,
+          version: latest ? latest.version + 1 : 1,
           content,
           status: 'PENDING',
           trigger,
@@ -467,7 +491,9 @@ export async function generatePlan(
         errorCode: 'plan_failed',
         errorMessage: error instanceof Error ? error.message : 'Plan failed',
       }).catch((failError) => {
-        console.warn('[plan] could not mark the plan job failed', failError);
+        // The PLAN job is now stuck RUNNING with no settle, and stdout was the only
+        // record of why. `/admin/jobs` needs an operator looking at it (F-814).
+        logError('plan.job_fail_write_failed', failError, { projectId, jobId: planJob.id });
       });
     }
     throw error;
@@ -569,11 +595,20 @@ export async function requestFollowUpPlan(projectId: string, message: string) {
     await prisma.project
       .update({ where: { id: projectId }, data: { phase: 'COMPLETE' } })
       .catch((rollbackError) => {
-        console.warn('[plan] could not roll the project phase back to COMPLETE', rollbackError);
+        // The rollback is the only thing standing between the user and a project that
+        // refuses every later follow-up with "A plan is already pending", so its failure
+        // is an operator-visible event, not a stdout line (F-814).
+        logError('plan.phase_rollback_failed', rollbackError, { projectId });
       });
     throw error;
   }
 }
+
+/**
+ * Rolls the `approvePlan` claim back from inside its transaction. Not an error the caller
+ * ever sees: it is converted to the 409 the route answers with.
+ */
+class NoPendingPlanError extends Error {}
 
 export async function approvePlan(
   projectId: string,
@@ -589,34 +624,60 @@ export async function approvePlan(
 
   const project = await prisma.project.findFirst({
     where: { id: projectId, deletedAt: null },
-    select: { id: true, ownerId: true, phase: true, initialPrompt: true },
+    select: { id: true, ownerId: true, initialPrompt: true },
   });
   if (!project) return notFound();
   if (!canMutate(user, project.ownerId)) return forbidden();
-  if (project.phase !== 'PLANNING') {
+
+  /**
+   * The phase transition is the mutex.
+   *
+   * The phase used to be read, asserted `PLANNING`, and only then written — nothing linked
+   * the check to the write, so two concurrent approvals both passed the check, both
+   * committed, and both started a generation off one plan (F-811). The only defence was
+   * `idempotencyKey`, which is optional and comes from the request body, so any non-browser
+   * client got two builds and two charges. `PLANNING` is now consumed by the same statement
+   * that asserts it: the win is the returned row count, never a re-read, exactly as
+   * `claimJobRun` states for the job layer.
+   *
+   * Everything the approval consists of is inside that claim's transaction, so a plan that
+   * has gone (or does not parse) rolls the phase back rather than stranding the project in
+   * BUILDING with nothing to build.
+   */
+  const claimed = await prisma
+    .$transaction(async (tx) => {
+      const rows = await tx.$queryRaw<Array<{ id: string }>>`
+        UPDATE "Project"
+        SET phase = 'BUILDING'::"ProjectPhase", "updatedAt" = NOW()
+        WHERE id = ${projectId} AND "deletedAt" IS NULL AND phase = 'PLANNING'
+        RETURNING id
+      `;
+      if (rows.length === 0) return null;
+
+      const pending = await tx.projectPlan.findFirst({
+        where: { projectId, status: 'PENDING' },
+        orderBy: { version: 'desc' },
+      });
+      if (!pending) throw new NoPendingPlanError();
+      const content = planContentSchema.parse(pending.content);
+      const plan = await tx.projectPlan.update({
+        where: { id: pending.id },
+        data: { status: 'APPROVED' },
+      });
+      return { plan, pending, content };
+    })
+    .catch((error) => {
+      if (error instanceof NoPendingPlanError) return 'no-plan' as const;
+      throw error;
+    });
+
+  if (claimed === null) {
     return { ok: false, error: 'Project is not in PLANNING phase', status: 409 };
   }
-
-  const pending = await prisma.projectPlan.findFirst({
-    where: { projectId, status: 'PENDING' },
-    orderBy: { version: 'desc' },
-  });
-  if (!pending) {
+  if (claimed === 'no-plan') {
     return { ok: false, error: 'No pending plan to approve', status: 409 };
   }
-
-  const content = planContentSchema.parse(pending.content);
-  const approved = await prisma.$transaction(async (tx) => {
-    const plan = await tx.projectPlan.update({
-      where: { id: pending.id },
-      data: { status: 'APPROVED' },
-    });
-    await tx.project.update({
-      where: { id: projectId },
-      data: { phase: 'BUILDING' },
-    });
-    return plan;
-  });
+  const { plan: approved, pending, content } = claimed;
 
   const trigger: PlanTrigger = pending.trigger === 'followup' ? 'followup' : 'initial';
   const instruction = trigger === 'initial' ? project.initialPrompt : pending.sourceMessage;
@@ -637,12 +698,27 @@ export async function approvePlan(
     // No job exists, so nothing will ever move this project out of BUILDING.
     // Put the plan and the phase back so approving again just works. The revert is
     // best effort: it must not mask the reason the job could not be created.
-    await revertApprovedPlan({ projectId, planId: pending.id }).catch((revertError) => {
-      console.error(
-        '[plan] approve compensation failed — project may be stuck in BUILDING',
-        { projectId, planId: pending.id },
-        revertError,
-      );
+    await revertApprovedPlan({ projectId, planId: pending.id }).catch(async (revertError) => {
+      // By its own comment this leaves the project stuck in BUILDING, and stdout was the
+      // only place that said so (F-814). Sentry gets the exception; the project's PLAN job
+      // gets a failed step, which is the row an operator reads in /admin/jobs.
+      logError('plan.approve_compensation_failed', revertError, {
+        projectId,
+        planId: pending.id,
+      });
+      const planJob = await prisma.job
+        .findFirst({
+          where: { projectId, kind: 'PLAN' },
+          orderBy: { createdAt: 'desc' },
+          select: { id: true },
+        })
+        .catch(() => null);
+      await recordJobStepFailure(planJob?.id, {
+        key: 'approve-compensation',
+        label: 'Roll back the approved plan',
+        error:
+          'The project is stuck in BUILDING: the plan was approved, no build job was created, and the rollback failed',
+      });
     });
     throw error;
   }

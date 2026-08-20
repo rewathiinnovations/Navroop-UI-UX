@@ -10,6 +10,41 @@ import {
 
 const POLL_MS = 5000;
 
+/** A job that has stopped, whatever the reason. */
+const TERMINAL_JOB_STATUSES: Record<string, true> = {
+  SUCCEEDED: true,
+  FAILED: true,
+  ABANDONED: true,
+  CANCELLED: true,
+};
+
+/**
+ * What one poll may conclude about the project's phase.
+ *
+ * Nothing here derives a phase. COMPLETE means a finished site — `lastCode` or a
+ * checkpoint — and only the server can see either: it settles the row through
+ * `resumablePhaseFromEvidence` on every terminal job write. This hook used to promote
+ * BUILDING to COMPLETE whenever the latest job was ABANDONED / FAILED / CANCELLED, or
+ * whenever `generationStatus` read `ready`, so a first build that failed with zero files
+ * showed as a finished project: no plan gate, no plan card, and a preview claiming to
+ * have something to show (F-048).
+ *
+ * `recheck` covers the one honest reason to look again: the project row is read before
+ * the job row, and the server writes both when a job settles, so a terminal job seen
+ * next to a BUILDING phase means the reading is simply older than the transition.
+ */
+export function phaseFromPoll(input: {
+  serverPhase: ProjectPhase | null;
+  jobStatus: string | null | undefined;
+  localPhase: ProjectPhase | null;
+}): { phase: ProjectPhase | null; recheck: boolean } {
+  const phase = input.serverPhase ?? input.localPhase;
+  return {
+    phase,
+    recheck: phase === 'BUILDING' && Boolean(TERMINAL_JOB_STATUSES[input.jobStatus ?? '']),
+  };
+}
+
 export function useProjectPlan({
   projectId,
   initialPhase,
@@ -29,29 +64,37 @@ export function useProjectPlan({
   const [approving, setApproving] = useState(false);
   const [watchPlan, setWatchPlan] = useState(false);
   const approveKeyRef = useRef<string | null>(null);
+  // A mirror, so `refresh` does not take `phase` as a dependency: the poll interval is
+  // keyed on that callback, and re-creating it on every phase change would restart the
+  // timer on each poll. Synced in an effect — a ref must not be written during render.
+  const phaseRef = useRef(phase);
+  useEffect(() => {
+    phaseRef.current = phase;
+  }, [phase]);
 
   const refresh = useCallback(async () => {
     if (!projectId) return;
+    const readPhase = async (): Promise<ProjectPhase | null> => {
+      const response = await fetch(`/api/projects/${projectId}`);
+      if (!response.ok) return null;
+      const data = (await response.json()) as { project?: { phase?: ProjectPhase } };
+      return data.project?.phase ?? null;
+    };
     try {
-      const [projectRes, planRes] = await Promise.all([
-        fetch(`/api/projects/${projectId}`),
+      const [serverPhase, planRes, jobRes] = await Promise.all([
+        readPhase(),
         fetch(`/api/projects/${projectId}/plan`),
+        fetch(`/api/projects/${projectId}/job`),
       ]);
-      if (projectRes.ok) {
-        const data = (await projectRes.json()) as { project?: { phase?: ProjectPhase } };
-        if (data.project?.phase) setPhase(data.project.phase);
-      }
-      const jobRes = await fetch(`/api/projects/${projectId}/job`);
+      let jobStatus: string | null = null;
       if (jobRes.ok) {
         const data = (await jobRes.json()) as { job?: { status?: string } | null };
-        if (
-          data.job?.status === 'ABANDONED' ||
-          data.job?.status === 'FAILED' ||
-          data.job?.status === 'CANCELLED'
-        ) {
-          setPhase((current) => (current === 'BUILDING' ? 'COMPLETE' : current));
-        }
+        jobStatus = data.job?.status ?? null;
       }
+      const polled = phaseFromPoll({ serverPhase, jobStatus, localPhase: phaseRef.current });
+      // The re-read costs one request and only happens on the poll where a job settled.
+      const settled = polled.recheck ? ((await readPhase()) ?? polled.phase) : polled.phase;
+      if (settled) setPhase(settled);
       if (planRes.ok) {
         const data = (await planRes.json()) as { plan?: unknown };
         setPlan(toWorkspacePlan(data.plan));
@@ -61,11 +104,14 @@ export function useProjectPlan({
     }
   }, [projectId]);
 
+  // `generationStatus` reaching 'ready' is the client's own runtime talking, not the
+  // server: it used to set COMPLETE here directly. Re-read instead — the terminal PATCH
+  // that produced 'ready' is also what makes the server's phase current.
   useEffect(() => {
     if (phase !== 'BUILDING') return;
     if (isJobActive) return;
-    if (generationStatus === 'ready') setPhase('COMPLETE');
-  }, [generationStatus, isJobActive, phase]);
+    if (generationStatus === 'ready') void refresh();
+  }, [generationStatus, isJobActive, phase, refresh]);
 
   useEffect(() => {
     if (phase === 'PLANNING' && watchPlan) setWatchPlan(false);

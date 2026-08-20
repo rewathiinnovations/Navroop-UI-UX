@@ -122,19 +122,28 @@ describe('offeredModel keeps a stored preference only while it is still offered'
 });
 
 describe('readGenerationInput refuses to store an unoffered model', () => {
+  // readGenerationInput now returns a validated result; `.data` holds the parsed
+  // fields. `modelOf` unwraps a payload known to be valid, and fails loudly if
+  // the parse itself regressed rather than silently reading `undefined.model`.
+  const modelOf = (body: Record<string, unknown>) => {
+    const result = readGenerationInput(body);
+    if (!result.ok) throw new Error(`expected a valid parse, got ${result.error}`);
+    return result.data.model;
+  };
+
   it('stores an offered model as sent', () => {
-    expect(readGenerationInput({ model: 'deepseek-v4-pro' }).model).toBe('deepseek-v4-pro');
+    expect(modelOf({ model: 'deepseek-v4-pro' })).toBe('deepseek-v4-pro');
   });
 
   it('clears the column instead of persisting a stale or blank id', () => {
-    expect(readGenerationInput({ model: 'deepseek-reasoner' }).model).toBeNull();
-    expect(readGenerationInput({ model: '' }).model).toBeNull();
-    expect(readGenerationInput({ model: null }).model).toBeNull();
-    expect(readGenerationInput({ model: 42 }).model).toBeNull();
+    expect(modelOf({ model: 'deepseek-reasoner' })).toBeNull();
+    expect(modelOf({ model: '' })).toBeNull();
+    expect(modelOf({ model: null })).toBeNull();
+    expect(modelOf({ model: 42 })).toBeNull();
   });
 
   it('leaves the column untouched when the field is absent', () => {
-    expect(readGenerationInput({}).model).toBeUndefined();
+    expect(modelOf({})).toBeUndefined();
   });
 });
 

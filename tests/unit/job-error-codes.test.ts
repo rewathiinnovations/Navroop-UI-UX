@@ -46,10 +46,14 @@ const EXPECTED_CODES = [
   'snapshot_unreadable',
   'provider_not_configured',
   'provider_quota_exhausted',
+  'provider_resting',
   'request_rejected',
   'repo_conflict',
+  'project_lock_lost',
   'import_failed',
   'stack_mismatch',
+  'internal_error',
+  'project_deleted',
 ] as const satisfies readonly JobErrorCode[];
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
@@ -330,5 +334,28 @@ describe('job error code copy', () => {
     const cause = recoveryCauseLine('credit_charge_failed');
     expect(cause).toMatch(/try again/i);
     expect(cause.toLowerCase()).not.toContain('used up');
+  });
+
+  // Both audit twins filed a deleted project as `provider_error`, so /admin/jobs read
+  // "The AI service did not respond" for a row that no longer exists and sent the
+  // operator to the provider dashboard (F-821).
+  it('a project deleted mid-audit does not blame the AI provider and offers no retry', () => {
+    const cause = recoveryCauseLine('project_deleted');
+    expect(cause).toMatch(/deleted/i);
+    expect(cause).not.toBe(recoveryCauseLine('provider_error'));
+    expect(cause.toLowerCase()).not.toContain('ai service');
+    expect(offersRecoveryRetry({ kind: 'AUDIT', errorCode: 'project_deleted' })).toBe(false);
+  });
+
+  it('neither audit twin still writes provider_error for a missing project row', () => {
+    for (const file of ['lib/audit/actions.ts', 'lib/seo/actions.ts']) {
+      const source = readFileSync(path.join(REPO_ROOT, file), 'utf8');
+      expect(source, `${file} still files a deleted project as provider_error`).not.toContain(
+        "errorMessage: 'Audit did not run'",
+      );
+      expect(source, `${file} does not write project_deleted`).toContain(
+        "errorCode: 'project_deleted'",
+      );
+    }
   });
 });

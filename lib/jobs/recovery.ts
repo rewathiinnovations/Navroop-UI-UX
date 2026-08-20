@@ -170,6 +170,19 @@ export async function retryAbandonedJob(jobId: string, idempotencyKey?: string |
         writtenFiles: files,
       })
     : job.inputPrompt || planContext || '';
+  // Refuse rather than create a job that cannot be started. `prompt` is empty whenever the
+  // row has no `inputPrompt` and there is no approved plan to fall back on — always for a
+  // FOLLOWUP, since `planContext` is only fetched for BUILD. The route answered ok with
+  // that empty string, so a QUEUED row was inserted that nothing would ever start: it held
+  // `one_active_job_per_project` and left the phase BUILDING with chat locked until the
+  // queued-stale reaper. `recoveryRetryIntent` declines this in the client too (F-033).
+  if (!prompt.trim()) {
+    return {
+      ok: false as const,
+      error: 'We do not have the prompt for this build. Type what you want changed instead.',
+      status: 400,
+    };
+  }
 
   const next = await createOrReuseJob({
     projectId: job.projectId,

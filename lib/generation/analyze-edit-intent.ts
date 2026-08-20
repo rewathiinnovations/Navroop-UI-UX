@@ -12,6 +12,8 @@ import { generateObject } from 'ai';
 import { z } from 'zod';
 import { getProviderForModel } from '@/lib/ai/provider-manager';
 import { ProviderNotConfiguredError } from '@/lib/ai/providers';
+import { log, logError } from '@/lib/logger';
+import { filterSearchPatterns } from './search-pattern';
 
 const searchPlanSchema = z.object({
   editType: z
@@ -88,15 +90,11 @@ export async function analyzeEditIntent(
   const { prompt, manifest } = input;
   const model = input.model || 'openai/gpt-oss-20b';
 
-  console.log('[analyze-edit-intent] Request received');
-  console.log('[analyze-edit-intent] Prompt:', prompt);
-  console.log('[analyze-edit-intent] Model:', model);
-
+  // The prompt and the file summary are user content. They used to be written to
+  // stdout in full on every call, which put project source and whatever someone
+  // typed into a second store with a different retention policy than the
+  // database (F-039). Shapes and counts only.
   const manifestFiles = (manifest as ManifestLike | null | undefined)?.files;
-  console.log(
-    '[analyze-edit-intent] Manifest files count:',
-    manifestFiles ? Object.keys(manifestFiles).length : 0,
-  );
 
   if (!prompt || !manifest) {
     return { ok: false, status: 400, error: 'prompt and manifest are required' };
@@ -116,19 +114,14 @@ export async function analyzeEditIntent(
     })
     .join('\n');
 
-  console.log('[analyze-edit-intent] Valid files found:', validFiles.length);
-
   if (validFiles.length === 0) {
-    console.error('[analyze-edit-intent] No valid files found in manifest');
+    log.warn('generation.edit_intent_empty_manifest', {
+      manifestFiles: manifestFiles ? Object.keys(manifestFiles).length : 0,
+    });
     return { ok: false, status: 400, error: 'No valid files found in manifest' };
   }
 
-  console.log('[analyze-edit-intent] Analyzing prompt:', prompt);
-  console.log(
-    '[analyze-edit-intent] File summary preview:',
-    fileSummary.split('\n').slice(0, 5).join('\n'),
-  );
-  console.log('[analyze-edit-intent] Using AI model:', model);
+  log.info('generation.edit_intent_planning', { model, files: validFiles.length });
 
   try {
     const result = await generateObject({
@@ -175,16 +168,39 @@ Create a search plan to find the exact code that needs to be modified. Include s
       ],
     });
 
-    console.log('[analyze-edit-intent] Search plan created:', {
-      editType: result.object.editType,
-      searchTerms: result.object.searchTerms,
-      patterns: result.object.regexPatterns?.length || 0,
-      reasoning: result.object.reasoning,
+    // Model-written regexes are bounded before they leave this function. Nothing
+    // compiles them today — the executor that ran them per line of every file was
+    // deleted — but the plan is returned over HTTP, and an unbounded
+    // catastrophically backtracking pattern blocks the whole event loop the moment
+    // anything does (F-752). Refusals are named, never dropped in silence.
+    const primary = filterSearchPatterns(result.object.regexPatterns);
+    const fallback = filterSearchPatterns(result.object.fallbackSearch?.patterns);
+    const refused = [...primary.refused, ...fallback.refused];
+    if (refused.length > 0) {
+      log.warn('generation.edit_intent_patterns_refused', {
+        count: refused.length,
+        refused: refused.slice(0, 5),
+      });
+    }
+
+    const searchPlan: SearchPlan = {
+      ...result.object,
+      regexPatterns: primary.safe,
+      fallbackSearch: result.object.fallbackSearch
+        ? { ...result.object.fallbackSearch, patterns: fallback.safe }
+        : undefined,
+    };
+
+    log.info('generation.edit_intent_plan', {
+      editType: searchPlan.editType,
+      terms: searchPlan.searchTerms.length,
+      patterns: primary.safe.length,
+      refusedPatterns: refused.length,
     });
 
-    return { ok: true, searchPlan: result.object };
+    return { ok: true, searchPlan };
   } catch (error) {
-    console.error('[analyze-edit-intent] Error:', error);
+    logError('generation.edit_intent_failed', error);
     if (error instanceof ProviderNotConfiguredError) {
       // The step failure this becomes ("Plan the edit") is the first place an
       // operator with a DB-only key used to see anything at all, and a 500

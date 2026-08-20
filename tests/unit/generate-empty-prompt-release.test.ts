@@ -20,7 +20,10 @@ const source = readFileSync(routePath, 'utf8');
  */
 describe('generate-ai-code-stream validates the prompt before acquiring anything (F-001)', () => {
   it('rejects a missing, non-string or whitespace-only prompt right after the body parse', () => {
-    const guardAt = source.indexOf("typeof prompt !== 'string' || !prompt.trim()");
+    // The guard is now `readUserPrompt` (lib/generation/user-prompt.ts), which also bounds
+    // the length — see tests/unit/generation-prompt-intake.test.ts for what it accepts.
+    // What matters here is unchanged: it runs before anything is acquired.
+    const guardAt = source.indexOf('readUserPrompt(promptInput)');
     expect(guardAt).toBeGreaterThan(0);
     // The guard sits after the body parse …
     expect(source.indexOf('await request.json()')).toBeLessThan(guardAt);

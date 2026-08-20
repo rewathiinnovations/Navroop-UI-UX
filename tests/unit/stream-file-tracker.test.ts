@@ -172,4 +172,20 @@ describe('StreamedFileTracker', () => {
     expect(block.slice(0, 600)).toMatch(/sendProgress\(\{\s*\n\s*type: 'warning'/);
     expect(block.slice(0, 600)).toMatch(/warnings: rejectedPaths/);
   });
+
+  it('folds the post-parse rejects into the same announced set as the live tracker', () => {
+    const route = readFileSync(
+      fileURLToPath(new URL('../../app/api/generate-ai-code-stream/route.ts', import.meta.url)),
+      'utf8',
+    );
+    // The live tracker only sees fences it recognised as it streamed; the post-stream
+    // parse recovers glued/split/unclosed fences it missed. A path unique to that set
+    // used to drop with a bare `continue` and no notice (F-045). The loop now records
+    // into the same set the warning frame reads, seeded from the tracker's own rejects.
+    expect(route).toMatch(/const droppedPaths = new Set<string>\(streamedFiles\.rejectedPaths\)/);
+    const loop = route.slice(route.indexOf('for (const [filePath, content] of Object.entries'));
+    expect(loop.slice(0, 300)).toMatch(/if \(!safe\.ok\) \{\s*\n\s*droppedPaths\.add\(filePath\)/);
+    // The frame counts the union, not just the tracker's list.
+    expect(route).toMatch(/const rejectedPaths = \[\.\.\.droppedPaths\]/);
+  });
 });

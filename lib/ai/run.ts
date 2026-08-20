@@ -1,5 +1,6 @@
-import { getDefaultCircuit, type CircuitBreaker } from './circuit';
-import { EmptyCompletionError, surfaceStreamFailure } from './empty-completion';
+import { JOB_TIMEOUT_MS } from '@/lib/jobs/poll';
+import { CircuitOpenError, getDefaultCircuit, type CircuitBreaker } from './circuit';
+import { EmptyCompletionError, StreamStalledError, surfaceStreamFailure } from './empty-completion';
 import { PROVIDER_ATTEMPT_TIMEOUT_MS, shouldFailover } from './failover';
 import type { ProviderEntry, ProviderName } from './providers';
 
@@ -21,6 +22,29 @@ export class ProviderAttemptTimeoutError extends Error {
   }
 }
 
+/**
+ * How long a stream may go quiet before it is treated as dead.
+ *
+ * `PROVIDER_ATTEMPT_TIMEOUT_MS` bounds only `start` — the `streamText` call that returns a
+ * lazy handle — and both the racing timer and its AbortController are cleared as soon as
+ * that handle exists. Collection was then unbounded, so a provider that accepted the
+ * request and stalled mid-stream held the request handler, the provider-queue slot and the
+ * project lock for up to the 20-minute job timeout: the staleness reaper is no help,
+ * because the heartbeat is a `setInterval` that a stalled `await` does not stop.
+ *
+ * An idle bound rather than a wall clock, because a legitimate first build streams for
+ * minutes. Derived from `JOB_TIMEOUT_MS` rather than picked, so the three bounds on one run
+ * — the platform's `maxDuration`, this, and the job's own hard timeout — cannot drift apart
+ * (F-030).
+ *
+ * A quarter of the job timeout (5 minutes) rather than something tighter, because
+ * `textStream` yields text deltas only: a thinking-mode model can reason for a long time
+ * before its first visible token, and cutting that off would fail healthy builds. Five
+ * minutes of silence still leaves fifteen for the run and ends a wedged handler long
+ * before the reaper would.
+ */
+export const STREAM_IDLE_TIMEOUT_MS = JOB_TIMEOUT_MS / 4;
+
 export type ProviderAttempt = {
   provider: ProviderName;
   model: string;
@@ -33,8 +57,30 @@ export type ProviderRunResult<T> = {
   result: T;
   provider: ProviderName;
   model: string;
+  /**
+   * The chain entry that actually served, by identity.
+   *
+   * `provider` cannot stand in for it: the chain shape allows two entries for the
+   * same provider (two DeepSeek models), so matching a result back to its entry by
+   * provider name always resolved to the first one. That handed `collect` the wrong
+   * model and made the failover index advance land short, re-running the entry that
+   * had just failed (F-055).
+   */
+  entry: ProviderEntry;
   failedOver: boolean;
   attempts: ProviderAttempt[];
+  /**
+   * Aborts the attempt's provider-facing signal — the one handed to `streamText`. The
+   * idle bound below needs it: nothing else can end a `for await` over a stream the
+   * provider has stopped feeding.
+   */
+  abort: (reason?: unknown) => void;
+};
+
+/** What `collect` is given so a live stream can say so. */
+export type ProviderCollectContext = {
+  /** Call on every chunk received. Rearms the idle timer. */
+  progress: () => void;
 };
 
 async function withTimeout<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
@@ -62,6 +108,11 @@ export type ProviderRunOptions = {
    * stopping the work says nothing about provider health.
    */
   signal?: AbortSignal;
+  /**
+   * Silence allowed between two chunks of a stream before it is abandoned. Defaults to
+   * `STREAM_IDLE_TIMEOUT_MS`.
+   */
+  idleTimeoutMs?: number;
 };
 
 export async function executeWithFailover<T>(
@@ -75,10 +126,16 @@ export async function executeWithFailover<T>(
   let lastError: unknown = new Error('No healthy provider is configured');
   const attempts: ProviderAttempt[] = [];
   let tried = 0;
+  /** The furthest-out breaker among the entries this run declined to call. */
+  let restingUntil = 0;
 
   for (const entry of chain) {
     if (opts.signal?.aborted) throw opts.signal.reason ?? new Error('The run was aborted');
-    if (!circuit.isHealthy(entry.provider)) continue;
+    if (!circuit.isHealthy(entry.provider)) {
+      const until = circuit.openUntil(entry.provider);
+      if (until != null && until > restingUntil) restingUntil = until;
+      continue;
+    }
     tried += 1;
     const controller = new AbortController();
     const abortTimer = setTimeout(() => controller.abort(), timeoutMs);
@@ -103,8 +160,10 @@ export async function executeWithFailover<T>(
         result,
         provider: entry.provider,
         model: entry.model,
+        entry,
         failedOver: tried > 1 || attempts.some((row) => !row.ok),
         attempts,
+        abort: (reason?: unknown) => controller.abort(reason),
       };
     } catch (error) {
       // A cancelled attempt is not a provider verdict: no failover, no circuit failure.
@@ -124,20 +183,84 @@ export async function executeWithFailover<T>(
     }
   }
 
+  // Every entry was skipped because its breaker is open: the app declined to call the
+  // provider. Reporting that as `lastError`'s placeholder ("No healthy provider is
+  // configured") told the user the vendor did not respond and the operator that their
+  // configuration was wrong, and mentioned neither the real cause nor that it clears by
+  // itself (F-031).
+  if (tried === 0 && restingUntil > 0) {
+    const resting = new CircuitOpenError(
+      chain[0]?.provider ?? 'unknown',
+      restingUntil - now().getTime(),
+    );
+    throw new ProviderRunError(resting.message, resting, attempts);
+  }
+
   const message = lastError instanceof Error ? lastError.message : String(lastError);
   throw new ProviderRunError(message, lastError, attempts);
 }
 
 /**
- * Start is timed (30s). Collecting the stream is not — a real first build
- * takes longer than PROVIDER_ATTEMPT_TIMEOUT_MS. An empty completion is a
- * failed attempt so the next configured provider runs. The chain is walked
- * once; the same provider is never retried.
+ * Collect the stream with a rolling idle bound.
+ *
+ * The timer is rearmed by `ctx.progress()` on every chunk, so a slow-but-live stream runs
+ * as long as it needs and a silent one is cut. On expiry the attempt's provider-facing
+ * signal is aborted — the only thing that can end a `for await` over a stream nobody is
+ * feeding — and the stall is reported as the collect failure so the normal classification
+ * and failover path applies.
+ */
+async function collectWithIdleBound<TStream, TCollected>(
+  started: ProviderRunResult<TStream>,
+  entry: ProviderEntry,
+  collect: (
+    started: TStream,
+    entry: ProviderEntry,
+    ctx: ProviderCollectContext,
+  ) => Promise<TCollected>,
+  idleMs: number,
+): Promise<TCollected> {
+  const { promise: stalled, reject } = Promise.withResolvers<never>();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let done = false;
+  const rearm = () => {
+    if (done) return;
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      const error = new StreamStalledError(started.provider, idleMs);
+      started.abort(error);
+      reject(error);
+    }, idleMs);
+    timer.unref?.();
+  };
+  rearm();
+  const work = collect(started.result, entry, { progress: rearm });
+  // Whichever promise loses the race still settles; attaching a handler here is what
+  // keeps the loser from surfacing as an unhandled rejection.
+  void work.catch(() => undefined);
+  void stalled.catch(() => undefined);
+  try {
+    return await Promise.race([work, stalled]);
+  } finally {
+    done = true;
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Start is timed (30s) and collection is bounded by silence rather than a wall clock
+ * (`STREAM_IDLE_TIMEOUT_MS`) — a real first build streams for longer than
+ * PROVIDER_ATTEMPT_TIMEOUT_MS but never goes quiet for minutes. An empty completion is a
+ * failed attempt so the next configured provider runs. The chain is walked once; the
+ * entry that served is never retried.
  */
 export async function executeWithCompletionFailover<TStream, TCollected>(
   chain: ProviderEntry[],
   start: (entry: ProviderEntry, ctx: { signal: AbortSignal }) => Promise<TStream>,
-  collect: (started: TStream, entry: ProviderEntry) => Promise<TCollected>,
+  collect: (
+    started: TStream,
+    entry: ProviderEntry,
+    ctx: ProviderCollectContext,
+  ) => Promise<TCollected>,
   isComplete: (collected: TCollected) => boolean,
   opts: ProviderRunOptions = {},
 ): Promise<ProviderRunResult<TCollected>> {
@@ -169,10 +292,17 @@ export async function executeWithCompletionFailover<TStream, TCollected>(
       failedOver = true;
     }
 
-    const servedEntry = chain.find((row) => row.provider === started.provider) ?? remaining[0];
     let collected: TCollected;
     try {
-      collected = await collect(started.result, servedEntry);
+      // The entry that served, by identity — never a provider-name lookup. With two
+      // entries for the same provider the name resolves to the first one, so `collect`
+      // was handed the wrong model (F-055).
+      collected = await collectWithIdleBound(
+        started,
+        started.entry,
+        collect,
+        opts.idleTimeoutMs ?? STREAM_IDLE_TIMEOUT_MS,
+      );
     } catch (collectError) {
       // Job caps abort the whole run — they are not a reason to try the next vendor.
       if (collectError instanceof Error && collectError.name === 'JobCapError') {
@@ -192,8 +322,10 @@ export async function executeWithCompletionFailover<TStream, TCollected>(
       });
       if (!shouldFailover(collectError)) throw collectError;
       circuit.recordFailure(started.provider);
-      const servedAt = remaining.findIndex((row) => row.provider === started.provider);
-      index += Math.max(1, servedAt + 1);
+      // Past the entry that served, by identity. The old provider-name lookup
+      // answered 0 for every DeepSeek entry, so a failure on the second one
+      // advanced by 1 and the loop restarted it (F-055).
+      index += Math.max(1, remaining.indexOf(started.entry) + 1);
       continue;
     }
 
@@ -208,8 +340,12 @@ export async function executeWithCompletionFailover<TStream, TCollected>(
         result: collected,
         provider: started.provider,
         model: started.model,
+        entry: started.entry,
         failedOver: failedOver || started.failedOver || attempts.some((row) => !row.ok),
         attempts,
+        // The attempt's controller, so a caller that keeps the result can still stop
+        // anything the stream left running. Aborting a finished attempt is a no-op.
+        abort: started.abort,
       };
     }
 
@@ -232,8 +368,7 @@ export async function executeWithCompletionFailover<TStream, TCollected>(
     if (!shouldFailover(cause)) throw cause;
     circuit.recordFailure(started.provider);
 
-    const servedAt = remaining.findIndex((row) => row.provider === started.provider);
-    index += Math.max(1, servedAt + 1);
+    index += Math.max(1, remaining.indexOf(started.entry) + 1);
   }
 
   const message = lastError instanceof Error ? lastError.message : String(lastError);

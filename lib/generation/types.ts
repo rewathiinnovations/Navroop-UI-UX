@@ -117,6 +117,12 @@ export interface GenerationProgressState {
   files: GenerationFile[];
   /** Paths dropped by `sanitizeGenerationPath`, first-seen order, deduped. */
   droppedPaths: DroppedGenerationPath[];
+  /**
+   * Scan cursor into `streamedCode`: the offset every closed `{path=…}` fence
+   * sits before, so the next chunk is parsed from here rather than from zero.
+   * Reset to 0 wherever `streamedCode` is reset, and clamped to the buffer's
+   * length by `applyStreamedCode` so a stale value can never skip a new reply.
+   */
   lastProcessedPosition: number;
   isEdit?: boolean;
 }
@@ -182,6 +188,12 @@ export type GenerateResult = {
    * client only runs what it is handed and carries the counter back.
    */
   buildFix?: BuildFixRequest | null;
+  /**
+   * The SSE stream ended with no terminal frame — a transport drop, not a failure. The
+   * build may still be finishing server-side, so the client neither PATCHed a status nor
+   * applied anything; the job poll takes over (F-036).
+   */
+  streamDropped?: boolean;
 };
 
 export type ApplyResult = {

@@ -73,7 +73,9 @@ async function startJob(projectId: string) {
 }
 
 function jobRow(jobId: string) {
-  return prisma.$queryRaw<Array<{ status: string; heartbeatAt: Date | null; errorCode: string | null }>>`
+  return prisma.$queryRaw<
+    Array<{ status: string; heartbeatAt: Date | null; errorCode: string | null }>
+  >`
     SELECT status, "heartbeatAt", "errorCode" FROM "GenerationJob" WHERE id = ${jobId}
   `;
 }
@@ -93,7 +95,10 @@ const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Resolves to 'pending' if the work has not settled within `ms`. */
 async function settledWithin(work: Promise<unknown>, ms: number) {
-  return Promise.race([work.then(() => 'settled' as const), wait(ms).then(() => 'pending' as const)]);
+  return Promise.race([
+    work.then(() => 'settled' as const),
+    wait(ms).then(() => 'pending' as const),
+  ]);
 }
 
 function runDetachedGeneration(input: {
@@ -192,6 +197,11 @@ function runDetachedGeneration(input: {
   return {
     readable: stream.readable,
     done,
+    /**
+     * False when the run finished without ever reaching `releaseGenerationLock` — the
+     * `close-first` leak, observed directly instead of inferred from a renewal.
+     */
+    lockReleased: () => !lockHeld,
     /** Test cleanup only: the `close-first` control deliberately leaks these timers. */
     stopHeartbeats: () => {
       jobHeartbeat.stop();
@@ -202,8 +212,7 @@ function runDetachedGeneration(input: {
 
 beforeEach(async () => {
   for (const projectId of PROJECTS) {
-    await prisma
-      .$executeRaw`DELETE FROM "GenerationJob" WHERE "projectId" = ${projectId}`.catch(
+    await prisma.$executeRaw`DELETE FROM "GenerationJob" WHERE "projectId" = ${projectId}`.catch(
       () => undefined,
     );
   }
@@ -211,8 +220,7 @@ beforeEach(async () => {
 
 afterAll(async () => {
   for (const projectId of PROJECTS) {
-    await prisma
-      .$executeRaw`DELETE FROM "GenerationJob" WHERE "projectId" = ${projectId}`.catch(
+    await prisma.$executeRaw`DELETE FROM "GenerationJob" WHERE "projectId" = ${projectId}`.catch(
       () => undefined,
     );
   }
@@ -323,6 +331,7 @@ describe('generate-ai-code-stream teardown', () => {
 
     // Releasing is also what stops `lockHeartbeat`. Re-hold the lock and its expiry must
     // stand still: nothing is renewing it any more.
+    expect(run.lockReleased()).toBe(true);
     expect((await acquireLock(projectId, USER, 'generation')).ok).toBe(true);
     const heldUntil = await lockExpiry(projectId);
     await wait(150);
@@ -353,12 +362,22 @@ describe('generate-ai-code-stream teardown', () => {
 
     // The job still settled, because the settle runs before the close…
     expect((await jobRow(job.id))[0]?.status).toBe('ABANDONED');
-    // …but the release was skipped, so nothing stopped `lockHeartbeat`. Re-hold the lock
-    // and watch it renew itself, which is the leak the reorder removes.
+    // …but the release was skipped, so nothing in the run stopped `lockHeartbeat`: the
+    // timer is still armed after the work is over, which is the leak the reorder removes.
+    // Asserted on the run itself rather than inferred from a renewal, because what the
+    // renewal does next changed: the settle above gave the project lock back
+    // (`abandonJob` → `releaseLockQuietly`), so the next renew matches no row, reports the
+    // loss and stops the interval itself (F-730). That bounds the leak; it does not make
+    // the close-first order correct, which is what this control is for.
+    expect(run.lockReleased()).toBe(false);
+    // Long enough for several 25ms renew ticks, so the loss has certainly been observed
+    // before the lock is taken again — otherwise the leaked timer would renew the *new*
+    // hold, which is the corruption F-730 is about.
+    await wait(200);
     expect((await acquireLock(projectId, USER, 'generation')).ok).toBe(true);
     const heldUntil = await lockExpiry(projectId);
     await wait(150);
-    expect(await lockExpiry(projectId)).toBeGreaterThan(heldUntil);
+    expect(await lockExpiry(projectId)).toBe(heldUntil);
 
     run.stopHeartbeats();
     await releaseLock(projectId, USER);

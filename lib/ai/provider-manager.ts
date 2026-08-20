@@ -61,6 +61,13 @@ function clientFor(entry: ProviderEntry, env: Record<string, string | undefined>
 }
 
 /**
+ * `modelId` is a model the caller genuinely wants, or `null` for "no
+ * preference — use the configured primary". Passing a constant nobody chose
+ * (this used to be `appConfig.ai.defaultModel`, a Google id) is not a request:
+ * DeepSeek is the only provider, so the id was discarded by the chain and
+ * logged a spurious substitution warning on every audit review, URL import,
+ * memory extraction and skill match (F-737).
+ *
  * `userId` is the acting user of the request, or null for a genuinely
  * user-less context. It must be the SAME subject the generation call resolves
  * with: hard-coding null here made one request use two credentials against
@@ -68,18 +75,18 @@ function clientFor(entry: ProviderEntry, env: Record<string, string | undefined>
  * all (F-073).
  */
 export async function getProviderForModel(
-  modelId: string,
+  modelId: string | null,
   userId: string | null,
 ): Promise<ProviderResolution> {
   const env = await loadEffectiveProviderEnv(userId, process.env);
-  const bare = modelId.includes('/') ? modelId.split('/').slice(1).join('/') : modelId;
+  const bare = modelId?.includes('/') ? modelId.split('/').slice(1).join('/') : modelId;
   // An unknown id is not a request for a model: let the chain pick the
   // configured one (`ai.primaryModel` → AI_PRIMARY_MODEL → the built-in).
-  const known = isDeepSeekModel(bare);
+  const known = bare !== null && isDeepSeekModel(bare);
   const [entry] = requireUsableProviderChain(env, {
     requestedModel: known ? bare : undefined,
   });
-  if (!known) {
+  if (modelId !== null && !known) {
     // Surfaced, not silent (F-082): config defaults still carry legacy vendor
     // ids, and the substitution used to be invisible on both sides.
     log.warn('ai.unknown_model_substituted', { requestedModel: modelId, actualModel: entry.model });

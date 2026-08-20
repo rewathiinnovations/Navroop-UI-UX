@@ -1,16 +1,25 @@
 import { log } from '@/lib/logger';
+import { jobErrorCodeFromError } from './error-code';
 import { beginJobHeartbeat, failJob, markJobRunning, succeedJob } from './lifecycle';
 import { ensureJobSettled } from './settle';
 import { getActiveJob, insertJobRaw, updateJobFields } from './store';
 import type { CreateJobInput } from './lifecycle';
-import type { JobStep } from './types';
+import type { JobErrorCode, JobStep } from './types';
 
 /**
  * Record a short or auxiliary job without stealing an in-flight generation/publish job.
  * If the project already has a QUEUED/RUNNING job, this is a no-op.
  */
 export async function withRecordedJob<T>(
-  input: CreateJobInput & { steps?: JobStep[] },
+  input: CreateJobInput & {
+    steps?: JobStep[];
+    /**
+     * How to file a failure. Supplied by callers that know what they were talking to —
+     * a provider caller passes `jobErrorCodeForProviderFailure`. Left off, the code comes
+     * from the thrown error itself and otherwise reads `internal_error` (F-047).
+     */
+    classifyError?: (error: unknown) => JobErrorCode;
+  },
   work: (jobId: string) => Promise<T>,
 ): Promise<T> {
   const active = await getActiveJob(input.projectId);
@@ -50,7 +59,10 @@ export async function withRecordedJob<T>(
     // (or QUEUED) with nothing to settle it.
     await markJobRunning(job.id, { chargeCredits: false, acquireProjectLock: false });
     if (input.steps) {
-      await updateJobFields(job.id, { steps: input.steps, currentStep: input.steps[0]?.key ?? null });
+      await updateJobFields(job.id, {
+        steps: input.steps,
+        currentStep: input.steps[0]?.key ?? null,
+      });
     }
     const result = await work(job.id);
     await succeedJob(job.id);
@@ -58,7 +70,7 @@ export async function withRecordedJob<T>(
   } catch (error) {
     // Settling the row is bookkeeping — it must not replace the caller's error.
     await failJob(job.id, {
-      errorCode: 'provider_error',
+      errorCode: (input.classifyError ?? jobErrorCodeFromError)(error),
       errorMessage: error instanceof Error ? error.message : 'Job failed',
     }).catch((failError) => {
       log.warn('jobs.record_fail_failed', {

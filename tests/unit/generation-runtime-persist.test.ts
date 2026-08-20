@@ -21,22 +21,6 @@ import { PREVIEW_NOT_READY_NOTICE } from '../../lib/preview/labels';
 
 const FILE_BLOCK = '<file path="src/App.jsx">export default function App() { return null; }</file>';
 
-function sseResponse(frames: ReadonlyArray<Record<string, unknown>>) {
-  const encoded = new TextEncoder().encode(
-    frames.map((frame) => `data: ${JSON.stringify(frame)}\n`).join(''),
-  );
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      controller.enqueue(encoded);
-      controller.close();
-    },
-  });
-  return new Response(stream, {
-    status: 200,
-    headers: { 'content-type': 'text/event-stream' },
-  });
-}
-
 function persistResponse(body: unknown, init?: { status?: number; json?: boolean }) {
   if (init?.json === false) {
     return new Response('not-json', {

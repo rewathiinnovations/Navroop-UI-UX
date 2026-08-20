@@ -54,7 +54,20 @@ export function recoveryRetryIntent(input: {
     }
     return { action: 'plan', prompt };
   }
-  return { action: 'build', prompt: input.inputPrompt || '' };
+  // Same guard the PLAN and IMPORT branches above already have. Without it a FOLLOWUP whose
+  // `inputPrompt` is null returned `{ action: 'build', prompt: '' }`, `dispatchRecoveryRetry`
+  // created the retry job and then skipped `startBuild` on the falsy prompt — leaving a
+  // QUEUED row nothing would ever start, holding `one_active_job_per_project` and the
+  // BUILDING phase (chat input locked) until the queued-stale reaper. The button looked
+  // like it did nothing (F-033).
+  const prompt = String(input.inputPrompt || '').trim();
+  if (!prompt) {
+    return {
+      action: 'none',
+      nextStep: 'We do not have the prompt for this build. Type what you want changed instead.',
+    };
+  }
+  return { action: 'build', prompt };
 }
 
 export async function dispatchRecoveryRetry(

@@ -59,6 +59,7 @@ vi.mock('@/lib/signals/collect', () => ({
   countVisualEditsFromSource: () => 0,
   recordVisualEditRate: async () => undefined,
   maybeSettleFollowups: async () => undefined,
+  recordGenerationKept: async () => undefined,
 }));
 
 import { getProject } from '@/lib/projects/actions';
@@ -157,5 +158,91 @@ describe('an offered model stays a real preference', () => {
 
   it('serves null when the project never chose one', async () => {
     expect(await servedModel(EMPTY)).toBeNull();
+  });
+});
+
+// F-809: the detail read was `include` with no `select`, so it returned every scalar on
+// `Project` while `listProjects` beside it curated ten columns. Any signed-in member could
+// read another member's lock holder, lock expiry, `previewUrl` and `progressMessage`, and
+// every column added to the model published itself here.
+describe('the detail read serves a curated row, not every column', () => {
+  const OPERATIONAL_FIELDS = [
+    'lockedById',
+    'lockedAt',
+    'lockExpiresAt',
+    'lockReason',
+    'previewUrl',
+    'progressMessage',
+    'generationStatus',
+    'contentVersion',
+    'activeJobId',
+    'activePreviewBuildId',
+    'githubRepoFullName',
+    'githubRepoUrl',
+    'lastPushedAt',
+    'deletedAt',
+    'initialPrompt',
+  ] as const;
+
+  beforeEach(async () => {
+    // Real values in every column the read must not publish, so absence is proof the
+    // select excludes them rather than proof the row happened to be empty.
+    await prisma.project.update({
+      where: { id: OFFERED },
+      data: {
+        lockedById: OWNER,
+        lockedAt: new Date(),
+        lockExpiresAt: new Date(Date.now() + 60_000),
+        lockReason: 'generate',
+        previewUrl: 'https://preview.example/offered',
+        progressMessage: 'Writing src/App.jsx',
+        generationStatus: 'active',
+        githubRepoFullName: 'deploy-org/offered',
+      },
+    });
+    // An import row too: `importSource: true` returned its whole row, including the
+    // captured `designTokens`/`sections` payloads the workspace never reads.
+    await prisma.importSource.upsert({
+      where: { projectId: OFFERED },
+      create: {
+        projectId: OFFERED,
+        sourceUrl: 'https://source.example/offered',
+        mode: 'clone',
+        designTokens: { colors: ['#123456'] },
+        sections: [{ kind: 'hero' }],
+        capturedAt: new Date(),
+      },
+      update: { sourceUrl: 'https://source.example/offered', mode: 'clone' },
+    });
+  });
+
+  it('withholds the lock and operational columns', async () => {
+    const stored = await prisma.project.findUniqueOrThrow({
+      where: { id: OFFERED },
+      select: { lockedById: true, previewUrl: true, progressMessage: true },
+    });
+    // Control: the columns really are populated, so the assertions below mean something.
+    expect(stored.lockedById).toBe(OWNER);
+    expect(stored.previewUrl).toBe('https://preview.example/offered');
+
+    const result = await getProject(OFFERED);
+    if (!result.ok || !result.data) throw new Error('getProject refused the fixture');
+    const served = Object.keys(result.data);
+    for (const field of OPERATIONAL_FIELDS) {
+      expect(served, `${field} is still served to every member`).not.toContain(field);
+    }
+  });
+
+  it('still serves everything the workspace and the plan poller read', async () => {
+    const result = await getProject(OFFERED);
+    if (!result.ok || !result.data) throw new Error('getProject refused the fixture');
+    // GenerationWorkspace :346-366 and useProjectPlan's phase poll.
+    for (const field of ['id', 'name', 'phase', 'style', 'model', 'lastCode', 'updatedAt']) {
+      expect(Object.keys(result.data), `${field} is no longer served`).toContain(field);
+    }
+    expect(result.data.owner).toBeTruthy();
+    // `importSource` is narrowed to the two fields the workspace resumes from.
+    const importKeys = Object.keys(result.data.importSource ?? {});
+    expect(importKeys.sort()).toEqual(['mode', 'sourceUrl']);
   });
 });

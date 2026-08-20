@@ -87,6 +87,28 @@ export const defaultCompensateAdapters: CompensateAdapters = {
   archiveDeployRepo: tryArchiveGithubRepo,
 };
 
+/** Which provider a teardown addressed, in the order they are attempted. */
+export type CompensatedResource = 'coolify' | 'dns' | 'repo';
+
+/**
+ * What a rollback did, not what it intended.
+ *
+ * - `kept_live`: a re-publish, so nothing was torn down on purpose.
+ * - `rolled_back`: every resource this job created is gone (or was already absent).
+ * - `partial`: at least one is still up. The marker is deliberately distinct so the
+ *   caller can retry and so the recovery panel does not print "cleaned up" over a
+ *   container that is still running and still billing.
+ */
+export type CompensateOutcome = 'kept_live' | 'rolled_back' | 'partial';
+
+export type CompensateResult = {
+  outcome: CompensateOutcome;
+  /** Torn down, so their ids may be cleared from the job and the Deployment row. */
+  compensated: CompensatedResource[];
+  /** Still up. Their ids MUST stay recorded — the orphan cron only deletes what it can trace. */
+  failed: CompensatedResource[];
+};
+
 /**
  * FIRST-TIME publish (no previous successful Deployment of that kind):
  * roll everything back. A half-created deployment serves nothing; slug/DNS
@@ -96,54 +118,72 @@ export const defaultCompensateAdapters: CompensateAdapters = {
  * The existing site must keep serving. Never compensate resources that
  * predate this job — compare against the Deployment row's stored ids
  * before deleting anything.
+ *
+ * Every delete is best-effort — one provider being down must not abandon the other two —
+ * but a swallowed failure is not a success. `outcome` used to be hardcoded `true` here, so
+ * a rollback in which every single delete 5xx'd still reported `rolled_back`, the recovery
+ * panel said "Incomplete work was cleaned up", and the marker it wrote made the whole
+ * compensation single-shot (F-046).
  */
 export async function compensateJobResources(input: {
   resources: JobResourceIds;
   hadSuccessfulDeployment: boolean;
   preexisting?: JobResourceIds;
   adapters?: CompensateAdapters;
-}): Promise<{ rolledBack: boolean; compensated: Array<'coolify' | 'dns' | 'repo'> }> {
+}): Promise<CompensateResult> {
   if (!shouldCompensatePublish(input.hadSuccessfulDeployment)) {
-    return { rolledBack: false, compensated: [] };
+    return { outcome: 'kept_live', compensated: [], failed: [] };
   }
 
   const adapters = input.adapters ?? defaultCompensateAdapters;
   const preexisting = input.preexisting ?? {};
-  const compensated: Array<'coolify' | 'dns' | 'repo'> = [];
+  const compensated: CompensatedResource[] = [];
+  const failed: CompensatedResource[] = [];
+
+  const attempt = async (
+    resource: CompensatedResource,
+    event: string,
+    run: () => Promise<void | boolean>,
+  ) => {
+    try {
+      // `false` means the adapter declined — not configured, no client — so the resource
+      // is still up. Same user-visible state as a refused delete, same bucket.
+      const removed = await run();
+      if (removed === false) {
+        log.warn(event, { resource, reason: 'adapter declined' });
+        failed.push(resource);
+        return;
+      }
+      compensated.push(resource);
+    } catch (error) {
+      // A 404 is the state we were trying to reach.
+      if (isAbsentError(error)) {
+        compensated.push(resource);
+        return;
+      }
+      logError(event, error);
+      failed.push(resource);
+    }
+  };
 
   const coolify = input.resources.coolifyAppUuid;
   if (coolify && coolify !== preexisting.coolifyAppUuid) {
-    try {
-      const deleted = await adapters.deleteCoolifyApp(coolify);
-      if (deleted !== false) compensated.push('coolify');
-    } catch (error) {
-      if (!isAbsentError(error)) logError('jobs.compensate_coolify_failed', error);
-    }
+    await attempt('coolify', 'jobs.compensate_coolify_failed', () =>
+      adapters.deleteCoolifyApp(coolify),
+    );
   }
 
   const dns = input.resources.dnsRecordId;
   if (dns && dns !== preexisting.dnsRecordId) {
-    try {
-      const deleted = await adapters.deleteDnsRecord(dns);
-      if (deleted !== false) compensated.push('dns');
-    } catch (error) {
-      if (!isAbsentError(error)) logError('jobs.compensate_dns_failed', error);
-    }
+    await attempt('dns', 'jobs.compensate_dns_failed', () => adapters.deleteDnsRecord(dns));
   }
 
   const repo = input.resources.githubRepo;
   if (repo && repo !== preexisting.githubRepo) {
-    try {
-      const archived = await adapters.archiveDeployRepo(repo);
-      if (archived !== false) compensated.push('repo');
-    } catch (error) {
-      if (!isAbsentError(error)) logError('jobs.compensate_repo_failed', error);
-    }
+    await attempt('repo', 'jobs.compensate_repo_failed', () => adapters.archiveDeployRepo(repo));
   }
 
-  log.warn('jobs.compensate_publish', {
-    rolledBack: true,
-    compensated,
-  });
-  return { rolledBack: true, compensated };
+  const outcome: CompensateOutcome = failed.length === 0 ? 'rolled_back' : 'partial';
+  log.warn('jobs.compensate_publish', { outcome, compensated, failed });
+  return { outcome, compensated, failed };
 }

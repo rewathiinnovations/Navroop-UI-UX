@@ -116,24 +116,43 @@ describe('the generation persist writes only real Project columns', () => {
 });
 
 describe('the request parser does not carry dropped columns', () => {
+  /**
+   * `readGenerationInput` now answers `{ ok, data }` so a bad field is a 400
+   * naming it rather than a Prisma exception (F-743). Every assertion here has
+   * to reach through that envelope: read off the envelope itself and a
+   * `not.toHaveProperty` — or a `hasGenerationFields` — is true of anything at
+   * all, which is how the negative case below used to pass without testing
+   * anything.
+   */
+  const parsedData = (body: Record<string, unknown>) => {
+    const result = readGenerationInput(body);
+    if (!result.ok) throw new Error(`expected a parse, got ${result.error}`);
+    return result.data;
+  };
+
   it('drops them from the parsed input', () => {
-    const parsed = readGenerationInput({
+    const data = parsedData({
       progressMessage: 'x',
       sandboxId: 'sbx_1',
       sandboxStatus: 'READY',
     }) as Record<string, unknown>;
 
+    expect(data).toHaveProperty('progressMessage');
     for (const column of DROPPED_COLUMNS) {
-      expect(parsed).not.toHaveProperty(column);
+      expect(data).not.toHaveProperty(column);
     }
   });
 
   it('does not treat a dropped column as a reason to run the generation persist', () => {
     // A body carrying only a dead field must not look like a generation update, or
     // the route would run the persist for a request with nothing real in it.
-    const parsed = readGenerationInput({ sandboxId: 'sbx_1' });
-    expect(hasGenerationFields(parsed)).toBe(false);
+    expect(hasGenerationFields(parsedData({ sandboxId: 'sbx_1' }))).toBe(false);
+    expect(hasGenerationFields(parsedData({ progressMessage: 'x' }))).toBe(true);
+  });
 
-    expect(hasGenerationFields(readGenerationInput({ progressMessage: 'x' }))).toBe(true);
+  it('refuses a non-string lastCode with a 400 rather than a Prisma exception', () => {
+    const result = readGenerationInput({ lastCode: { a: 1 } });
+    expect(result).toMatchObject({ ok: false, status: 400 });
+    if (!result.ok) expect(result.error).toContain('lastCode');
   });
 });

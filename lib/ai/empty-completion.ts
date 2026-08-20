@@ -13,6 +13,25 @@ export class EmptyCompletionError extends Error {
   }
 }
 
+/**
+ * The provider accepted the request and then stopped sending.
+ *
+ * Lives beside `EmptyCompletionError` — the other "the stream did not deliver" verdict —
+ * so `failover.ts` can classify it without importing `run.ts`, which imports `failover.ts`.
+ * See `STREAM_IDLE_TIMEOUT_MS` in `run.ts` for the bound that raises it (F-030).
+ */
+export class StreamStalledError extends Error {
+  readonly provider: ProviderName;
+  readonly idleMs: number;
+
+  constructor(provider: ProviderName, idleMs: number) {
+    super(`The AI stopped sending output for ${Math.round(idleMs / 1000)}s — the stream stalled.`);
+    this.name = 'StreamStalledError';
+    this.provider = provider;
+    this.idleMs = idleMs;
+  }
+}
+
 export type StreamFailureSource = {
   text?: PromiseLike<string>;
   streamError?: unknown;

@@ -1,9 +1,17 @@
 /** ~4 characters per token. Used when the provider omits usage. */
 export const CHARS_PER_TOKEN = 4;
 
+/**
+ * The estimate depends only on the length of the text, so a caller assembling a string
+ * incrementally can track the length and price a candidate addition without rendering the
+ * whole string again (`lib/memory/build-context.ts`).
+ */
+export function estimateTokensForLength(length: number): number {
+  return Math.ceil(length / CHARS_PER_TOKEN);
+}
+
 export function estimateTokens(text: string): number {
-  if (!text) return 0;
-  return Math.ceil(text.length / CHARS_PER_TOKEN);
+  return estimateTokensForLength(text.length);
 }
 
 export function readProviderInputTokens(usage: unknown): number | null {

@@ -1,7 +1,7 @@
 import '../setup/env';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { testPrismaClient } from '../setup/db';
-import { settleStreamedGeneration } from '@/lib/jobs/settle-generation';
+import { settleStreamedGeneration, writeMergedSite } from '@/lib/jobs/settle-generation';
 import { insertJobRaw, updateJobFields } from '@/lib/jobs/store';
 import { offersRecoveryRetry } from '@/lib/jobs/copy';
 
@@ -322,5 +322,90 @@ describe('settleStreamedGeneration — stack mismatch', () => {
       select: { lastCode: true },
     });
     expect(project.lastCode).toBeNull();
+  });
+});
+
+/**
+ * The site write and the content-version bump used to be two statements with no
+ * compare-and-set between them. `lastCode` was read at the top of the settle, and an
+ * `await resolveImages(...)` — a call out to an image provider that can take many
+ * seconds — sat between that read and the write. A concurrent writer landing in that
+ * window (a checkpoint restore, keep-partial, or an import persist) was overwritten
+ * wholesale, and a crash between the write and `bumpContentVersion` left new code
+ * carrying a stale version, so no other viewer's stale-view banner ever fired (F-044).
+ *
+ * The project lock mostly serialises this, but `acquireLock` is re-entrant for the same
+ * user by design, so two operations by one person are not serialised by it at all.
+ */
+describe('settleStreamedGeneration — the site write is atomic', () => {
+  it('bumps contentVersion in the same statement that writes the site', async () => {
+    const job = await startBuild();
+    const before = await prisma.project.findUniqueOrThrow({
+      where: { id: PROJECT },
+      select: { contentVersion: true },
+    });
+
+    await settleStreamedGeneration({
+      jobId: job.id,
+      producedFiles: 1,
+      streamedCode: ['```tsx{path=app/page.tsx}', 'export const a = 1;', '```'].join('\n'),
+    });
+
+    const project = await prisma.project.findUniqueOrThrow({
+      where: { id: PROJECT },
+      select: { lastCode: true, contentVersion: true, phase: true },
+    });
+    expect(project.lastCode).toContain('app/page.tsx');
+    expect(project.contentVersion).toBe(before.contentVersion + 1);
+    expect(project.phase).toBe('COMPLETE');
+  });
+
+  it('does not overwrite a write that landed after the read it merged onto', async () => {
+    await seed();
+    const before = await prisma.project.findUniqueOrThrow({
+      where: { id: PROJECT },
+      select: { lastCode: true, contentVersion: true },
+    });
+
+    // Exactly the window: this is what a restore/keep-partial does while the settle is
+    // still inside resolveImages, holding the reading above.
+    await prisma.project.update({
+      where: { id: PROJECT },
+      data: {
+        lastCode: '<file path="src/Restored.jsx">\nexport const restored = 1;\n</file>',
+        contentVersion: { increment: 1 },
+      },
+    });
+
+    await writeMergedSite(PROJECT, { 'app/page.tsx': 'export const a = 1;' }, before);
+
+    const after = await prisma.project.findUniqueOrThrow({
+      where: { id: PROJECT },
+      select: { lastCode: true, contentVersion: true },
+    });
+    // Both survive: the stale read is discarded and the generated file is merged onto
+    // the base that actually won.
+    expect(after.lastCode).toContain('src/Restored.jsx');
+    expect(after.lastCode).toContain('app/page.tsx');
+    expect(after.contentVersion).toBe(before.contentVersion + 2);
+  });
+
+  // Control: the retry is a re-read, not a blind overwrite. Writing on a current reading
+  // must take exactly one version, or the test above could pass on a function that
+  // always re-reads and the compare-and-set would be doing nothing.
+  it('control: a write on a current reading takes one version', async () => {
+    await seed();
+    const before = await prisma.project.findUniqueOrThrow({
+      where: { id: PROJECT },
+      select: { lastCode: true, contentVersion: true },
+    });
+
+    await writeMergedSite(PROJECT, { 'app/page.tsx': 'export const a = 1;' }, before);
+
+    const after = await prisma.project.findUniqueOrThrow({
+      where: { id: PROJECT },
+      select: { contentVersion: true },
+    });
+    expect(after.contentVersion).toBe(before.contentVersion + 1);
   });
 });

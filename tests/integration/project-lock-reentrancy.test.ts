@@ -5,7 +5,6 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { testPrismaClient } from '../setup/db';
 import {
   acquireLock,
-  forceRelease,
   holdProjectLock,
   releaseLock,
   renewLock,

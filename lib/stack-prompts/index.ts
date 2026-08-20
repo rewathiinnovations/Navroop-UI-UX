@@ -7,7 +7,7 @@ import { buildStaticHtmlStablePrompt } from './static-html';
 import { COMPLETION_RULES, buildVolatilePromptSuffix, type StackPromptContext } from './shared';
 import { getSeoRules } from './seo-rules';
 
-export type { StackPromptContext, StackPromptEditContext } from './shared';
+export type { StackPromptContext } from './shared';
 export { buildVolatilePromptSuffix } from './shared';
 export { BASE_RULES } from './base-rules';
 export { getSeoRules } from './seo-rules';

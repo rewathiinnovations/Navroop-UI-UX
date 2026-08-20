@@ -255,9 +255,21 @@ export type JobUpdateFields = {
   resourceIds?: JobResourceIds | null;
 };
 
-export async function updateJobFields(id: string, fields: JobUpdateFields) {
+/**
+ * Writes the fields and nothing else.
+ *
+ * `updateJobFields` re-reads the row afterwards, which most callers want and the
+ * progress batcher does not: it fires every two seconds for the length of a
+ * build and never looks at the result, so the read was a whole extra round trip
+ * per flush against the same Postgres every request shares (F-034).
+ */
+export async function applyJobFields(id: string, fields: JobUpdateFields) {
   const { sql, values } = buildJobUpdate(id, fields);
   await prisma.$executeRawUnsafe(sql, ...values);
+}
+
+export async function updateJobFields(id: string, fields: JobUpdateFields) {
+  await applyJobFields(id, fields);
   return getJob(id);
 }
 

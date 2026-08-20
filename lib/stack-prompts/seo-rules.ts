@@ -17,10 +17,19 @@ const STACK_SEO: Record<StackId, string> = {
 - Literal robots.txt and sitemap.xml listing every page.`,
   REACT: `REACT + VITE head:
 - Put title/meta in the document head file (index.html and any helmet/head helper).
-- Client-only meta is unreliable for social bots and many crawlers. Do not pretend SPA meta is enough for sharing or AEO. Recommend Next.js or Astro for public marketing sites.
+- Client-only meta is unreliable for social bots and many crawlers. Do not pretend SPA meta is enough for sharing or AEO.
 - Still ship static robots.txt + sitemap.xml of known routes.
-- Add an HTML comment in the head/meta file: <!-- Client-rendered meta is unreliable for social bots; prefer Next.js or Astro for public SEO. -->`,
+- Add an HTML comment in the head/meta file: <!-- Client-rendered meta is unreliable for social bots; server-rendered metadata is stronger for public SEO. -->`,
 };
+
+/**
+ * The REACT block used to tell the model to "Recommend Next.js or Astro for public marketing
+ * sites" — and to write that recommendation into the generated site as an HTML comment. This
+ * product has exactly three stacks (`Stack` in prisma/schema.prisma), none of them Astro, so
+ * the advice named a migration target the user cannot pick and the comment shipped that
+ * confusion to the visitor's page source. Next.js *is* offered, and is the default, so the
+ * honest form is the tradeoff without the shopping list (F-099).
+ */
 
 /** Tight SEO/AEO block appended to every generation via the shared assembler. */
 export function getSeoRules(stack: string): string {
