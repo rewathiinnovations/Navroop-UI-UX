@@ -70,8 +70,14 @@ describe('generation output contract', () => {
     expect(summary.fences).toBe(4);
   });
 
-  it('leaves no XML-format instructions in the generate route or examples', () => {
-    for (const file of ['app/api/generate-ai-code-stream/route.ts', 'lib/edit-examples.ts']) {
+  it('leaves no XML-format instructions in the generate route or the prompt rules', () => {
+    // `lib/edit-examples.ts` used to be the second file here. It was the dead
+    // sandbox-era edit-context module's prompt bank and went with it; the
+    // output-format contract it duplicated now lives in COMPLETION_RULES.
+    for (const file of [
+      'app/api/generate-ai-code-stream/route.ts',
+      'lib/stack-prompts/shared.ts',
+    ]) {
       expect(source(file), `${file} still instructs XML output`).not.toContain('<file path="src');
     }
   });

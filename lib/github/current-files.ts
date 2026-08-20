@@ -1,27 +1,14 @@
 /**
- * Reuses Open Lovable's existing current-files sources:
- * Code tab / get-sandbox-files cache (`sandboxState.fileCache`) and `Project.lastCode`.
- * Does not walk the sandbox filesystem again.
+ * Reads a project's current files from `Project.lastCode` — the only durable
+ * record of what was generated. It used to consult a `sandboxState.fileCache`
+ * server-global first; the sandbox subsystem is gone and nothing writes that
+ * global, so the branch was dead. It is not restored: both the settle path and
+ * the "keep what was built" path spread a generation over what this returns,
+ * and a cache winning over the row would resurrect deleted files.
  */
-
-type CachedFile = { content?: string } | string;
 
 function normalizePath(path: string) {
   return path.replace(/^\.?\//, '');
-}
-
-function filesFromCache(): Record<string, string> {
-  const cache = (globalThis as { sandboxState?: { fileCache?: { files?: Record<string, CachedFile> } } })
-    .sandboxState?.fileCache?.files;
-  if (!cache) return {};
-  const out: Record<string, string> = {};
-  for (const [path, value] of Object.entries(cache)) {
-    const content = typeof value === 'string' ? value : value?.content;
-    if (typeof content === 'string') {
-      out[normalizePath(path)] = content;
-    }
-  }
-  return out;
 }
 
 function filesFromLastCode(lastCode: string | null | undefined): Record<string, string> {
@@ -55,7 +42,5 @@ function filesFromLastCode(lastCode: string | null | undefined): Record<string, 
 }
 
 export function getCurrentProjectFiles(project: { lastCode?: string | null }) {
-  const cached = filesFromCache();
-  if (Object.keys(cached).length > 0) return cached;
   return filesFromLastCode(project.lastCode);
 }

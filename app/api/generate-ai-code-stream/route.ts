@@ -1,14 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createOpenAI } from '@ai-sdk/openai';
 import { streamText } from 'ai';
-import type { SandboxState } from '@/types/sandbox';
-import { selectFilesForEdit, getFileContents, formatFilesForAI } from '@/lib/context-selector';
-import {
-  executeSearchPlan,
-  formatSearchResultsForAI,
-  selectTargetFile,
-} from '@/lib/file-search-executor';
-import { FileManifest } from '@/types/file-manifest';
 import type { ConversationMessage, ConversationEdit } from '@/types/conversation';
 import { appConfig } from '@/config/app.config';
 import { buildUiUxProMaxBrief } from '@/lib/ui-ux-pro-max/build-design-brief';
@@ -22,8 +14,8 @@ import { filesFromReply, replaceBlockInReply } from '@/lib/generation/parse-bloc
 const FENCE = '```';
 import { conversationStateFor } from '@/lib/generation/conversation-state';
 import { StreamedFileTracker } from '@/lib/generation/stream-file-tracker';
+import { StreamedPackageTracker } from '@/lib/generation/stream-package-tracker';
 import { selectFileContext } from '@/lib/generation/selective-context';
-import { resolveInputTokens } from '@/lib/generation/token-estimate';
 import { buildStablePromptPrefix, buildVolatilePromptSuffix } from '@/lib/stack-prompts';
 import { resolveRequestGenerationProfile } from '@/lib/stack-resolve';
 import { packageNameFromImport, shouldSkipPackageInstall, stackShapeMismatch } from '@/lib/stacks';
@@ -37,7 +29,6 @@ import { jsonError } from '@/lib/api/error-response';
 import { withRequest } from '@/lib/api/with-request';
 import { prisma } from '@/lib/db';
 import { getCurrentProjectFiles } from '@/lib/github/current-files';
-import { analyzeEditIntent } from '@/lib/generation/analyze-edit-intent';
 import { log, logError } from '@/lib/logger';
 import { trackFailure, trackStart, trackSuccess } from '@/lib/observability/track';
 import { holdProjectLock } from '@/lib/projects/lock';
@@ -60,11 +51,13 @@ import { getRequestId } from '@/lib/request-context';
 import { JobCapError, JobCapTracker } from '@/lib/consumption/caps';
 import { getPlanCaps } from '@/lib/consumption/plan-caps';
 import { recordJobUsage } from '@/lib/consumption/record';
+import { RunUsage } from '@/lib/consumption/run-usage';
 import { getDefaultCircuit } from '@/lib/ai/circuit';
 import { jobErrorCodeForProviderFailure, providerFailureMessage } from '@/lib/ai/failover';
 import { getDefaultProviderQueue, QUEUE_TIMEOUT_MESSAGE } from '@/lib/ai/queue';
 import {
   getProviderApiKey,
+  isDeepSeekModel,
   maxOutputTokensForEntry,
   modelIdForEntry,
   NO_PROVIDER_CONFIGURED_MESSAGE,
@@ -72,6 +65,7 @@ import {
   providerDisplayName,
   ProviderNotConfiguredError,
   requireUsableProviderChain,
+  unknownModelMessage,
   type ProviderEntry,
   type ProviderName,
 } from '@/lib/ai/providers';
@@ -225,10 +219,6 @@ async function recordProviderAttempts(jobId: string, attempts: ProviderAttempt[]
   });
 }
 
-declare global {
-  var sandboxState: SandboxState;
-}
-
 export async function POST(request: NextRequest) {
   return withRequest(request, () => generateAiCodeStream(request));
 }
@@ -303,6 +293,18 @@ async function generateAiCodeStream(request: NextRequest) {
       typeof requestedModelRaw === 'string' && requestedModelRaw.trim()
         ? requestedModelRaw.trim()
         : undefined;
+    // Validated here, ahead of the session, the credit check, the project lock, the Job
+    // row and the provider-queue slot: an unoffered model must not cost any of those.
+    // It used to be trimmed and nothing else, then handed to the chain and on to
+    // `client(entry.model)`, so any authenticated member could run every build on a
+    // model the operator never configured and never priced — and a nonexistent id came
+    // back from DeepSeek as `request_rejected`, which reads as an outage (F-003).
+    if (requestedModel && !isDeepSeekModel(requestedModel)) {
+      return NextResponse.json(
+        { success: false, error: unknownModelMessage(requestedModel) },
+        { status: 400 },
+      );
+    }
 
     const sessionUser = await getSessionUser();
     if (!sessionUser) {
@@ -581,187 +583,14 @@ async function generateAiCodeStream(request: NextRequest) {
 
     // Start processing in background
     (async () => {
+      // Every provider call this run makes adds to one accumulator: the main
+      // stream, each failover attempt, the corrective ask, and each truncation
+      // recovery. Declared out here so the catch below can record what a failed
+      // run burned — a provider that took the prompt billed for it (F-027).
+      const runUsage = new RunUsage();
       try {
         // Send initial status
         await sendProgress({ type: 'status', message: 'Initializing AI...' });
-
-        // No keep-alive needed - sandbox provisioned for 10 minutes
-
-        // Check if we have a file manifest for edit mode
-        let editContext = null;
-        let enhancedSystemPrompt = '';
-
-        if (isEdit) {
-          console.log(
-            '[generate-ai-code-stream] Edit mode detected - starting agentic search workflow',
-          );
-          console.log('[generate-ai-code-stream] Has fileCache:', !!global.sandboxState?.fileCache);
-          console.log(
-            '[generate-ai-code-stream] Has manifest:',
-            !!global.sandboxState?.fileCache?.manifest,
-          );
-
-          const manifest: FileManifest | undefined = global.sandboxState?.fileCache?.manifest;
-
-          if (manifest) {
-            await sendProgress({ type: 'status', message: '🔍 Creating search plan...' });
-
-            const fileContents = global.sandboxState.fileCache?.files || {};
-            console.log(
-              '[generate-ai-code-stream] Files available for search:',
-              Object.keys(fileContents).length,
-            );
-
-            // STEP 1: Get search plan from AI
-            try {
-              const intent = await analyzeEditIntent({
-                prompt,
-                manifest,
-                model,
-                userId: sessionUser.id,
-              });
-
-              if (intent.ok) {
-                const searchPlan = intent.searchPlan;
-                console.log('[generate-ai-code-stream] Search plan received:', searchPlan);
-
-                await sendProgress({
-                  type: 'status',
-                  message: `🔎 Searching for: "${searchPlan.searchTerms.join('", "')}"`,
-                });
-
-                // STEP 2: Execute the search plan
-                const searchExecution = executeSearchPlan(
-                  searchPlan,
-                  Object.fromEntries(
-                    Object.entries(fileContents).map(([path, data]) => [
-                      path.startsWith('/') ? path : `/home/user/app/${path}`,
-                      data.content,
-                    ]),
-                  ),
-                );
-
-                console.log('[generate-ai-code-stream] Search execution:', {
-                  success: searchExecution.success,
-                  resultsCount: searchExecution.results.length,
-                  filesSearched: searchExecution.filesSearched,
-                  time: searchExecution.executionTime + 'ms',
-                });
-
-                if (searchExecution.success && searchExecution.results.length > 0) {
-                  // STEP 3: Select the best target file
-                  const target = selectTargetFile(searchExecution.results, searchPlan.editType);
-
-                  if (target) {
-                    await sendProgress({
-                      type: 'status',
-                      message: `✅ Found code in ${target.filePath.split('/').pop()} at line ${target.lineNumber}`,
-                    });
-
-                    console.log('[generate-ai-code-stream] Target selected:', target);
-
-                    // Create surgical edit context with exact location
-                    // normalizedPath would be: target.filePath.replace('/home/user/app/', '');
-                    // fileContent available but not used in current implementation
-                    // const fileContent = fileContents[normalizedPath]?.content || '';
-
-                    // Build enhanced context with search results
-                    enhancedSystemPrompt = `
-${formatSearchResultsForAI(searchExecution.results)}
-
-SURGICAL EDIT INSTRUCTIONS:
-You have been given the EXACT location of the code to edit.
-- File: ${target.filePath}
-- Line: ${target.lineNumber}
-- Reason: ${target.reason}
-
-Make ONLY the change requested by the user. Do not modify any other code.
-User request: "${prompt}"`;
-
-                    // Set up edit context with just this one file
-                    editContext = {
-                      primaryFiles: [target.filePath],
-                      contextFiles: [],
-                      systemPrompt: enhancedSystemPrompt,
-                      editIntent: {
-                        type: searchPlan.editType,
-                        description: searchPlan.reasoning,
-                        targetFiles: [target.filePath],
-                        confidence: 0.95, // High confidence since we found exact location
-                        searchTerms: searchPlan.searchTerms,
-                      },
-                    };
-
-                    console.log('[generate-ai-code-stream] Surgical edit context created');
-                  }
-                } else {
-                  // Search failed - fall back to old behavior but inform user
-                  console.warn(
-                    '[generate-ai-code-stream] Search found no results, falling back to broader context',
-                  );
-                  await sendProgress({
-                    type: 'status',
-                    message: '⚠️ Could not find exact match, using broader search...',
-                  });
-                }
-              } else {
-                // Log and continue. The plan only narrows the edit to a file
-                // and a line; without it the model still edits, it just sees a
-                // broader slice of the project. Aborting the user's generation
-                // over a planning miss would be the bigger failure.
-                console.error('[generate-ai-code-stream] Failed to get search plan:', intent.error);
-                await sendProgress({
-                  type: 'warning',
-                  message: 'Could not plan a targeted edit; using broader context for this change.',
-                });
-                await recordJobStepFailure(generationJob?.id, {
-                  key: 'analyze-edit-intent',
-                  label: 'Plan the edit',
-                  error: intent.error,
-                });
-              }
-            } catch (error) {
-              console.error('[generate-ai-code-stream] Error in agentic search workflow:', error);
-              await recordJobStepFailure(generationJob?.id, {
-                key: 'analyze-edit-intent',
-                label: 'Plan the edit',
-                error: error instanceof Error ? error.message : String(error),
-              });
-              await sendProgress({
-                type: 'status',
-                message: '⚠️ Search workflow error, falling back to keyword method...',
-              });
-              // Fall back to old method on any error if we have a manifest
-              if (manifest) {
-                editContext = selectFilesForEdit(prompt, manifest);
-              }
-            }
-          } else {
-            // Fall back to old method if AI analysis fails
-            console.warn(
-              '[generate-ai-code-stream] AI intent analysis failed, falling back to keyword method',
-            );
-            if (manifest) {
-              editContext = selectFilesForEdit(prompt, manifest);
-            } else {
-              console.log('[generate-ai-code-stream] No manifest available for fallback');
-              await sendProgress({
-                type: 'status',
-                message: '⚠️ No file manifest available, will use broad context',
-              });
-            }
-          }
-
-          // If we got an edit context from any method, use its system prompt
-          if (editContext) {
-            enhancedSystemPrompt = editContext.systemPrompt;
-
-            await sendProgress({
-              type: 'status',
-              message: `Identified edit type: ${editContext.editIntent?.description || 'Code modification'}`,
-            });
-          }
-        }
 
         // Build conversation context for system prompt
         let conversationContext = '';
@@ -877,15 +706,6 @@ User request: "${prompt}"`;
         if (injectedSkills.names.length > 0) {
           await sendProgress({ type: 'skills', names: injectedSkills.names });
         }
-        const promptEditContext = editContext
-          ? {
-              editIntent: {
-                type: String(editContext.editIntent?.type ?? ''),
-                confidence: Number(editContext.editIntent?.confidence ?? 0),
-              },
-              primaryFiles: editContext.primaryFiles ?? [],
-            }
-          : null;
         const assetProjectId =
           (typeof requestProjectId === 'string' && requestProjectId) ||
           (typeof context?.projectId === 'string' && context.projectId) ||
@@ -893,22 +713,19 @@ User request: "${prompt}"`;
         const assetManifest = await loadAssetManifest(assetProjectId || null);
         // The model call sends `stablePrefix` as the system message and this as the
         // volatile user turn (see buildCachedMessages), so the composed getStackPrompt
-        // string had no reader here once the Morph branch that appended to it was gone.
+        // string has no reader here.
         const volatileSuffix = buildVolatilePromptSuffix({
           conversationContext,
           uiUxBrief,
           isEdit,
-          editContext: promptEditContext,
           assetManifest,
         });
 
-        // No Morph fast-apply branch here. It told the model to answer in `<edit>` blocks
-        // instead of fenced files, and nothing has applied those since the apply route was
-        // deleted: `parseMorphEdits` / `applyMorphEditToFile` have no production caller. So
-        // with a Morph key saved in Admin -> Configuration, every follow-up edit reported
-        // SUCCEEDED with an explanation in chat and left the project's files untouched.
-        // Until an applier exists, the one output contract is the fenced `{path=…}` block
-        // that `filesFromReply` parses.
+        // There is one output contract, and it is the fenced `{path=…}` block that
+        // `filesFromReply` parses. Morph Fast Apply used to compete with it by asking
+        // for `<edit>` blocks that no applier ever consumed, so a follow-up edit
+        // reported SUCCEEDED and left the project untouched; the feature is removed
+        // (F-718). Do not add a second reply format without an applier for it.
 
         // Build full prompt with context.
         //
@@ -976,14 +793,10 @@ User request: "${prompt}"`;
             contextParts.push(
               '\nYou MUST analyze the user request and determine which specific file(s) to edit.',
             );
-            if (editContext?.systemPrompt) {
-              contextParts.push(`\n${editContext.systemPrompt}\n`);
-            }
-            // Selection reads `backendFiles` directly. It used to have a
-            // second path that pulled contents out of a FileManifest, but a
-            // manifest only ever came from a sandbox sync — the assertions on
-            // it (`global.sandboxState!.fileCache!.manifest!`) would throw the
-            // moment real files arrived here.
+            // Selection reads `backendFiles` directly. It used to have a second
+            // path that pulled contents out of a FileManifest, but a manifest only
+            // ever came from a sandbox sync, and the branch that built one was
+            // unreachable (F-026) — so the hints below are the whole of it.
             const recentPaths = conversation.context.edits
               .flatMap((edit) => edit.targetFiles || [])
               .slice(-12);
@@ -991,7 +804,6 @@ User request: "${prompt}"`;
               files: backendFiles,
               userMessage: prompt,
               recentlyModifiedPaths: recentPaths,
-              primaryPaths: editContext?.primaryFiles,
             });
             console.log(
               `[generate-ai-code-stream] Selective context: ${selected.fullPaths.length} full, ${selected.pathOnly.length} path-only, ~${selected.estimatedTokens} tokens`,
@@ -1012,7 +824,6 @@ User request: "${prompt}"`;
               files: context.currentFiles as Record<string, string>,
               userMessage: prompt,
               recentlyModifiedPaths: recentPaths,
-              primaryPaths: editContext?.primaryFiles,
             });
             contextParts.push(selected.formatted);
             contextParts.push(
@@ -1137,7 +948,12 @@ User request: "${prompt}"`;
         if (!actualModel.includes('-pro')) {
           streamOptions.temperature = 0.7;
         }
-        let result: Awaited<ReturnType<typeof streamText>> | undefined;
+        /**
+         * What the prompt is worth in tokens when the provider reports no usage
+         * of its own — a rejected call, an aborted stream. `RunUsage` falls back
+         * to a character estimate of exactly this text.
+         */
+        const promptTextForEstimate = `${stablePrefix}\n${injectedSkills.block}\n${volatileSuffix}\n${fullPrompt}`;
         let generatedCode = '';
         let files: { path: string; content: string }[] = [];
         let componentCount = 0;
@@ -1155,6 +971,9 @@ User request: "${prompt}"`;
                 maxOutputTokens: Math.min(outputTokenCap, maxOutputTokensForEntry(entry)),
                 abortSignal: ctx.signal,
               };
+              // Announced per attempt, not per run: a failover retry uploads the
+              // whole prompt again and the provider bills it again.
+              runUsage.willSend(promptTextForEstimate);
               const capture = bindStreamErrorCapture();
               return capture.attach(
                 streamText({
@@ -1164,7 +983,6 @@ User request: "${prompt}"`;
               );
             },
             async (stream, entry) => {
-              result = stream;
               servedProvider = entry.provider;
               servedModel = entry.model;
               generatedCode = '';
@@ -1172,7 +990,7 @@ User request: "${prompt}"`;
               const streamedFiles = new StreamedFileTracker();
               let isInTag = false;
               let conversationalBuffer = '';
-              let tagBuffer = '';
+              const streamedPackages = new StreamedPackageTracker();
               packagesToInstall.length = 0;
 
               // Stream the response and parse in real-time
@@ -1195,9 +1013,6 @@ User request: "${prompt}"`;
                   await jobProgress?.flush();
                   throw capAbort;
                 }
-
-                // Combine with buffer for tag detection
-                const searchText = tagBuffer + text;
 
                 // Log streaming chunks to console
                 process.stdout.write(text);
@@ -1241,15 +1056,13 @@ User request: "${prompt}"`;
                   console.log(`[generate-ai-code-stream] Streamed ${generatedCode.length} chars`);
                 }
 
-                // Check for package tags in buffered text (ONLY for edits, not initial generation)
-                let lastIndex = 0;
+                // Package tags, for edits only (an initial build installs nothing).
+                // The tracker consumes what it has matched and holds back a bounded
+                // tail — see StreamedPackageTracker for the buffer that used to grow
+                // here to a second full copy of the reply, re-scanned per chunk.
                 if (isEdit) {
-                  const packageRegex = /<package>([^<]+)<\/package>/g;
-                  let packageMatch;
-
-                  while ((packageMatch = packageRegex.exec(searchText)) !== null) {
-                    const packageName = packageMatch[1].trim();
-                    if (packageName && !packagesToInstall.includes(packageName)) {
+                  for (const packageName of streamedPackages.push(text)) {
+                    if (!packagesToInstall.includes(packageName)) {
                       packagesToInstall.push(packageName);
                       console.log(`[generate-ai-code-stream] Package detected: ${packageName}`);
                       await sendProgress({
@@ -1258,12 +1071,8 @@ User request: "${prompt}"`;
                         message: `Package detected: ${packageName}`,
                       });
                     }
-                    lastIndex = packageMatch.index + packageMatch[0].length;
                   }
                 }
-
-                // Keep unmatched portion in buffer for next iteration
-                tagBuffer = searchText.substring(Math.max(0, lastIndex - 50)); // Keep last 50 chars
 
                 // Files the tracker finished on this chunk. It owns the fence
                 // bookkeeping and the path check — see StreamedFileTracker for the
@@ -1437,6 +1246,12 @@ User request: "${prompt}"`;
                 }
               }
 
+              // This attempt is done streaming, so its usage is readable. A
+              // rejected usage promise must not take the run down: the
+              // accumulator falls back to a character estimate of what was
+              // sent and streamed.
+              runUsage.settle(await stream.usage.catch(() => undefined), generatedCode);
+
               const summary = summarizeGenerationOutput(generatedCode);
               log.info('generation.stream_complete', {
                 jobId: generationJob?.id ?? null,
@@ -1563,6 +1378,13 @@ User request: "${prompt}"`;
           });
           await sendProgress({ type: 'info', message: MISSING_FILES_ASKED_AGAIN });
           try {
+            // A second full generation: the whole message list again, plus the
+            // echo and the correction. It was previously free of charge in the
+            // books because the usage read only ever looked at the main stream.
+            const correctiveEcho = generatedCode.slice(0, CORRECTIVE_ECHO_CHARS);
+            runUsage.willSend(
+              `${promptTextForEstimate}\n${correctiveEcho}\n${MISSING_FILES_CORRECTION}`,
+            );
             const capture = bindStreamErrorCapture();
             const correctiveClient = clientForEntry(correctiveEntry, providerEnv);
             const corrective = capture.attach(
@@ -1575,7 +1397,7 @@ User request: "${prompt}"`;
                   // Its own words back, capped: the claim is what it has to answer for, and
                   // a reply that ran to tens of thousands of tokens must not be bought a
                   // second time as input.
-                  { role: 'assistant', content: generatedCode.slice(0, CORRECTIVE_ECHO_CHARS) },
+                  { role: 'assistant', content: correctiveEcho },
                   { role: 'user', content: MISSING_FILES_CORRECTION },
                 ],
                 onError: capture.onError,
@@ -1592,6 +1414,7 @@ User request: "${prompt}"`;
               }
               await sendProgress({ type: 'stream', text, raw: true });
             }
+            runUsage.settle(await corrective.usage.catch(() => undefined), correctedCode);
             // `textStream` drops error parts, so a rejected call iterates zero chunks and
             // resolves to nothing — indistinguishable from a model with nothing to say
             // unless the captured rejection is surfaced here.
@@ -1720,6 +1543,10 @@ Original request: ${prompt}
 Provide the complete file content without any truncation. Include all necessary imports, complete all functions, and close all tags properly.`;
 
                 const recoveryClient = clientForEntry(recoveryEntry, providerEnv);
+                // One call per truncated file, each with its own prompt. None of
+                // them were counted: `collectRecoveredStreamText` drains the
+                // stream and never touches usage.
+                runUsage.willSend(completionPrompt);
                 const capture = bindStreamErrorCapture();
                 const completionResult = capture.attach(
                   streamText({
@@ -1748,6 +1575,10 @@ Provide the complete file content without any truncation. Include all necessary 
                 // Throws whatever the stream reported rather than handing back the empty
                 // string a rejected call resolves to.
                 const completedContent = await collectRecoveredStreamText(completionResult);
+                runUsage.settle(
+                  await completionResult.usage.catch(() => undefined),
+                  completedContent,
+                );
 
                 // Extract just the code content (remove any markdown or explanation)
                 let cleanContent = completedContent;
@@ -1846,18 +1677,23 @@ Provide the complete file content without any truncation. Include all necessary 
           (typeof requestProjectId === 'string' && requestProjectId) ||
           (typeof context?.projectId === 'string' && context.projectId) ||
           '';
-        let inputTokens = 0;
-        let outputTokens: number | undefined;
+        // Everything this run spent, across every call. `close` charges a call
+        // that was announced and never settled — an aborted or rejected stream
+        // whose prompt the provider still billed.
+        runUsage.close();
+        const spent = runUsage.totals;
+        const inputTokens = spent.tokensIn;
+        const outputTokens = spent.tokensOut;
+        if (spent.estimatedCalls > 0) {
+          log.warn('generation.tokens_partly_estimated', {
+            jobId: generationJob?.id ?? null,
+            calls: spent.calls,
+            estimatedCalls: spent.estimatedCalls,
+            tokensIn: inputTokens,
+            tokensOut: outputTokens,
+          });
+        }
         try {
-          const usage = await result?.usage;
-          inputTokens = resolveInputTokens(
-            usage,
-            `${stablePrefix}\n${injectedSkills.block}\n${volatileSuffix}\n${fullPrompt}`,
-          );
-          outputTokens =
-            usage && typeof usage === 'object' && 'outputTokens' in usage
-              ? Number((usage as { outputTokens?: number }).outputTokens)
-              : undefined;
           if (usageProjectId) {
             await attachGenerationInputTokens(usageProjectId, inputTokens);
           }
@@ -1873,10 +1709,10 @@ Provide the complete file content without any truncation. Include all necessary 
         // Reporting it as `no_files_generated` failed the job and drew the red recovery
         // panel with a Try again button over a model that had done nothing wrong.
         //
-        // A parsed file is still the only evidence a run changed anything (nothing applies
-        // Morph `<edit>` blocks, so counting them let an edit that changed nothing report
-        // success), and a reply that owed files and did not deliver after being asked twice
-        // is still a failure. An answer is not.
+        // A parsed file is still the only evidence a run changed anything (the removed
+        // Morph `<edit>` block count was evidence of nothing, so counting it let an edit
+        // that changed nothing report success), and a reply that owed files and did not
+        // deliver after being asked twice is still a failure. An answer is not.
         const replyOutcome = classifyReplyOutcome({
           fileCount: files.length,
           reply: generatedCode,
@@ -1887,8 +1723,9 @@ Provide the complete file content without any truncation. Include all necessary 
         const noChangeReason = hadNoChanges
           ? describeNoChanges({
               isEdit,
-              hasProjectFiles: Object.keys(global.sandboxState?.fileCache?.files || {}).length > 0,
-              hasManifest: Boolean(global.sandboxState?.fileCache?.manifest),
+              hasProjectFiles: Object.keys(backendFiles).length > 0,
+              // No manifest exists any more; the flag no longer selects a message.
+              hasManifest: false,
               providersTried,
             })
           : null;
@@ -1944,14 +1781,19 @@ Provide the complete file content without any truncation. Include all necessary 
         if (generationJob) {
           await jobProgress?.flush();
           // The tokens were spent either way, so they are recorded either way.
-          const estimatedCostUsd = await recordJobUsage({
-            jobId: generationJob.id,
-            workspaceId: WORKSPACE_ROW_ID,
-            tokensIn: inputTokens,
-            tokensOut: outputTokens,
-            provider: servedProvider,
-            model: servedModel,
-          });
+          // `claim` is what stops the catch below from accruing the same spend a
+          // second time if anything after this point throws.
+          const claimed = runUsage.claim();
+          const estimatedCostUsd = claimed
+            ? await recordJobUsage({
+                jobId: generationJob.id,
+                workspaceId: WORKSPACE_ROW_ID,
+                tokensIn: claimed.tokensIn,
+                tokensOut: claimed.tokensOut,
+                provider: servedProvider,
+                model: servedModel,
+              })
+            : null;
           if (chatAnswer) {
             // An answer changed nothing, so there is nothing to persist and no site to
             // claim. `succeedJob` puts the project back on the phase the evidence supports
@@ -2162,34 +2004,37 @@ Provide the complete file content without any truncation. Include all necessary 
         // Track edit in conversation history. Writes land on the state this
         // request resolved, never on whatever the process global points at by
         // now — another project's request may have taken it over mid-stream.
-        if (isEdit && editContext) {
+        //
+        // The gate used to be `isEdit && editContext`, and editContext came from
+        // the sandbox-manifest search plan, which never ran (F-026) — so nothing
+        // was ever recorded and `recentlyModifiedPaths` above was always empty.
+        // The paths this reply actually changed are the honest source, and unlike
+        // a predicted plan they need no confidence estimate.
+        if (isEdit && files.length > 0) {
+          const targetFiles = files.map((file) => file.path);
           const editRecord: ConversationEdit = {
             timestamp: Date.now(),
             userRequest: prompt,
-            editType: editContext.editIntent.type,
-            targetFiles: editContext.primaryFiles,
-            confidence: editContext.editIntent.confidence,
-            outcome: 'success', // Assuming success if we got here
+            editType: 'EDIT',
+            targetFiles,
+            confidence: 1,
+            outcome: 'success',
           };
 
           conversation.context.edits.push(editRecord);
 
-          // Track major changes
-          if (editContext.editIntent.type === 'ADD_FEATURE' || files.length > 3) {
+          // Feeds the "Recent Changes" prompt section. A follow-up that rewrites
+          // most of the project is the kind of change the next turn should know
+          // about; a one-file tweak is not.
+          if (files.length > 3) {
             conversation.context.projectEvolution.majorChanges.push({
               timestamp: Date.now(),
-              description: editContext.editIntent.description,
-              filesAffected: editContext.primaryFiles,
+              description: `Edited ${targetFiles.length} files: ${targetFiles.slice(0, 5).join(', ')}`,
+              filesAffected: targetFiles,
             });
           }
 
-          // Update last updated timestamp
           conversation.lastUpdated = Date.now();
-
-          console.log(
-            '[generate-ai-code-stream] Updated conversation history with edit:',
-            editRecord,
-          );
         }
       } catch (error) {
         console.error('[generate-ai-code-stream] Stream processing error:', error);
@@ -2235,6 +2080,32 @@ Provide the complete file content without any truncation. Include all necessary 
           });
         }
         if (generationJob) {
+          // A failed run still spent everything it sent. This path used to reach
+          // `failJob` with `tokensIn` absent and `tokensOut` set only by a cap
+          // abort, so `estimatedCostUsd` was 0, `accrueSpend` was skipped, and
+          // the most expensive failures were the cheapest on the books (F-027).
+          // Null when the successful settle above already billed this run and
+          // something after it threw — the same spend must not be accrued twice.
+          const burned = runUsage.claim();
+          // Left undefined when the usage write failed or was already done, so
+          // the terminal write skips the column rather than blanking it.
+          let estimatedCostUsd: number | undefined;
+          if (burned) {
+            try {
+              estimatedCostUsd = await recordJobUsage({
+                jobId: generationJob.id,
+                workspaceId: WORKSPACE_ROW_ID,
+                tokensIn: burned.tokensIn,
+                tokensOut: burned.tokensOut,
+                provider: servedProvider,
+                model: servedModel,
+              });
+            } catch (usageError) {
+              // Never the reason a failure is reported as something else: the
+              // settle below still runs and still says what went wrong.
+              logError('generation.failed_usage_not_recorded', usageError);
+            }
+          }
           try {
             await failJob(generationJob.id, {
               errorCode:
@@ -2243,7 +2114,11 @@ Provide the complete file content without any truncation. Include all necessary 
                   ? 'tool_call_validation_failed'
                   : jobErrorCodeForProviderFailure(cause)),
               errorMessage: honest,
-              tokensOut: cap?.tokensOut,
+              tokensIn: burned?.tokensIn,
+              // A cap abort counted the output itself; otherwise it is what the
+              // run accumulated.
+              tokensOut: cap?.tokensOut ?? burned?.tokensOut,
+              estimatedCostUsd,
               provider: servedProvider,
               model: servedModel,
             });

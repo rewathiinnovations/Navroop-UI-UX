@@ -48,4 +48,36 @@ describe('edit context comes from the project row', () => {
     // These assertions threw the moment real files reached the branch.
     expect(live).not.toContain('global.sandboxState!.fileCache!.manifest!');
   });
+
+  it('leaves no reader of the sandbox global in the generation route', () => {
+    // The global has no writer, so every branch gated on it was unreachable:
+    // the search plan, the surgical edit context and the keyword fallback all
+    // hung off `global.sandboxState?.fileCache?.manifest`. A dead branch that
+    // still compiles is how the file-context selector stayed degraded.
+    const live = readFileSync(ROUTE, 'utf8')
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('//') && !line.trim().startsWith('*'))
+      .join('\n');
+    expect(live).not.toContain('sandboxState');
+    expect(live).not.toContain('selectFilesForEdit');
+  });
+
+  it('prefers the project row over any sandbox global that reappears', () => {
+    // Defence in depth for the merge paths: `settleStreamedGeneration` and the
+    // "keep what was built" path both spread a generation over whatever this
+    // returns, so a stale cache winning here would silently resurrect files
+    // the person deleted.
+    const globals = globalThis as { sandboxState?: unknown };
+    globals.sandboxState = {
+      fileCache: { files: { 'src/App.tsx': { content: 'stale sandbox copy' } } },
+    };
+    try {
+      const recovered = getCurrentProjectFiles({
+        lastCode: toLastCode({ 'src/App.tsx': 'current project copy' }),
+      });
+      expect(recovered['src/App.tsx']).toBe('current project copy');
+    } finally {
+      delete globals.sandboxState;
+    }
+  });
 });
