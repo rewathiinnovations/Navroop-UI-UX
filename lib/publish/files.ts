@@ -9,11 +9,29 @@ export function publishJobErrorCode(error: unknown): JobErrorCode {
   return 'provider_error';
 }
 
+/**
+ * Paths that must never reach a deploy repo (F-201). The commit is built from
+ * explicit Git Data tree entries, so a `.gitignore` in the tree is decoration —
+ * the only place an exclusion can work is here, before a file becomes a commit.
+ * Both sources (checkpoint snapshot and stored-code fallback) flow through
+ * `toMap`, so both are covered.
+ */
+function isNeverPublishedPath(path: string): boolean {
+  const segments = path.split('/');
+  if (segments.some((segment) => segment === 'node_modules' || segment === '.git')) return true;
+  const basename = (segments[segments.length - 1] ?? '').toLowerCase();
+  if (basename === '.env') return true;
+  if (basename.startsWith('.env.') && basename !== '.env.example') return true;
+  if (basename.endsWith('.pem')) return true;
+  if (basename.startsWith('id_rsa')) return true;
+  return false;
+}
+
 function toMap(entries: Array<{ path: string; content: string }>) {
   const files: Record<string, string> = {};
   for (const entry of entries) {
     const path = entry.path.replace(/^\.?\//, '');
-    if (!path || path.startsWith('.git/')) continue;
+    if (!path || isNeverPublishedPath(path)) continue;
     files[path] = entry.content;
   }
   return files;
@@ -44,10 +62,20 @@ export async function collectPublishFiles(projectId: string) {
   // to captureFileSnapshot, which reads project.lastCode and would ship a stale site
   // under a green publish job. Do not add a catch that returns the fallback.
   const fromCheckpoint = latest ? await readSnapshot(latest) : [];
-  if (fromCheckpoint.length > 0) return toMap(fromCheckpoint);
+  if (fromCheckpoint.length > 0) {
+    // No fallback when everything was excluded: shipping lastCode instead of the
+    // checkpoint the user believes they are publishing would be a stale site.
+    const files = toMap(fromCheckpoint);
+    if (Object.keys(files).length === 0) throw new Error('This project has no files to publish');
+    return files;
+  }
 
   const fallback = await captureFileSnapshot(projectId);
-  if (fallback.length > 0) return toMap(fallback);
+  if (fallback.length > 0) {
+    const files = toMap(fallback);
+    if (Object.keys(files).length === 0) throw new Error('This project has no files to publish');
+    return files;
+  }
 
   throw new Error('This project has no files to publish');
 }

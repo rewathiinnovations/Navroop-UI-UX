@@ -22,7 +22,7 @@ config({ path: resolve(process.cwd(), '.env.local') });
 config({ path: resolve(process.cwd(), '.env') });
 
 if (!process.env.AUTH_SECRET && !process.env.NEXTAUTH_SECRET && !process.env.ENCRYPTION_KEY) {
-  process.env.AUTH_SECRET = 'test-auth-secret-for-github-oauth-verification';
+  process.env.AUTH_SECRET = 'gh-oauth-test';
 }
 
 /**
@@ -58,6 +58,7 @@ function mockGithub() {
   const blobs = new Map<string, string>();
   let treeSha = 0;
   let commitSha = 0;
+  const commitTrees = new Map<string, string>();
   let mainSha: string | null = null;
 
   const githubFetch = async (url: string, init?: RequestInit) => {
@@ -93,7 +94,16 @@ function mockGithub() {
     if (url.includes('/git/commits') && method === 'POST') {
       commits += 1;
       commitSha += 1;
+      const tree =
+        body && typeof body === 'object' && 'tree' in body ? String(body.tree ?? '') : '';
+      commitTrees.set(`commit${commitSha}`, tree);
       return json(201, { sha: `commit${commitSha}` });
+    }
+    if (method === 'GET' && url.includes('/git/commits/')) {
+      const sha = url.split('/git/commits/')[1] ?? '';
+      const tree = commitTrees.get(sha);
+      if (!tree) return json(404, { message: 'Not Found' });
+      return json(200, { sha, tree: { sha: tree } });
     }
     if (url.includes('/git/ref/heads/main') && method === 'GET') {
       if (!mainSha) return json(404, { message: 'Not Found' });
@@ -190,7 +200,10 @@ async function main() {
     assert(decrypt(rows[0].accessTokenEncrypted) === plain, 'stored token decrypts');
 
     const status = await getGitHubConnectionStatusForUser(prisma, user.id);
-    assert(status.connected === true && status.githubUsername === 'octocat', 'status returns username');
+    assert(
+      status.connected === true && status.githubUsername === 'octocat',
+      'status returns username',
+    );
     assert(!JSON.stringify(status).includes(plain), 'status JSON never leaks token');
     assert(!('accessTokenEncrypted' in status), 'status omits encrypted token');
 
@@ -212,7 +225,10 @@ async function main() {
     assert(github.stats().commits === 1, 'first push is one commit, not per-file');
     assert(
       github.calls.some(
-        (c) => c.method === 'POST' && c.url === 'https://api.github.com/user/repos' && (c.body as { private?: boolean })?.private === true,
+        (c) =>
+          c.method === 'POST' &&
+          c.url === 'https://api.github.com/user/repos' &&
+          (c.body as { private?: boolean })?.private === true,
       ),
       'created repo is private',
     );
@@ -232,7 +248,27 @@ async function main() {
       'second push reuses the same repo',
     );
     assert(github.stats().repoCreated === 1, 'second push does not create another repo');
-    assert(github.stats().commits === 2, 'second push adds one more full-tree commit');
+    assert(github.stats().commits === 2, 'second push adds one more commit');
+    // F-210: the repo is the user's own — the second push must be a delta child
+    // of the current head, and the ref update must not force past their commits.
+    const secondTree = github.calls
+      .filter((c) => c.method === 'POST' && c.url.includes('/git/trees'))
+      .at(-1);
+    const secondTreeBody =
+      secondTree?.body && typeof secondTree.body === 'object' ? secondTree.body : {};
+    assert(
+      'base_tree' in secondTreeBody && Boolean(secondTreeBody.base_tree),
+      'second push builds a delta tree over the current head',
+    );
+    const refPatches = github.calls.filter((c) => c.method === 'PATCH');
+    assert(refPatches.length > 0, 'second push updates main via ref PATCH');
+    assert(
+      refPatches.every(
+        (c) =>
+          !(c.body && typeof c.body === 'object' && 'force' in c.body && c.body.force === true),
+      ),
+      'no ref update is forced',
+    );
 
     const failGithub = mockGithub();
     const originalFetch = failGithub.githubFetch;
@@ -332,7 +368,9 @@ async function main() {
 
     // Anti-vacuity: a gate that answered 401 for everything would satisfy the loop
     // above while having broken the whole product.
-    const allowlisted = await proxy(new NextRequest(`${GATE_ORIGIN}/api/health`, { method: 'GET' }));
+    const allowlisted = await proxy(
+      new NextRequest(`${GATE_ORIGIN}/api/health`, { method: 'GET' }),
+    );
     assert(allowlisted.status !== 401, 'the API gate still lets GET /api/health through');
   } finally {
     await prisma.gitHubConnection.deleteMany({ where: { userId: user.id } });

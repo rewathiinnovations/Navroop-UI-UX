@@ -53,6 +53,13 @@ export type PushDeps = {
     lastCode: string | null;
   }) => Promise<Record<string, string>> | Record<string, string>;
   trySandboxGit?: (input: { token: string; fullName: string }) => Promise<boolean>;
+  /**
+   * Explicit opt-in to replace the repository contents and force-move `main`
+   * (F-210). Default false: the push is a child commit over the current head
+   * and refuses when the remote moved. No UI sets this yet; a future toggle on
+   * the Connectors push button would thread it through `pushProjectToGitHub`.
+   */
+  force?: boolean;
 };
 
 type PushDb = {
@@ -162,7 +169,7 @@ export async function pushProjectToGitHubForUser(
   try {
     const pushedViaGit = await tryGit({ token, fullName });
     if (!pushedViaGit) {
-      await pushViaGitDataApi({ githubFetch, token, fullName, files });
+      await pushViaGitDataApi({ githubFetch, token, fullName, files, force: deps.force === true });
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Could not push to GitHub';

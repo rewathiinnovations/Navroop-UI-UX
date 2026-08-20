@@ -65,12 +65,12 @@ On failure the summary prints the exact command to reproduce.
 
 ### The Playwright server
 
-Whether a server is booted is decided by probing the base URL, not by `CI`. `playwright.config.ts` always declares the `webServer` (`node ./node_modules/next/dist/bin/next start`, env via `lib/verify/playwright-env.ts` with a test-only `ENCRYPTION_KEY` fallback) with `reuseExistingServer: true`:
+Which server the suite validates is decided by `resolvePlaywrightServer` (`lib/verify/playwright-env.ts`), not by probing "whatever answers on :3000". Two worktrees run two dev servers on the reference machine, and a probe cannot tell which checkout it reached — reuse-by-probe let both fatal Playwright steps validate a different branch's code. `playwright.config.ts` always declares the `webServer` (`node ./node_modules/next/dist/bin/next dev`, env via `playwrightWebServerEnv` with a test-only `ENCRYPTION_KEY` fallback):
 
-- a developer with a dev server on `:3000` gets that server reused;
-- a CI runner has nothing listening, so `next start` is spawned against the `next build` from step 8.
+- `PLAYWRIGHT_BASE_URL` set (runtime) → the suite targets it with `reuseExistingServer: true`; the operator has vouched that whatever answers there is this checkout.
+- otherwise → `reuseExistingServer: false` and the suite boots its own `next dev` from this checkout: in CI on the `APP_URL` port (nothing listens there, so behaviour is unchanged), locally on `PLAYWRIGHT_PORT` (runtime) or `APP_URL`'s port + 100 so it cannot collide with either worktree's live dev server. The child binds the derived port via `PORT` and its `APP_URL` / `NEXT_PUBLIC_APP_URL` / `NEXTAUTH_URL` / `AUTH_URL` are pinned to the served origin.
 
-It used to be `CI && !PLAYWRIGHT_NO_SERVER` with `reuseExistingServer: false`. Playwright probes the URL before spawning and throws `http://localhost:3000 is already used`, so **any** shell that exported `CI` (agent shells do) could not finish `verify` at all: step 9 died for an environmental reason and, because the orchestrator returns on the first fatal failure, depcheck, knip and the fatal dependency audit never ran.
+A shell that exports `CI` next to a live server on the APP_URL port now goes red with `is already used` instead of silently validating that server — set `PLAYWRIGHT_BASE_URL` to reuse it deliberately, or `PLAYWRIGHT_PORT` to spawn elsewhere.
 
 `PLAYWRIGHT_NO_SERVER=1` (runtime) drops the `webServer` entirely, for when you want an unreachable base URL to go red rather than have a server appear under the run.
 

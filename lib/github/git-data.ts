@@ -27,11 +27,7 @@ async function githubJson<T>(
   return { ok: res.ok, status: res.status, data, raw };
 }
 
-export async function createPrivateRepo(
-  githubFetch: GithubFetch,
-  token: string,
-  name: string,
-) {
+export async function createPrivateRepo(githubFetch: GithubFetch, token: string, name: string) {
   const result = await githubJson<{ full_name?: string; html_url?: string; message?: string }>(
     githubFetch,
     token,
@@ -50,13 +46,40 @@ export async function createPrivateRepo(
   return { fullName: result.data.full_name, htmlUrl: result.data.html_url };
 }
 
+/**
+ * The remote `main` moved between reading the ref and the non-force update
+ * (F-210). The push targets the user's OWN repository, so this is their work
+ * arriving upstream — refuse instead of forcing over it.
+ */
+export class RepoMovedUpstreamError extends Error {
+  constructor(fullName: string) {
+    super(
+      `${fullName} changed upstream while pushing. Pull or review the remote changes, then push again.`,
+    );
+    this.name = 'RepoMovedUpstreamError';
+  }
+}
+
+/**
+ * Push the project files to the user's repository (F-210).
+ *
+ * Non-destructive by default: the new tree is a delta over the current head's
+ * tree (`base_tree`), the commit is a child of that head, and the ref update is
+ * non-force — GitHub's fast-forward check is the compare-and-swap that catches
+ * a remote that moved between read and write (`RepoMovedUpstreamError`).
+ *
+ * `force: true` restores replace semantics (root tree, forced ref move) and is
+ * an explicit opt-in that no caller passes today; a future UI toggle would
+ * thread it from the Connectors push button through `pushProjectToGitHubForUser`.
+ */
 export async function pushViaGitDataApi(input: {
   githubFetch: GithubFetch;
   token: string;
   fullName: string;
   files: Record<string, string>;
+  force?: boolean;
 }) {
-  const { githubFetch, token, fullName, files } = input;
+  const { githubFetch, token, fullName, files, force = false } = input;
   const base = `https://api.github.com/repos/${fullName}`;
 
   const entries = Object.entries(files).filter(([path]) => path && !path.startsWith('.git/'));
@@ -81,8 +104,10 @@ export async function pushViaGitDataApi(input: {
         method: 'PUT',
         body: JSON.stringify({
           message: 'Initialize repository',
-          content: Buffer.from(`# ${fullName.split('/').pop()}
-`).toString('base64'),
+          content: Buffer.from(
+            `# ${fullName.split('/').pop()}
+`,
+          ).toString('base64'),
         }),
       },
     );
@@ -96,6 +121,21 @@ export async function pushViaGitDataApi(input: {
     );
   }
   const parentSha = ref.ok ? ref.data.object?.sha : undefined;
+
+  // The delta base: the head commit's tree. Skipped under the force opt-in,
+  // where the caller explicitly asked for a full replacement.
+  let baseTreeSha: string | undefined;
+  if (parentSha && !force) {
+    const head = await githubJson<{ tree?: { sha?: string }; message?: string }>(
+      githubFetch,
+      token,
+      `${base}/git/commits/${parentSha}`,
+    );
+    if (!head.ok || !head.data.tree?.sha) {
+      throw new Error(head.data.message || 'Could not read the current head commit');
+    }
+    baseTreeSha = head.data.tree.sha;
+  }
 
   const treeItems: { path: string; mode: '100644'; type: 'blob'; sha: string }[] = [];
   for (const [path, content] of entries) {
@@ -120,7 +160,9 @@ export async function pushViaGitDataApi(input: {
     `${base}/git/trees`,
     {
       method: 'POST',
-      body: JSON.stringify({ tree: treeItems }),
+      body: JSON.stringify(
+        baseTreeSha ? { tree: treeItems, base_tree: baseTreeSha } : { tree: treeItems },
+      ),
     },
   );
   if (!tree.ok || !tree.data.sha) {
@@ -151,22 +193,22 @@ export async function pushViaGitDataApi(input: {
       `${base}/git/refs/heads/main`,
       {
         method: 'PATCH',
-        body: JSON.stringify({ sha: commit.data.sha, force: true }),
+        body: JSON.stringify({ sha: commit.data.sha, force }),
       },
     );
     if (!patched.ok) {
+      // A non-force update is GitHub's fast-forward CAS: our commit's parent is
+      // the head we read, so a rejection means the remote moved in between.
+      if (!force && (patched.status === 422 || /fast forward/i.test(patched.data.message || ''))) {
+        throw new RepoMovedUpstreamError(fullName);
+      }
       throw new Error(patched.data.message || 'Could not update main ref');
     }
   } else {
-    const created = await githubJson<{ message?: string }>(
-      githubFetch,
-      token,
-      `${base}/git/refs`,
-      {
-        method: 'POST',
-        body: JSON.stringify({ ref: 'refs/heads/main', sha: commit.data.sha }),
-      },
-    );
+    const created = await githubJson<{ message?: string }>(githubFetch, token, `${base}/git/refs`, {
+      method: 'POST',
+      body: JSON.stringify({ ref: 'refs/heads/main', sha: commit.data.sha }),
+    });
     if (!created.ok) {
       throw new Error(created.data.message || 'Could not create main ref');
     }

@@ -21,7 +21,12 @@ export default defineConfig({
       'tests/setup/**/*.test.ts',
     ],
     exclude: ['e2e/**', 'node_modules/**', '.next/**'],
-    setupFiles: ['tests/setup/vitest.setup.ts'],
+    // `env.ts` MUST come first: it rewrites DATABASE_URL to TEST_DATABASE_URL for
+    // every worker before any test module (and therefore the `@/lib/db` singleton)
+    // loads. Before 2026-08-20 only the integration files that remembered to import
+    // it got the redirect, so any unit test reaching `lib/db.ts` held a PrismaClient
+    // pointed at the application database (F-600).
+    setupFiles: ['tests/setup/env.ts', 'tests/setup/vitest.setup.ts'],
     // Runs in its own process, before and after the whole suite: fails the run if a
     // test wrote the repository's own state (.data/, public/uploads, tmp/backups).
     // Those paths are gitignored, so nothing else would notice.

@@ -1,10 +1,23 @@
 import { defineConfig, devices } from '@playwright/test';
 import { AUTH_STORAGE_STATE } from './e2e/support/paths';
-import { loadPlaywrightDotenv, playwrightWebServerEnv } from './lib/verify/playwright-env';
+import {
+  loadPlaywrightDotenv,
+  playwrightWebServerEnv,
+  resolvePlaywrightServer,
+} from './lib/verify/playwright-env';
 
 loadPlaywrightDotenv();
 
-const baseURL = process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:3000';
+/**
+ * Which server this suite validates is decided by `resolvePlaywrightServer`,
+ * not by "whatever answers on :3000". Two worktrees run two dev servers on this
+ * machine, and a probe cannot tell which checkout it reached — so without an
+ * explicit PLAYWRIGHT_BASE_URL the suite always boots its own `next dev` from
+ * THIS checkout on a port derived to be free (locally APP_URL's port + 100; in
+ * CI the APP_URL port itself, where nothing listens, so CI is unchanged).
+ */
+const server = resolvePlaywrightServer(process.env);
+const baseURL = server.baseURL;
 const inCI = Boolean(process.env.CI);
 
 export default defineConfig({
@@ -32,18 +45,17 @@ export default defineConfig({
     video: 'retain-on-failure',
   },
   /**
-   * Whether to boot a server is decided by probing `baseURL`, which is what
-   * actually describes the situation — not by `CI`, which does not. This block
-   * used to be `inCI && !PLAYWRIGHT_NO_SERVER` with `reuseExistingServer: false`,
-   * so a developer whose shell happened to export `CI` (agent shells do) could
-   * not complete `pnpm run verify` at all: Playwright probes the URL before
-   * spawning and throws `is already used` against the dev server on :3000, which
-   * failed the gate for an environmental reason and skipped every later step
-   * including the fatal dependency audit. Reuse is now the rule, so a healthy
-   * server is used as-is; a CI runner has nothing listening, so `next start` is
-   * still spawned there. `PLAYWRIGHT_NO_SERVER=1` opts out entirely (documented
-   * in docs/release.md) for the case where you want the run to go red rather
-   * than have a server appear under it.
+   * `reuseExistingServer` was unconditionally `true` here, which fixed one
+   * failure mode (a shell exporting `CI` made Playwright refuse a healthy local
+   * server) by creating a worse one: with two worktrees serving :3000 and :3001,
+   * "reuse whatever answers" let both fatal Playwright steps validate a
+   * different checkout's code (F-620). Playwright cannot ask a server which
+   * checkout it serves, so reuse now requires the operator to vouch for the
+   * target by setting PLAYWRIGHT_BASE_URL. Without it the suite boots its own
+   * server — see `resolvePlaywrightServer` — which by construction serves this
+   * checkout. `PLAYWRIGHT_NO_SERVER=1` still opts out entirely (documented in
+   * docs/release.md) for the case where you want the run to go red rather than
+   * have a server appear under it.
    */
   webServer: process.env.PLAYWRIGHT_NO_SERVER
     ? undefined
@@ -62,12 +74,14 @@ export default defineConfig({
         // and Next prints `"next start" does not work with "output: standalone"` on
         // every boot. Turbopack dev compiles current source, so staleness is not
         // representable. The production build is still gated — `next build` is its
-        // own verify step.
+        // own verify step. The child binds `server.port` via PORT and describes
+        // itself with the served origin (`playwrightWebServerEnv` pins APP_URL /
+        // NEXT_PUBLIC_APP_URL / NEXTAUTH_URL / AUTH_URL to it).
         command: 'node ./node_modules/next/dist/bin/next dev',
         url: baseURL,
-        reuseExistingServer: true,
+        reuseExistingServer: server.reuseExistingServer,
         timeout: 120_000,
-        env: playwrightWebServerEnv(process.env),
+        env: playwrightWebServerEnv(process.env, server),
       },
   projects: [
     /**

@@ -85,6 +85,49 @@ describe('collectPublishFiles', () => {
   });
 });
 
+describe('collectPublishFiles never-publish exclusions', () => {
+  // The trees API commits explicit entries, so a .gitignore in the repo is
+  // decoration — secrets must be dropped before any file becomes a commit.
+  it('excludes secret and vendor paths but keeps .env.example', async () => {
+    db.checkpointFindFirst.mockResolvedValue({ snapshotKey: 'k1', fileSnapshot: null });
+    snapshot.read.mockResolvedValue([
+      { path: 'index.html', content: '<h1>Hi</h1>' },
+      { path: '.env', content: 'API_KEY=test-key' },
+      { path: '.env.production', content: 'API_KEY=test-key' },
+      { path: '.env.example', content: 'API_KEY=' },
+      { path: 'config/.env.local', content: 'API_KEY=test-key' },
+      { path: 'node_modules/pkg/index.js', content: 'module.exports = 1;' },
+      { path: '.git/config', content: '[core]' },
+      { path: 'vendor/.git/HEAD', content: 'ref: main' },
+      { path: 'certs/server.pem', content: '-----BEGIN-----' },
+      { path: '.ssh/id_rsa', content: 'key material' },
+      { path: 'id_rsa.pub', content: 'ssh-rsa AAAA' },
+    ]);
+
+    await expect(collectPublishFiles('p1')).resolves.toEqual({
+      'index.html': '<h1>Hi</h1>',
+      '.env.example': 'API_KEY=',
+    });
+  });
+
+  it('applies the same exclusions to the stored-code fallback', async () => {
+    snapshot.capture.mockResolvedValue([
+      { path: 'index.html', content: '<h1>Hi</h1>' },
+      { path: '.env', content: 'API_KEY=test-key' },
+    ]);
+    await expect(collectPublishFiles('p1')).resolves.toEqual({ 'index.html': '<h1>Hi</h1>' });
+  });
+
+  it('refuses when the checkpoint holds only never-publish files, without falling back', async () => {
+    // Falling through to the stored code here would ship a different (stale)
+    // site than the checkpoint the user believes they are publishing.
+    db.checkpointFindFirst.mockResolvedValue({ snapshotKey: 'k1', fileSnapshot: null });
+    snapshot.read.mockResolvedValue([{ path: '.env', content: 'API_KEY=test-key' }]);
+    await expect(collectPublishFiles('p1')).rejects.toThrow('no files to publish');
+    expect(snapshot.capture).not.toHaveBeenCalled();
+  });
+});
+
 describe('projectHasPublishableFiles', () => {
   it('is ready when files exist', async () => {
     snapshot.capture.mockResolvedValue([{ path: 'index.html', content: '<h1>Hi</h1>' }]);
