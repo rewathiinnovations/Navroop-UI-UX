@@ -16,7 +16,11 @@ import { keepPartialBuild, resolveRecoveryTarget, retryAbandonedJob } from '@/li
  */
 
 const prisma = vi.hoisted(() => ({
-  project: { update: vi.fn() },
+  project: {
+    update: vi.fn(),
+    // The merge (F-020) reads the current site before writing; no base by default.
+    findUnique: vi.fn().mockResolvedValue({ lastCode: null }),
+  },
   projectPlan: { updateMany: vi.fn() },
 }));
 const store = vi.hoisted(() => ({
@@ -38,6 +42,7 @@ const checkpoints = vi.hoisted(() => ({ createCheckpoint: vi.fn() }));
 vi.mock('@/lib/db', () => ({ prisma }));
 vi.mock('@/lib/checkpoints/actions', () => ({ createCheckpoint: checkpoints.createCheckpoint }));
 vi.mock('@/lib/projects/plan', () => ({ getApprovedPlanGenerationContext: vi.fn() }));
+vi.mock('@/lib/projects/lock', () => ({ bumpContentVersion: vi.fn() }));
 vi.mock('@/lib/jobs/lifecycle', () => ({
   cancelJob: lifecycle.cancelJob,
   createOrReuseJob: lifecycle.createOrReuseJob,

@@ -1,5 +1,13 @@
 import { createCheckpoint } from '@/lib/checkpoints/actions';
+import {
+  placeholderReplacements,
+  replaceNeedImageTokens,
+  sweepNeedImageTokens,
+} from '@/lib/assets/need-image';
 import { prisma } from '@/lib/db';
+import { getCurrentProjectFiles } from '@/lib/github/current-files';
+import { toLastCode } from '@/lib/projects/last-code';
+import { bumpContentVersion } from '@/lib/projects/lock';
 import { getApprovedPlanGenerationContext } from '@/lib/projects/plan';
 import { WORKSPACE_ROW_ID } from '@/lib/storage/usage';
 import { showsChatRecovery } from './chat-ui';
@@ -15,7 +23,6 @@ import {
   settleKeptPartialJob,
 } from './store';
 import {
-  filesToLastCode,
   isRecoveryJobStatus,
   parsePartialFiles,
   type GenerationJobRow,
@@ -78,16 +85,48 @@ export async function keepPartialBuild(jobId: string) {
       status: 409,
     };
   }
-  const lastCode = filesToLastCode(files);
   try {
+    // Merge over the current site, never replace it. `partialFiles` holds only the
+    // files *this* run streamed — on a failed edit that is a fraction of the site,
+    // and writing them as the whole tree turned a 30-file project into a 2-file
+    // project, then checkpointed the damage. Same contract as the settle path
+    // (settle-generation.ts): base from lastCode, partials spread on top. A first
+    // build with no base falls out naturally — the merge is just the partials.
+    const project = await prisma.project.findUnique({
+      where: { id: job.projectId },
+      select: { lastCode: true },
+    });
+    const existing = getCurrentProjectFiles({ lastCode: project?.lastCode ?? null });
+    const kept: Record<string, string> = {};
+    for (const file of files) {
+      // Same last-line-of-defence sweep the settle path runs: a kept build must
+      // not ship a literal `NEED_IMAGE: …` token into stored files.
+      const leftovers = placeholderReplacements(file.content);
+      const replaced =
+        leftovers.length > 0 ? replaceNeedImageTokens(file.content, leftovers) : file.content;
+      kept[file.path.replace(/^\.?\//, '')] = sweepNeedImageTokens(replaced);
+    }
+    // An unchanged tree (the edit re-streamed what was already there) still settles
+    // the job below, but earns no rewrite, no version bump, and no duplicate
+    // checkpoint of an identical snapshot.
+    const changed = Object.entries(kept).some(([path, content]) => existing[path] !== content);
     await prisma.project.update({
       where: { id: job.projectId },
-      data: { lastCode, generationStatus: 'ready' },
+      data: {
+        ...(changed ? { lastCode: toLastCode({ ...existing, ...kept }) } : {}),
+        generationStatus: 'ready',
+      },
     });
-    await createCheckpoint(job.projectId, {
-      trigger: job.kind === 'FOLLOWUP' ? 'followup' : 'initial',
-      sourceMessage: job.inputPrompt,
-    });
+    if (changed) {
+      // Other tabs poll contentVersion to learn the content moved — the normal
+      // persist path (persistProjectGeneration, settleStreamedGeneration) bumps
+      // it after every lastCode write, and this write is no different.
+      await bumpContentVersion(job.projectId);
+      await createCheckpoint(job.projectId, {
+        trigger: job.kind === 'FOLLOWUP' ? 'followup' : 'initial',
+        sourceMessage: job.inputPrompt,
+      });
+    }
   } catch (error) {
     // Hand the claim back so the person can click again. createCheckpoint writes a snapshot
     // to object storage, and a 5xx there must not cost them the build.
