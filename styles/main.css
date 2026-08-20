@@ -1,11 +1,11 @@
 /* Fire Design System - Must be imported first for color definitions */
-@import "./fire.css";
-@import "./components/index.css";
-@import "./inside-border-fix.css";
+@import './fire.css';
+@import './components/index.css';
+@import './inside-border-fix.css';
 
 /* Additional styles */
-@import "additional-styles/utility-patterns.css";
-@import "additional-styles/theme.css";
+@import 'additional-styles/utility-patterns.css';
+@import 'additional-styles/theme.css';
 
 @tailwind base;
 @tailwind components;
@@ -97,8 +97,8 @@
   }
   /* Hide scrollbar for IE, Edge and Firefox */
   .no-scrollbar {
-    -ms-overflow-style: none;  /* IE and Edge */
-    scrollbar-width: none;  /* Firefox */
+    -ms-overflow-style: none; /* IE and Edge */
+    scrollbar-width: none; /* Firefox */
   }
 }
 
@@ -208,8 +208,7 @@
   }
 
   .marquee-animation {
-    animation: marquee var(--speed, 10s) linear infinite
-      var(--direction, forwards);
+    animation: marquee var(--speed, 10s) linear infinite var(--direction, forwards);
   }
 
   @keyframes marquee {
@@ -231,7 +230,8 @@
   }
 
   @keyframes pulse-subtle {
-    0%, 100% {
+    0%,
+    100% {
       opacity: 1;
     }
     50% {
@@ -272,12 +272,24 @@
   }
 }
 
-.grecaptcha-badge { visibility: hidden; }
-
-/* Remove all focus styles from hero input */
-input[type="text"]:focus,
-input[type="text"]:focus-visible {
-  outline: none !important;
-  box-shadow: none !important;
-  border-color: inherit !important;
+.grecaptcha-badge {
+  visibility: hidden;
 }
+
+/*
+ * Nothing here suppresses a focus ring, and nothing should. This sheet used to
+ * end with an unscoped rule that killed outline, box-shadow and border-colour
+ * with !important for every text input in the product, commented "Remove all
+ * focus styles from hero input" — but it named no hero. Tailwind compiles
+ * focus-visible:ring-2 to a box-shadow, so the !important beat every studio
+ * field's ring and took the border fallback with it: tabbing through
+ * /admin/config or the invite dialog showed no focus at all (WCAG 2.4.7).
+ *
+ * Nothing replaced it, because the hero it was written for is the Firecrawl
+ * marketing input under components/app/(home)/sections/hero-input/, which no
+ * route renders — app/landing.tsx and that section's Hero.tsx have no importer,
+ * and / renders HomeLanding -> PromptHero instead. The rule cost every live
+ * field its focus ring to style a page nobody can reach. If that hero is ever
+ * revived, give it a scoped `focus-visible` treatment of its own; do not put a
+ * bare element selector back here.
+ */

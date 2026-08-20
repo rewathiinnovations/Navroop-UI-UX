@@ -260,8 +260,7 @@ describe('safePreviewRequestPath', () => {
 describe('handlePreviewRequest', () => {
   // Assembled from parts rather than written as one long literal, so the staged
   // credential scanner in scripts/secret-scan.ts does not read a test fixture as
-  // a leaked key. It is right to be strict; the fixture is what should bend. Same
-  // idiom as tests/unit/morph-fast-apply.test.ts.
+  // a leaked key. It is right to be strict; the fixture is what should bend.
   const SECRET = ['preview', 'signing', 'value', 'for', 'tests'].join('-');
   const NOW = 1_760_000_000_000;
 

@@ -623,6 +623,10 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
       isEdit: input.isEdit,
       projectId: input.projectId ?? state.projectId,
       idempotencyKey: input.idempotencyKey ?? undefined,
+      // Drives the server's attempt cap and repeated-failure guard. Only a
+      // repair generation carries them; an ordinary one must not look like a retry.
+      buildFixAttempt: input.buildFixAttempt ?? undefined,
+      buildFixSignature: input.buildFixSignature ?? undefined,
     }),
     signal: controller.signal,
   });
@@ -631,6 +635,20 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
   if (response.ok && contentType.includes('application/json')) {
     const body = (await response.json().catch(() => ({}))) as { reused?: boolean };
     if (body.reused) {
+      // A build was already in flight, so the route attached to it and answered JSON
+      // instead of SSE: nothing is streaming into *this* tab. Settling the runtime is
+      // not cosmetic — `setJobStatus('generating')` above armed the 4-second
+      // heartbeat, and `isActiveGenerationStatus` is the only thing that stops it, so
+      // leaving it set had this tab PATCHing `status: 'generating'` onto the project
+      // row for the rest of the session. The job that *is* running is the poller's to
+      // report. Handled like the 409 below, which is the same shape of refusal.
+      setJobStatus('idle');
+      setGenerationProgressState((prev) => ({
+        ...prev,
+        isGenerating: false,
+        isStreaming: false,
+        isThinking: false,
+      }));
       return {
         generatedCode: '',
         explanation: '',
@@ -684,6 +702,7 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
   let explanation = '';
   let packagesToInstall: string[] = [];
   let skillNames: string[] = [];
+  let buildFix: GenerateResult['buildFix'] = null;
   let buffer = '';
 
   while (true) {
@@ -770,6 +789,18 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
               (name: unknown): name is string => typeof name === 'string',
             );
           }
+          // The repair instruction the route already paid a validation pass to
+          // compute. It used to be parsed and dropped here, which left the whole
+          // build-fix loop inert while chat announced a fix that never ran.
+          buildFix =
+            data.buildFix && typeof data.buildFix.instruction === 'string'
+              ? {
+                  instruction: data.buildFix.instruction,
+                  attempt: Number(data.buildFix.attempt ?? 0),
+                  signature:
+                    typeof data.buildFix.signature === 'string' ? data.buildFix.signature : null,
+                }
+              : null;
           if (packagesToInstall.length > 0 && typeof window !== 'undefined') {
             (window as unknown as { pendingPackages?: string[] }).pendingPackages =
               packagesToInstall;
@@ -858,7 +889,7 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
     status: 'Generation complete!',
   }));
 
-  return { generatedCode, explanation, packagesToInstall, skillNames };
+  return { generatedCode, explanation, packagesToInstall, skillNames, buildFix };
 }
 
 /**

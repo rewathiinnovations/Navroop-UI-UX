@@ -6,7 +6,8 @@ import { cn } from '@/utils/cn';
 import { useDraftStorage } from '@/hooks/useDraftStorage';
 import { chatPlaceholder, isChatBuilding, isChatLocked } from '@/lib/jobs/chat-ui';
 import Hint from './Hint';
-import type { ChatMode, ProjectPhase, SendMessageOptions } from './types';
+import { shouldRestoreRefusedText } from './types';
+import type { ChatMode, ProjectPhase, SendMessageOptions, SendOutcome } from './types';
 
 export default function ChatInput({
   projectId,
@@ -19,7 +20,7 @@ export default function ChatInput({
   recoveryActive = false,
 }: {
   projectId: string | null;
-  onSend: (text: string, options: SendMessageOptions) => void;
+  onSend: (text: string, options: SendMessageOptions) => void | Promise<SendOutcome | void>;
   sending: boolean;
   disabled?: boolean;
   phase?: ProjectPhase | null;
@@ -57,8 +58,21 @@ export default function ChatInput({
   const submit = () => {
     const trimmed = value.trim();
     if (!trimmed || busy) return;
-    onSend(trimmed, { mode });
+    const sent = onSend(trimmed, { mode });
     clear();
+    // A send the server refused — a build was already running, so the prompt never
+    // reached a model — used to disappear from the box, the draft, and the job row
+    // at once, leaving the chat bubble as the only copy. Put it back.
+    //
+    // Through the updater, not the captured `value`: that one is the text just sent,
+    // and the refusal lands a round trip later, by which time the box may hold
+    // something newer that must not be overwritten.
+    if (sent) {
+      void sent.then((outcome) => {
+        if (!outcome) return;
+        setValue((current) => (shouldRestoreRefusedText(outcome, current) ? trimmed : current));
+      });
+    }
   };
 
   const onFormSubmit = (event: FormEvent) => {

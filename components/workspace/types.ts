@@ -86,6 +86,51 @@ export type SendMessageOptions = {
   silent?: boolean;
 };
 
+/** Why a send was refused. One reason so far; the shape is what the UI branches on. */
+export type SendRefusalReason = 'already-running';
+
+/**
+ * What a send did.
+ *
+ * `onSend` stays assignable to a `void`-returning prop, so the callers that cannot
+ * refuse (the preview repair button, the plan thread) need no change; only the
+ * paths that genuinely refused resolve `accepted: false`.
+ */
+export type SendOutcome = { accepted: true } | { accepted: false; reason: SendRefusalReason };
+
+/**
+ * What the chat says when the server attached to a build already in flight.
+ *
+ * The old behaviour was silence followed by "Generation complete!": the bubble was
+ * appended, the box cleared, and `if (generatedCode)` was false because the route
+ * had answered `{ job, reused: true }` as JSON instead of streaming. The new prompt
+ * was not recorded on the job either — `createOrReuseJob` writes `inputPrompt` on
+ * insert only — so the request was unrecoverable.
+ */
+export const SEND_REFUSED_ALREADY_RUNNING =
+  'A build is already running on this project, so your message was not sent. Your text is back in the box — send it again once the current build finishes.';
+
+/**
+ * A reused job means the server joined a build that was already running, so this
+ * prompt never reached a model. That is a refusal, not a silent success.
+ */
+export function sendOutcomeForStream(result: { alreadyRunning?: boolean }): SendOutcome {
+  return result.alreadyRunning
+    ? { accepted: false, reason: 'already-running' }
+    : { accepted: true };
+}
+
+/**
+ * Whether a refused send's text goes back in the box.
+ *
+ * Only when the box is still empty. A refusal lands asynchronously, so by then the
+ * person may have started typing something else, and pasting the old prompt over it
+ * would lose more text than the refusal did.
+ */
+export function shouldRestoreRefusedText(outcome: SendOutcome | undefined, current: string) {
+  return Boolean(outcome && !outcome.accepted && !current.trim());
+}
+
 export type ProjectPhase = 'PLANNING' | 'BUILDING' | 'COMPLETE';
 export type PlanStatus = 'PENDING' | 'APPROVED' | 'SUPERSEDED';
 export type PlanTrigger = 'initial' | 'followup';

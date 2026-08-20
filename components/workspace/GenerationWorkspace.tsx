@@ -9,7 +9,9 @@ import { pagesFromFiles } from '@/components/workspace/pages-from-files';
 import {
   hasExistingSite,
   hasStoredSite,
+  sendOutcomeForStream,
   shouldRequestFollowUpPlan,
+  SEND_REFUSED_ALREADY_RUNNING,
   type ChatMode,
   type MessageSource,
   type ProjectPhase,
@@ -30,7 +32,7 @@ import { useGeneration } from '@/components/app/generation/GenerationProvider';
 import { applyPageCopy, shouldAddApplyChat } from '@/lib/generation/apply-page-copy';
 import { getGenerationState, surfacePreviewNotice } from '@/lib/generation/generation-runtime';
 import { filesFromReply } from '@/lib/generation/parse-blocks';
-import { isActiveGenerationStatus } from '@/lib/generation/types';
+import { isActiveGenerationStatus, type BuildFixRequest } from '@/lib/generation/types';
 import { streamingFilesLabel } from './BuildingIndicator';
 import { notify } from '@/lib/notify';
 
@@ -616,7 +618,7 @@ function AISandboxPage({
     code: string,
     isEdit: boolean = false,
     overrideSandboxData?: SandboxData,
-    autoFix?: { attempt: number; previousSignature: string | null },
+    buildFix?: BuildFixRequest | null,
   ) => {
     setLoading(true);
     log('Applying AI-generated code...');
@@ -639,21 +641,21 @@ function AISandboxPage({
 
       // Stream is owned by GenerationProvider so leaving the workspace does not abort it
       const effectiveSandboxData = overrideSandboxData || sandboxData;
-      const applyResult = await startApply({
+      await startApply({
         code,
         isEdit,
         packages: pendingPackages,
         sandboxId: effectiveSandboxData?.sandboxId,
-        autoFixAttempt: autoFix?.attempt ?? 0,
-        previousBuildSignature: autoFix?.previousSignature ?? null,
       });
-      const finalData: any = applyResult.finalData;
 
-      // Close the build → fix → re-apply loop. The server decides whether a
+      // Close the build → fix → re-generate loop. The server decides whether a
       // retry is warranted (attempt cap, repeated-failure guard, actionability)
       // and only then returns buildFix; the client's job is to run it, not to
       // re-derive the policy. Absent buildFix means the loop is over.
-      const buildFix = finalData?.buildFix;
+      //
+      // It arrives on the *generate* complete frame. This used to read it off
+      // `applyResult.finalData`, which `runApplyStream` returns as null by
+      // design — so the branch was unreachable and the loop never ran once.
       if (buildFix?.instruction) {
         addChatMessage(
           `Build failed — attempting an automatic fix (${buildFix.attempt}/2).`,
@@ -667,14 +669,21 @@ function AISandboxPage({
             isEdit: true,
             projectId: projectId ?? undefined,
             sandboxData: effectiveSandboxData ?? undefined,
+            // Carried back so the server's cap and repeat guard can see this is
+            // already a retry. Without them every attempt looked like the first.
+            buildFixAttempt: buildFix.attempt,
+            buildFixSignature: buildFix.signature,
           });
           if (fixResult?.generatedCode) {
-            // Recurse with the attempt carried forward; the server stops the loop
-            // by withholding buildFix once the cap or the guard trips.
-            return await applyGeneratedCode(fixResult.generatedCode, true, overrideSandboxData, {
-              attempt: buildFix.attempt,
-              previousSignature: buildFix.signature ?? null,
-            });
+            // Recurse with whatever the repair reply itself validated to; the
+            // server stops the loop by withholding buildFix once the cap or the
+            // guard trips.
+            return await applyGeneratedCode(
+              fixResult.generatedCode,
+              true,
+              overrideSandboxData,
+              fixResult.buildFix,
+            );
           }
           addChatMessage('The automatic build fix produced no changes.', 'system');
         } catch (fixError: unknown) {
@@ -1155,6 +1164,19 @@ function AISandboxPage({
         projectId,
         sandboxData,
       });
+
+      // A build was already in flight, so the route answered `{ reused: true }` as
+      // JSON and attached to it: this prompt never reached a model. Saying so — and
+      // handing the text back through the returned outcome — is the fix for the path
+      // that used to fall through `if (generatedCode)` in silence and then print
+      // "Generation complete!" over a message that was never sent. The progress reset
+      // lives in the runtime's own reuse branch, next to the `setJobStatus` that
+      // stops this tab's heartbeat.
+      const outcome = sendOutcomeForStream(streamResult);
+      if (!outcome.accepted) {
+        addChatMessage(SEND_REFUSED_ALREADY_RUNNING, 'system');
+        return outcome;
+      }
       const generatedCode = streamResult.generatedCode;
       const explanation = streamResult.explanation;
 
@@ -1191,7 +1213,7 @@ function AISandboxPage({
         // from them, so there is nothing to boot or wait for first. This used
         // to be gated on live sandbox data, which is now always null — every
         // generation streamed in, printed its files, and was then dropped.
-        await applyGeneratedCode(generatedCode, isEdit);
+        await applyGeneratedCode(generatedCode, isEdit, undefined, streamResult.buildFix);
       }
 
       // Show completion status briefly then switch to preview
@@ -1616,8 +1638,16 @@ function AISandboxPage({
     await startGeneration();
   };
 
-  const startGeneration = async () => {
-    if (!homeUrlInput.trim()) return;
+  /**
+   * `sourceUrlOverride` exists because a caller that has just called
+   * `setHomeUrlInput` cannot see it: React has not committed the state yet, so
+   * `homeUrlInput` here would still be the previous render's value. The sidebar
+   * scrape panel does exactly that, and the guard below silently returned instead
+   * of starting the clone the person asked for.
+   */
+  const startGeneration = async (sourceUrlOverride?: string) => {
+    const cloneUrl = (sourceUrlOverride ?? homeUrlInput).trim();
+    if (!cloneUrl) return;
     if (
       isJobActive &&
       generation.projectId &&
@@ -1643,7 +1673,7 @@ function AISandboxPage({
 
     // Clear messages and immediately show the initial message
     setChatMessages([]);
-    let displayUrl = homeUrlInput.trim();
+    let displayUrl = cloneUrl;
     if (!displayUrl.match(/^https?:\/\//i)) {
       displayUrl = 'https://' + displayUrl;
     }
@@ -1684,12 +1714,12 @@ function AISandboxPage({
       const createdSandbox = await sandboxPromise;
 
       // Now start the clone process which will stream the generation
-      setUrlInput(homeUrlInput);
+      setUrlInput(cloneUrl);
       setUrlStatus(['Scraping website content...']);
 
       try {
         // Scrape the website
-        let url = homeUrlInput.trim();
+        let url = cloneUrl;
         if (!url.match(/^https?:\/\//i)) {
           url = 'https://' + url;
         }
@@ -1948,7 +1978,7 @@ Focus on building something NEW, minimal, and functional that perfectly matches 
           // Filter out style-related context when using screenshot/URL-based generation
           // Only keep user's explicit instructions, not inherited styles
           let filteredContext = homeContextInput;
-          if (homeUrlInput && homeContextInput) {
+          if (cloneUrl && homeContextInput) {
             // Check if the context contains default style names that shouldn't be inherited
             const stylePatterns = [
               'Glassmorphism style design',
@@ -2149,9 +2179,9 @@ Focus on the key sections and content, making it clean and modern.`;
       updatedAt={projectUpdatedAt}
       onRename={renameProject}
       messages={chatMessages}
-      onSend={(text, options) => {
-        void sendChatMessage(text, options);
-      }}
+      // Returned, not voided: the resolved outcome is how ChatInput learns a send
+      // was refused and puts the typed text back.
+      onSend={(text, options) => sendChatMessage(text, options)}
       sending={isJobActive || generationProgress.isGenerating || loading}
       pages={workspacePages}
       selectedPage={selectedPage}
@@ -2168,7 +2198,6 @@ Focus on the key sections and content, making it clean and modern.`;
         else setActiveTab(next);
       }}
       onRefresh={refreshPreview}
-      iframeRef={iframeRef}
       sandboxUrl={sandboxData?.url}
       chatHeader={
         <>
@@ -2184,7 +2213,10 @@ Focus on the key sections and content, making it clean and modern.`;
                   setHomeContextInput(instructions || '');
                   setSelectedStyle(style);
                   setAiModel(model);
-                  startGeneration();
+                  // Handed over explicitly: `setHomeUrlInput` above has not been
+                  // committed yet, so reading the state here would see the previous
+                  // render's empty string and the clone would never start.
+                  void startGeneration(url);
                 }}
                 disabled={loading || generationProgress.isGenerating}
               />
