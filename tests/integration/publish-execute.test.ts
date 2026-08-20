@@ -31,7 +31,19 @@ const SLUG_PREFIX = 'pubx';
 
 /** One project per case: `one_active_job_per_project` is unique and every case runs a job. */
 type CaseKey =
-  'happy' | 'kill' | 'appfail' | 'resume' | 'settled' | 'unhealthy' | 'preview' | 'relive';
+  | 'happy'
+  | 'kill'
+  | 'appfail'
+  | 'resume'
+  | 'settled'
+  | 'unhealthy'
+  | 'preview'
+  | 'relive'
+  | 'scaffold'
+  | 'concurrent'
+  | 'stalepoll'
+  | 'nouuid'
+  | 'pin';
 
 const projectId = (key: CaseKey) => `proj_${SLUG_PREFIX}_${key}`;
 const serverId = (key: CaseKey) => `srv_${SLUG_PREFIX}_${key}`;
@@ -176,12 +188,14 @@ type PublishSpy = {
     repoSlug: string | null;
     pushedTo: string | null;
     pushedPaths: string[];
+    pushedFiles: Record<string, string>;
     createApp: CreateApplicationInput | null;
     dnsLabel: string | null;
     dnsIp: string | null;
     domainHost: string | null;
     redirectsFor: string | null;
     deployedUuid: string | null;
+    polledDeploymentUuid: string | null;
   };
 };
 
@@ -197,6 +211,13 @@ function publishSpy(
     appUuid?: string;
     dnsRecordId?: string;
     health?: DeploymentHealth;
+    /** What `startDeploy` hands back; `null` models Coolify returning no deployment id. */
+    deploymentUuid?: string | null;
+    /**
+     * Successive `deploymentStatus` answers, so a build can be observed still running
+     * before it settles. The last entry repeats once the list runs out.
+     */
+    statuses?: Array<{ health: DeploymentHealth; status: string }>;
     /** Models an org repo that already exists — the F-202 guard decides from its id. */
     existingRepo?: { repoId: string };
     /** Runs inside `upsertDns` before it returns; throwing here fails the `dns` step. */
@@ -216,18 +237,20 @@ function publishSpy(
     addAppDomain: 0,
     applyRedirects: 0,
     startDeploy: 0,
-    deployHealth: 0,
+    deploymentStatus: 0,
   };
   const seen: PublishSpy['seen'] = {
     repoSlug: null,
     pushedTo: null,
     pushedPaths: [],
+    pushedFiles: {},
     createApp: null,
     dnsLabel: null,
     dnsIp: null,
     domainHost: null,
     redirectsFor: null,
     deployedUuid: null,
+    polledDeploymentUuid: null,
   };
   const record = (name: keyof PublishDeps) => {
     calls.push(name);
@@ -263,6 +286,7 @@ function publishSpy(
       record('pushFiles');
       seen.pushedTo = repoFullName;
       seen.pushedPaths = Object.keys(files).sort();
+      seen.pushedFiles = files;
       return 'commit-sha-1';
     },
     async createApp(_auth, input) {
@@ -290,12 +314,22 @@ function publishSpy(
     async startDeploy(_auth, appUuid) {
       record('startDeploy');
       seen.deployedUuid = appUuid;
-      return { deploymentUuid: 'coolify-deployment-1' };
+      return {
+        deploymentUuid:
+          options.deploymentUuid === undefined ? 'coolify-deployment-1' : options.deploymentUuid,
+      };
     },
-    async deployHealth() {
-      record('deployHealth');
+    async deploymentStatus(_auth, deploymentUuid) {
+      record('deploymentStatus');
+      seen.polledDeploymentUuid = deploymentUuid;
+      if (options.statuses?.length) {
+        // Repeat the last answer: a build that never settles must time the poll out
+        // rather than run off the end of the list.
+        const index = Math.min(counts.deploymentStatus - 1, options.statuses.length - 1);
+        return options.statuses[index];
+      }
       const health = options.health ?? 'healthy';
-      return { health, status: health === 'healthy' ? 'running:healthy' : 'exited' };
+      return { health, status: health === 'healthy' ? 'finished' : 'failed' };
     },
   };
 
@@ -364,7 +398,7 @@ describe('runPublishJob — the shipped ten-step loop', () => {
       'addAppDomain',
       'applyRedirects',
       'startDeploy',
-      'deployHealth',
+      'deploymentStatus',
     ]);
 
     expect(uuidVisibleWhenDnsRan).toBe('coolify-app-1');
@@ -385,6 +419,8 @@ describe('runPublishJob — the shipped ten-step loop', () => {
       githubRepo: `deploy-org/${expectedSlug('happy')}`,
       coolifyAppUuid: 'coolify-app-1',
       dnsRecordId: 'dns-record-1',
+      // The build this job triggered, recorded so a resumed `poll` can still find it.
+      coolifyDeploymentUuid: 'coolify-deployment-1',
     });
 
     const deployment = await prisma.deployment.findUniqueOrThrow({
@@ -416,6 +452,8 @@ describe('runPublishJob — the shipped ten-step loop', () => {
     );
     expect(spy.seen.createApp?.projectUuid).toBe('project-uuid-happy');
     expect(spy.seen.deployedUuid).toBe('coolify-app-1');
+    // The poll reads the deployment Coolify returned, never the application.
+    expect(spy.seen.polledDeploymentUuid).toBe('coolify-deployment-1');
 
     const project = await prisma.project.findUniqueOrThrow({ where: { id: seeded.projectId } });
     expect(project.status).toBe('published');
@@ -521,7 +559,7 @@ describe('runPublishJob — the shipped ten-step loop', () => {
     // than a run that never started.
     expect(second.counts.upsertDns).toBe(1);
     expect(second.counts.addAppDomain).toBe(1);
-    expect(second.counts.deployHealth).toBe(1);
+    expect(second.counts.deploymentStatus).toBe(1);
     expect(second.counts.ensureRepo).toBe(0);
     expect(second.counts.pushFiles).toBe(0);
     expect(second.counts.createApp).toBe(0);
@@ -578,7 +616,7 @@ describe('runPublishJob — the shipped ten-step loop', () => {
     const jobId = await queuePublishJob(seeded, 'LIVE');
 
     const spy = publishSpy(seeded.server, { health: 'failed' });
-    await expect(runPublishJob(jobId, spy.deps)).rejects.toThrow('Coolify build fail: exited');
+    await expect(runPublishJob(jobId, spy.deps)).rejects.toThrow('Coolify build fail: failed');
 
     const job = await getJob(jobId);
     expect(job?.status).toBe('FAILED');
@@ -595,7 +633,7 @@ describe('runPublishJob — the shipped ten-step loop', () => {
       where: { id: seeded.deploymentId },
     });
     expect(deployment.status).toBe('FAILED');
-    expect(deployment.lastError).toBe('Coolify build fail: exited');
+    expect(deployment.lastError).toBe('Coolify build fail: failed');
     expect(deployment.publishedAt).toBeNull();
     expect(deployment.url).toBeNull();
 
@@ -683,5 +721,196 @@ describe('runPublishJob — the shipped ten-step loop', () => {
     expect(deployment.coolifyAppUuid).toBe('coolify-app-existing');
     expect(deployment.dnsRecordId).toBe('dns-record-existing');
     expect(deployment.commitSha).toBe('commit-sha-1');
+  });
+
+  it('pushes a repository Coolify can build, not the generated files on their own', async () => {
+    // Checkpoint snapshots are the `<file>` blocks from `Project.lastCode` and nothing
+    // else, so a generation that did not happen to emit a package.json produced a repo
+    // whose build fails ten minutes later at `poll`. `buildRepoFiles` — what the
+    // Connectors push and the ZIP export already ship — is the fix; publish was the one
+    // caller that skipped it.
+    const seeded = await seedCase({ key: 'scaffold', kind: 'LIVE' });
+    const jobId = await queuePublishJob(seeded, 'LIVE');
+
+    const spy = publishSpy(seeded.server, {
+      files: {
+        'app/page.tsx': 'export default function Page() { return null; }',
+        // The deny list has to survive the merge: `collectFiles` is injectable and the
+        // commit is built from explicit tree entries, so a `.gitignore` in the tree
+        // cannot stop this reaching GitHub.
+        '.env.local': 'API_KEY=not-real',
+      },
+    });
+    await runPublishJob(jobId, spy.deps);
+
+    for (const path of ['package.json', 'Dockerfile', '.dockerignore', '.gitignore', 'README.md']) {
+      expect(spy.seen.pushedPaths).toContain(path);
+    }
+    // The stack scaffold underneath — without it there is no Next config and no entry
+    // point beyond whatever the model happened to write.
+    expect(spy.seen.pushedPaths).toContain('next.config.mjs');
+    expect(spy.seen.pushedPaths).toContain('tsconfig.json');
+    // The generated file still wins over its scaffold counterpart.
+    expect(spy.seen.pushedFiles['app/page.tsx']).toBe(
+      'export default function Page() { return null; }',
+    );
+    expect(spy.seen.pushedPaths).not.toContain('.env.local');
+
+    const manifest = JSON.parse(spy.seen.pushedFiles['package.json']) as { name?: string };
+    expect(manifest.name).toBe(expectedSlug('scaffold'));
+    expect(spy.seen.pushedFiles.Dockerfile).toContain('FROM node:');
+  });
+
+  it('refuses a second runner on a job that is already in flight', async () => {
+    // Two tabs, a double click, or two POSTs all reach `runPublishJob` with the *same*
+    // job id: `startPublishJob` hands the second caller the in-flight job, `acquireLock`
+    // is re-entrant for the same user, and `markJobRunning` accepts an already-RUNNING
+    // row. Two runners on one job race a force-push on one branch and can create two
+    // Coolify applications for one deployment — the second recorded nowhere.
+    const seeded = await seedCase({ key: 'concurrent', kind: 'LIVE' });
+    const jobId = await queuePublishJob(seeded, 'LIVE');
+
+    const second = publishSpy(seeded.server, { appUuid: 'coolify-app-second' });
+    let secondResultStatus: string | null | undefined;
+    // Start the second runner while the first is genuinely mid-flight, holding a fresh
+    // heartbeat — running them one after the other would prove nothing.
+    const first = publishSpy(seeded.server, {
+      async onDns() {
+        const job = await runPublishJob(jobId, second.deps);
+        secondResultStatus = job?.status;
+      },
+    });
+
+    await runPublishJob(jobId, first.deps);
+
+    expect(second.calls).toEqual([]);
+    // It gets the in-flight job back, not an error and not a second run.
+    expect(secondResultStatus).toBe('RUNNING');
+    expect(first.counts.createApp).toBe(1);
+
+    const deployment = await prisma.deployment.findUniqueOrThrow({
+      where: { id: seeded.deploymentId },
+    });
+    expect(deployment.status).toBe('LIVE');
+    expect(deployment.coolifyAppUuid).toBe('coolify-app-1');
+  });
+
+  it('fails a re-publish whose own deployment failed, however healthy the application is', async () => {
+    // The poll used to read the application, which on a re-publish is already
+    // `running:healthy` from the previous build — so the first poll broke the loop and
+    // the job wrote LIVE and a fresh publishedAt over a build that was still running, or
+    // had already failed. Polling the deployment this job triggered is the only way to
+    // tell those apart.
+    const seeded = await seedCase({
+      key: 'stalepoll',
+      kind: 'LIVE',
+      alreadyLive: {
+        slug: `${SLUG_PREFIX}-stalepoll`,
+        repoFullName: 'deploy-org/pubx-stalepoll',
+        coolifyAppUuid: 'coolify-app-existing',
+        dnsRecordId: 'dns-record-existing',
+      },
+    });
+    const jobId = await queuePublishJob(seeded, 'LIVE');
+
+    const spy = publishSpy(seeded.server, {
+      existingRepo: { repoId: 'repo-id-stalepoll' },
+      statuses: [
+        { health: 'building', status: 'in_progress' },
+        { health: 'failed', status: 'failed' },
+      ],
+    });
+
+    await expect(runPublishJob(jobId, spy.deps)).rejects.toThrow('Coolify build fail: failed');
+
+    expect(spy.counts.deploymentStatus).toBe(2);
+    expect(spy.seen.polledDeploymentUuid).toBe('coolify-deployment-1');
+
+    const job = await getJob(jobId);
+    expect(stepStatuses(job?.steps)).toMatchObject({ poll: 'failed', live: 'pending' });
+
+    const deployment = await prisma.deployment.findUniqueOrThrow({
+      where: { id: seeded.deploymentId },
+    });
+    // The previous release is still serving, so the row stays LIVE — but the failure is
+    // recorded and nothing re-stamps publishedAt.
+    expect(deployment.status).toBe('LIVE');
+    expect(deployment.lastError).toBe('Coolify build fail: failed');
+    expect(deployment.publishedAt).toEqual(new Date('2026-08-01T00:00:00.000Z'));
+  });
+
+  it('refuses to call a build live when Coolify returned no deployment id', async () => {
+    const seeded = await seedCase({ key: 'nouuid', kind: 'LIVE' });
+    const jobId = await queuePublishJob(seeded, 'LIVE');
+
+    const spy = publishSpy(seeded.server, { deploymentUuid: null });
+
+    await expect(runPublishJob(jobId, spy.deps)).rejects.toThrow('could not be verified');
+
+    // Nothing to poll and nothing to guess from: unverifiable is a failure, not a pass.
+    expect(spy.counts.startDeploy).toBe(1);
+    expect(spy.counts.deploymentStatus).toBe(0);
+
+    const deployment = await prisma.deployment.findUniqueOrThrow({
+      where: { id: seeded.deploymentId },
+    });
+    expect(deployment.status).toBe('FAILED');
+    expect(deployment.publishedAt).toBeNull();
+  });
+
+  it('keeps a retry on the server the Coolify app was created on', async () => {
+    // `pickCoolifyServer` recomputes the least-loaded server on every call, so re-picking
+    // in the `slug` step moved a retry to server B while `resourceIds` still carried the
+    // application uuid created on server A: the retry then called server B's API with
+    // server A's uuid (a 404 nobody can read) and recorded a `serverId` that no longer
+    // says where the app is — which is also how stop and destroy find it.
+    const seeded = await seedCase({ key: 'pin', kind: 'LIVE' });
+    const firstJob = await queuePublishJob(seeded, 'LIVE');
+
+    const first = publishSpy(seeded.server, {
+      async onDns() {
+        throw new Error('network went away');
+      },
+    });
+    await expect(runPublishJob(firstJob, first.deps)).rejects.toThrow('network went away');
+    // The first attempt did pick, and did create the application on that server.
+    expect(first.counts.pickServer).toBe(1);
+    expect(first.counts.createApp).toBe(1);
+
+    // Retry: `createOrReuseJob` does not reuse a FAILED job, so this is a fresh job with
+    // every step pending — the `slug` step runs again.
+    const emptier = await prisma.coolifyServer.create({
+      data: {
+        id: `srv_${SLUG_PREFIX}_pinb`,
+        name: 'coolify-pin-b',
+        apiUrl: 'https://coolify-b.example.test',
+        apiToken: 'not-a-real-token',
+        serverIp: '198.51.100.9',
+        projectUuid: 'project-uuid-pin-b',
+      },
+    });
+    const retryJob = await queuePublishJob(seeded, 'LIVE');
+    const second = publishSpy({
+      id: emptier.id,
+      apiUrl: emptier.apiUrl,
+      apiToken: emptier.apiToken,
+      serverIp: emptier.serverIp,
+      projectUuid: emptier.projectUuid,
+    });
+
+    await runPublishJob(retryJob, second.deps);
+
+    // Not even asked: an application already exists on server A.
+    expect(second.counts.pickServer).toBe(0);
+    expect(second.counts.createApp).toBe(0);
+    // DNS points at server A's IP, not the emptier server's.
+    expect(second.seen.dnsIp).toBe(SERVER_IP);
+
+    const deployment = await prisma.deployment.findUniqueOrThrow({
+      where: { id: seeded.deploymentId },
+    });
+    expect(deployment.serverId).toBe(seeded.server.id);
+    expect(deployment.coolifyAppUuid).toBe('coolify-app-1');
+    expect(deployment.buildLogUrl).toBe(`${SERVER_API_URL}/application/coolify-app-1`);
   });
 });

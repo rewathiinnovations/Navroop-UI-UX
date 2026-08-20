@@ -184,7 +184,9 @@ export default function HealthDashboard() {
             )}
           </p>
           <p className="mt-8 text-[12px] text-[var(--studio-muted)]">
-            Rolling back the app does not revert the database. Restore from backup if the schema
+            Rolling back pins the Coolify application to the chosen commit and deploys it; the app
+            keeps deploying that commit until a newer one is set. Watch the deployment in Coolify to
+            confirm it finishes. The database is not reverted — restore from backup if the schema
             changed.
           </p>
           {(data.release.history || []).length > 0 && (
@@ -214,7 +216,7 @@ export default function HealthDashboard() {
               onClick={async () => {
                 setRollingBack(true);
                 setRollbackMessage('');
-                const toastId = notify.loading('Requesting rollback…');
+                const toastId = notify.loading('Requesting the rollback deploy…');
                 try {
                   const response = await fetch('/api/admin/health/rollback', {
                     method: 'POST',
@@ -227,8 +229,10 @@ export default function HealthDashboard() {
                     setRollbackMessage(payload.error || 'Could not roll back');
                     return;
                   }
+                  // The API confirms Coolify accepted the commit pin and started a deploy —
+                  // it does not confirm the build finished, so neither does this line.
                   const detail =
-                    `Rollback requested to ${payload.sha}. ${payload.note || ''}`.trim();
+                    `Coolify is deploying ${payload.sha}. ${payload.note || ''}`.trim();
                   notify.settle(toastId, 'success', detail);
                   setRollbackMessage(detail);
                 } catch (cause) {
@@ -238,7 +242,7 @@ export default function HealthDashboard() {
                 }
               }}
             >
-              {rollingBack ? 'Rolling back…' : 'Roll back to previous release'}
+              {rollingBack ? 'Requesting…' : 'Roll back to previous release'}
             </StudioButton>
           </div>
           {rollbackMessage ? (

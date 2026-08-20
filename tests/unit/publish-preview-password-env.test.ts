@@ -101,6 +101,9 @@ beforeEach(() => {
   db.executeRaw.mockResolvedValue(1);
   jobs.getActiveJob.mockResolvedValue(null);
   jobs.createOrReuseJob.mockResolvedValue({ id: 'job_1' });
+  // The runner returns the settled job. Anything other than SUCCEEDED means the build
+  // carrying the new gate did not land.
+  execute.runPublishJob.mockResolvedValue({ id: 'job_1', status: 'SUCCEEDED' });
 });
 
 describe('updatePreviewPassword — node stack', () => {
@@ -157,6 +160,36 @@ describe('updatePreviewPassword — node stack', () => {
 
     // The deployed app still runs the previous middleware, so the row must not claim the new
     // password is in force — `hasPassword` is read straight off it.
+    expect(db.deploymentUpdate).toHaveBeenLastCalledWith({
+      where: { id: DEPLOYMENT },
+      data: { passwordHash: 'hashed:the-old-one' },
+    });
+  });
+
+  it('puts the hash back when a runner was already in flight and this one declined', async () => {
+    db.deploymentFindUnique.mockResolvedValue({
+      id: DEPLOYMENT,
+      projectId: PROJECT,
+      workspaceId: 'default',
+      serverId: 'srv_1',
+      kind: 'PREVIEW',
+      status: 'LIVE',
+      slug: 'shop',
+      coolifyAppUuid: APP_UUID,
+      publishedAt: new Date('2026-08-01T00:00:00.000Z'),
+      passwordHash: 'hashed:the-old-one',
+      server: { id: 'srv_1', apiUrl: 'https://coolify.test', apiToken: 'stub' },
+      project: { stack: 'NEXTJS' },
+    });
+    // The F-203 claim: a second runner on an in-flight job returns the job instead of
+    // executing it. That is not an error, so it has to be *read* — the middleware
+    // carrying the new gate was never built either way.
+    execute.runPublishJob.mockResolvedValue({ id: 'job_1', status: 'RUNNING' });
+
+    await expect(
+      updatePreviewPassword({ projectId: PROJECT, userId: USER, password: PASSWORD }),
+    ).rejects.toThrow('A publish is already running for this project');
+
     expect(db.deploymentUpdate).toHaveBeenLastCalledWith({
       where: { id: DEPLOYMENT },
       data: { passwordHash: 'hashed:the-old-one' },

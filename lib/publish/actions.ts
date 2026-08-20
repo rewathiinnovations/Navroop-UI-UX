@@ -9,7 +9,7 @@ import { assertPublishSlot, PublishLimitError } from './limits';
 import { getLatestJobByKind, toPublicJob } from '@/lib/jobs';
 import { runPublishJob } from './execute';
 import { getProjectDeployments, startPublishJob, updatePreviewPassword } from './publish';
-import { destroyDeployment, stopDeployment } from './cleanup';
+import { destroyDeployment, partialTeardownMessage, stopDeployment } from './cleanup';
 import { confirmRepoOverwrite } from './overwrite';
 import { projectHasPublishableFiles } from './files';
 import { serializeDeployment } from './serialize';
@@ -319,6 +319,15 @@ export async function deleteDeploymentAction(id: string, confirmSlug: string) {
     return { ok: false as const, error: 'Type the slug to confirm', status: 422 as const };
   }
   const destroyed = await destroyDeployment(id, { deleteRepo: true });
+  // `null` means the row was already gone by the time the teardown read it. Nothing
+  // survives, so the list is right to drop it — but do not call that a deletion we did.
+  const failures = destroyed?.failures ?? [];
+  const rowDeleted = destroyed ? destroyed.rowDeleted : true;
+  const message = !destroyed
+    ? 'This deployment had already been removed.'
+    : rowDeleted
+      ? 'Deployment deleted.'
+      : partialTeardownMessage(failures);
   await writeAudit({
     actorId: user.id,
     actorEmail: user.email,
@@ -332,7 +341,13 @@ export async function deleteDeploymentAction(id: string, confirmSlug: string) {
       slug: row.slug,
       kind: row.kind,
       keptCloudflareZones: destroyed?.keptCloudflareZones ?? [],
+      // A partial teardown leaves provider resources alive with only this entry and the
+      // surviving row naming them.
+      failures,
+      rowDeleted,
     },
   });
-  return { ok: true as const, data: { id } };
+  // The caller renders all three: a partial teardown is a warning that must keep the row
+  // on screen, not a success that removes it.
+  return { ok: true as const, data: { id, rowDeleted, failures, message } };
 }

@@ -94,6 +94,25 @@ export type DestroyedDeployment = {
   rowDeleted: boolean;
 };
 
+/** What each `failures` entry means to someone reading a toast. */
+const PROVIDER_LABELS: Record<string, string> = {
+  coolify: 'the Coolify application',
+  dns: 'the DNS record',
+  repo: 'the deploy repository',
+};
+
+/**
+ * The sentence for a teardown that only partly worked.
+ *
+ * `destroyDeployment` keeps the row in this case, so the user's next page load will show
+ * the deployment again. The copy has to agree with that: naming what survived is the
+ * difference between "retry this" and "the product is lying to me".
+ */
+export function partialTeardownMessage(failures: string[]) {
+  const named = failures.map((failure) => PROVIDER_LABELS[failure] ?? failure).join(', ');
+  return `Could not remove ${named}. This deployment is still listed so the teardown can be retried — until it is gone it keeps running and keeps costing money.`;
+}
+
 export async function destroyDeployment(
   id: string,
   opts?: { deleteRepo?: boolean },

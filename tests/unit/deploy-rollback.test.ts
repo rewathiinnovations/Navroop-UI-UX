@@ -6,6 +6,7 @@ import {
   pushReleaseHistory,
 } from '../../lib/deploy/release';
 import {
+  coolifyApplicationPath,
   coolifyRedeployPath,
   executeCoolifyRollback,
   planRollback,
@@ -130,31 +131,128 @@ describe('rollback confirmation', () => {
   });
 });
 
+/**
+ * The rollback used to `GET /api/v1/deploy?uuid=…&force=true` — Coolify's *redeploy the
+ * current configuration* endpoint — and pass the wanted release as an invented
+ * `X-Navroop-Image-Tag` header that Coolify has no code to read. So the button redeployed
+ * the broken release and printed "Rollback requested to <sha>": a false success at the
+ * one moment an operator most needs the truth.
+ *
+ * The real lever is the application's `git_commit_sha` (Coolify resolves a manual deploy
+ * to it when no commit is given). So: pin it, read it back, and only then deploy — and
+ * refuse, having deployed nothing, whenever the pin cannot be proven.
+ */
 describe('Coolify rollback request', () => {
-  it('builds the force-redeploy path', () => {
+  type Call = { path: string; method: string; body: string | null };
+
+  function recorder(responses: (call: Call) => Response): {
+    request: (path: string, init?: RequestInit) => Promise<Response>;
+    calls: Call[];
+  } {
+    const calls: Call[] = [];
+    return {
+      calls,
+      async request(path, init) {
+        const call = {
+          path,
+          method: init?.method ?? 'GET',
+          body: typeof init?.body === 'string' ? init.body : null,
+        };
+        calls.push(call);
+        return responses(call);
+      },
+    };
+  }
+
+  const OLD = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2';
+  const NEW = '0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f';
+
+  it('builds the application and force-redeploy paths', () => {
+    expect(coolifyApplicationPath('app/1')).toBe('/api/v1/applications/app%2F1');
     expect(coolifyRedeployPath('app/1')).toBe('/api/v1/deploy?uuid=app%2F1&force=true');
   });
 
-  it('sends the image tag header and treats a 2xx as success', async () => {
-    const request = async (path: string, init?: RequestInit) => {
-      expect(path).toBe('/api/v1/deploy?uuid=app-1&force=true');
-      expect(init?.method).toBe('GET');
-      expect(init?.headers).toEqual({ 'X-Navroop-Image-Tag': 'sha-old' });
-      return new Response('ok', { status: 200 });
-    };
+  it('pins the commit, verifies it, then deploys — in that order', async () => {
+    const { request, calls } = recorder((call) => {
+      if (call.method === 'PATCH') return Response.json({ message: 'Application updated.' });
+      if (call.path === '/api/v1/applications/app-1') {
+        return Response.json({ uuid: 'app-1', git_commit_sha: OLD });
+      }
+      return Response.json({ deployment_uuid: 'dep-77' });
+    });
+
     await expect(
-      executeCoolifyRollback({ request, applicationUuid: 'app-1', imageTag: 'sha-old' }),
-    ).resolves.toEqual({ ok: true });
+      executeCoolifyRollback({ request, applicationUuid: 'app-1', targetSha: OLD }),
+    ).resolves.toEqual({ ok: true, sha: OLD, deploymentUuid: 'dep-77' });
+
+    expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([
+      'PATCH /api/v1/applications/app-1',
+      'GET /api/v1/applications/app-1',
+      'GET /api/v1/deploy?uuid=app-1&force=true',
+    ]);
+    // The commit travels in the body Coolify documents, not in a header it ignores.
+    expect(JSON.parse(calls[0].body ?? '{}')).toEqual({ git_commit_sha: OLD });
   });
 
-  it('returns the Coolify status when redeploy fails', async () => {
-    const request = async () => new Response('busy', { status: 503 });
+  it('deploys nothing when Coolify refuses the commit pin', async () => {
+    const { request, calls } = recorder((call) =>
+      call.method === 'PATCH' ? new Response('nope', { status: 422 }) : Response.json({}),
+    );
+
     await expect(
-      executeCoolifyRollback({
-        request,
-        applicationUuid: 'app-1',
-        imageTag: 'sha-old',
-      }),
-    ).resolves.toEqual({ ok: false, error: 'Coolify rollback returned 503' });
+      executeCoolifyRollback({ request, applicationUuid: 'app-1', targetSha: OLD }),
+    ).resolves.toEqual({
+      ok: false,
+      error:
+        'Coolify refused to pin this application to a previous commit (422). Nothing was deployed.',
+    });
+    // The whole point: no deploy call, so the broken release is not redeployed under the
+    // word "rollback".
+    expect(calls.map((call) => call.method)).toEqual(['PATCH']);
+  });
+
+  it('deploys nothing when the application reads back a different commit', async () => {
+    const { request, calls } = recorder((call) =>
+      call.method === 'PATCH'
+        ? Response.json({ message: 'Application updated.' })
+        : Response.json({ git_commit_sha: NEW }),
+    );
+
+    await expect(
+      executeCoolifyRollback({ request, applicationUuid: 'app-1', targetSha: OLD }),
+    ).resolves.toEqual({
+      ok: false,
+      error: `Coolify still reports commit ${NEW} for this application, so the rollback was not applied. Nothing was deployed.`,
+    });
+    expect(calls).toHaveLength(2);
+  });
+
+  it('says the application is pinned but undeployed when the deploy call fails', async () => {
+    const { request } = recorder((call) => {
+      if (call.method === 'PATCH') return Response.json({ message: 'Application updated.' });
+      if (call.path === '/api/v1/applications/app-1') return Response.json({ git_commit_sha: OLD });
+      return new Response('busy', { status: 503 });
+    });
+
+    await expect(
+      executeCoolifyRollback({ request, applicationUuid: 'app-1', targetSha: OLD }),
+    ).resolves.toEqual({
+      ok: false,
+      error: `Coolify is pinned to ${OLD} but the deploy request failed (503). Deploy the application from Coolify to finish the rollback.`,
+    });
+  });
+
+  it('succeeds without a deployment id rather than inventing one', async () => {
+    const { request } = recorder((call) =>
+      call.method === 'PATCH'
+        ? Response.json({ message: 'Application updated.' })
+        : call.path === '/api/v1/applications/app-1'
+          ? Response.json({ git_commit_sha: OLD })
+          : Response.json({ message: 'Deployment request queued.' }),
+    );
+
+    await expect(
+      executeCoolifyRollback({ request, applicationUuid: 'app-1', targetSha: OLD }),
+    ).resolves.toEqual({ ok: true, sha: OLD, deploymentUuid: null });
   });
 });

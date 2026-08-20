@@ -200,9 +200,9 @@ function publishSpy(
     async startDeploy() {
       return { deploymentUuid: 'coolify-deployment-1' };
     },
-    async deployHealth() {
+    async deploymentStatus() {
       const health = options.health ?? 'healthy';
-      return { health, status: health === 'healthy' ? 'running:healthy' : 'exited' };
+      return { health, status: health === 'healthy' ? 'finished' : 'failed' };
     },
   };
   return { deps, counts, seen };

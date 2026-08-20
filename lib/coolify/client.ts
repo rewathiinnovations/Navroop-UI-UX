@@ -373,31 +373,55 @@ export async function triggerDeploy(server: CoolifyServerAuth, appUuid: string) 
   return { raw: data, deploymentUuid };
 }
 
-export async function getDeploymentStatus(
+/**
+ * Map a Coolify deployment-queue status to the three states the publish loop acts on.
+ *
+ * Coolify's own vocabulary (`queued`, `in_progress`, `finished`, `failed`,
+ * `cancelled-by-user`) is matched exactly rather than by substring: `finished` is the
+ * only success, and anything unrecognised stays `building` so the poll keeps waiting
+ * instead of calling an unknown word healthy.
+ */
+export function deploymentHealthFromStatus(status: string): DeploymentHealth {
+  const value = status.trim().toLowerCase();
+  if (value === 'finished') return 'healthy';
+  if (value === 'failed' || value === 'cancelled-by-user' || value === 'error') return 'failed';
+  return 'building';
+}
+
+/**
+ * The state of one deployment — the build this publish job actually triggered.
+ *
+ * The poll used to read `GET /api/v1/applications/{uuid}` and derive health from the
+ * *application's* status. On a re-publish the application is already `running:healthy`
+ * from the previous build, so the first poll returned healthy and the loop broke
+ * immediately: the job wrote LIVE and a fresh `publishedAt` while the new build was still
+ * running, or after it had already failed. `GET /api/v1/deployments/{uuid}` is the only
+ * endpoint that answers for one build.
+ *
+ * A 404 reads as `building`, not failed: Coolify has been observed not to expose a
+ * just-queued deployment yet. Never becoming `finished` therefore times out the poll,
+ * which is a failure to verify — the correct answer — rather than a silent success.
+ */
+export async function getCoolifyDeployment(
   server: CoolifyServerAuth,
-  appUuid: string,
-): Promise<{
-  health: DeploymentHealth;
-  status: string;
-  raw: unknown;
-}> {
-  const { data } = await coolifyFetch(server, `/api/v1/applications/${appUuid}`);
-  const row = asRecord(data);
-  const status = String(row.status ?? row.fqdn ?? '');
-  const lower = status.toLowerCase();
-  let health: DeploymentHealth = 'building';
-  if (
-    lower.includes('unhealthy') ||
-    lower.includes('exited') ||
-    lower.includes('failed') ||
-    lower.includes('error') ||
-    lower.includes('dead')
-  ) {
-    health = 'failed';
-  } else if (lower.includes('healthy') || lower === 'running') {
-    health = 'healthy';
+  deploymentUuid: string,
+): Promise<{ health: DeploymentHealth; status: string; raw: unknown }> {
+  let data: unknown;
+  try {
+    ({ data } = await coolifyFetch(
+      server,
+      `/api/v1/deployments/${encodeURIComponent(deploymentUuid)}`,
+    ));
+  } catch (error) {
+    if (error instanceof CoolifyApiError && error.status === 404) {
+      return { health: 'building', status: 'not_found', raw: null };
+    }
+    throw error;
   }
-  return { health, status, raw: data };
+  const row = asRecord(data);
+  const nested = asRecord(row.data);
+  const status = String(row.status ?? nested.status ?? '');
+  return { health: deploymentHealthFromStatus(status), status, raw: data };
 }
 
 export async function getApplication(server: CoolifyServerAuth, appUuid: string) {

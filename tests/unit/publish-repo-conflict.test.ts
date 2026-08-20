@@ -22,7 +22,11 @@ const db = vi.hoisted(() => ({
   queryRaw: vi.fn(),
   executeRaw: vi.fn(),
 }));
-const jobs = vi.hoisted(() => ({ getJob: vi.fn(), updateJobFields: vi.fn() }));
+const jobs = vi.hoisted(() => ({
+  claimJobRun: vi.fn(async () => true),
+  getJob: vi.fn(),
+  updateJobFields: vi.fn(),
+}));
 const lifecycle = vi.hoisted(() => ({
   failJob: vi.fn(),
   markJobRunning: vi.fn(),
@@ -38,7 +42,12 @@ vi.mock('@/lib/db', () => ({
     $executeRaw: db.executeRaw,
   },
 }));
-vi.mock('@/lib/jobs/store', () => ({ getJob: jobs.getJob, updateJobFields: jobs.updateJobFields }));
+vi.mock('@/lib/jobs/store', () => ({
+  // The exclusive run claim: this suite drives one runner, so it always wins.
+  claimJobRun: jobs.claimJobRun,
+  getJob: jobs.getJob,
+  updateJobFields: jobs.updateJobFields,
+}));
 vi.mock('@/lib/jobs/lifecycle', () => ({
   beginJobHeartbeat: () => ({ stop: () => {} }),
   failJob: lifecycle.failJob,
@@ -55,7 +64,7 @@ vi.mock('@/lib/cloudflare/dns', () => ({ upsertARecord: vi.fn() }));
 vi.mock('@/lib/coolify/client', () => ({
   addApplicationDomain: vi.fn(),
   createApplication: vi.fn(),
-  getDeploymentStatus: vi.fn(),
+  getCoolifyDeployment: vi.fn(),
   triggerDeploy: vi.fn(),
 }));
 vi.mock('@/lib/coolify/servers', () => ({
@@ -114,8 +123,8 @@ function spyDeps(repo: { repoId: string; created: boolean }): { deps: PublishDep
     async startDeploy() {
       return { deploymentUuid: 'coolify-deployment-1' };
     },
-    async deployHealth() {
-      return { health: 'healthy', status: 'running:healthy' };
+    async deploymentStatus() {
+      return { health: 'healthy', status: 'finished' };
     },
   };
   return { deps, seen };

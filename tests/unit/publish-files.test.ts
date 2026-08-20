@@ -31,8 +31,13 @@ vi.mock('@/lib/checkpoints/snapshot', () => ({
   SnapshotReadError: FakeSnapshotReadError,
 }));
 
-const { collectPublishFiles, projectHasPublishableFiles, publishJobErrorCode } =
-  await import('@/lib/publish/files');
+const {
+  collectPublishFiles,
+  projectHasPublishableFiles,
+  publishJobErrorCode,
+  withoutNeverPublishedPaths,
+} = await import('@/lib/publish/files');
+const { buildRepoFiles } = await import('@/lib/deploy/repo-files');
 const { PublishRepoConflictError } = await import('@/lib/publish/repo-guard');
 
 beforeEach(() => {
@@ -155,5 +160,32 @@ describe('publishJobErrorCode', () => {
     expect(publishJobErrorCode(new FakeSnapshotReadError('x'))).toBe('snapshot_unreadable');
     expect(publishJobErrorCode(new PublishRepoConflictError('deploy-org/x'))).toBe('repo_conflict');
     expect(publishJobErrorCode(new Error('boom'))).toBe('provider_error');
+  });
+});
+
+describe('withoutNeverPublishedPaths', () => {
+  // Publish lays the stack scaffold and the host files (Dockerfile, package.json,
+  // .gitignore) around the generated files with `buildRepoFiles`, then runs this over the
+  // result. It has to drop exactly the same things `toMap` drops — and none of what
+  // `buildRepoFiles` adds, or the deploy repo goes back to being unbuildable.
+  it('drops secrets and vendor paths from an already-merged file set', () => {
+    expect(
+      withoutNeverPublishedPaths({
+        'app/page.tsx': 'export default () => null;',
+        '.env': 'API_KEY=test-key',
+        'config/.env.production': 'API_KEY=test-key',
+        'node_modules/pkg/index.js': 'module.exports = 1;',
+        'certs/server.pem': '-----BEGIN-----',
+      }),
+    ).toEqual({ 'app/page.tsx': 'export default () => null;' });
+  });
+
+  it('keeps every file buildRepoFiles adds', () => {
+    const built = buildRepoFiles('NEXTJS', { 'app/page.tsx': 'x' }, { projectName: 'Acme' });
+    expect(withoutNeverPublishedPaths(built)).toEqual(built);
+    // Named so the two claims above cannot both pass on an empty object.
+    expect(Object.keys(built)).toEqual(
+      expect.arrayContaining(['package.json', 'Dockerfile', '.gitignore', '.dockerignore']),
+    );
   });
 });

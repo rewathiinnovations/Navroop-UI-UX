@@ -329,6 +329,49 @@ export async function updateJobIfActive(id: string, fields: JobUpdateFields) {
 }
 
 /**
+ * Take a job for this runner, exclusively.
+ *
+ * `updateJobIfActive` guards on `status IN ('QUEUED','RUNNING')`, which is right for a
+ * terminal settle and wrong for starting one: a second request landing on a job that is
+ * already RUNNING won that write too, so two runners walked the same publish. Each held
+ * its own `steps` array and its own `resourceIds` snapshot, so both raced a force-push on
+ * one branch, both called `triggerDeploy`, and — when neither saw the other's application
+ * yet — created two Coolify applications for one deployment, the second of which is
+ * recorded nowhere and therefore unreapable.
+ *
+ * QUEUED always wins. RUNNING is only taken over when its heartbeat has stopped, which is
+ * the same ownership test `reconcileAbandonedJobs` uses: a live runner rewrites
+ * `heartbeatAt` every `HEARTBEAT_INTERVAL_MS`, so its rows are never stale, and a row
+ * whose heartbeat stopped is unowned whichever instance last held it. Fencing on
+ * `ownerInstance` instead would deadlock the only path that recovers a crashed instance's
+ * work.
+ *
+ * The win is the returned row count, never a re-read: two callers reading "still QUEUED"
+ * before either writes is exactly the race this exists to close.
+ */
+export async function claimJobRun(
+  id: string,
+  ownerInstance: string,
+  staleBefore: Date,
+): Promise<boolean> {
+  const rows = await prisma.$queryRaw<Array<{ id: string }>>`
+    UPDATE "GenerationJob"
+    SET status = 'RUNNING'::"JobStatus",
+        "ownerInstance" = ${ownerInstance},
+        "startedAt" = COALESCE("startedAt", NOW()),
+        "heartbeatAt" = NOW(),
+        "updatedAt" = NOW()
+    WHERE id = ${id}
+      AND (
+        status = 'QUEUED'
+        OR (status = 'RUNNING' AND ("heartbeatAt" IS NULL OR "heartbeatAt" < ${staleBefore}))
+      )
+    RETURNING id
+  `;
+  return rows.length > 0;
+}
+
+/**
  * Stamp `creditsChargedAt` only if it is still NULL. Two replicas racing to start
  * the same job both see `creditsChargedAt: null` in a plain read, so the stamp has
  * to be the same statement as the condition.

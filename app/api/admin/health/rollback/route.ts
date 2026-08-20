@@ -44,7 +44,7 @@ export async function POST(request: NextRequest) {
   const result = await executeCoolifyRollback({
     request: client.request,
     applicationUuid: appUuid,
-    imageTag: plan.target.sha,
+    targetSha: plan.target.sha,
   });
   if (!result.ok) return NextResponse.json({ error: result.error }, { status: 502 });
 
@@ -54,12 +54,15 @@ export async function POST(request: NextRequest) {
     action: 'deploy.rollback',
     targetType: 'release',
     targetId: plan.target.sha,
-    after: { from: current.sha, to: plan.target.sha },
+    after: { from: current.sha, to: plan.target.sha, deploymentUuid: result.deploymentUuid },
   });
 
+  // "Deploying", not "rolled back": the pin is confirmed but the build is not. The pin is
+  // also sticky — Coolify keeps deploying this commit until the operator moves it on.
   return NextResponse.json({
     ok: true,
-    sha: plan.target.sha,
-    note: 'Database was not reverted. Restore from backup if the schema changed.',
+    sha: result.sha,
+    deploymentUuid: result.deploymentUuid,
+    note: `Coolify is now deploying ${result.sha}; watch the deployment to confirm it finishes. The application stays pinned to this commit until you deploy a newer one. Database was not reverted — restore from backup if the schema changed.`,
   });
 }

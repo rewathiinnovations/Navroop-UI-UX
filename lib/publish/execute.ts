@@ -2,7 +2,7 @@ import { prisma } from '@/lib/db';
 import {
   addApplicationDomain,
   createApplication,
-  getDeploymentStatus,
+  getCoolifyDeployment,
   triggerDeploy,
   type CoolifyServerAuth,
   type CreateApplicationInput,
@@ -14,12 +14,16 @@ import { applyPrimaryRedirects } from '@/lib/domains/redirects';
 import { ensureDeployRepo, pushFiles } from '@/lib/github/deploy-client';
 import { getRootDomain } from '@/lib/integrations/store';
 import { getStack } from '@/lib/stacks';
+import { buildRepoFiles } from '@/lib/deploy/repo-files';
+import { deriveDeploymentStatus } from './deployment-status';
 import { beginJobHeartbeat, failJob, markJobRunning, succeedJob } from '@/lib/jobs/lifecycle';
-import { getJob, updateJobFields } from '@/lib/jobs/store';
+import { HEARTBEAT_STALE_MS } from '@/lib/jobs/poll';
+import { claimJobRun, getJob, updateJobFields } from '@/lib/jobs/store';
+import { getInstanceId } from '@/lib/runtime/instance';
 import type { JobResourceIds, JobStep } from '@/lib/jobs/types';
 import { log } from '@/lib/logger';
 import { PUBLISH_POLL_MS, PUBLISH_POLL_TIMEOUT_MS } from './constants';
-import { collectPublishFiles, publishJobErrorCode } from './files';
+import { collectPublishFiles, publishJobErrorCode, withoutNeverPublishedPaths } from './files';
 import { injectPreviewFiles } from './preview-inject';
 import { coolifyAppName, dnsLabel, deployRepoName } from './naming';
 import { withProviderRetry } from './retry';
@@ -82,9 +86,14 @@ export type PublishDeps = {
     auth: CoolifyServerAuth,
     appUuid: string,
   ) => Promise<{ deploymentUuid: string | null }>;
-  deployHealth: (
+  /**
+   * The state of the deployment `startDeploy` returned — not the application's. The
+   * application is already healthy from the previous build on every re-publish, so
+   * reading it reported LIVE before the new build had even started.
+   */
+  deploymentStatus: (
     auth: CoolifyServerAuth,
-    appUuid: string,
+    deploymentUuid: string,
   ) => Promise<{ health: DeploymentHealth; status: string }>;
 };
 
@@ -99,7 +108,7 @@ export const livePublishDeps: PublishDeps = {
   addAppDomain: addApplicationDomain,
   applyRedirects: applyPrimaryRedirects,
   startDeploy: triggerDeploy,
-  deployHealth: getDeploymentStatus,
+  deploymentStatus: getCoolifyDeployment,
 };
 
 function initialSteps(): JobStep[] {
@@ -131,17 +140,6 @@ function patchSteps(
         }
       : step,
   );
-}
-
-function deriveDeploymentStatus(
-  jobStatus: 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'ABANDONED' | 'CANCELLED',
-  hadSuccessfulDeployment: boolean,
-) {
-  if (jobStatus === 'SUCCEEDED') return 'LIVE' as const;
-  if (jobStatus === 'QUEUED') return 'QUEUED' as const;
-  if (jobStatus === 'RUNNING') return 'BUILDING' as const;
-  if (hadSuccessfulDeployment) return 'LIVE' as const;
-  return 'FAILED' as const;
 }
 
 async function persistProgress(
@@ -213,6 +211,26 @@ export async function runPublishJob(jobId: string, deps: PublishDeps = livePubli
   if (!job) throw new Error('Publish job not found');
   if (job.status === 'SUCCEEDED') return job;
   if (job.status !== 'QUEUED' && job.status !== 'RUNNING') return job;
+
+  // Claim the run before anything external happens. `startPublishJob` deliberately hands
+  // a second caller the *same* job id, `acquireLock` is re-entrant for the same user, and
+  // `markJobRunning`'s guard accepts a row that is already RUNNING — so a double click,
+  // two tabs, or two POSTs used to put two runners on one job. Each has its own `steps`
+  // and `resourceIds`, so they raced a force-push on one branch, called `triggerDeploy`
+  // twice, and could create two Coolify applications for one deployment, the second of
+  // which is recorded nowhere and therefore unreapable.
+  //
+  // A lost claim is not an error: the work is already in flight, so hand the caller the
+  // in-flight job.
+  const claimed = await claimJobRun(
+    jobId,
+    getInstanceId(),
+    new Date(Date.now() - HEARTBEAT_STALE_MS),
+  );
+  if (!claimed) {
+    log.info('publish.run_already_claimed', { jobId, projectId: job.projectId });
+    return getJob(jobId);
+  }
 
   const kind = job.inputPrompt === 'PREVIEW' ? 'PREVIEW' : 'LIVE';
   const deployment = await prisma.deployment.findUnique({
@@ -293,15 +311,33 @@ export async function runPublishJob(jobId: string, deps: PublishDeps = livePubli
       where: { id: deployment.serverId },
     });
 
-    // One source for both call sites below. The gate follows `Deployment.passwordHash`,
-    // not the request: hardcoding `password: null` here meant every publish of a node
-    // stack shipped a middleware with the Basic-Auth branch stripped out while the UI
-    // kept reporting `hasPassword: true`. The plaintext never reaches the deploy repo —
-    // it lives on the Coolify application as PREVIEW_PASSWORD.
+    // One source for both call sites below.
+    //
+    // `deps.collectFiles` returns the generated files and nothing else — the checkpoint
+    // snapshot is `<file>` blocks from `Project.lastCode`, so a generation that did not
+    // happen to emit a `package.json` produced a repo Coolify cannot build. `buildRepoFiles`
+    // is what the Connectors push and the ZIP export already ship: the stack scaffold
+    // underneath, the generated files on top, plus the Dockerfile / .dockerignore /
+    // .gitignore / README the host needs. Publish was the one caller that skipped it.
+    //
+    // The never-publish deny list is re-applied to the merged set on purpose. It already
+    // runs inside `collectPublishFiles`, but `collectFiles` is an injectable dependency
+    // and the commit is built from explicit Git Data tree entries (a `.gitignore` in the
+    // tree is decoration), so the last thing before a file becomes a commit has to be the
+    // filter. Nothing `buildRepoFiles` adds is on that list.
+    //
+    // The preview gate goes on top of all of it. The gate follows
+    // `Deployment.passwordHash`, not the request: hardcoding `password: null` here meant
+    // every publish of a node stack shipped a middleware with the Basic-Auth branch
+    // stripped out while the UI kept reporting `hasPassword: true`. The plaintext never
+    // reaches the deploy repo — it lives on the Coolify application as PREVIEW_PASSWORD.
     const collectForPublish = async () => {
-      const collected = await deps.collectFiles(job.projectId);
-      if (kind !== 'PREVIEW') return collected;
-      return injectPreviewFiles(collected, {
+      const generated = await deps.collectFiles(job.projectId);
+      const repoFiles = withoutNeverPublishedPaths(
+        buildRepoFiles(stack.id, generated, { projectName: project.name }),
+      );
+      if (kind !== 'PREVIEW') return repoFiles;
+      return injectPreviewFiles(repoFiles, {
         stack: stack.id,
         deployType: stack.deployType,
         passwordProtected: Boolean(deployment.passwordHash),
@@ -332,7 +368,20 @@ export async function runPublishJob(jobId: string, deps: PublishDeps = livePubli
           });
         },
       });
-      server = await deps.pickServer();
+      // The server is pinned by the first resource created on it. Re-picking here on
+      // every unsuccessful attempt moved a retry to whichever server was least loaded
+      // *now*, while `resourceIds` still carried the Coolify uuid created on the old one
+      // — so the retry talked to server B's API with server A's application uuid, got a
+      // 404 nobody can interpret, and left `serverId` pointing somewhere the app is not
+      // (which is also how `stopDeployment` and `destroyDeployment` find it). A genuine
+      // move is a migration: delete the app, recreate it, re-point DNS.
+      const pinnedByResource = Boolean(
+        resourceIds.coolifyAppUuid ||
+        deployment.coolifyAppUuid ||
+        resourceIds.dnsRecordId ||
+        deployment.dnsRecordId,
+      );
+      if (!pinnedByResource) server = await deps.pickServer();
       await persistProgress(jobId, deployment.id, {
         steps,
         currentStep: 'slug',
@@ -449,6 +498,10 @@ export async function runPublishJob(jobId: string, deps: PublishDeps = livePubli
       if (!appUuid) throw new Error('Coolify app missing — publish again');
       const triggered = await deps.startDeploy(auth, appUuid);
       buildLogUrl = `${server.apiUrl.replace(/\/+$/, '')}/application/${appUuid}`;
+      // Onto `resourceIds`, not just `lastRequestId`: `poll` is a separate step, so a
+      // resumed job has to find the deployment this job triggered rather than fall back
+      // to whatever the application is currently serving.
+      resourceIds.coolifyDeploymentUuid = triggered.deploymentUuid;
       await persistProgress(jobId, deployment.id, {
         steps,
         currentStep: 'deploy',
@@ -459,21 +512,34 @@ export async function runPublishJob(jobId: string, deps: PublishDeps = livePubli
     });
 
     await step('poll', async () => {
-      const appUuid = resourceIds.coolifyAppUuid || deployment.coolifyAppUuid;
-      if (!appUuid) throw new Error('Coolify app missing — publish again');
+      const deploymentUuid = resourceIds.coolifyDeploymentUuid;
+      // No uuid is a failure to verify, never a success. Reading the application instead
+      // is what made every re-publish report LIVE on its first poll: the application was
+      // already `running:healthy` from the previous build, so the loop broke immediately
+      // and the job wrote LIVE + a fresh `publishedAt` while the new build was still
+      // running — or after it had already failed.
+      if (!deploymentUuid) {
+        throw new Error(
+          'Coolify did not return a deployment id, so this build could not be verified. Open the build log to check it.',
+        );
+      }
       const deadline = Date.now() + PUBLISH_POLL_TIMEOUT_MS;
-      let lastHealth = 'building';
+      let lastHealth: DeploymentHealth = 'building';
+      let lastStatus = 'queued';
       while (Date.now() < deadline) {
-        const status = await deps.deployHealth(auth, appUuid);
-        lastHealth = status.health;
-        if (status.health === 'healthy') break;
-        if (status.health === 'failed') {
-          throw new Error(`Coolify build fail: ${status.status}`);
+        const state = await deps.deploymentStatus(auth, deploymentUuid);
+        lastHealth = state.health;
+        lastStatus = state.status;
+        if (state.health === 'healthy') break;
+        if (state.health === 'failed') {
+          throw new Error(`Coolify build fail: ${state.status}`);
         }
         await sleep(PUBLISH_POLL_MS);
       }
       if (lastHealth !== 'healthy') {
-        throw new Error('Build did not become healthy within 10 minutes');
+        throw new Error(
+          `Coolify did not finish this build within 10 minutes (last reported "${lastStatus}")`,
+        );
       }
     });
 

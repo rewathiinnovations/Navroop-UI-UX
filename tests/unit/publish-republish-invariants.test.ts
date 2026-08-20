@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as PublishFiles from '@/lib/publish/files';
 import type { PublishDeps, PublishServer } from '@/lib/publish/execute';
 
 /**
@@ -29,7 +30,11 @@ const db = vi.hoisted(() => ({
   projectUpdate: vi.fn(),
   serverFindUniqueOrThrow: vi.fn(),
 }));
-const jobs = vi.hoisted(() => ({ getJob: vi.fn(), updateJobFields: vi.fn() }));
+const jobs = vi.hoisted(() => ({
+  claimJobRun: vi.fn(async () => true),
+  getJob: vi.fn(),
+  updateJobFields: vi.fn(),
+}));
 const lifecycle = vi.hoisted(() => ({
   failJob: vi.fn(),
   markJobRunning: vi.fn(),
@@ -48,23 +53,34 @@ vi.mock('@/lib/db', () => ({
     $executeRaw: vi.fn(async () => 1),
   },
 }));
-vi.mock('@/lib/jobs/store', () => ({ getJob: jobs.getJob, updateJobFields: jobs.updateJobFields }));
+vi.mock('@/lib/jobs/store', () => ({
+  // The exclusive run claim: this suite drives one runner, so it always wins.
+  claimJobRun: jobs.claimJobRun,
+  getJob: jobs.getJob,
+  updateJobFields: jobs.updateJobFields,
+}));
 vi.mock('@/lib/jobs/lifecycle', () => ({
   beginJobHeartbeat: () => ({ stop: () => {} }),
   failJob: lifecycle.failJob,
   markJobRunning: lifecycle.markJobRunning,
   succeedJob: lifecycle.succeedJob,
 }));
-vi.mock('@/lib/publish/files', () => ({
-  collectPublishFiles: vi.fn(),
-  publishJobErrorCode: () => 'provider_error',
-}));
+vi.mock('@/lib/publish/files', async (importOriginal) => {
+  // Only the reader is stubbed: the never-publish filter is real, because what reaches
+  // the deploy repo is exactly what these cases assert on.
+  const actual = await importOriginal<typeof PublishFiles>();
+  return {
+    ...actual,
+    collectPublishFiles: vi.fn(),
+    publishJobErrorCode: () => 'provider_error',
+  };
+});
 vi.mock('@/lib/github/deploy-client', () => ({ ensureDeployRepo: vi.fn(), pushFiles: vi.fn() }));
 vi.mock('@/lib/cloudflare/dns', () => ({ upsertARecord: vi.fn() }));
 vi.mock('@/lib/coolify/client', () => ({
   addApplicationDomain: vi.fn(),
   createApplication: vi.fn(),
-  getDeploymentStatus: vi.fn(),
+  getCoolifyDeployment: vi.fn(),
   triggerDeploy: vi.fn(),
 }));
 vi.mock('@/lib/coolify/servers', () => ({
@@ -137,8 +153,8 @@ function spyDeps(): { deps: PublishDeps; seen: Seen } {
     async startDeploy() {
       return { deploymentUuid: 'coolify-deployment-1' };
     },
-    async deployHealth() {
-      return { health: 'healthy', status: 'running:healthy' };
+    async deploymentStatus() {
+      return { health: 'healthy', status: 'finished' };
     },
   };
   return { deps, seen };

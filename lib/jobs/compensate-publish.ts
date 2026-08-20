@@ -2,6 +2,7 @@ import { prisma } from '@/lib/db';
 import { compensateJobResources, type CompensateAdapters } from './compensate';
 import { getJob, updateJobFields } from './store';
 import type { JobResourceIds, JobStep } from './types';
+import { deriveDeploymentStatus } from '@/lib/publish/deployment-status';
 
 function parseKindFromPrompt(prompt: string | null): 'LIVE' | 'PREVIEW' | null {
   if (prompt === 'LIVE' || prompt === 'PREVIEW') return prompt;
@@ -70,11 +71,22 @@ export async function compensateAbandonedPublish(
     ...(steps ? { steps } : {}),
   });
 
-  if (result.rolledBack && deployment && deployment.status !== 'LIVE') {
+  // Settle the row on every abandon, not only when something was rolled back.
+  //
+  // A re-publish deliberately rolls nothing back — its Coolify app and DNS record were
+  // already serving — so gating this write on `result.rolledBack` skipped exactly the
+  // case that needed it: the first `persistProgress` had written BUILDING, the runner's
+  // catch never ran, and no other writer exists. The site stayed up and the product said
+  // "Building" forever, in the publish sheet, on /deployments, on the project badge, and
+  // in the live-slot count (`lib/publish/limits.ts` counts any non-STOPPED row).
+  //
+  // `deriveDeploymentStatus('ABANDONED', …)` computes the state the row had before the
+  // job started: LIVE for a re-publish, FAILED for a first publish.
+  if (deployment) {
     await prisma.deployment.update({
       where: { id: deployment.id },
       data: {
-        status: 'FAILED',
+        status: deriveDeploymentStatus('ABANDONED', hadSuccessfulDeployment),
         lastError: job.errorMessage || 'Publish did not finish',
         ...(toreDownCoolify ? { coolifyAppUuid: null } : {}),
         ...(toreDownDns ? { dnsRecordId: null } : {}),

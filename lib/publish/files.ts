@@ -27,6 +27,24 @@ function isNeverPublishedPath(path: string): boolean {
   return false;
 }
 
+/**
+ * Drop every never-publish path from a finished file set.
+ *
+ * `toMap` applies the same rule to each source as it is read; this applies it to the set
+ * that is actually about to become a commit, after the stack scaffold and the host files
+ * have been laid under and over it. Publish calls it there because `collectFiles` is an
+ * injectable dependency and the commit is built from explicit Git Data tree entries — a
+ * `.gitignore` inside the tree is decoration, so the filter has to be the last thing that
+ * runs, not something a caller can bypass.
+ */
+export function withoutNeverPublishedPaths(files: Record<string, string>) {
+  const kept: Record<string, string> = {};
+  for (const [path, content] of Object.entries(files)) {
+    if (!isNeverPublishedPath(path)) kept[path] = content;
+  }
+  return kept;
+}
+
 function toMap(entries: Array<{ path: string; content: string }>) {
   const files: Record<string, string> = {};
   for (const entry of entries) {

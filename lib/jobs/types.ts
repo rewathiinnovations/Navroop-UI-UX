@@ -38,6 +38,12 @@ export type SandboxSkippedRecord = {
 export type JobResourceIds = {
   githubRepo?: string | null;
   coolifyAppUuid?: string | null;
+  /**
+   * The deployment Coolify created for this job's `deploy` step — the only handle that
+   * distinguishes *this* build from the one already running on the application. The
+   * `poll` step verifies against it, so it has to survive a resume.
+   */
+  coolifyDeploymentUuid?: string | null;
   dnsRecordId?: string | null;
   cloudflareZoneId?: string | null;
   compensation?: 'rolled_back' | 'kept_live' | null;
@@ -280,6 +286,7 @@ export function parseResourceIds(value: unknown): JobResourceIds | null {
   return {
     githubRepo: row.githubRepo ?? null,
     coolifyAppUuid: row.coolifyAppUuid ?? null,
+    coolifyDeploymentUuid: row.coolifyDeploymentUuid ?? null,
     dnsRecordId: row.dnsRecordId ?? null,
     cloudflareZoneId: row.cloudflareZoneId ?? null,
     compensation: row.compensation ?? null,

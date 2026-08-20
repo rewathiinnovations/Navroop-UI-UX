@@ -216,7 +216,15 @@ export async function updatePreviewPassword(input: {
       userId: input.userId,
     });
     try {
-      await runPublishJob(started.jobId);
+      const finished = await runPublishJob(started.jobId);
+      // A runner declines when a publish is already in flight on this job (the F-203
+      // claim), and it returns rather than throws. The middleware carrying the new gate
+      // was therefore never built, so this is the same failure as a build that broke.
+      if (finished?.status !== 'SUCCEEDED') {
+        throw new Error(
+          'A publish is already running for this project. Wait for it to finish, then set the preview password again.',
+        );
+      }
     } catch (error) {
       // The gate is injected from the hash, so the hash has to be written before the build.
       // If the build never lands, the running app still serves the previous middleware —

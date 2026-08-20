@@ -38,10 +38,20 @@ export default function DeploymentsList({ initial }: { initial: PublicDeployment
         notify.settle(toastId, 'error', data.error || `Could not ${action} this deployment`);
         return;
       }
-      notify.settle(toastId, 'success', done);
       if (action === 'delete') {
-        setRows((current) => current.filter((row) => row.id !== id));
-        return;
+        // A partial teardown keeps the row (it is the last thing naming the Coolify uuid
+        // and DNS record id, and the orphan cron only deletes what this system recorded
+        // creating). Anything other than an explicit `rowDeleted: true` therefore keeps
+        // the row on screen and reads as a warning, so the list never contradicts itself
+        // on the next page load.
+        const removed = data.rowDeleted === true;
+        notify.settle(toastId, removed ? 'success' : 'warning', data.message || done);
+        if (removed) {
+          setRows((current) => current.filter((row) => row.id !== id));
+          return;
+        }
+      } else {
+        notify.settle(toastId, 'success', done);
       }
       const list = await fetch('/api/deployments');
       const payload = await list.json().catch(() => ({}));
