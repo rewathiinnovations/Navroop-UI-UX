@@ -142,6 +142,22 @@ export const SETTINGS: readonly SettingEntry[] = [
     // runtime never had.
     fallback: '2',
   },
+  {
+    key: 'ai.cost.inputPerMillionUsd',
+    group: 'ai',
+    label: 'Input token price (USD per million)',
+    help: 'What DeepSeek charges you for a million input tokens. Leave blank to use the built-in list price of 0.27 (fast) / 0.55 (strongest) — those are transcribed from DeepSeek\u2019s public page, not from your invoice, and every cost figure and the workspace spend limit are calculated from them. Check one bill and enter the real number.',
+    kind: 'number',
+    placeholder: '0.27',
+  },
+  {
+    key: 'ai.cost.outputPerMillionUsd',
+    group: 'ai',
+    label: 'Output token price (USD per million)',
+    help: 'What DeepSeek charges you for a million output tokens. Leave blank to use the built-in list price of 1.10 (fast) / 2.19 (strongest). Both prices must be filled in for either to be used, so a half-entered pair keeps the built-in defaults.',
+    kind: 'number',
+    placeholder: '1.10',
+  },
 
   // ------------------------------------------------------------------ tooling
   {
@@ -151,14 +167,6 @@ export const SETTINGS: readonly SettingEntry[] = [
     help: 'Used when someone imports an existing website by URL. Imports fail without it.',
     kind: 'secret',
     env: 'FIRECRAWL_API_KEY',
-  },
-  {
-    key: 'tooling.morph.apiKey',
-    group: 'tooling',
-    label: 'Morph API key',
-    help: 'Not in use. Nothing applies Morph edit blocks today, so a key here changes nothing — saving one used to make every follow-up edit report success and leave the files untouched.',
-    kind: 'secret',
-    env: 'MORPH_API_KEY',
   },
   {
     key: 'tooling.unsplash.accessKey',

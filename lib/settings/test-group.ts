@@ -173,18 +173,13 @@ async function testAi(): Promise<GroupTestResult['checks']> {
  * consumer uses — `lib/import/firecrawl.ts` and `lib/assets/stock-photo.ts` —
  * so a green line means the saved value was accepted, not merely typed in.
  *
- * There used to be an E2B line here. The entry it read was deleted from
- * SETTINGS along with the sandbox subsystem, and until then the button
- * confirmed "E2B key is set" for a billable credential nothing would ever
- * read. Morph is still in the registry, marked not in use; it is reported only
- * when a key is saved, to say exactly that.
+ * There used to be an E2B line here, and a Morph one. Both read entries that
+ * are now gone from SETTINGS: the sandbox subsystem was deleted, and Morph Fast
+ * Apply had no applier, so until it was removed the button confirmed a billable
+ * credential nothing would ever read.
  */
 async function testTooling(): Promise<GroupTestResult['checks']> {
-  const values = await getSettings([
-    'tooling.firecrawl.apiKey',
-    'tooling.morph.apiKey',
-    'tooling.unsplash.accessKey',
-  ]);
+  const values = await getSettings(['tooling.firecrawl.apiKey', 'tooling.unsplash.accessKey']);
   const checks: GroupTestResult['checks'] = [];
 
   const firecrawl = values['tooling.firecrawl.apiKey'];
@@ -215,16 +210,6 @@ async function testTooling(): Promise<GroupTestResult['checks']> {
             'No access key. Generated sites use placeholder imagery, which is a supported setup.',
         }),
   });
-
-  if (values['tooling.morph.apiKey']) {
-    checks.push({
-      label: 'Morph',
-      ok: true,
-      depth: 'local',
-      message:
-        'A key is saved, but nothing applies Morph edit blocks today, so it is never used. Clearing it changes nothing.',
-    });
-  }
 
   return checks;
 }

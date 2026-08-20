@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+// Pure data with no mocked dependency, so it does not need the deferred import below.
+import { SETTINGS } from '@/lib/settings/registry';
 
 /**
  * The Test button on /admin/config is the only diagnostic an operator has for
@@ -199,17 +201,22 @@ describe('the tooling check reports only keys something reads', () => {
     expect(result.checks.map((check) => check.label)).not.toContain('E2B');
   });
 
-  it('says a saved Morph key is never used rather than calling it configured', async () => {
+  it('has no Morph field or check left to invite a key for a removed feature', async () => {
+    // Morph Fast Apply was configurable, keyed and billable with no applier:
+    // `parseMorphEdits` / `applyMorphEditToFile` had no production caller, so a
+    // saved key made every follow-up edit report success and change nothing.
+    // Reporting "a key is saved but never used" was the interim honest answer;
+    // the feature is gone now, so there is no field to save one into (F-718).
+    expect(SETTINGS.map((entry) => entry.key)).not.toContain('tooling.morph.apiKey');
+    expect(SETTINGS.map((entry) => entry.env)).not.toContain('MORPH_API_KEY');
+
     vi.stubEnv('FIRECRAWL_API_KEY', '');
     vi.stubEnv('UNSPLASH_ACCESS_KEY', '');
-    storeSetting('tooling.morph.apiKey', ADMIN_KEY);
     stubFetch(() => ({ status: 200 }));
 
-    const morph = (await testSettingGroup('tooling')).checks.find(
-      (check) => check.label === 'Morph',
-    );
+    const result = await testSettingGroup('tooling');
 
-    expect(morph?.message).toMatch(/nothing applies Morph edit blocks/i);
+    expect(result.checks.map((check) => check.label)).not.toContain('Morph');
   });
 });
 
