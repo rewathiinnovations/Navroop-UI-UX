@@ -1,9 +1,12 @@
 /**
  * Identity of the E2E account, plus the guards deciding which database may
- * receive it. No side effects and no database work: the Playwright setup project
- * and `scripts/seed-e2e-account.ts` both import this, so the seeded row and the
+ * receive it. No database work: the Playwright setup project and
+ * `scripts/seed-e2e-account.ts` both import this, so the seeded row and the
  * credentials typed into the login form cannot drift apart.
  */
+import { randomBytes } from 'node:crypto';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import { validateEmail } from '../../lib/password';
 
 /** `.invalid` is a reserved TLD, so this address can never receive real mail. */
@@ -37,11 +40,26 @@ export function adminAccountFor(account: E2eAccount): E2eAccount {
 }
 
 /**
- * Only ever used against a database on this machine. A non-local target must
- * supply `E2E_USER_PASSWORD`, so this literal can never become a login on a
- * server someone else can reach.
+ * Only ever used against a database on this machine; a non-local target must
+ * supply `E2E_USER_PASSWORD`. Generated per machine and persisted next to the
+ * storage states (gitignored via `e2e/.gitignore`), so no committed string is
+ * ever a working credential — the old source literal here was a standing
+ * password for a seeded ADMIN row (F-612).
  */
-const LOCAL_ONLY_PASSWORD = 'E2eLocal-Pw9';
+const LOCAL_PASSWORD_FILE = resolve(process.cwd(), 'e2e/.auth/local-password');
+
+function localOnlyPassword(): string {
+  try {
+    const existing = readFileSync(LOCAL_PASSWORD_FILE, 'utf8').trim();
+    if (existing.length >= 8) return existing;
+  } catch {
+    // First run on this machine — generate below.
+  }
+  const generated = randomBytes(18).toString('base64url');
+  mkdirSync(dirname(LOCAL_PASSWORD_FILE), { recursive: true });
+  writeFileSync(LOCAL_PASSWORD_FILE, `${generated}\n`, 'utf8');
+  return generated;
+}
 
 /** Test databases are owned by Vitest; the seeded account has no business there. */
 const FORBIDDEN_DATABASES = new Set(['openlovable_test', 'openlovable_shadow']);
@@ -110,7 +128,7 @@ export function resolveE2eTarget(env: NodeJS.ProcessEnv = process.env): E2eTarge
     };
   }
 
-  const password = (env.E2E_USER_PASSWORD || '').trim() || (isLocal ? LOCAL_ONLY_PASSWORD : '');
+  const password = (env.E2E_USER_PASSWORD || '').trim() || (isLocal ? localOnlyPassword() : '');
   if (!password) {
     return {
       ok: false,

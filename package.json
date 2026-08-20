@@ -22,7 +22,7 @@
     "db:test": "tsx scripts/ensure-test-db.ts && tsx scripts/migrate-test-db.ts",
     "db:test:migrate": "tsx scripts/migrate-test-db.ts",
     "db:migrate": "prisma migrate dev",
-    "db:seed": "node prisma/seed.mjs",
+    "db:seed": "tsx prisma/seed.ts",
     "smoke": "tsx scripts/smoke-test.ts",
     "rollback": "tsx scripts/rollback.ts",
     "prepare": "husky"
@@ -144,6 +144,6 @@
     ]
   },
   "prisma": {
-    "seed": "node prisma/seed.mjs"
+    "seed": "tsx prisma/seed.ts"
   }
 }

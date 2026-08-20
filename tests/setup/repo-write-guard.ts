@@ -64,6 +64,12 @@ export const DEFAULT_ALLOWLIST: readonly string[] = [
   // The v8 coverage provider writes here; also in SKIP_DIRECTORIES, kept for the
   // case where a reporter is pointed somewhere shallower.
   'coverage',
+  // Written create-if-absent by the E2E harness (`localOnlyPassword` in
+  // e2e/support/account.ts, F-612): the per-machine seeded password. No vitest
+  // path can create it — only playwright/scripts do — but a concurrent verify
+  // or playwright run in another shell may create it inside a vitest snapshot
+  // window, and that is the harness's own output, not a test leaving state.
+  'e2e/.auth/local-password',
 ];
 
 export type FileFacts = { mtimeMs: number; size: number };

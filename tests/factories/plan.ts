@@ -26,7 +26,7 @@ export type DefaultPlanRow = {
 
 export type PlanEnsureDb = { plan: Pick<PrismaClient['plan'], 'findFirst' | 'upsert'> };
 
-/** Idempotent Free/default plan — same keys as prisma/seed.mjs. */
+/** Idempotent Free/default plan — same keys as prisma/seed.ts. */
 export async function ensureDefaultPlan(db: PlanEnsureDb): Promise<DefaultPlanRow> {
   const existing = await db.plan.findFirst({ where: { isDefault: true } });
   if (existing) return existing;

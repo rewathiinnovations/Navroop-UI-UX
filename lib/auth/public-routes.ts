@@ -95,7 +95,8 @@ export const PUBLIC_API_ROUTES: PublicRouteRule[] = [
     pattern: '/api/auth/login',
     methods: ['POST'],
     reason: 'Signing in is the act of obtaining a session.',
-    ownMechanism: 'Password verification plus per-email and per-IP rate limits.',
+    ownMechanism:
+      'Password verification plus rate limits: per-email always, per-client-IP when a trusted proxy supplies the address (lib/auth/client-ip.ts); both stores are bounded and swept.',
   },
   {
     pattern: '/api/auth/register',
@@ -131,7 +132,8 @@ export const PUBLIC_API_ROUTES: PublicRouteRule[] = [
     pattern: '/api/auth/forgot-password',
     methods: ['POST'],
     reason: 'A locked-out user has no session by definition.',
-    ownMechanism: 'Generic response for every input, plus per-email and per-IP rate limits.',
+    ownMechanism:
+      'Generic response for every input, plus the same per-email / trusted-proxy per-IP rate limits as login, on a bounded swept store.',
   },
   {
     pattern: '/api/auth/reset-password',

@@ -61,18 +61,25 @@ async function issueAndEmail(user: { id: string; email: string }, now: Date, sen
 }
 
 export async function requestPasswordReset(
-  input: { email: string; ip: string },
+  input: { email: string; ip: string | null },
   deps?: { send?: EmailSend; now?: Date },
 ): Promise<ForgotResult> {
   const email = String(input.email || '')
     .trim()
     .toLowerCase();
-  const ip = String(input.ip || 'unknown');
   const now = deps?.now ?? new Date();
   const send = deps?.send ?? sendEmail;
 
-  if (!validateEmail(email) || !allowPasswordResetRequest(email, ip, now)) {
+  if (!validateEmail(email)) {
     await dummyWork();
+    return { ok: true, message: GENERIC_FORGOT_MESSAGE };
+  }
+
+  // No dummyWork here (F-709): the response is byte-identical either way, so
+  // there is no timing signal to equalise — and burning a cost-12 bcrypt for a
+  // request the limiter already refused makes the flood *more* expensive to
+  // serve, not less.
+  if (!allowPasswordResetRequest(email, input.ip, now)) {
     return { ok: true, message: GENERIC_FORGOT_MESSAGE };
   }
 

@@ -1,4 +1,5 @@
 import { auth } from '@/auth';
+import { redirect } from 'next/navigation';
 import { prisma } from '@/lib/db';
 import { getGitHubConnectionStatusForUser } from '@/lib/github/connection';
 import { getLatestPlan } from '@/lib/projects/plan';
@@ -7,13 +8,18 @@ import GenerationWorkspace from '@/components/workspace/GenerationWorkspace';
 
 export default async function ProjectPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  // The proxy's page gate only checks that a session cookie *exists*
+  // (`hasSessionCookie`), so this page runs for a stale or garbage cookie.
+  // `auth()` decrypts and validates the token — without a verified session,
+  // nothing is fetched and nothing renders (F-013). Same pattern as
+  // `app/project/[id]/domains/page.tsx`. Any verified member may view:
+  // project reads are workspace-wide by design.
   const session = await auth();
   const userId = session?.user?.id;
+  if (!userId) redirect('/');
 
   const [github, project, planResult] = await Promise.all([
-    userId
-      ? getGitHubConnectionStatusForUser(prisma, userId)
-      : Promise.resolve({ connected: false as const }),
+    getGitHubConnectionStatusForUser(prisma, userId),
     prisma.project.findFirst({
       where: { id, deletedAt: null },
       select: { githubRepoUrl: true, phase: true },

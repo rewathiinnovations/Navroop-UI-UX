@@ -28,7 +28,7 @@ describe('sign-in rate limit', () => {
     const email = 'member@example.com';
     const ip = '203.0.113.11';
     for (let i = 0; i < LOGIN_ATTEMPT_LIMIT; i += 1) allowLoginAttempt(email, ip);
-    recordLoginSuccess(email, ip);
+    recordLoginSuccess(email);
     expect(allowLoginAttempt(email, ip).allowed).toBe(true);
   });
 });
