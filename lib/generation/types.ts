@@ -143,6 +143,17 @@ export type StartGenerationInput = {
   projectId?: string | null;
   sandboxData?: SandboxData | null;
   idempotencyKey?: string | null;
+  /**
+   * Model fix attempts already spent on this build, echoed back from the
+   * previous reply's `buildFix`. The server's attempt cap reads it; omitting it
+   * made every retry look like the first.
+   */
+  buildFixAttempt?: number;
+  /**
+   * Signature of the failure this generation is repairing, so the server can
+   * stop a loop that is re-emitting the same broken file.
+   */
+  buildFixSignature?: string | null;
 };
 
 export type StartApplyInput = {
@@ -150,13 +161,9 @@ export type StartApplyInput = {
   isEdit?: boolean;
   packages?: string[];
   sandboxId?: string | null;
-  /** Model fix attempts already spent on this build. 0 on a normal apply. */
-  autoFixAttempt?: number;
-  /** Previous failure signature, so a repeated failure stops the loop. */
-  previousBuildSignature?: string | null;
 };
 
-/** Returned on the apply `complete` frame when the build needs another pass. */
+/** Returned on the generate `complete` frame when the build needs another pass. */
 export type BuildFixRequest = {
   instruction: string;
   attempt: number;
@@ -169,6 +176,12 @@ export type GenerateResult = {
   packagesToInstall: string[];
   alreadyRunning?: boolean;
   skillNames?: string[];
+  /**
+   * The repair pass the server decided is warranted, or null. The server owns
+   * the whole policy (attempt cap, repeated-failure guard, admin toggle); the
+   * client only runs what it is handed and carries the counter back.
+   */
+  buildFix?: BuildFixRequest | null;
 };
 
 export type ApplyResult = {
