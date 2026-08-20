@@ -1,7 +1,7 @@
 'use server';
 
 import { prisma } from '@/lib/db';
-import { getSessionUser } from '@/lib/auth';
+import { getSessionUser, type SessionUser } from '@/lib/auth';
 
 function unauthorized() {
   return { ok: false as const, error: 'Sign in required', status: 401 };
@@ -11,15 +11,30 @@ function notFound() {
   return { ok: false as const, error: 'Project not found', status: 404 };
 }
 
+function forbidden() {
+  return { ok: false as const, error: 'Forbidden', status: 403 };
+}
+
+function canMutate(user: SessionUser, ownerId: string) {
+  return user.id === ownerId || user.role === 'ADMIN';
+}
+
+/**
+ * A star is per user — the row is keyed `(userId, projectId)` — but it is still a write
+ * against someone else's project, so it is gated like every other mutation in
+ * `lib/projects/*`: owner or ADMIN. Without it any signed-in member could probe project
+ * ids and leave rows on projects never shared with them (F-402).
+ */
 export async function toggleStar(projectId: string) {
   const user = await getSessionUser();
   if (!user) return unauthorized();
 
   const project = await prisma.project.findFirst({
     where: { id: projectId, deletedAt: null },
-    select: { id: true },
+    select: { ownerId: true },
   });
   if (!project) return notFound();
+  if (!canMutate(user, project.ownerId)) return forbidden();
 
   const existing = await prisma.projectStar.findUnique({
     where: { userId_projectId: { userId: user.id, projectId } },

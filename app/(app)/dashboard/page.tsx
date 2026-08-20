@@ -124,6 +124,12 @@ export default function DashboardPage() {
     setProjects((current) => current.filter((project) => project.id !== id));
   };
 
+  const onStarred = (id: string, starred: boolean) => {
+    setProjects((current) =>
+      current.map((project) => (project.id === id ? { ...project, starred } : project)),
+    );
+  };
+
   return (
     <StudioShell variant="workspace">
       <main className="mx-auto max-w-[960px] px-20 pb-64">
@@ -244,6 +250,7 @@ export default function DashboardPage() {
                     onRenamed={onRenamed}
                     onDuplicated={onDuplicated}
                     onDeleted={onDeleted}
+                    onStarred={onStarred}
                   />
                 ))}
               </div>

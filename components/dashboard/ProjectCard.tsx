@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useState, type MouseEvent } from 'react';
-import { Copy, MoreHorizontal, Pencil, Trash2 } from 'lucide-react';
+import { Copy, MoreHorizontal, Pencil, Star, Trash2 } from 'lucide-react';
 import { formatRelativeTime } from '@/lib/format-relative-time';
 import {
   initialsGradient,
@@ -19,6 +19,7 @@ import {
 import { cn } from '@/utils/cn';
 import styles from './project-card.module.css';
 import { fetchJson, notify, toMessage } from '@/lib/notify';
+import { toggleStar } from '@/lib/projects/stars';
 
 function publishBadgeFor(project: ListProject) {
   if (project.publishBadge) return project.publishBadge;
@@ -52,6 +53,7 @@ type ProjectCardProps = {
   onRenamed?: (id: string, name: string) => void;
   onDuplicated?: (project: ListProject) => void;
   onDeleted?: (id: string) => void;
+  onStarred?: (id: string, starred: boolean) => void;
 };
 
 export default function ProjectCard({
@@ -60,6 +62,7 @@ export default function ProjectCard({
   onRenamed,
   onDuplicated,
   onDeleted,
+  onStarred,
 }: ProjectCardProps) {
   const generating = isProjectGenerating(project);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -137,6 +140,37 @@ export default function ProjectCard({
     } catch (cause) {
       notify.error(cause, {
         fallback: 'Could not delete the project',
+        key: `project-${project.id}`,
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // `starred` is per user and lives on the row the list owns, so the parent is told and
+  // re-renders; the card keeps no second copy of it to drift out of sync.
+  const star = async () => {
+    setMenuOpen(false);
+    setBusy(true);
+    try {
+      const result = await toggleStar(project.id);
+      if (!result.ok) {
+        notify.error(result.error, {
+          fallback: 'Could not update the star',
+          key: `project-${project.id}`,
+        });
+        return;
+      }
+      onStarred?.(project.id, result.data.starred);
+      notify.success(
+        result.data.starred
+          ? `“${project.name}” starred.`
+          : `“${project.name}” removed from starred.`,
+        { key: `project-${project.id}` },
+      );
+    } catch (cause) {
+      notify.error(cause, {
+        fallback: 'Could not update the star',
         key: `project-${project.id}`,
       });
     } finally {
@@ -275,6 +309,10 @@ export default function ProjectCard({
           <DropdownMenuItem className={menuItemClass} onSelect={() => void duplicate()}>
             <Copy className="size-14" aria-hidden />
             Duplicate
+          </DropdownMenuItem>
+          <DropdownMenuItem className={menuItemClass} onSelect={() => void star()}>
+            <Star className={cn('size-14', project.starred && 'fill-current')} aria-hidden />
+            {project.starred ? 'Unstar' : 'Star'}
           </DropdownMenuItem>
           <DropdownMenuItem
             className={cn(

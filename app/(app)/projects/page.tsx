@@ -157,6 +157,18 @@ function ProjectsContent() {
     setProjects((current) => current.filter((project) => project.id !== id));
   };
 
+  // On `?starred=true` the row no longer belongs in the list it is sitting in, so drop it
+  // rather than leave a card the filter would not have returned.
+  const onStarred = (id: string, isStarred: boolean) => {
+    setProjects((current) =>
+      starred && !isStarred
+        ? current.filter((project) => project.id !== id)
+        : current.map((project) =>
+            project.id === id ? { ...project, starred: isStarred } : project,
+          ),
+    );
+  };
+
   const selectClass =
     'h-44 rounded-10 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-12 text-[14px] text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]';
 
@@ -362,6 +374,7 @@ function ProjectsContent() {
                     onRenamed={onRenamed}
                     onDuplicated={onDuplicated}
                     onDeleted={onDeleted}
+                    onStarred={onStarred}
                   />
                 ))}
               </div>
