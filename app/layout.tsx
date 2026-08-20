@@ -1,39 +1,40 @@
-import type { Metadata } from "next";
-import { Inter, Outfit, Roboto_Mono } from "next/font/google";
-import localFont from "next/font/local";
-import { AppProviders } from "./providers";
-import "./globals.css";
+import type { Metadata } from 'next';
+import { Inter, Outfit, Roboto_Mono } from 'next/font/google';
+import localFont from 'next/font/local';
+import { AppProviders } from './providers';
+import { SentryClientConfigMeta } from '@/lib/sentry/config-meta';
+import './globals.css';
 
-const inter = Inter({ 
-  subsets: ["latin"],
-  variable: "--font-inter"
+const inter = Inter({
+  subsets: ['latin'],
+  variable: '--font-inter',
 });
 
 const outfit = Outfit({
-  subsets: ["latin"],
-  variable: "--font-wordmark",
+  subsets: ['latin'],
+  variable: '--font-wordmark',
 });
 
 const geistSans = localFont({
-  src: "./fonts/GeistVF.woff",
-  variable: "--font-geist-sans",
-  weight: "100 900",
+  src: './fonts/GeistVF.woff',
+  variable: '--font-geist-sans',
+  weight: '100 900',
 });
 
 const geistMono = localFont({
-  src: "./fonts/GeistMonoVF.woff",
-  variable: "--font-geist-mono",
-  weight: "100 900",
+  src: './fonts/GeistMonoVF.woff',
+  variable: '--font-geist-mono',
+  weight: '100 900',
 });
 
 const robotoMono = Roboto_Mono({
-  subsets: ["latin"],
-  variable: "--font-roboto-mono",
+  subsets: ['latin'],
+  variable: '--font-roboto-mono',
 });
 
 export const metadata: Metadata = {
-  title: "Navroop",
-  description: "Re-imagine any website in seconds with AI-powered website builder.",
+  title: 'Navroop',
+  description: 'Re-imagine any website in seconds with AI-powered website builder.',
 };
 
 export default function RootLayout({
@@ -43,10 +44,11 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className={`${inter.variable} ${geistSans.variable} ${geistMono.variable} ${robotoMono.variable} ${outfit.variable} font-sans`}>
-        <AppProviders>
-          {children}
-        </AppProviders>
+      <body
+        className={`${inter.variable} ${geistSans.variable} ${geistMono.variable} ${robotoMono.variable} ${outfit.variable} font-sans`}
+      >
+        <SentryClientConfigMeta />
+        <AppProviders>{children}</AppProviders>
       </body>
     </html>
   );

@@ -8,7 +8,11 @@ import { DEFAULT_WORKSPACE_ID } from '@/lib/publish/constants';
 
 export async function sendDsnVerificationEvent(dsn: string) {
   const parsed = parseSentryDsn(dsn);
-  if (!parsed) return { ok: false as const, error: 'The Sentry DSN is malformed. Check the URL, project id, and public key.' };
+  if (!parsed)
+    return {
+      ok: false as const,
+      error: 'The Sentry DSN is malformed. Check the URL, project id, and public key.',
+    };
   const eventId = randomUUID().replace(/-/g, '');
   const url = `${parsed.protocol}://${parsed.host}/api/${parsed.projectId}/store/`;
   const publicKey = (() => {
@@ -44,7 +48,10 @@ export async function sendDsnVerificationEvent(dsn: string) {
     return {
       ok: false as const,
       eventId,
-      error: error instanceof Error ? error.message : 'Could not send the verification event (transport error).',
+      error:
+        error instanceof Error
+          ? error.message
+          : 'Could not send the verification event (transport error).',
     };
   }
 }
@@ -61,7 +68,14 @@ export async function runSentryRoundTrip(workspaceId = DEFAULT_WORKSPACE_ID) {
     },
     poll: async () => {
       if (!api) return null;
-      return api.findIssueByFingerprint('navroop-sentry-verify');
+      try {
+        return await api.findIssueByFingerprint('navroop-sentry-verify');
+      } catch {
+        // The API now rejects on failure (F-631). For the verify round trip a
+        // failed poll is a miss, not a crash: the loop keeps polling and the
+        // user still gets the sent_not_received outcome, as before.
+        return null;
+      }
     },
     getStats: api ? () => api.getProjectStats() : undefined,
   });

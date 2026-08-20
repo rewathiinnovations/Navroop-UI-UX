@@ -3,7 +3,13 @@ import { HEARTBEAT_FINGERPRINT } from './heartbeat';
 import { resolveSendAdminEmail } from './alerts';
 import { createSentryApi, sentryApiConfigured, type SentryApiCredentials } from './sentry-api';
 import { getObservabilityStore } from './store';
-import type { ObservabilityStore, SentryApi, SendAdminEmail } from './types';
+import type {
+  ObservabilityStore,
+  SendAdminEmail,
+  SentryApi,
+  SentryIssueHit,
+  SentryProjectStats,
+} from './types';
 
 const MISMATCH_MS = 3 * 60 * 60 * 1000;
 
@@ -50,8 +56,25 @@ export async function runObservabilityQuotaCheck(deps: QuotaCheckDeps = {}) {
   }
 
   const api = deps.sentryApi ?? createSentryApi(credentials);
-  const stats = await api.getProjectStats();
-  const issue = await api.findIssueByFingerprint(HEARTBEAT_FINGERPRINT);
+  let stats: SentryProjectStats;
+  let issue: SentryIssueHit | null;
+  try {
+    stats = await api.getProjectStats();
+    issue = await api.findIssueByFingerprint(HEARTBEAT_FINGERPRINT);
+  } catch (error) {
+    // The API call itself failed. That is not a healthy, quiet project, and it
+    // is not a heartbeat mismatch either — record a skip and fail the run so
+    // handleCron turns it into a failed CronRun (F-631).
+    const message = error instanceof Error ? error.message : String(error);
+    await store.createCheck({
+      kind: 'quota',
+      ok: false,
+      eventId: null,
+      detail: `skipped: sentry API unreachable: ${message}`,
+      createdAt: now,
+    });
+    return { status: 'skipped' as const, ok: false, quotaWarning: false };
+  }
 
   const localOk = (await store.listChecks('heartbeat')).some(
     (row) => row.ok && now.getTime() - row.createdAt.getTime() <= 24 * 60 * 60 * 1000,
@@ -63,14 +86,22 @@ export async function runObservabilityQuotaCheck(deps: QuotaCheckDeps = {}) {
   const quotaRatio = stats.quota.limit > 0 ? stats.quota.used / stats.quota.limit : 0;
   const quotaWarning = quotaRatio >= 0.8;
   const droppedWarning = stats.dropped.some(
-    (row) => (row.reason === 'rate_limit' || row.reason === 'rate_limited' || row.reason === 'quota') && row.count > 0,
+    (row) =>
+      (row.reason === 'rate_limit' || row.reason === 'rate_limited' || row.reason === 'quota') &&
+      row.count > 0,
   );
 
   if (mismatch) {
     await sendAdmin(heartbeatMismatchEmail());
   }
   if (quotaWarning) {
-    await sendAdmin(quotaWarningEmail({ used: stats.quota.used, limit: stats.quota.limit, topIssues: stats.topIssues }));
+    await sendAdmin(
+      quotaWarningEmail({
+        used: stats.quota.used,
+        limit: stats.quota.limit,
+        topIssues: stats.topIssues,
+      }),
+    );
   }
 
   await store.createCheck({
