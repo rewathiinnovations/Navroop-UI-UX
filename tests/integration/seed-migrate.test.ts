@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { testPrismaClient } from '../setup/db';
 import { findDestructiveStatements, hasReviewedDestructiveMarker } from '../../lib/migrate/safety';
 
 describe('seed and migration', () => {
@@ -28,9 +29,42 @@ describe('seed and migration', () => {
     expect(templates).toMatch(/upsert|update|create/);
   });
 
-  it('documents previous-schema migrate as a subset', () => {
-    // Full previous-schema fixture is not checked in (size). Empty-DB migrate is
-    // `prisma migrate deploy` against TEST_DATABASE_URL — see docs/release.md.
-    expect(true).toBe(true);
+  /**
+   * F-603: this case was `expect(true).toBe(true)` under the name "documents
+   * previous-schema migrate as a subset" — the upgrade path that decides whether a
+   * production `prisma migrate deploy` succeeds, claimed by a test name and covered
+   * by nothing. A placeholder is worse than an absent test because it hides the gap.
+   *
+   * What is checkable without provisioning a second database: the chain this
+   * repository ships and the chain a migrated database has applied are the same set.
+   * A folder with no applied row means `migrate deploy` has never been run against
+   * these files at all; an applied row with no folder means a migration was deleted
+   * or renamed after release, which is the first thing a previous-schema deploy hits.
+   *
+   * Still not covered, and recorded in `docs/release.md` rather than implied by a
+   * green tick: the deploy itself, and checksum drift on an already-applied migration.
+   */
+  it('every committed migration is applied in the test database, and vice versa', async () => {
+    const dir = join(process.cwd(), 'prisma/migrations');
+    const folders = readdirSync(dir)
+      .filter((name) => !name.startsWith('.') && statSync(join(dir, name)).isDirectory())
+      .sort();
+    const prisma = testPrismaClient();
+    try {
+      const rows = await prisma.$queryRaw<Array<{ migration_name: string }>>`
+        SELECT migration_name FROM "_prisma_migrations" WHERE rolled_back_at IS NULL
+      `;
+      const applied = rows.map((row) => row.migration_name).sort();
+      // Anti-vacuity: two empty lists would satisfy the equality below.
+      expect(folders.length).toBeGreaterThan(20);
+      expect(applied.length).toBeGreaterThan(20);
+      expect(applied).toEqual(folders);
+      // Append-only: the folder names are timestamp-prefixed, so the shipped order is
+      // the deploy order. A name that sorts out of place would be applied before the
+      // migration it depends on.
+      expect(folders).toEqual([...folders].sort());
+    } finally {
+      await prisma.$disconnect();
+    }
   });
 });

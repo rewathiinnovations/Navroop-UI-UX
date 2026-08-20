@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
- * The daily maintenance cron carries five jobs, and one bad row may not take the other four.
+ * The daily maintenance cron carries six jobs, and one bad row may not take the other five.
  *
  * `deleteObject` throws on a stored key `normalizeKey` cannot resolve (it used to silently
  * rewrite), and an S3 delete surfaces credential and throttle errors. The delete was
@@ -30,6 +30,7 @@ const prunes = vi.hoisted(() => ({
   audit: vi.fn(),
   preview: vi.fn(),
   observability: vi.fn(),
+  settle: vi.fn(),
 }));
 
 vi.mock('@/lib/db', () => ({
@@ -51,6 +52,9 @@ vi.mock('@/lib/projects/presence', () => ({ pruneStalePresence: prunes.presence 
 vi.mock('@/lib/audit/log', () => ({ pruneAuditLogs: prunes.audit }));
 vi.mock('@/lib/preview/prune', () => ({ prunePreviewBuilds: prunes.preview }));
 vi.mock('@/lib/observability/prune', () => ({ pruneObservabilityHistory: prunes.observability }));
+// The quality-signal settle pass moved here off the /admin/quality render, which
+// must not write (F-732). It is a downstream job like the prunes above.
+vi.mock('@/lib/signals/collect', () => ({ settleIdleProjects: prunes.settle }));
 
 const { thinCheckpoints } = await import('@/lib/checkpoints/thin');
 
@@ -89,6 +93,7 @@ beforeEach(() => {
   prunes.audit.mockResolvedValue({ deleted: 4 });
   prunes.preview.mockResolvedValue({ deleted: 5, reclaimedBytes: 500 });
   prunes.observability.mockResolvedValue({ cronRuns: 6, checks: 7, cutoff: null });
+  prunes.settle.mockResolvedValue(8);
 });
 
 describe('thinCheckpoints when one snapshot key cannot be deleted', () => {
@@ -102,12 +107,13 @@ describe('thinCheckpoints when one snapshot key cannot be deleted', () => {
     expect(result.thinned).toBe(1);
     expect(result.blocked).toBe(1);
     expect(result.reclaimedBytes).toBe(1_000);
-    // The four jobs that used to be skipped entirely.
+    // The five jobs that used to be skipped entirely, plus the settle pass.
     expect(result.presencePruned).toBe(3);
     expect(result.auditPruned).toBe(4);
     expect(result.previewDeleted).toBe(5);
     expect(result.cronRunsPruned).toBe(6);
     expect(result.observabilityChecksPruned).toBe(7);
+    expect(result.projectsSettled).toBe(8);
   });
 
   it('does not read as a healthy run, and names the cost', async () => {

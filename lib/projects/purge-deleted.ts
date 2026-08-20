@@ -23,21 +23,42 @@ import type { PurgedProjectPublishResources } from '@/lib/publish/cleanup';
  * see `blocked` in the return value. The ids are also copied into the `project.hard_purge`
  * audit entry before the delete, which is the one receipt that outlives the cascade.
  */
+/**
+ * Projects one run will hard-delete.
+ *
+ * There was no cap: the loop loaded every eligible project and then, per project, ran a
+ * publish teardown, three `listKeys` calls and one `deleteObject` per key, serially. A backlog
+ * therefore produced a run that could only ever be killed by the request timeout, and the same
+ * one again the next day (F-783). Twenty-five is chosen against the 30-minute claim budget in
+ * `lib/cron/claim.ts`, not against a byte count: the loop is already restart-safe — anything
+ * it does not reach keeps its rows and its receipts and is retried on the next tick — so a
+ * conservative batch that always finishes beats an ambitious one that never does.
+ */
+export const PURGE_PROJECT_LIMIT = 25;
+
 export async function purgeDeletedProjects() {
   const days = await purgeDeletedDays();
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-  const projects = await prisma.project.findMany({
-    where: { deletedAt: { not: null, lt: cutoff } },
-    select: {
-      id: true,
-      checkpoints: { select: { snapshotKey: true, snapshotBytes: true } },
-      projectAssets: { select: { storageKey: true, sizeBytes: true } },
-      // `storagePrefix` is the only pointer to `previews/{id}/{buildId}/…`
-      // objects, and the delete below cascades these rows away — so this
-      // listing is the last moment the bytes can be reclaimed at all.
-      previewBuilds: { select: { totalBytes: true } },
-    },
-  });
+  const where = { deletedAt: { not: null, lt: cutoff } };
+  const [eligible, projects] = await Promise.all([
+    prisma.project.count({ where }),
+    prisma.project.findMany({
+      where,
+      take: PURGE_PROJECT_LIMIT,
+      // Oldest deletion first, so a backlog drains in the order it accumulated instead of
+      // starving whatever happens to sort last.
+      orderBy: { deletedAt: 'asc' },
+      select: {
+        id: true,
+        checkpoints: { select: { snapshotKey: true, snapshotBytes: true } },
+        projectAssets: { select: { storageKey: true, sizeBytes: true } },
+        // `storagePrefix` is the only pointer to `previews/{id}/{buildId}/…`
+        // objects, and the delete below cascades these rows away — so this
+        // listing is the last moment the bytes can be reclaimed at all.
+        previewBuilds: { select: { totalBytes: true } },
+      },
+    }),
+  ]);
 
   let purged = 0;
   let reclaimedBytes = 0;
@@ -136,14 +157,36 @@ export async function purgeDeletedProjects() {
       },
     });
 
-    await prisma.project.delete({ where: { id: project.id } });
-    await adjustStorageBytes(-bytes);
+    // One unit of work. `adjustStorageBytes` used to run *after* the delete as a separate
+    // statement, so anything that killed the process in between — redeploy, OOM, lost
+    // connection — over-counted `Workspace.storageBytes` permanently: the rows the bytes were
+    // computed from are gone with the project, so nothing could ever work out what to
+    // subtract. Sharing one transaction means either both landed or neither did, and neither
+    // means the project is still eligible on the next run.
+    try {
+      await prisma.$transaction(async (tx) => {
+        await tx.project.delete({ where: { id: project.id } });
+        await adjustStorageBytes(-bytes, tx);
+      });
+    } catch (error) {
+      // The objects are already gone, which is safe to repeat: the next run lists nothing and
+      // deletes nothing. The rows are what must not be half-destroyed.
+      console.warn('[purge-projects] delete transaction failed, retrying next run', {
+        projectId: project.id,
+        error,
+      });
+      blocked += 1;
+      continue;
+    }
 
     console.info('[purge-projects]', { projectId: project.id, reclaimedBytes: bytes });
     purged += 1;
     reclaimedBytes += bytes;
   }
 
-  console.info('[purge-projects] done', { purged, blocked, reclaimedBytes, days });
-  return { purged, blocked, reclaimedBytes, days };
+  const remaining = Math.max(0, eligible - purged);
+  console.info('[purge-projects] done', { purged, blocked, remaining, reclaimedBytes, days });
+  // `remaining` is what keeps the cap from reading as a stall: the cron reports a backlog it
+  // will work through over the following runs instead of appearing to be finished.
+  return { purged, blocked, eligible, remaining, reclaimedBytes, days };
 }

@@ -63,6 +63,13 @@ enum JobStatus {
   CANCELLED
 }
 
+/// DATABASE-ONLY INVARIANT (F-309), not expressible in this schema: the trigger
+/// `user_prevent_last_admin` (function `prevent_last_admin_removal()`,
+/// `20260817270000_audit_invariants/migration.sql`) refuses any UPDATE that would leave
+/// zero active ADMIN rows, serialized on an advisory lock. `lib/team/actions.ts` reads its
+/// `check_violation` and turns it into the operator-facing refusal — so a schema-first
+/// rebuild (`prisma db push`, `migrate reset` from the datamodel) silently loses admin
+/// lockout protection. `tests/integration/db-invariants.test.ts` asserts it is present.
 model User {
   id            String    @id @default(cuid())
   email         String    @unique
@@ -98,6 +105,10 @@ model User {
   jobs                Job[]
 }
 
+/// Auth.js adapter table. NEVER WRITTEN in this product: `auth.ts` wires `PrismaAdapter`, but
+/// `session.strategy` is `'jwt'` and `Credentials` is the only provider, so no OAuth account row
+/// is ever created. Kept because dropping it would fight the adapter's typings and because a
+/// future OAuth provider needs it. Do not read it to answer "which accounts are linked".
 model Account {
   id                String  @id @default(cuid())
   userId            String
@@ -118,6 +129,12 @@ model Account {
   @@index([userId])
 }
 
+/// Auth.js adapter table. NEVER WRITTEN, for the same reason as `Account`: sessions are JWTs
+/// held by the client, so there is no server-side session row and **individual sessions are not
+/// revocable**. What actually signs other devices out is `User.passwordChangedAt`, which the
+/// `jwt` callback compares against the token's `iat`; `passwordChangeWrites`
+/// (lib/auth/session-invalidation.ts) also deletes from here as belt-and-braces for rows left
+/// by an earlier strategy. Do not add a feature that assumes this table lists live sessions.
 model Session {
   id           String   @id @default(cuid())
   sessionToken String   @unique
@@ -140,6 +157,8 @@ model PasswordResetToken {
   @@index([userId])
 }
 
+/// Auth.js adapter table. NEVER WRITTEN: there is no email/magic-link provider. Password
+/// resets use `PasswordResetToken` above, and invites use `Invite.tokenHash`.
 model VerificationToken {
   identifier String
   token      String
@@ -195,12 +214,18 @@ model Project {
   presence         ProjectPresence[]
   activePreviewBuildId String?
   previewMode          PreviewMode @default(STATIC)
+  /// F-102: which checkpoint the workspace is *viewing*. A preview is a read — it never
+  /// writes `lastCode` — so this column is the only record that the pane is showing an
+  /// older version, and the only thing that survives a reload. NULL means "current".
+  previewingCheckpointId String?
   previewBuilds        PreviewBuild[]
   /// Generated tsvector (name + initialPrompt). Unmapped; queried via raw SQL only.
   searchVector         Unsupported("tsvector")? @default(dbgenerated("(setweight(to_tsvector('english'::regconfig, COALESCE(name, ''::text)), 'A'::\"char\") || setweight(to_tsvector('english'::regconfig, COALESCE(\"initialPrompt\", ''::text)), 'B'::\"char\"))"))
 
   @@index([ownerId])
   @@index([deletedAt])
+  /// F-314: listProjects filters deletedAt and orders by updatedAt desc.
+  @@index([deletedAt, updatedAt])
   @@index([lockedById, lockExpiresAt])
   @@index([searchVector], type: Gin, map: "Project_searchVector_idx")
 }
@@ -307,6 +332,8 @@ model Checkpoint {
 
   @@index([projectId])
   @@index([createdAt])
+  /// F-314: the export route reads one project's unpruned history newest-first.
+  @@index([projectId, createdAt])
   @@index([isBookmarked, snapshotPruned, createdAt])
 }
 
@@ -367,6 +394,8 @@ model CreditLedger {
   workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   userId      String
   user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Deliberately unconstrained: billing history outlives the project it was spent on, so
+  /// there is no relation and no cascade. Indexed (F-363) so attribution is not a scan.
   projectId   String?
   action      String
   credits     Int
@@ -374,6 +403,7 @@ model CreditLedger {
 
   @@index([workspaceId, createdAt])
   @@index([workspaceId, userId, createdAt])
+  @@index([projectId])
 }
 
 model ProjectStar {
@@ -403,6 +433,15 @@ model ProjectPlan {
   @@index([projectId])
 }
 
+/// Invite history, and — as of F-351 — a live single-use invitation.
+///
+/// `POST /api/admin/invite` writes a *pending* row (`acceptedAt` null, `tokenHash` set,
+/// `expiresAt` in the future) and mails the link; the invitee redeems it at `/accept-invite`,
+/// which POSTs `/api/auth/accept-invite` -> `acceptInviteWithToken` (lib/invites/service.ts).
+/// That claim is a conditional UPDATE, which is what makes the link single-use with two tabs
+/// open. Re-inviting the same address rotates the token and revokes the old one
+/// (`revokedAt`). No password is ever returned to the admin, and the raw token is never
+/// stored — only its sha256. Behaviour is pinned in tests/integration/invite-acceptance.test.ts.
 model Invite {
   id          String    @id @default(cuid())
   email       String
@@ -411,6 +450,10 @@ model Invite {
   invitedBy   User      @relation("InvitedBy", fields: [invitedById], references: [id], onDelete: Cascade)
   createdAt   DateTime  @default(now())
   acceptedAt  DateTime?
+  /// SHA-256 of the single-use invite token. The token itself is never stored.
+  tokenHash   String?   @unique
+  expiresAt   DateTime?
+  revokedAt   DateTime?
 
   @@index([email])
 }
@@ -446,6 +489,12 @@ model GitHubConnection {
   accessTokenEncrypted String   @db.Text
   scope                String
   connectedAt          DateTime @default(now())
+  /// F-206: the last time *this member's* personal token was rejected. A per-user grant
+  /// failing says nothing about the workspace GitHub App, so it is recorded here rather
+  /// than on the `GITHUB_DEPLOY` Integration row that gates publishing for everyone.
+  /// Read only when `lastErrorAt > connectedAt`, so a reconnect retires it with no write.
+  lastError            String?  @db.Text
+  lastErrorAt          DateTime?
 }
 
 // Workspace-scoped conditional instruction sets. Project Brain memory is a separate concern.
@@ -590,6 +639,14 @@ model CoolifyServer {
   deployments    Deployment[]
 }
 
+/// DATABASE-ONLY INVARIANT (F-309), not expressible in this schema: the expression unique
+/// index `Deployment_dns_label_key` on
+/// `(CASE WHEN kind = 'PREVIEW' THEN 'preview-' || slug ELSE slug END)` stops a LIVE slug
+/// `preview-acme` colliding with the DNS label a PREVIEW deploy of `acme` gets. Prisma
+/// models neither expression nor partial indexes. `tests/integration/db-invariants.test.ts`
+/// asserts it is present. `onDelete: Restrict` below is the third invariant and IS in this
+/// schema — hard-deleting a project with a deployment must go through purge, which releases
+/// the external Coolify and DNS resources first.
 model Deployment {
   id            String           @id @default(cuid())
   projectId     String
@@ -706,6 +763,17 @@ model BackupRun {
 
 /// Durable long-running work. Table stays GenerationJob (@@map) so existing rows are kept.
 /// Phase on Project is a side effect of these rows.
+///
+/// DATABASE-ONLY INVARIANTS (F-309), not expressible in this schema — Prisma models no
+/// partial indexes, so the `@@index` list below names only two of the four objects that
+/// exist on this table (`20260817220000_generation_jobs/migration.sql`):
+///   1. `one_active_job_per_project` — UNIQUE ("projectId") WHERE status IN ('QUEUED','RUNNING').
+///      The whole job state machine and `createOrReuseJob` rest on it; without it two
+///      concurrent generations for one project both run and both charge.
+///   2. `generation_job_project_idempotency_key` — UNIQUE ("projectId","idempotencyKey")
+///      WHERE "idempotencyKey" IS NOT NULL. Without it `idempotencyKey` below is an
+///      unenforced column and a retried submit is charged twice.
+/// `tests/integration/db-invariants.test.ts` asserts both are present.
 model Job {
   id              String    @id @default(cuid())
   projectId       String

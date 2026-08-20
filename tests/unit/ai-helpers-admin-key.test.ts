@@ -134,7 +134,6 @@ function pageCapture() {
   return {
     sourceUrl: 'https://example.com',
     desktopPng: Buffer.from('desktop'),
-    mobilePng: Buffer.from('mobile'),
     tokens: {
       fontFamily: 'Inter',
       fontSizes: ['16px'],

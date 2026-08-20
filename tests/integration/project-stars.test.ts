@@ -75,6 +75,7 @@ vi.mock('@/lib/signals/collect', () => ({
   countVisualEditsFromSource: () => 0,
   recordVisualEditRate: async () => undefined,
   maybeSettleFollowups: async () => undefined,
+  recordGenerationKept: async () => undefined,
 }));
 
 import { listProjects } from '@/lib/projects/actions';

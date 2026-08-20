@@ -1,4 +1,11 @@
-export const CREDIT_ACTIONS = ['generation', 'image', 'import', 'audit', 'evolution'] as const;
+export const CREDIT_ACTIONS = [
+  'generation',
+  'image',
+  'import',
+  'audit',
+  'evolution',
+  'search',
+] as const;
 export type CreditAction = (typeof CREDIT_ACTIONS)[number];
 
 export const LIMIT_KINDS = ['projects', 'liveSites', 'previewSites', 'members', 'storage'] as const;

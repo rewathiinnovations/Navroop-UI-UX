@@ -12,17 +12,20 @@ import {
 import { offeredModel, ProviderNotConfiguredError } from '@/lib/ai/providers';
 import { applyCreateProjectPlanFlow, peekActor } from '@/lib/projects/plan';
 import { buildProjectListQuery, type ListProjectsQuery } from '@/lib/projects/list-sql';
+import { isStaleClientError } from '@/lib/projects/list-fallback';
 import { createCheckpointAfterGeneration } from '@/lib/checkpoints/actions';
+import { CHECKPOINT_NOT_SAVED_NOTICE } from '@/lib/checkpoints/labels';
 import { extractMemoriesAfterGeneration } from '@/lib/memory/extract';
 import {
   countVisualEditsFromSource,
   maybeSettleFollowups,
+  recordGenerationKept,
   recordVisualEditRate,
 } from '@/lib/signals/collect';
 import { decideUrlImportFlow } from '@/lib/import/pipeline';
 import { upsertImportSource } from '@/lib/import/persist';
 import { asCreditActionErr } from '@/lib/plans/http';
-import { checkLimit } from '@/lib/plans/limits';
+import { withLimit } from '@/lib/plans/limits';
 import { WORKSPACE_ROW_ID } from '@/lib/storage/usage';
 import { bumpContentVersion } from '@/lib/projects/lock';
 import { incrementUsageCount } from '@/lib/templates/usage';
@@ -43,6 +46,15 @@ const ownerSelect = { id: true, name: true, email: true, role: true } as const;
 const listOwnerSelect = { name: true, avatarUrl: true } as const;
 
 const LIST_SORTS = new Set(['updatedAt', 'name', 'createdAt']);
+
+/**
+ * F-314: the project list is bounded in the UI, so the query is bounded too.
+ * Both list paths use it, and both order newest-first, so the cap keeps the
+ * same rows.
+ */
+const LIST_TAKE = 200;
+
+type PublishBadge = 'draft' | 'preview' | 'live';
 
 function unauthorized(): ActionErr {
   return { ok: false, error: 'Sign in required', status: 401 };
@@ -79,6 +91,27 @@ function detachAfterGeneration(projectId: string, task: string, work: () => Prom
   })();
 }
 
+// Both say "nothing was saved" because that is exactly what the compensation below makes
+// true, and both are retryable: the row is gone, so a second attempt starts clean.
+const PLAN_FAILED_ON_CREATE = 'We could not plan this project, so nothing was saved. Try again.';
+const IMPORT_SOURCE_FAILED =
+  'We could not record the page to import, so nothing was saved. Try again.';
+
+/**
+ * Removes a project whose creation could not be completed.
+ *
+ * The delete used to be `.catch(() => undefined)`, so a failed cleanup was invisible and
+ * the orphan it was supposed to remove stayed in the list, counting against the project
+ * ceiling, with nothing anywhere saying why (F-808).
+ */
+async function discardIncompleteProject(projectId: string, reason: string) {
+  try {
+    await prisma.project.delete({ where: { id: projectId } });
+  } catch (error) {
+    logError('projects.create_compensation_failed', error, { projectId, reason });
+  }
+}
+
 async function requireUser() {
   const user = await getSessionUser();
   if (!user) return { user: null, err: unauthorized() as ActionErr };
@@ -109,9 +142,6 @@ export async function createProject(input: {
   const parsed = parseWithZod(createProjectSchema, input);
   if (!parsed.ok) return parsed;
 
-  const projectLimit = await checkLimit(WORKSPACE_ROW_ID, 'projects');
-  if (!projectLimit.ok) return asCreditActionErr(projectLimit);
-
   const flow = decideUrlImportFlow({
     initialPrompt: parsed.data.initialPrompt,
     skipPlanning: parsed.data.skipPlanning === true,
@@ -122,27 +152,53 @@ export async function createProject(input: {
     typeof parsed.data.name === 'string' && parsed.data.name.trim()
       ? parsed.data.name.trim()
       : nameFromPrompt(parsed.data.initialPrompt);
-  const project = await prisma.project.create({
-    data: {
-      name,
-      initialPrompt: parsed.data.initialPrompt,
-      ownerId: user.id,
-      status: 'draft',
-      generationStatus: flow.isUrlImport ? 'generating' : 'idle',
-      progressMessage: flow.isUrlImport ? 'Capturing page…' : null,
-      phase: skipPlanning ? 'BUILDING' : 'PLANNING',
-      stack: parsed.data.stack,
-      designDirection: parsed.data.designDirection,
-    },
-    include: { owner: { select: ownerSelect } },
-  });
+  // The ceiling is enforced at the insert, not before it (F-307): `checkLimit` counted and
+  // returned, and the `create` was a separate statement, so two concurrent creates at the
+  // project ceiling both counted `limit - 1` and both inserted. `withLimit` re-counts
+  // inside the transaction that does the insert, under an advisory lock keyed on the limit.
+  const reserved = await withLimit(WORKSPACE_ROW_ID, 'projects', 1, (tx) =>
+    tx.project.create({
+      data: {
+        name,
+        initialPrompt: parsed.data.initialPrompt,
+        ownerId: user.id,
+        status: 'draft',
+        generationStatus: flow.isUrlImport ? 'generating' : 'idle',
+        progressMessage: flow.isUrlImport ? 'Capturing page…' : null,
+        phase: skipPlanning ? 'BUILDING' : 'PLANNING',
+        stack: parsed.data.stack,
+        designDirection: parsed.data.designDirection,
+      },
+      include: { owner: { select: ownerSelect } },
+    }),
+  );
+  if (!reserved.ok) return asCreditActionErr(reserved);
+  const project = reserved.data;
 
+  // Everything below runs outside the insert's transaction, and it has to: the plan flow
+  // calls the AI provider, so wrapping it in `prisma.$transaction` would hold the
+  // project-limit advisory lock that `withLimit` takes for the whole multi-second
+  // generation and serialise every concurrent create in the workspace. The row is
+  // therefore compensated on failure instead of rolled back — for *every* failure, not
+  // just `ProviderNotConfiguredError` (F-808). Before this, a provider 429 that exhausted
+  // failover, a Zod rejection of the model's plan JSON or a `createOrReuseJob` failure all
+  // re-threw with the row committed, leaving an "Untitled project" corpse in PLANNING with
+  // no plan, counting against the workspace's project ceiling.
   if (flow.isUrlImport) {
-    await upsertImportSource({
-      projectId: project.id,
-      sourceUrl: flow.sourceUrl,
-      mode: flow.importMode,
-    });
+    try {
+      await upsertImportSource({
+        projectId: project.id,
+        sourceUrl: flow.sourceUrl,
+        mode: flow.importMode,
+      });
+    } catch (error) {
+      // An import project with no `ImportSource` row cannot capture or resume: the import
+      // route reads that row for the URL and the mode. The project is unusable, not merely
+      // incomplete.
+      logError('projects.create_import_source_failed', error, { projectId: project.id });
+      await discardIncompleteProject(project.id, 'import_source_failed');
+      return { ok: false as const, error: IMPORT_SOURCE_FAILED, status: 502 as const };
+    }
   }
 
   let plan;
@@ -151,7 +207,9 @@ export async function createProject(input: {
     // The row exists; the browser can land in the workspace now. The plan
     // generates detached — useProjectPlan polls during PLANNING and renders
     // it the moment it lands, and a failed PLAN job surfaces through the
-    // normal chat recovery panel.
+    // normal chat recovery panel. This path keeps its row on failure on
+    // purpose: the user is already in the workspace and the recovery panel
+    // offers Try again there.
     plan = null;
     detachAfterGeneration(project.id, 'initial-plan', () =>
       applyCreateProjectPlanFlow({
@@ -161,7 +219,7 @@ export async function createProject(input: {
         skipPlanning,
       }),
     );
-  } else
+  } else {
     try {
       ({ plan } = await applyCreateProjectPlanFlow({
         projectId: project.id,
@@ -170,24 +228,31 @@ export async function createProject(input: {
         skipPlanning,
       }));
     } catch (error) {
+      // The caller never reached the workspace, so there is no recovery panel to carry
+      // this: the row has no plan, no job the user can see, and no way back to it except
+      // as a corpse in the project list. Remove it and say what happened.
+      await discardIncompleteProject(project.id, 'plan_failed');
       if (error instanceof ProviderNotConfiguredError) {
-        // Nothing about this project can ever run until an admin adds a key, so
-        // failing fast at the dashboard beats navigating into a dead workspace.
-        // The row is seconds old with no dependents — remove it rather than
-        // leaving an "Untitled project" corpse for every misconfigured attempt.
-        // Before this catch, the server action 500ed and the member saw nothing.
-        await prisma.project.delete({ where: { id: project.id } }).catch(() => undefined);
-        return {
-          ok: false as const,
-          error: error.message,
-          status: 503 as const,
-        };
+        // Nothing about this project can ever run until an admin adds a key, so failing
+        // fast at the dashboard beats navigating into a dead workspace.
+        return { ok: false as const, error: error.message, status: 503 as const };
       }
-      throw error;
+      logError('projects.create_plan_failed', error, { projectId: project.id });
+      return { ok: false as const, error: PLAN_FAILED_ON_CREATE, status: 502 as const };
     }
+  }
 
   if (parsed.data.templateId) {
-    await incrementUsageCount(parsed.data.templateId);
+    // A usage counter is bookkeeping: the project exists and works, so this must not throw
+    // the create away after the plan has already been paid for and written (F-808).
+    try {
+      await incrementUsageCount(parsed.data.templateId);
+    } catch (error) {
+      logError('projects.template_usage_increment_failed', error, {
+        projectId: project.id,
+        templateId: parsed.data.templateId,
+      });
+    }
   }
 
   await writeAudit({
@@ -248,6 +313,10 @@ export async function listProjects(query: {
           : {}),
       },
       orderBy: sort === 'name' ? { name: 'asc' } : { [sort]: 'desc' },
+      // F-314: the dashboard used to load every non-deleted project in the workspace on
+      // every visit. The UI is bounded, so the query is too. Paired with
+      // `@@index([deletedAt, updatedAt])` on Project.
+      take: LIST_TAKE,
       select: {
         id: true,
         name: true,
@@ -262,14 +331,25 @@ export async function listProjects(query: {
       },
     });
 
-    const projects = rows.map(({ stars, ...project }) => ({
-      ...project,
-      starred: stars.length > 0,
-    }));
+    const projects = await withPublishBadges(
+      rows.map(({ stars, ...project }) => ({
+        ...project,
+        starred: stars.length > 0,
+      })),
+    );
 
     return { ok: true as const, data: { projects } };
-  } catch {
-    // Stale Prisma client (pre-phase/stars DMMF) still talks to the current DB.
+  } catch (error) {
+    // F-804: only a stale Prisma client takes the fallback. Every other failure —
+    // pool exhaustion, permissions, a genuine schema break — used to be reported
+    // to the user as a successful list, so a real outage looked like an empty
+    // workspace.
+    if (!isStaleClientError(error)) {
+      logError('projects.list_failed', error, { userId: user.id, sort });
+      return { ok: false as const, error: 'Could not load projects', status: 500 };
+    }
+
+    logError('projects.list_stale_client', error, { userId: user.id, sort });
     try {
       const projects = await listProjectsFromSql({
         userId: user.id,
@@ -279,8 +359,10 @@ export async function listProjects(query: {
         starred: query.starred === true,
       });
       return { ok: true as const, data: { projects } };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Could not load projects';
+    } catch (fallbackError) {
+      logError('projects.list_fallback_failed', fallbackError, { userId: user.id, sort });
+      const message =
+        fallbackError instanceof Error ? fallbackError.message : 'Could not load projects';
       return { ok: false as const, error: message, status: 500 };
     }
   }
@@ -300,30 +382,32 @@ type ListProjectRow = {
   starred: boolean;
 };
 
-async function listProjectsFromSql(query: ListProjectsQuery) {
-  const { sql, values } = buildProjectListQuery(query);
-  const rows = await prisma.$queryRawUnsafe<ListProjectRow[]>(sql, ...values);
-
-  const mapped = rows.map((row) => ({
-    id: row.id,
-    name: row.name,
-    thumbnailUrl: row.thumbnailUrl,
-    status: row.status,
-    phase: row.phase,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-    ownerId: row.ownerId,
-    owner: { name: row.ownerName, avatarUrl: row.ownerAvatarUrl },
-    starred: Boolean(row.starred),
+/**
+ * F-804: the publish badge used to be computed only on the raw-SQL fallback, so
+ * a project card showed Live/Preview **only when the primary query had failed**
+ * — a rendering difference nobody could reproduce without breaking the
+ * database. Both paths run through here, so one list shape reaches the UI.
+ *
+ * A failure to read deployments degrades the badge, not the list: the rows
+ * themselves are already correct, and the badge falls back to the project's own
+ * status in `ProjectCard`. It is logged so the degradation is not silent.
+ */
+async function withPublishBadges<T extends { id: string }>(
+  rows: T[],
+): Promise<
+  Array<T & { liveUrl: string | null; previewUrl: string | null; publishBadge: PublishBadge }>
+> {
+  const undecorated = rows.map((row) => ({
+    ...row,
     liveUrl: null as string | null,
     previewUrl: null as string | null,
-    publishBadge: 'draft' as 'draft' | 'preview' | 'live',
+    publishBadge: 'draft' as PublishBadge,
   }));
+  if (undecorated.length === 0) return undecorated;
 
-  if (mapped.length === 0) return mapped;
   try {
     const deployments = await prisma.deployment.findMany({
-      where: { projectId: { in: mapped.map((row) => row.id) }, status: 'LIVE' },
+      where: { projectId: { in: undecorated.map((row) => row.id) }, status: 'LIVE' },
       select: { projectId: true, kind: true, url: true },
     });
     const byProject = new Map<string, { liveUrl: string | null; previewUrl: string | null }>();
@@ -333,20 +417,73 @@ async function listProjectsFromSql(query: ListProjectsQuery) {
       if (row.kind === 'PREVIEW') current.previewUrl = row.url;
       byProject.set(row.projectId, current);
     }
-    return mapped.map((project) => {
+    return undecorated.map((project) => {
       const urls = byProject.get(project.id);
-      const publishBadge = urls?.liveUrl ? 'live' : urls?.previewUrl ? 'preview' : 'draft';
       return {
         ...project,
         liveUrl: urls?.liveUrl ?? null,
         previewUrl: urls?.previewUrl ?? null,
-        publishBadge,
+        publishBadge: urls?.liveUrl ? 'live' : urls?.previewUrl ? 'preview' : 'draft',
       };
     });
-  } catch {
-    return mapped;
+  } catch (error) {
+    logError('projects.list_badges_failed', error, { count: undecorated.length });
+    return undecorated;
   }
 }
+
+async function listProjectsFromSql(query: ListProjectsQuery) {
+  const { sql, values } = buildProjectListQuery({ ...query, limit: LIST_TAKE });
+  const rows = await prisma.$queryRawUnsafe<ListProjectRow[]>(sql, ...values);
+
+  return await withPublishBadges(
+    rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      thumbnailUrl: row.thumbnailUrl,
+      status: row.status,
+      phase: row.phase,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      ownerId: row.ownerId,
+      owner: { name: row.ownerName, avatarUrl: row.ownerAvatarUrl },
+      starred: Boolean(row.starred),
+    })),
+  );
+}
+
+/**
+ * The detail read used to be `include` with no `select`, so it returned every scalar on
+ * `Project` — the lock holder and lock expiry, `previewUrl`, `progressMessage`,
+ * `generationStatus`, `contentVersion`, `activeJobId`, the GitHub repo fields — while
+ * `listProjects` next to it curated ten columns. Any signed-in member could read all of
+ * it for any project, and every column added to the model published itself here (F-809).
+ *
+ * This list is what the two consumers actually render: the workspace
+ * (`GenerationWorkspace` name/updatedAt/style/model/lastCode/importSource) and
+ * `useProjectPlan` (`phase`), plus the curated list columns so the two reads agree.
+ *
+ * `lastCode` stays: `GET /api/projects/[id]/files` already serves the same bytes to the
+ * same audience — any signed-in member, deliberately, so a member opening a teammate's
+ * project is not shown an empty studio — so withholding it here would break preview
+ * restore without narrowing what is reachable.
+ */
+const projectDetailSelect = {
+  id: true,
+  name: true,
+  status: true,
+  phase: true,
+  stack: true,
+  thumbnailUrl: true,
+  style: true,
+  model: true,
+  lastCode: true,
+  createdAt: true,
+  updatedAt: true,
+  ownerId: true,
+  owner: { select: ownerSelect },
+  importSource: { select: { sourceUrl: true, mode: true } },
+} as const;
 
 export async function getProject(id: string) {
   const { user, err } = await requireUser();
@@ -354,7 +491,7 @@ export async function getProject(id: string) {
 
   const project = await prisma.project.findFirst({
     where: { id, deletedAt: null },
-    include: { owner: { select: ownerSelect }, importSource: true },
+    select: projectDetailSelect,
   });
 
   if (!project) return { ok: true as const, data: null };
@@ -394,7 +531,18 @@ export async function updateProject(id: string, input: { name?: string; status?:
       ...(typeof parsed.data.name === 'string' ? { name: parsed.data.name } : {}),
       ...(parsed.data.status !== undefined ? { status: parsed.data.status } : {}),
     },
-    include: { owner: { select: ownerSelect } },
+    // Explicit, like the detail read (F-809), and deliberately narrower than it: the one
+    // caller re-reads through `getProject`, so returning `lastCode` here would fetch an
+    // 85KB column on every rename for a value nobody looks at.
+    select: {
+      id: true,
+      name: true,
+      status: true,
+      phase: true,
+      updatedAt: true,
+      ownerId: true,
+      owner: { select: ownerSelect },
+    },
   });
 
   return { ok: true as const, data: project };
@@ -417,11 +565,29 @@ export async function deleteProject(id: string) {
     include: { owner: { select: ownerSelect } },
   });
 
+  // What the user is told beyond "deleted". Empty on the happy path; a sentence when the
+  // sites this project was serving are still up, because the project disappearing from the
+  // dashboard while its Coolify applications keep running and keep billing is exactly the
+  // state nobody could see before (F-806).
+  let warning: string | null = null;
   try {
-    const { stopProjectDeployments } = await import('@/lib/publish/cleanup');
-    await stopProjectDeployments(id);
+    // Dynamic on purpose: `publish/cleanup` reaches Coolify, Cloudflare and GitHub at
+    // import time, and every project action would otherwise pay for that module graph.
+    const { stopProjectDeployments, stoppedPartiallyMessage } =
+      await import('@/lib/publish/cleanup');
+    const outcome = await stopProjectDeployments(id);
+    if (outcome.failed.length > 0) {
+      // The rows stay non-STOPPED so the retention purge retries them; recorded here
+      // because the user is told the project is deleted while these keep billing.
+      log.warn('projects.soft_delete_stop_incomplete', { projectId: id, failed: outcome.failed });
+      warning = stoppedPartiallyMessage(outcome.failed);
+    }
   } catch (error) {
-    console.warn('[projects] stop deployments on soft-delete failed', id, error);
+    // Could not even ask — a disconnected Coolify integration, an unreachable API. That is
+    // not "nothing was running": it is "we do not know", and the difference is a live site.
+    logError('projects.soft_delete_stop_failed', error, { projectId: id });
+    warning =
+      'The project was deleted, but its deployments could not be reached to stop them. Anything still running keeps costing money until the teardown succeeds; it is retried automatically.';
   }
 
   await writeAudit({
@@ -430,9 +596,12 @@ export async function deleteProject(id: string) {
     action: 'project.soft_delete',
     targetType: 'project',
     targetId: id,
+    after: warning ? { stopIncomplete: true } : undefined,
   });
 
-  return { ok: true as const, data: project };
+  return warning
+    ? { ok: true as const, data: project, warning }
+    : { ok: true as const, data: project };
 }
 
 export async function restoreProject(id: string) {
@@ -463,32 +632,126 @@ export async function restoreProject(id: string) {
   return { ok: true as const, data: project };
 }
 
+/**
+ * Duplicate copies the *site*, not just the prompt.
+ *
+ * It used to read five columns and write six: no `lastCode`, no `ImportSource`, no plan,
+ * and the phase fell to the schema default `PLANNING` — so "Duplicate" on a finished
+ * project spent a slot from the project ceiling to produce a shell that showed an empty
+ * preview and had no plan to approve (F-805, and F-664 for the missing test).
+ *
+ * `Project.lastCode` is the whole site: `collectPublishFiles` and `collectExportFiles`
+ * both fall back to it when a project has no checkpoint, so a copy that carries it is
+ * publishable and exportable. The checkpoint *objects* are deliberately not copied —
+ * they would double the workspace's stored bytes for files already in `lastCode`.
+ * `ProjectAsset` rows are not copied either: they carry `storageKey`s owned by the
+ * source, so duplicating the rows would double-count storage and let either project's
+ * purge delete the other's objects. The asset URLs inside `lastCode` still resolve.
+ *
+ * `previewUrl` is not copied: it names the source's own preview build.
+ */
 export async function duplicateProject(id: string) {
   const { user, err } = await requireUser();
   if (!user) return err;
 
   const source = await prisma.project.findFirst({
     where: { id, deletedAt: null },
-    select: { name: true, initialPrompt: true, ownerId: true, stack: true, designDirection: true },
+    select: {
+      id: true,
+      name: true,
+      initialPrompt: true,
+      ownerId: true,
+      stack: true,
+      designDirection: true,
+      lastCode: true,
+      thumbnailUrl: true,
+      style: true,
+      model: true,
+      importSource: {
+        select: {
+          sourceUrl: true,
+          mode: true,
+          designTokens: true,
+          sections: true,
+          capturedAt: true,
+        },
+      },
+    },
   });
   if (!source) return notFound();
   if (!canMutate(user, source.ownerId)) return forbidden();
 
-  const projectLimit = await checkLimit(WORKSPACE_ROW_ID, 'projects');
-  if (!projectLimit.ok) return asCreditActionErr(projectLimit);
+  // The newest plan worth carrying. SUPERSEDED history stays with the original: the copy
+  // starts its own version series at 1.
+  const sourcePlan = await prisma.projectPlan.findFirst({
+    where: { projectId: id, status: { in: ['PENDING', 'APPROVED'] } },
+    orderBy: [{ version: 'desc' }, { createdAt: 'desc' }],
+    select: { content: true, status: true, sourceMessage: true, trigger: true },
+  });
 
-  // TODO: does not copy sandbox/generated code.
-  const project = await prisma.project.create({
-    data: {
-      name: copyName(source.name),
-      initialPrompt: source.initialPrompt,
-      ownerId: user.id,
-      status: 'draft',
-      generationStatus: 'idle',
-      stack: source.stack,
-      designDirection: source.designDirection,
-    },
-    include: { owner: { select: ownerSelect } },
+  // Evidence, not the source's phase: the copy has no job, so it can never be BUILDING.
+  const phase = source.lastCode ? 'COMPLETE' : 'PLANNING';
+
+  // Same enforcement point as `createProject` (F-307). Everything the copy consists of
+  // is written in that one transaction, so a failure leaves no half-copied project.
+  const reserved = await withLimit(WORKSPACE_ROW_ID, 'projects', 1, async (tx) => {
+    const created = await tx.project.create({
+      data: {
+        name: copyName(source.name),
+        initialPrompt: source.initialPrompt,
+        ownerId: user.id,
+        status: 'draft',
+        generationStatus: 'idle',
+        phase,
+        stack: source.stack,
+        designDirection: source.designDirection,
+        lastCode: source.lastCode,
+        thumbnailUrl: source.thumbnailUrl,
+        style: source.style,
+        model: source.model,
+      },
+      include: { owner: { select: ownerSelect } },
+    });
+
+    if (source.importSource) {
+      await tx.importSource.create({
+        data: {
+          projectId: created.id,
+          sourceUrl: source.importSource.sourceUrl,
+          mode: source.importSource.mode,
+          designTokens: (source.importSource.designTokens ?? {}) as Prisma.InputJsonValue,
+          sections: (source.importSource.sections ?? []) as Prisma.InputJsonValue,
+          capturedAt: source.importSource.capturedAt,
+        },
+      });
+    }
+
+    if (sourcePlan) {
+      await tx.projectPlan.create({
+        data: {
+          projectId: created.id,
+          version: 1,
+          content: (sourcePlan.content ?? {}) as Prisma.InputJsonValue,
+          status: sourcePlan.status,
+          sourceMessage: sourcePlan.sourceMessage,
+          trigger: sourcePlan.trigger,
+        },
+      });
+    }
+
+    return created;
+  });
+  if (!reserved.ok) return asCreditActionErr(reserved);
+  const project = reserved.data;
+
+  await writeAudit({
+    actorId: user.id,
+    actorEmail: user.email,
+    action: 'project.duplicate',
+    targetType: 'project',
+    targetId: project.id,
+    before: { projectId: source.id, name: source.name },
+    after: { projectId: project.id, name: project.name, phase },
   });
 
   return { ok: true as const, data: project };
@@ -576,7 +839,6 @@ export async function persistProjectGeneration(id: string, input: GenerationPers
     try {
       const checkpoint = await createCheckpointAfterGeneration(id, {
         previousPhase: existing.phase,
-        previewUrl: input.previewUrl ?? project.previewUrl,
         sourceMessage: input.sourceMessage,
       });
       if (checkpoint?.id) {
@@ -612,12 +874,22 @@ export async function persistProjectGeneration(id: string, input: GenerationPers
         }
       }
     } catch (error) {
-      console.error('[checkpoints] create after generation failed', error);
+      // The generation itself succeeded — the files are in `lastCode`. What failed is
+      // the snapshot, which export, publish and restore all read, so the user has to be
+      // told rather than shown a clean completion (F-807). The notice channel already
+      // carries into chat; `logError` (not `console.error`) is what reaches Sentry.
+      logError('projects.checkpoint_after_generation_failed', error, { projectId: id });
+      previewNotice = CHECKPOINT_NOT_SAVED_NOTICE;
     }
     detachAfterGeneration(id, 'visual_edit_rate', () =>
       recordVisualEditRate(id, countVisualEditsFromSource(input.source, input.sourceMessage)),
     );
     detachAfterGeneration(id, 'settle_followups', () => maybeSettleFollowups(id));
+    // The `revert_rate` population used to gain a row only when a restore rejected a
+    // generation, or 30 minutes after a project stopped being touched. Pairing the kept
+    // case here is what stops an actively iterated project reading as all-rejected
+    // (F-818); a later restore flips this row to 0.
+    detachAfterGeneration(id, 'revert_rate_kept', () => recordGenerationKept(id));
     detachAfterGeneration(id, 'extract_memories', () =>
       extractMemoriesAfterGeneration(id, { sourceMessage: input.sourceMessage, userId: user.id }),
     );

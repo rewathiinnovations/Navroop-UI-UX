@@ -1,6 +1,6 @@
-import type { Plan, Workspace } from '@/generated/prisma';
+import type { Plan, Prisma, Workspace } from '@/generated/prisma';
 import { prisma } from '@/lib/db';
-import { WORKSPACE_ROW_ID } from '@/lib/storage/usage';
+import { MAX_TRACKABLE_STORAGE_BYTES, WORKSPACE_ROW_ID } from '@/lib/storage/usage';
 import { notifyAdminsCredit80 } from './alerts';
 import { creditDenialMessage, limitDenialMessage } from './messages';
 import { log } from '@/lib/logger';
@@ -20,7 +20,31 @@ export const CREDIT_COSTS = {
   import: 5,
   audit: 1,
   evolution: 20,
+  /**
+   * `POST /api/search` runs a Firecrawl search for 10 results, each scraped for
+   * markdown *and* a screenshot. It used to be free and unattributed, so the spend
+   * was invisible to /admin/usage and belonged to nobody (F-319). Priced above a
+   * plain generation because it is 10 scrapes, below an import because it keeps
+   * nothing.
+   */
+  search: 2,
 } as const satisfies Record<CreditAction, number>;
+
+/**
+ * Limit kinds counted across the whole installation rather than per workspace.
+ *
+ * `currentForLimit` takes a `workspaceId` and, for these two, does not use it —
+ * the signature concealed that (F-320). It is not an oversight that can be fixed
+ * here: `Project` and `User` carry no `workspaceId` column, so there is nothing
+ * to scope by. The counts coincide today because the product is single-workspace.
+ *
+ * The migration that makes these scopeable is the one that adds `workspaceId` to
+ * `Project` and `User` (backfilled to `WORKSPACE_ROW_ID`); until then, the moment
+ * a second workspace exists every workspace is measured against the global counts
+ * and the first one to fill the plan blocks the rest. Named here so that is a
+ * documented property with a test on it rather than a silent one.
+ */
+export const GLOBAL_LIMIT_KINDS = ['projects', 'members'] as const satisfies readonly LimitKind[];
 
 export { creditDenialMessage, limitDenialMessage } from './messages';
 export type { CreditAction, CreditCheckResult, LimitCheckResult, LimitKind } from './types';
@@ -75,6 +99,42 @@ export async function getEffectivePlan(workspaceId = WORKSPACE_ROW_ID): Promise<
   return fallback;
 }
 
+/**
+ * Roll the credit period only if it is still the period the caller decided on.
+ *
+ * The win is the row count. A zero means another request crossed the boundary first and
+ * its debit is already on the row — rolling again would zero that debit, which is the
+ * defect this guard exists to stop (F-305): request A rolled, debited `creditsUsed = 1`,
+ * and request B's roll then set `creditsUsed = 0` over the top of it. Credits were
+ * granted free at every period boundary and `Workspace.creditsUsed` diverged from
+ * `CreditLedger` for good, which `getUsageBreakdown` absorbs as `unattributed` rather
+ * than reporting.
+ *
+ * Losing the race is not an error and is not retried: the winner already wrote the
+ * period this caller wanted.
+ */
+export async function claimCreditPeriodRoll(
+  workspaceId: string,
+  from: Date,
+  to: Date,
+): Promise<boolean> {
+  const rows = await prisma.$queryRaw<Array<{ id: string }>>`
+    UPDATE "Workspace"
+    SET
+      "creditsUsed" = 0,
+      "creditsPeriodStart" = ${to},
+      "creditAlert80Sent" = false,
+      "spendUsd" = 0,
+      "spendAlert80Sent" = false,
+      "generationPaused" = CASE WHEN "pauseReason" = 'SPEND_LIMIT' THEN false ELSE "generationPaused" END,
+      "pauseReason" = CASE WHEN "pauseReason" = 'SPEND_LIMIT' THEN NULL ELSE "pauseReason" END
+    WHERE id = ${workspaceId}
+      AND "creditsPeriodStart" = ${from}
+    RETURNING id
+  `;
+  return rows.length > 0;
+}
+
 export async function rollCreditPeriodIfNeeded(workspaceId = WORKSPACE_ROW_ID): Promise<Workspace> {
   const workspace = await ensureWorkspace(workspaceId);
   const now = new Date();
@@ -82,18 +142,13 @@ export async function rollCreditPeriodIfNeeded(workspaceId = WORKSPACE_ROW_ID): 
     return workspace;
   }
   const nextStart = currentPeriodStart(workspace.creditsPeriodStart, now);
-  await prisma.$executeRaw`
-    UPDATE "Workspace"
-    SET
-      "creditsUsed" = 0,
-      "creditsPeriodStart" = ${nextStart},
-      "creditAlert80Sent" = false,
-      "spendUsd" = 0,
-      "spendAlert80Sent" = false,
-      "generationPaused" = CASE WHEN "pauseReason" = 'SPEND_LIMIT' THEN false ELSE "generationPaused" END,
-      "pauseReason" = CASE WHEN "pauseReason" = 'SPEND_LIMIT' THEN NULL ELSE "pauseReason" END
-    WHERE id = ${workspace.id}
-  `;
+  const rolled = await claimCreditPeriodRoll(workspace.id, workspace.creditsPeriodStart, nextStart);
+  if (!rolled) {
+    log.info('credits.period_roll_lost', { workspaceId: workspace.id });
+  }
+  // Re-read either way: on a win to pick up the zeroed counters, on a loss to pick up
+  // the period and the debit the winner wrote. The decision above came from the row
+  // count, never from comparing this read against the one at the top.
   return prisma.workspace.findUniqueOrThrow({ where: { id: workspace.id } });
 }
 
@@ -320,27 +375,59 @@ export async function consumeCredits(
   return result;
 }
 
-async function currentForLimit(workspaceId: string, kind: LimitKind) {
+/**
+ * `workspaceId` scopes `liveSites`, `previewSites` and `storage`. It is
+ * deliberately unused by the two kinds in {@link GLOBAL_LIMIT_KINDS} — see the
+ * comment there for why it cannot be honoured yet and what lifts it.
+ */
+async function currentForLimit(db: Prisma.TransactionClient, workspaceId: string, kind: LimitKind) {
   switch (kind) {
     case 'projects':
-      return prisma.project.count({ where: { deletedAt: null } });
+      // Global by design, not by omission (F-320): `Project` has no workspaceId.
+      return db.project.count({ where: { deletedAt: null } });
     case 'liveSites':
-      return prisma.deployment.count({
+      return db.deployment.count({
         where: { workspaceId, kind: 'LIVE', status: { not: 'STOPPED' } },
       });
     case 'previewSites':
-      return prisma.deployment.count({
+      return db.deployment.count({
         where: { workspaceId, kind: 'PREVIEW', status: { not: 'STOPPED' } },
       });
     case 'members':
-      return prisma.user.count({ where: { isActive: true } });
+      // Global by design, not by omission (F-320): `User` has no workspaceId.
+      return db.user.count({ where: { isActive: true } });
     case 'storage': {
-      const workspace = await ensureWorkspace(workspaceId);
+      const workspace = await db.workspace.upsert({
+        where: { id: workspaceId },
+        create: { id: workspaceId, storageBytes: 0 },
+        update: {},
+      });
       return workspace.storageBytes;
     }
     default:
       return 0;
   }
+}
+
+/**
+ * `storage` is the only kind whose configured limit lives in a wider column than
+ * the counter it is compared against: `Plan.storageBytesLimit` is a `BigInt`,
+ * `Workspace.storageBytes` is an `INTEGER`. Comparing them meant a 20 GiB plan
+ * limit was never reached — the increment errored with "integer out of range"
+ * first (F-315).
+ *
+ * So the comparison happens in `BigInt` and the result is clamped to
+ * {@link MAX_TRACKABLE_STORAGE_BYTES}, including when the plan says unlimited:
+ * "no limit" is not a capability this column has, and a refusal at the real
+ * ceiling is the honest answer. Narrowing happens only after the clamp, where the
+ * value is guaranteed to fit.
+ */
+function storageLimitFor(plan: Plan) {
+  const configured = plan.storageBytesLimit;
+  const ceiling = BigInt(MAX_TRACKABLE_STORAGE_BYTES);
+  // `BigInt(0)`, not `0n`: tsconfig targets ES2017, where BigInt literals do not compile.
+  if (configured < BigInt(0) || configured > ceiling) return MAX_TRACKABLE_STORAGE_BYTES;
+  return Number(configured);
 }
 
 function planLimit(plan: Plan, kind: LimitKind) {
@@ -354,20 +441,32 @@ function planLimit(plan: Plan, kind: LimitKind) {
     case 'members':
       return plan.maxMembers;
     case 'storage':
-      return Number(plan.storageBytesLimit);
+      return storageLimitFor(plan);
     default:
       return 0;
   }
 }
 
+/**
+ * The pre-flight. Answers "would this be allowed right now" and is safe to call for a
+ * denial message, a disabled button or a 402 before any work starts. It is not, and cannot
+ * be, the enforcement point: the count and the caller's subsequent `create` are separate
+ * statements. Use {@link withLimit} for the write.
+ *
+ * `upcoming` has no default. It used to be `0`, which reads as "is the limit reached" and
+ * answers a different question than every caller was asking: at `current === limit` the
+ * comparison `current + 0 <= limit` still passed, so a plan with `maxProjects: 5` admitted
+ * a sixth project. Pass what the call is about to add — `1` for a row, the byte count for
+ * storage — so the pre-flight and {@link withLimit} agree about the boundary.
+ */
 export async function checkLimit(
   workspaceId: string,
   kind: LimitKind,
-  upcoming = 0,
+  upcoming: number,
 ): Promise<LimitCheckResult> {
   const plan = await getEffectivePlan(workspaceId);
   const limit = planLimit(plan, kind);
-  const current = await currentForLimit(workspaceId, kind);
+  const current = await currentForLimit(prisma, workspaceId, kind);
   if (isUnlimited(limit) || current + upcoming <= limit) {
     return { ok: true, current, limit };
   }
@@ -378,6 +477,53 @@ export async function checkLimit(
     reason: kind,
     message: limitDenialMessage(kind),
   };
+}
+
+export type LimitReservation<T> = { ok: true; data: T } | (LimitCheckResult & { ok: false });
+
+/**
+ * Enforce a plan ceiling at the write (F-307).
+ *
+ * `checkLimit` alone is check-then-act: two concurrent creates at the ceiling both counted
+ * `limit - 1`, both passed, and both inserted. Credits never had that problem because
+ * `consumeCredits` enforces the ceiling inside the `UPDATE` itself, but `projects`,
+ * `members`, `liveSites`, `previewSites` and `storage` had no equivalent — the ceilings
+ * were advisory under concurrency, which is quota leakage for members and projects and an
+ * over-committed Coolify server for the site slots.
+ *
+ * There is no single row to guard the way `creditsUsed` is guarded, so the serialization
+ * point is a transaction-scoped advisory lock keyed on the limit — the shape
+ * `incrementPrivateReject` uses for its counter. The re-count and `create` run inside one
+ * transaction that no other reservation for the same limit can interleave with, and the
+ * lock is released on commit or rollback whatever `create` does.
+ *
+ * `upcoming` is what the write is about to add: `1` for a row, the byte count for storage.
+ * The same value the matching `checkLimit` pre-flight is given, so a member never sees an
+ * enabled button for a write this refuses.
+ */
+export async function withLimit<T>(
+  workspaceId: string,
+  kind: LimitKind,
+  upcoming: number,
+  create: (tx: Prisma.TransactionClient) => Promise<T>,
+): Promise<LimitReservation<T>> {
+  const plan = await getEffectivePlan(workspaceId);
+  const limit = planLimit(plan, kind);
+  const lockKey = `plan-limit:${workspaceId}:${kind}`;
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
+    const current = await currentForLimit(tx, workspaceId, kind);
+    if (!isUnlimited(limit) && current + upcoming > limit) {
+      return {
+        ok: false as const,
+        current,
+        limit,
+        reason: kind,
+        message: limitDenialMessage(kind),
+      };
+    }
+    return { ok: true as const, data: await create(tx) };
+  });
 }
 
 export const CUSTOM_DOMAIN_LOCKED_MESSAGE = 'This feature is not on your plan yet';

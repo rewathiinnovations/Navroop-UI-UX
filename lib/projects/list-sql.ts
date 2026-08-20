@@ -17,6 +17,11 @@ export type ListProjectsQuery = {
   search?: string;
   mine?: boolean;
   starred: boolean;
+  /**
+   * F-314: same row cap as the Prisma path. Both order newest-first, so the two
+   * paths return the same rows rather than one of them returning the whole table.
+   */
+  limit?: number;
 };
 
 export function buildProjectListQuery(query: ListProjectsQuery) {
@@ -53,6 +58,9 @@ export function buildProjectListQuery(query: ListProjectsQuery) {
         ? 'p."createdAt" DESC'
         : 'p."updatedAt" DESC';
 
+  const requested = query.limit ?? 0;
+  const limit = Number.isFinite(requested) && requested > 0 ? Math.trunc(requested) : null;
+
   return {
     sql: `SELECT
       p.id,
@@ -69,7 +77,7 @@ export function buildProjectListQuery(query: ListProjectsQuery) {
     FROM "Project" p
     INNER JOIN "User" u ON u.id = p."ownerId"
     WHERE ${filters.join(' AND ')}
-    ORDER BY ${orderBy}`,
+    ORDER BY ${orderBy}${limit === null ? '' : `\n    LIMIT ${bind(limit)}`}`,
     values,
   };
 }

@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { conversationStateFor, resetConversationStates } from '@/lib/generation/conversation-state';
 import type { ConversationMessage } from '@/types/conversation';
+import { codeBetween } from '../setup/source-slice';
 
 const ROUTE = fileURLToPath(
   new URL('../../app/api/generate-ai-code-stream/route.ts', import.meta.url),
@@ -118,16 +119,18 @@ describe('conversation state is scoped per project', () => {
 describe('the generate route trusts the project row, not the client', () => {
   it('loads the project\u2019s files whenever there is a project, not when the client says isEdit', () => {
     const source = readFileSync(ROUTE, 'utf8');
-    const load = source
-      .slice(
-        source.indexOf('let backendFiles: Record<string, string> = {};'),
-        source.indexOf('let hasBackendFiles ='),
-      )
-      // Code only. The block now carries a comment naming `isEdit` to say why it
-      // is not consulted — the rule this test enforces — and a raw text scan
-      // cannot tell that apart from a real gate.
-      .replace(/\/\/.*$/gm, '')
-      .replace(/\/\*[\s\S]*?\*\//g, '');
+    // Keyword-free anchors: `prefer-const` (F-790) turned `let hasBackendFiles =`
+    // into `const hasBackendFiles =`, the old anchor stopped resolving, and the
+    // `-1` slice swallowed 1,400 lines of the route — so `not.toMatch(/isEdit/)`
+    // below failed on nine unrelated uses and read as a route regression.
+    // `codeBetween` throws on a missing anchor instead, and strips comments: the
+    // block carries a comment naming `isEdit` to say why it is not consulted,
+    // which a raw text scan cannot tell apart from a real gate.
+    const load = codeBetween(
+      source,
+      'backendFiles: Record<string, string> = {};',
+      'hasBackendFiles =',
+    );
     // `isEdit` is a client hint. Reading the row only when the client claimed an edit let a
     // request that claimed `isEdit: false` skip the read, land in FIRST GENERATION MODE, and
     // have the model rewrite a project that already had stored code from scratch.

@@ -8,10 +8,7 @@ import {
 import { actionError, hasGenerationFields, readGenerationInput } from '@/lib/projects/http';
 import { isProductStatus } from '@/lib/projects/schema';
 
-export async function GET(
-  _request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const result = await getProject(id);
   if (!result.ok) return actionError(result);
@@ -21,14 +18,12 @@ export async function GET(
   return NextResponse.json({ project: result.data });
 }
 
-export async function PATCH(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
 
-  const name = typeof (body.name ?? body.title) === 'string' ? String(body.name ?? body.title) : undefined;
+  const name =
+    typeof (body.name ?? body.title) === 'string' ? String(body.name ?? body.title) : undefined;
   const productStatus = isProductStatus(body.status) ? body.status : undefined;
   const wantsProductUpdate = name !== undefined || productStatus !== undefined;
 
@@ -38,8 +33,9 @@ export async function PATCH(
   }
 
   const generation = readGenerationInput(body);
-  if (hasGenerationFields(generation)) {
-    const persisted = await persistProjectGeneration(id, generation);
+  if (!generation.ok) return actionError(generation);
+  if (hasGenerationFields(generation.data)) {
+    const persisted = await persistProjectGeneration(id, generation.data);
     if (!persisted.ok) return actionError(persisted);
     return NextResponse.json({
       project: persisted.data,
@@ -56,15 +52,21 @@ export async function PATCH(
     return NextResponse.json({ project: latest.data });
   }
 
-  return NextResponse.json({ error: 'Validation failed', details: [{ message: 'Provide name and/or status' }] }, { status: 400 });
+  return NextResponse.json(
+    { error: 'Validation failed', details: [{ message: 'Provide name and/or status' }] },
+    { status: 400 },
+  );
 }
 
 export async function DELETE(
   _request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
   const result = await deleteProject(id);
   if (!result.ok) return actionError(result);
-  return NextResponse.json({ success: true });
+  // A soft-delete whose deployments would not stop still succeeds — the row is stamped and
+  // the purge retries — but the caller has to be able to say so (F-806).
+  const warning = 'warning' in result ? result.warning : null;
+  return NextResponse.json(warning ? { success: true, warning } : { success: true });
 }

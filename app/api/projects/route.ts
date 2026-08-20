@@ -29,9 +29,10 @@ export async function POST(request: NextRequest) {
   if (!created.ok) return actionError(created);
 
   const generation = readGenerationInput(body);
+  if (!generation.ok) return actionError(generation);
 
-  if (hasGenerationFields(generation)) {
-    const persisted = await persistProjectGeneration(created.data.id, generation);
+  if (hasGenerationFields(generation.data)) {
+    const persisted = await persistProjectGeneration(created.data.id, generation.data);
     if (!persisted.ok) return actionError(persisted);
     return NextResponse.json({
       id: created.data.id,

@@ -168,14 +168,14 @@ try {
   });
   assert(ledger?.credits === 1, 'consumeCredits writes a ledger row');
 
-  const projects = await checkLimit(WS, 'projects');
+  const projects = await checkLimit(WS, 'projects', 1);
   assert(projects.limit === free.maxProjects, 'checkLimit projects uses effective plan');
   assert(
-    isUnlimited(-1) && (await checkLimit(WS, 'previewSites')).limit === free.maxPreviewSites,
+    isUnlimited(-1) && (await checkLimit(WS, 'previewSites', 1)).limit === free.maxPreviewSites,
     'preview limit from plan',
   );
 
-  const storage = await checkLimit(WS, 'storage');
+  const storage = await checkLimit(WS, 'storage', 0);
   assert(storage.limit === Number(free.storageBytesLimit), 'storage limit from plan BigInt');
 
   // An "unlimited" plan denied every generation at 0 credits used, because the

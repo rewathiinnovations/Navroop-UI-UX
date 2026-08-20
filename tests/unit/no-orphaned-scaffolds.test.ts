@@ -78,4 +78,56 @@ describe('no unchecked publishable package rides along', () => {
   it('has no scaffolder for the removed sandbox providers', () => {
     expect(existsSync(join(ROOT, 'packages/create-open-lovable'))).toBe(false);
   });
+
+  it('carries no install-time exception for the removed sandbox SDKs', () => {
+    // F-842. `pnpm-workspace.yaml` kept `minimumReleaseAgeExclude` entries pinning four
+    // `@daytona/*` packages at 0.205.0 — a policy exception, read on every install, for a
+    // driver that went with the sandbox subsystem. Nothing imports them and the lockfile no
+    // longer mentions them, so the exception was the last surviving signal that the
+    // subsystem is current.
+    for (const file of ['pnpm-workspace.yaml', 'pnpm-lock.yaml', 'package.json']) {
+      expect(
+        readFileSync(join(ROOT, file), 'utf8'),
+        `${file} still names @daytona/*`,
+      ).not.toContain('@daytona/');
+    }
+  });
+});
+
+/**
+ * F-766: `types/sandbox.ts` declared `activeSandbox`, `sandboxState` and
+ * `existingFiles` as ambient globals, so `global.sandboxState` typechecked
+ * anywhere and dead modules kept reading it without the compiler objecting.
+ * The file is gone; two smaller residues outlived it — a `sandboxId` on
+ * conversation message metadata, and a prompt line that told the model
+ * "Current sandbox ID: …" from a value that can no longer be set.
+ */
+describe('the sandbox subsystem left no ambient residue', () => {
+  it('declares no sandbox globals', () => {
+    expect(existsSync(join(ROOT, 'types/sandbox.ts'))).toBe(false);
+    const offenders = walk('types').filter((file) =>
+      /declare\s+global[\s\S]*?\bvar\s+(activeSandbox|sandboxState|existingFiles)\b/.test(
+        readFileSync(join(ROOT, file), 'utf8'),
+      ),
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  it('records no sandbox id on a conversation message', () => {
+    const types = readFileSync(join(ROOT, 'types/conversation.ts'), 'utf8');
+    // The interface is still here — this is a field check, not a missing-file check.
+    expect(types).toContain('interface ConversationMessage');
+    expect(types).not.toContain('sandboxId');
+  });
+
+  it('never puts a sandbox id in the generation prompt', () => {
+    const route = readFileSync(join(ROOT, 'app/api/generate-ai-code-stream/route.ts'), 'utf8');
+    const live = route
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('//'))
+      .join('\n');
+    expect(live).toContain('contextParts.push(');
+    expect(live).not.toMatch(/sandbox ID/i);
+    expect(live).not.toContain('context?.sandboxId');
+  });
 });

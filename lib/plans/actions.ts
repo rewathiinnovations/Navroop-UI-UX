@@ -73,7 +73,7 @@ export async function createPlan(input: {
   maxFilesPerJob?: number;
   maxOutputBytesPerJob?: number;
 }): Promise<ActionOk<PublicPlan> | ActionErr> {
-  const { err } = await adminGate();
+  const { user, err } = await adminGate();
   if (err) return err;
   const key = input.key.trim().toLowerCase();
   if (!key) return { ok: false, error: 'Plan key is required', status: 400 };
@@ -105,6 +105,27 @@ export async function createPlan(input: {
         : {}),
     },
   });
+  // A plan defines credit ceilings, project/site/member limits and per-job token
+  // caps. Editing one and assigning one were both audited; creating one was not,
+  // so /admin/audit could show a limit set being changed and put into service
+  // with no record of how it came to exist (F-316).
+  await writeAudit({
+    actorId: user.id,
+    actorEmail: user.email,
+    action: 'plan.create',
+    targetType: 'plan',
+    targetId: created.id,
+    after: {
+      key: created.key,
+      monthlyCredits: created.monthlyCredits,
+      maxProjects: created.maxProjects,
+      maxLiveSites: created.maxLiveSites,
+      maxPreviewSites: created.maxPreviewSites,
+      maxMembers: created.maxMembers,
+      storageBytesLimit: created.storageBytesLimit.toString(),
+      isActive: created.isActive,
+    },
+  });
   return { ok: true, data: toPublicPlan(created) };
 }
 
@@ -133,45 +154,61 @@ export async function updatePlan(
   const existing = await prisma.plan.findUnique({ where: { id } });
   if (!existing) return { ok: false, error: 'Plan not found', status: 404 };
 
-  if (input.isDefault === true) {
-    await prisma.$transaction([
-      prisma.plan.updateMany({ where: { isDefault: true }, data: { isDefault: false } }),
-      prisma.plan.update({
-        where: { id },
-        data: {
-          isDefault: true,
-          isActive: true,
-        },
-      }),
-    ]);
+  // The default plan is what `getEffectivePlan` falls back to, and its fallback query is
+  // `where: { isDefault: true }` with no `isActive` filter. So switching the default off
+  // does not remove it from service — it silently becomes an inactive plan that every
+  // limit and credit check is evaluated against. Refusing is the clearer contract than
+  // filtering the fallback, because the operator asked for something that cannot mean
+  // what they think it means.
+  const willBeDefault = input.isDefault === true || existing.isDefault;
+  if (input.isActive === false && willBeDefault) {
+    return {
+      ok: false,
+      error: 'The default plan cannot be switched off — make another plan the default first',
+      status: 400,
+    };
   }
 
-  const updated = await prisma.plan.update({
-    where: { id },
-    data: {
-      ...(input.name !== undefined ? { name: input.name } : {}),
-      ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
-      ...(input.monthlyCredits !== undefined ? { monthlyCredits: input.monthlyCredits } : {}),
-      ...(input.maxProjects !== undefined ? { maxProjects: input.maxProjects } : {}),
-      ...(input.maxLiveSites !== undefined ? { maxLiveSites: input.maxLiveSites } : {}),
-      ...(input.maxPreviewSites !== undefined ? { maxPreviewSites: input.maxPreviewSites } : {}),
-      ...(input.maxMembers !== undefined ? { maxMembers: input.maxMembers } : {}),
-      ...(input.checkpointRetentionDays !== undefined
-        ? { checkpointRetentionDays: input.checkpointRetentionDays }
-        : {}),
-      ...(input.storageBytesLimit !== undefined
-        ? { storageBytesLimit: BigInt(input.storageBytesLimit) }
-        : {}),
-      ...(input.allowCustomDomain !== undefined
-        ? { allowCustomDomain: input.allowCustomDomain }
-        : {}),
-      ...(input.allowGithubSync !== undefined ? { allowGithubSync: input.allowGithubSync } : {}),
-      ...(input.maxTokensPerJob !== undefined ? { maxTokensPerJob: input.maxTokensPerJob } : {}),
-      ...(input.maxFilesPerJob !== undefined ? { maxFilesPerJob: input.maxFilesPerJob } : {}),
-      ...(input.maxOutputBytesPerJob !== undefined
-        ? { maxOutputBytesPerJob: input.maxOutputBytesPerJob }
-        : {}),
-    },
+  // One transaction, not two writes (F-312). The `isDefault` demotion of the siblings used
+  // to commit on its own and the rest of the payload followed in an independent `update`:
+  // a failure in between moved the default while none of the operator's other edits
+  // landed, with no compensation, and the second write's `isActive: input.isActive`
+  // overwrote the `true` the first had just set.
+  const updated = await prisma.$transaction(async (tx) => {
+    if (input.isDefault === true) {
+      await tx.plan.updateMany({
+        where: { isDefault: true, id: { not: id } },
+        data: { isDefault: false },
+      });
+    }
+    return tx.plan.update({
+      where: { id },
+      data: {
+        ...(input.isDefault === true ? { isDefault: true, isActive: true } : {}),
+        ...(input.name !== undefined ? { name: input.name } : {}),
+        ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
+        ...(input.monthlyCredits !== undefined ? { monthlyCredits: input.monthlyCredits } : {}),
+        ...(input.maxProjects !== undefined ? { maxProjects: input.maxProjects } : {}),
+        ...(input.maxLiveSites !== undefined ? { maxLiveSites: input.maxLiveSites } : {}),
+        ...(input.maxPreviewSites !== undefined ? { maxPreviewSites: input.maxPreviewSites } : {}),
+        ...(input.maxMembers !== undefined ? { maxMembers: input.maxMembers } : {}),
+        ...(input.checkpointRetentionDays !== undefined
+          ? { checkpointRetentionDays: input.checkpointRetentionDays }
+          : {}),
+        ...(input.storageBytesLimit !== undefined
+          ? { storageBytesLimit: BigInt(input.storageBytesLimit) }
+          : {}),
+        ...(input.allowCustomDomain !== undefined
+          ? { allowCustomDomain: input.allowCustomDomain }
+          : {}),
+        ...(input.allowGithubSync !== undefined ? { allowGithubSync: input.allowGithubSync } : {}),
+        ...(input.maxTokensPerJob !== undefined ? { maxTokensPerJob: input.maxTokensPerJob } : {}),
+        ...(input.maxFilesPerJob !== undefined ? { maxFilesPerJob: input.maxFilesPerJob } : {}),
+        ...(input.maxOutputBytesPerJob !== undefined
+          ? { maxOutputBytesPerJob: input.maxOutputBytesPerJob }
+          : {}),
+      },
+    });
   });
   // `updated` is the source of truth for the response. Echoing `input` here instead
   // reported the hardcoded defaults for whichever job cap the admin had not touched,
@@ -381,16 +418,40 @@ export async function getUsageBreakdown() {
   const plan = await getEffectivePlan();
   const isAdmin = user.role === 'ADMIN';
 
-  const ledgers = await prisma.creditLedger.findMany({
-    where: {
-      workspaceId: workspace.id,
-      createdAt: { gte: workspace.creditsPeriodStart },
-    },
-    include: { user: { select: { id: true, name: true, email: true } } },
-    orderBy: { createdAt: 'desc' },
-  });
+  const period = {
+    workspaceId: workspace.id,
+    createdAt: { gte: workspace.creditsPeriodStart },
+  };
+
+  // Two grouped aggregates instead of every ledger row of the period with a joined user
+  // (F-311). One row exists per credit-consuming action, so a busy month accumulates
+  // thousands, and this route is reachable by any member as often as they like: the old
+  // shape grew response time and server memory linearly with monthly activity and
+  // duplicated the joined `user` object on every row. Postgres answers both shapes in a
+  // handful of rows. The existing `CreditLedger(workspaceId, createdAt)` index serves both.
+  const [actionGroups, memberGroups] = await Promise.all([
+    prisma.creditLedger.groupBy({ by: ['action'], where: period, _sum: { credits: true } }),
+    prisma.creditLedger.groupBy({
+      by: ['userId', 'action'],
+      where: period,
+      _sum: { credits: true },
+    }),
+  ]);
 
   const byAction: Record<string, number> = {};
+  for (const group of actionGroups) {
+    byAction[group.action] = group._sum.credits ?? 0;
+  }
+
+  const memberIds = [...new Set(memberGroups.map((group) => group.userId))];
+  const members = memberIds.length
+    ? await prisma.user.findMany({
+        where: { id: { in: memberIds } },
+        select: { id: true, name: true, email: true },
+      })
+    : [];
+  const memberById = new Map(members.map((row) => [row.id, row]));
+
   const byMember = new Map<
     string,
     {
@@ -401,24 +462,39 @@ export async function getUsageBreakdown() {
       actions: Record<string, number>;
     }
   >();
-  for (const row of ledgers) {
-    byAction[row.action] = (byAction[row.action] ?? 0) + row.credits;
-    const current = byMember.get(row.userId) ?? {
-      userId: row.userId,
-      name: row.user.name,
-      email: row.user.email,
+  for (const group of memberGroups) {
+    const member = memberById.get(group.userId);
+    if (!member) continue;
+    const credits = group._sum.credits ?? 0;
+    const current = byMember.get(group.userId) ?? {
+      userId: group.userId,
+      name: member.name,
+      email: member.email,
       credits: 0,
       actions: {},
     };
-    current.credits += row.credits;
-    current.actions[row.action] = (current.actions[row.action] ?? 0) + row.credits;
-    byMember.set(row.userId, current);
+    current.credits += credits;
+    current.actions[group.action] = credits;
+    byMember.set(group.userId, current);
+  }
+  if (byMember.size !== memberIds.length) {
+    // Unreachable while `CreditLedger.userId` is ON DELETE CASCADE — the `include: { user }`
+    // this replaced relied on the same guarantee and would have thrown. If it ever fires,
+    // the per-member breakdown is short by those credits while `workspaceTotal` still
+    // counts them, so `unattributed` is where the difference surfaces.
+    console.warn('[plans] credit ledger rows with no user row', {
+      workspaceId: workspace.id,
+      missing: memberIds.length - byMember.size,
+    });
   }
 
-  const totals = await prisma.creditLedger.aggregate({
-    where: { workspaceId: workspace.id, createdAt: { gte: workspace.creditsPeriodStart } },
-    _sum: { credits: true },
-  });
+  // The grouped sums already are the total. The separate `aggregate` scanned the period a
+  // second time for a number that is the sum of `byAction`. `null` rather than 0 when the
+  // period has no rows at all, so the `workspaceTotal` fallback below still distinguishes
+  // "nothing recorded" from "recorded zero".
+  const ledgerTotal = actionGroups.length
+    ? actionGroups.reduce((sum, group) => sum + (group._sum.credits ?? 0), 0)
+    : null;
 
   return {
     ok: true as const,
@@ -430,12 +506,12 @@ export async function getUsageBreakdown() {
       storageLimitBytes: Number(plan.storageBytesLimit),
       byAction,
       members: [...byMember.values()].filter((row) => isAdmin || row.userId === user.id),
-      workspaceTotal: totals._sum.credits ?? workspace.creditsUsed,
+      workspaceTotal: ledgerTotal ?? workspace.creditsUsed,
       // The meter is the Workspace counter; the breakdown is the ledger. They
       // diverge legitimately — deleting a user cascades their ledger rows while
       // the counter keeps billing history. Showing the difference beats letting
       // the two numbers silently disagree.
-      unattributed: Math.max(0, workspace.creditsUsed - (totals._sum.credits ?? 0)),
+      unattributed: Math.max(0, workspace.creditsUsed - (ledgerTotal ?? 0)),
       isAdmin,
     },
   };

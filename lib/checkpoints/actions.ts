@@ -6,15 +6,16 @@ import { Prisma } from '@/generated/prisma';
 import {
   captureFileSnapshot,
   readSnapshot,
+  snapshotObjectKey,
   snapshotsEqual,
   SnapshotReadError,
   writeSnapshot,
   type FileSnapshotEntry,
   type SnapshotRecord,
 } from './snapshot';
-import { captureThumbnail } from './thumbnail';
 import { recordRevertRate } from '@/lib/signals/collect';
 import { adjustStorageBytes, WORKSPACE_ROW_ID } from '@/lib/storage/usage';
+import { deleteObject } from '@/lib/storage';
 import { checkLimit } from '@/lib/plans/limits';
 import { gzipSync } from 'node:zlib';
 import { toLastCode } from '@/lib/projects/last-code';
@@ -35,7 +36,6 @@ export type PublicCheckpoint = {
 };
 
 type ActionErr = { ok: false; error: string; status: number; details?: unknown };
-type ActionOk<T> = { ok: true; data: T };
 
 function unauthorized(): ActionErr {
   return { ok: false, error: 'Sign in required', status: 401 };
@@ -126,8 +126,9 @@ export async function createCheckpoint(
   input: {
     trigger: CheckpointTrigger;
     sourceMessage?: string | null;
-    previewUrl?: string | null;
     restoredFromAt?: Date | null;
+    /** Overrides the trigger-derived label — used for the pre-restore safety snapshot. */
+    label?: string;
   },
 ) {
   const fileSnapshot = await captureFileSnapshot(projectId);
@@ -136,17 +137,16 @@ export async function createCheckpoint(
   }
 
   const label =
-    input.trigger === 'restore'
+    input.label ??
+    (input.trigger === 'restore'
       ? restoreLabel(input.restoredFromAt)
-      : labelFromSource(input.sourceMessage);
+      : labelFromSource(input.sourceMessage));
 
-  let thumbnailUrl: string | null = null;
-  try {
-    thumbnailUrl = await captureThumbnail(input.previewUrl, projectId);
-  } catch (error) {
-    console.warn('[checkpoints] thumbnail failed', error);
-  }
-
+  // No thumbnail. Capturing one needs a URL a server-side browser can visit, and
+  // the only column that ever held one — `Project.previewUrl` — has had nothing
+  // write to it since the sandbox subsystem was removed, so the capture returned
+  // null on its first check for every checkpoint ever taken (F-151). The cards
+  // render their placeholder gradient, which is what they have always shown.
   const created = await prisma.checkpoint.create({
     data: {
       projectId,
@@ -154,19 +154,13 @@ export async function createCheckpoint(
       sourceMessage: input.sourceMessage ?? null,
       trigger: input.trigger,
       fileSnapshot: Prisma.DbNull,
-      thumbnailUrl,
     },
   });
 
   try {
     const upcoming = gzipSync(Buffer.from(JSON.stringify(fileSnapshot), 'utf8')).length;
     const storage = await checkLimit(WORKSPACE_ROW_ID, 'storage', upcoming);
-    if (!storage.ok) {
-      await prisma.checkpoint.delete({ where: { id: created.id } }).catch((error) => {
-        console.warn('[checkpoints] rollback delete failed, row has no snapshot', error);
-      });
-      throw new Error(storage.message || 'Workspace storage limit is used up');
-    }
+    if (!storage.ok) throw new Error(storage.message || 'Workspace storage limit is used up');
     const written = await writeSnapshot(projectId, created.id, fileSnapshot);
     await prisma.checkpoint.update({
       where: { id: created.id },
@@ -178,17 +172,20 @@ export async function createCheckpoint(
     });
     await adjustStorageBytes(written.snapshotBytes);
   } catch (error) {
+    // The object is uploaded before any row can point at it, so a failure between the
+    // two used to leave `snapshots/{projectId}/{checkpointId}.json.gz` referenced by a
+    // checkpoint id that no longer exists: bytes nothing can reach, and nothing counted
+    // either, since `adjustStorageBytes` had not run. Only the project-purge cron lists
+    // that prefix, so they were reclaimed on project deletion and never otherwise.
+    // `deleteObject` is idempotent for a key that was never written, which is what the
+    // storage-limit branch above relies on.
+    await deleteObject(snapshotObjectKey(projectId, created.id)).catch((deleteError) => {
+      console.warn('[checkpoints] rollback of the snapshot object failed', deleteError);
+    });
     await prisma.checkpoint.delete({ where: { id: created.id } }).catch((deleteError) => {
       console.warn('[checkpoints] rollback delete failed, row has no snapshot', deleteError);
     });
     throw error;
-  }
-
-  if (thumbnailUrl) {
-    await prisma.project.update({
-      where: { id: projectId },
-      data: { thumbnailUrl },
-    });
   }
 
   return prisma.checkpoint.findUniqueOrThrow({ where: { id: created.id } });
@@ -198,7 +195,6 @@ export async function createCheckpointAfterGeneration(
   projectId: string,
   input: {
     previousPhase: 'PLANNING' | 'BUILDING' | 'COMPLETE';
-    previewUrl?: string | null;
     sourceMessage?: string | null;
   },
 ) {
@@ -243,11 +239,7 @@ export async function createCheckpointAfterGeneration(
     return null;
   }
 
-  return createCheckpoint(projectId, {
-    trigger,
-    sourceMessage,
-    previewUrl: input.previewUrl,
-  });
+  return createCheckpoint(projectId, { trigger, sourceMessage });
 }
 
 export async function getCheckpoints(projectId: string) {
@@ -281,7 +273,7 @@ export async function getCheckpoints(projectId: string) {
 async function loadProjectForWrite(projectId: string) {
   return prisma.project.findFirst({
     where: { id: projectId, deletedAt: null },
-    select: { id: true, ownerId: true, previewUrl: true },
+    select: { id: true, ownerId: true },
   });
 }
 
@@ -417,11 +409,32 @@ export async function restoreCheckpoint(projectId: string, checkpointId: string)
   if (files.length === 0) return prunedError();
 
   const locked = await withProjectLock(projectId, user.id, 'generation', async () => {
+    // The dialog promises "a new checkpoint of the current state is saved first, so
+    // nothing is lost". Take it here, before the write, but only when the live files
+    // have drifted from the newest checkpoint — otherwise every restore doubles the
+    // storage it writes for a snapshot already on record. This is exactly the state
+    // "Preview this version" leaves behind, which is the case the promise is for.
+    const current = await captureFileSnapshot(projectId);
+    const newest = await prisma.checkpoint.findFirst({
+      where: { projectId },
+      orderBy: { createdAt: 'desc' },
+      select: { snapshotKey: true, fileSnapshot: true },
+    });
+    const alreadyCheckpointed = newest
+      ? snapshotsEqual(await readSnapshot(newest), current)
+      : false;
+    if (current.length > 0 && !alreadyCheckpointed) {
+      await createCheckpoint(projectId, {
+        trigger: 'followup',
+        sourceMessage: null,
+        label: 'Before restoring an earlier version',
+      });
+    }
+
     await writeCheckpointFiles(projectId, files);
     const created = await createCheckpoint(projectId, {
       trigger: 'restore',
       sourceMessage: null,
-      previewUrl: project.previewUrl,
       restoredFromAt: checkpoint.createdAt,
     });
     await bumpContentVersion(projectId);

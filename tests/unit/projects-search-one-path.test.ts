@@ -45,6 +45,7 @@ vi.mock('@/lib/signals/collect', () => ({
   countVisualEditsFromSource: () => 0,
   recordVisualEditRate: async () => undefined,
   maybeSettleFollowups: async () => undefined,
+  recordGenerationKept: async () => undefined,
 }));
 
 const USER = { id: 'u-1', email: 'owner@example.com', name: 'Owner', role: 'MEMBER' as const };

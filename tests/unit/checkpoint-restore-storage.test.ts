@@ -223,29 +223,22 @@ describe('collectExportFiles', () => {
 
   it('throws rather than handing back an empty ZIP', async () => {
     sdk.send.mockRejectedValue(accessDenied());
-    await expect(
-      collectExportFiles({ projectId: PROJECT, sandboxStatus: 'DEAD', checkpoints }),
-    ).rejects.toThrow(/storage/i);
+    await expect(collectExportFiles({ projectId: PROJECT, checkpoints })).rejects.toThrow(
+      /storage/i,
+    );
   });
 
   it('returns the files when storage answers', async () => {
     sdk.send.mockResolvedValue(snapshotBody());
-    const files = await collectExportFiles({
-      projectId: PROJECT,
-      sandboxStatus: 'DEAD',
-      checkpoints,
-    });
+    const { files, oversized } = await collectExportFiles({ projectId: PROJECT, checkpoints });
     expect(files.map((file) => file.path)).toEqual(['src/App.jsx']);
+    expect(oversized).toEqual([]);
   });
 
   it('returns nothing when the snapshot is genuinely gone', async () => {
     // The route turns this into 409 "No checkpoint files to export", which is honest.
     sdk.send.mockRejectedValue(absentKey());
-    const files = await collectExportFiles({
-      projectId: PROJECT,
-      sandboxStatus: 'DEAD',
-      checkpoints,
-    });
+    const { files } = await collectExportFiles({ projectId: PROJECT, checkpoints });
     expect(files).toEqual([]);
   });
 });

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { log } from '@/lib/logger';
 import { prisma } from '@/lib/db';
 import { stampActivePromptHash } from '@/lib/prompts/version';
 import { maybeSettleFollowups } from '@/lib/signals/collect';
@@ -41,8 +42,15 @@ export function decimalToNumber(value: { toString(): string } | number | null | 
   return Math.round(n * 10000) / 10000;
 }
 
-/** Logging failure must never block generation. */
-export async function logGenerationEvent(input: LogGenerationEventInput) {
+/**
+ * Logging failure must never block generation.
+ *
+ * Returns the created event's id, or `null` when the write failed. The id is the only
+ * safe handle on this row: `attachGenerationInputTokens` used to look up "the newest
+ * event for the project" instead, which mis-attributes the count the moment two
+ * generations in one project overlap (F-749).
+ */
+export async function logGenerationEvent(input: LogGenerationEventInput): Promise<string | null> {
   try {
     await maybeSettleFollowups(input.projectId);
     const promptVersion = await stampActivePromptHash();
@@ -50,7 +58,7 @@ export async function logGenerationEvent(input: LogGenerationEventInput) {
     // different numbers for one generation is how /admin/usage and /admin/jobs
     // came to disagree.
     const rate = await loadOperatorTokenRate();
-    await prisma.generationEvent.create({
+    const created = await prisma.generationEvent.create({
       data: {
         projectId: input.projectId,
         userId: input.userId,
@@ -65,9 +73,12 @@ export async function logGenerationEvent(input: LogGenerationEventInput) {
         promptVersion,
         ...(input.inputTokens != null ? { inputTokens: input.inputTokens } : {}),
       },
+      select: { id: true },
     });
+    return created.id;
   } catch (error) {
     console.error('[usage] Failed to log generation event', error);
+    return null;
   }
 }
 
@@ -87,19 +98,36 @@ function parseBound(value: string, edge: 'start' | 'end') {
   return new Date(value);
 }
 
-/** Attach measured/estimated input tokens to the latest event for this project. */
-export async function attachGenerationInputTokens(projectId: string, inputTokens: number) {
+/**
+ * Attach measured input tokens to the event the run created.
+ *
+ * `updateMany` rather than `update`: the `inputTokens: null` guard makes the write
+ * idempotent — `logGenerationEvent` already priced the event when the caller knew the
+ * count up front, and overwriting that would leave `estimatedCost` and `inputTokens`
+ * describing different generations — and the row count is how a miss becomes visible.
+ * The old shape returned silently on both a missing row and an already-counted one.
+ */
+export async function attachGenerationInputTokens(
+  eventId: string | null | undefined,
+  inputTokens: number,
+) {
+  if (!eventId) {
+    // `amount`, not `inputTokens`/`tokensIn`: the log scrubber redacts any field whose
+    // name contains `token`, so both of those log as `[Filtered]` and the line carries
+    // no count at all.
+    log.warn('usage.input_tokens_unattributed', { amount: inputTokens });
+    return;
+  }
   try {
-    const latest = await prisma.generationEvent.findFirst({
-      where: { projectId },
-      orderBy: { createdAt: 'desc' },
-      select: { id: true, inputTokens: true },
-    });
-    if (!latest || latest.inputTokens != null) return;
-    await prisma.generationEvent.update({
-      where: { id: latest.id },
+    const { count } = await prisma.generationEvent.updateMany({
+      where: { id: eventId, inputTokens: null },
       data: { inputTokens },
     });
+    if (count === 0) {
+      // Either the event already carries a count (the caller passed one to
+      // `logGenerationEvent`) or the row is gone. Both are benign; neither was reported.
+      log.info('usage.input_tokens_not_applied', { eventId, amount: inputTokens });
+    }
   } catch (error) {
     console.error('[usage] Failed to attach input tokens', error);
   }

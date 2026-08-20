@@ -20,17 +20,37 @@ export type InternalOriginCheck =
   /** Unset: the loopback fallback is used, which works but is not declared. */
   | { ok: false; origin: string; severity: 'warn'; error: string };
 
-function hostOf(value: string) {
+function parse(value: string) {
   try {
-    return new URL(value).host;
+    return new URL(value);
   } catch {
     return null;
   }
 }
 
 /**
- * NEXT_PUBLIC_APP_URL must parse and must point at the same host as APP_URL
- * (or its NEXTAUTH_URL / AUTH_URL aliases) when one is configured.
+ * Loopback is exempt from the production https rule: `docker-compose.yml` run locally with
+ * `NODE_ENV=production` and the `.env.example` default (`http://localhost:3000`) is a
+ * supported way to exercise a production image, and nothing on loopback travels a network.
+ */
+const LOOPBACK_HOSTNAMES: Record<string, true> = {
+  localhost: true,
+  '127.0.0.1': true,
+  '[::1]': true,
+  '::1': true,
+};
+
+/**
+ * NEXT_PUBLIC_APP_URL must parse and must agree with APP_URL (or its
+ * NEXTAUTH_URL / AUTH_URL aliases) on *both* scheme and host when one is
+ * configured, and must be https in production off loopback.
+ *
+ * Host alone was not enough (F-764): `http://app.example` beside
+ * `https://app.example` passed, and both consumers named at the top of this
+ * file build URLs from the value — GitHub rejects an `http` App Manifest
+ * callback outright, and an `http` preview origin puts signed preview tokens on
+ * the wire in cleartext. Either way the boot check certified the value and the
+ * failure surfaced days later as someone else's bug.
  *
  * Being unset is a warning here and is escalated to fatal by
  * `assertInternalOrigin` in production only. docker-compose.yml passes the
@@ -48,8 +68,8 @@ export function checkInternalOrigin(env: NodeJS.ProcessEnv = process.env): Inter
     };
   }
 
-  const originHost = hostOf(raw);
-  if (!originHost) {
+  const origin = parse(raw);
+  if (!origin) {
     return {
       ok: false,
       severity: 'error',
@@ -61,8 +81,8 @@ export function checkInternalOrigin(env: NodeJS.ProcessEnv = process.env): Inter
   const normalized = raw.replace(/\/+$/, '');
   const appUrl = (env.APP_URL || env.NEXTAUTH_URL || env.AUTH_URL || '').trim();
   if (appUrl) {
-    const appHost = hostOf(appUrl);
-    if (!appHost) {
+    const app = parse(appUrl);
+    if (!app) {
       return {
         ok: false,
         severity: 'error',
@@ -70,14 +90,35 @@ export function checkInternalOrigin(env: NodeJS.ProcessEnv = process.env): Inter
         error: `APP_URL is not a valid URL: ${appUrl}`,
       };
     }
-    if (appHost !== originHost) {
+    if (app.host !== origin.host) {
       return {
         ok: false,
         severity: 'error',
         origin: normalized,
-        error: `NEXT_PUBLIC_APP_URL host (${originHost}) does not match APP_URL host (${appHost})`,
+        error: `NEXT_PUBLIC_APP_URL host (${origin.host}) does not match APP_URL host (${app.host})`,
       };
     }
+    if (app.protocol !== origin.protocol) {
+      return {
+        ok: false,
+        severity: 'error',
+        origin: normalized,
+        error: `NEXT_PUBLIC_APP_URL scheme (${origin.protocol}) does not match APP_URL scheme (${app.protocol})`,
+      };
+    }
+  }
+
+  if (
+    env.NODE_ENV === 'production' &&
+    origin.protocol !== 'https:' &&
+    !LOOPBACK_HOSTNAMES[origin.hostname]
+  ) {
+    return {
+      ok: false,
+      severity: 'error',
+      origin: normalized,
+      error: `NEXT_PUBLIC_APP_URL must be https in production: ${normalized}`,
+    };
   }
 
   return { ok: true, severity: 'ok', origin: normalized };
@@ -86,8 +127,9 @@ export function checkInternalOrigin(env: NodeJS.ProcessEnv = process.env): Inter
 /**
  * Boot check.
  *
- * In production any problem — unset, unparseable, or pointing at a different
- * host than APP_URL — throws and the app refuses to start. A container that
+ * In production any problem — unset, unparseable, a different host or scheme
+ * than APP_URL, or a non-https origin off loopback — throws and the app refuses
+ * to start. A container that
  * boots with the wrong public origin serves a GitHub App callback and preview
  * URLs that point somewhere else, and that is discovered days later by a user,
  * not by us. Failing at boot puts it in the deploy log instead.

@@ -7,6 +7,7 @@ import {
 } from '../../lib/consumption/caps';
 import {
   CREDIT_COSTS,
+  checkCredits,
   consumeCredits,
   creditDenialMessage,
   isUnlimited,
@@ -37,6 +38,15 @@ const db = vi.hoisted(() => ({
 }));
 const alerts = vi.hoisted(() => ({ notifyAdminsCredit80: vi.fn() }));
 const logger = vi.hoisted(() => ({ logError: vi.fn() }));
+// `consumeCredits` reports a dropped 80% alert through `trackFailure`, not `logError`
+// (F-306): console output reaches container stdout only, and no operator has been told to
+// grep for an event name. The contract under test is that the failure is surfaced to the
+// error tracker, so that is what is asserted.
+const track = vi.hoisted(() => ({
+  trackStart: vi.fn(),
+  trackSuccess: vi.fn(),
+  trackFailure: vi.fn(),
+}));
 const store = vi.hoisted(() => ({
   getJob: vi.fn(),
   claimJobCreditCharge: vi.fn(),
@@ -48,6 +58,11 @@ vi.mock('@/lib/plans/alerts', () => ({ notifyAdminsCredit80: alerts.notifyAdmins
 vi.mock('@/lib/logger', async (importOriginal) => ({
   ...(await importOriginal<typeof LoggerModule>()),
   logError: logger.logError,
+}));
+vi.mock('@/lib/observability/track', () => ({
+  trackStart: track.trackStart,
+  trackSuccess: track.trackSuccess,
+  trackFailure: track.trackFailure,
 }));
 vi.mock('@/lib/projects/lock', () => ({ acquireLock: vi.fn(), releaseLock: vi.fn() }));
 vi.mock('@/lib/jobs/compensate-publish', () => ({ compensateAbandonedPublish: vi.fn() }));
@@ -68,13 +83,35 @@ vi.mock('@/lib/jobs/store', () => ({
 }));
 
 describe('money and limits (unit)', () => {
-  it('credits are checked before a model call — mock stays idle on fail', async () => {
+  it('the credit pre-flight refuses an exhausted workspace before the model runs', async () => {
+    // The generate route checks credits at route.ts:314 and returns before it ever
+    // reaches the model. This drives that real gate: `checkCredits` reads a mocked
+    // exhausted workspace and decides the outcome — the AI mock is wired to the gate,
+    // not asserted idle by construction. Delete the pre-flight (or let `checkCredits`
+    // stop refusing an exhausted workspace) and `ai.complete` runs, so `ai.invoked` is 1.
+    const workspaceId = 'ws_money_limits_preflight';
+    db.workspace.upsert.mockResolvedValue({
+      id: workspaceId,
+      planId: 'plan_exhausted',
+      creditsUsed: 100,
+      creditsPeriodStart: new Date(Date.now() - 24 * 60 * 60 * 1000),
+      creditAlert80Sent: false,
+      memberMonthlyCreditCap: null,
+      generationPaused: false,
+    });
+    db.plan.findUnique.mockResolvedValue({ id: 'plan_exhausted', monthlyCredits: 100 });
+
     const ai = createAiMock('success');
-    const check = { ok: false as const, reason: 'workspace_exhausted' as const };
+    const check = await checkCredits(workspaceId, 'user_1', 'generation');
+    if (check.ok) {
+      await ai.complete('build me a landing page');
+    }
+
+    expect(check.ok).toBe(false);
     if (!check.ok) {
       expect(creditDenialMessage(check.reason)).toMatch(/credits are used up/i);
-      expect(ai.invoked).toBe(0);
     }
+    expect(ai.invoked).toBe(0);
   });
 
   it('job caps abort mid-stream', () => {
@@ -139,7 +176,7 @@ describe('the 80% credit alert', () => {
     expect(alerts.notifyAdminsCredit80).toHaveBeenCalledTimes(1);
     expect(tx.creditLedger.create).toHaveBeenCalledTimes(1);
     expect(store.releaseJobCreditCharge).not.toHaveBeenCalled();
-    expect(logger.logError).toHaveBeenCalledWith(
+    expect(track.trackFailure).toHaveBeenCalledWith(
       'credits.alert_failed',
       expect.any(Error),
       expect.objectContaining({ workspaceId: WORKSPACE.id, action: 'generation' }),
@@ -167,7 +204,7 @@ describe('the 80% credit alert', () => {
 
     await consumeCredits(WORKSPACE.id, 'user_1', 'generation');
     expect(alerts.notifyAdminsCredit80).not.toHaveBeenCalled();
-    expect(logger.logError).toHaveBeenCalledWith(
+    expect(track.trackFailure).toHaveBeenCalledWith(
       'credits.alert_failed',
       expect.any(Error),
       expect.objectContaining({ workspaceId: WORKSPACE.id, action: 'generation' }),

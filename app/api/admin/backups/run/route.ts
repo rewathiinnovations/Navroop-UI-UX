@@ -9,7 +9,10 @@ export async function POST() {
   if (!user) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   const result = await runDbBackup();
   if (!result.ok) {
-    return NextResponse.json(result, { status: 500 });
+    // 409, not 500: a backup that is already running has not failed, and the run holding the
+    // claim writes the only receipt (F-722).
+    const status = 'alreadyRunning' in result ? 409 : 500;
+    return NextResponse.json(result, { status });
   }
   return NextResponse.json(result);
 }

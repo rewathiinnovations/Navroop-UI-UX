@@ -18,7 +18,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const db = vi.hoisted(() => ({
   projectFindMany: vi.fn(),
+  projectCount: vi.fn(),
   projectDelete: vi.fn(),
+  transaction: vi.fn(),
 }));
 const storage = vi.hoisted(() => ({ listKeys: vi.fn(), deleteObject: vi.fn() }));
 const publish = vi.hoisted(() => ({ purgeProjectPublishResources: vi.fn() }));
@@ -27,7 +29,14 @@ const usage = vi.hoisted(() => ({ adjustStorageBytes: vi.fn() }));
 
 vi.mock('@/lib/db', () => ({
   prisma: {
-    project: { findMany: db.projectFindMany, delete: db.projectDelete },
+    project: {
+      findMany: db.projectFindMany,
+      count: db.projectCount,
+      delete: db.projectDelete,
+    },
+    // The delete and the storage-ledger decrement share one transaction (F-783); this fake
+    // just runs the callback so the ordering assertions below still see the two calls.
+    $transaction: db.transaction,
   },
 }));
 vi.mock('@/lib/storage', () => ({
@@ -80,6 +89,11 @@ beforeEach(() => {
   vi.spyOn(console, 'info').mockImplementation(() => {});
   db.projectFindMany.mockResolvedValue([PROJECT]);
   db.projectDelete.mockResolvedValue(PROJECT);
+  db.projectCount.mockResolvedValue(1);
+  db.transaction.mockImplementation(
+    async (fn: (client: { project: { delete: typeof db.projectDelete } }) => Promise<unknown>) =>
+      fn({ project: { delete: db.projectDelete } }),
+  );
   storage.listKeys.mockResolvedValue([]);
   storage.deleteObject.mockResolvedValue(undefined);
   publish.purgeProjectPublishResources.mockResolvedValue(TORN_DOWN);
@@ -181,8 +195,9 @@ describe('purgeDeletedProjects storage keys', () => {
     const deleted = storage.deleteObject.mock.calls.map((call) => call[0]);
     expect(deleted).toContain('previews/proj_1/build_1/index.html');
     expect(deleted).toContain('previews/proj_1/build_1/assets/app.js');
-    // 100 snapshot + 20 asset + 300 preview bytes leave the workspace ledger.
-    expect(usage.adjustStorageBytes).toHaveBeenCalledWith(-420);
+    // 100 snapshot + 20 asset + 300 preview bytes leave the workspace ledger, inside the same
+    // transaction as the project delete (F-783) — hence the second argument.
+    expect(usage.adjustStorageBytes).toHaveBeenCalledWith(-420, expect.anything());
   });
 
   it('holds the project back when the object listing fails, and keeps going', async () => {

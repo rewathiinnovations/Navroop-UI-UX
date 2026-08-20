@@ -1,22 +1,14 @@
-import { getSetting } from '@/lib/settings/resolve';
+import { positiveNumberSetting } from '@/lib/settings/numbers';
 
 const DEFAULT_CHECKPOINT_RETENTION_DAYS = 7;
 const DEFAULT_PURGE_DELETED_DAYS = 30;
 
-function positiveDays(value: string | null, fallback: number) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
 export async function checkpointRetentionDays() {
-  return positiveDays(
-    await getSetting('app.checkpointRetentionDays'),
-    DEFAULT_CHECKPOINT_RETENTION_DAYS,
-  );
+  return positiveNumberSetting('app.checkpointRetentionDays', DEFAULT_CHECKPOINT_RETENTION_DAYS);
 }
 
 export async function purgeDeletedDays() {
-  return positiveDays(await getSetting('app.purgeDeletedDays'), DEFAULT_PURGE_DELETED_DAYS);
+  return positiveNumberSetting('app.purgeDeletedDays', DEFAULT_PURGE_DELETED_DAYS);
 }
 
 export function isThinEligible(input: {

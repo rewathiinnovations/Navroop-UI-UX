@@ -9,13 +9,19 @@ export async function POST(request: Request) {
     // until it clears, a container the operator is being billed for is still up — and nothing
     // else in the product reports that count. Without this the cron answered 200 and recorded
     // `CronRun{ok: true}` on a run where every project was blocked.
+    // A run capped at PURGE_PROJECT_LIMIT is healthy, not failed — but the backlog has to be
+    // said out loud, or "purged 25, ok" reads identically whether the queue is empty or ten
+    // thousand deep.
+    const backlog =
+      report.remaining > 0 ? `${report.remaining} project(s) remain for the next run` : null;
+    const stuck =
+      report.blocked > 0
+        ? `${report.blocked} project(s) still have live publish resources and were not deleted`
+        : null;
     return {
       ...report,
       ok: report.blocked === 0,
-      detail:
-        report.blocked > 0
-          ? `${report.blocked} project(s) still have live publish resources and were not deleted`
-          : null,
+      detail: [stuck, backlog].filter(Boolean).join('; ') || null,
     };
   });
 }

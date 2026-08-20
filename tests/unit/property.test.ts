@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import fc from 'fast-check';
 import { slugFromName, isReservedSlug } from '../../lib/publish/slug';
 import { sanitizeGenerationPath } from '../../lib/generation/parse-files';
-import { fileTreeFromPaths, flattenFileTree } from '../../lib/checkpoints/file-tree';
 import { CREDIT_COSTS, isUnlimited } from '../../lib/plans/limits';
 import { UnsafeUrlError, assertSafeUrl } from '../../lib/security/url-guard';
 
@@ -31,20 +30,25 @@ describe('property-based: slugs', () => {
 describe('property-based: url guard', () => {
   it('file/ftp/javascript protocols are always rejected', async () => {
     await fc.assert(
-      fc.asyncProperty(fc.constantFrom('file:', 'ftp:', 'javascript:', 'data:'), async (protocol) => {
-        await expect(assertSafeUrl(`${protocol}//example`)).rejects.toBeInstanceOf(UnsafeUrlError);
-      }),
+      fc.asyncProperty(
+        fc.constantFrom('file:', 'ftp:', 'javascript:', 'data:'),
+        async (protocol) => {
+          await expect(assertSafeUrl(`${protocol}//example`)).rejects.toBeInstanceOf(
+            UnsafeUrlError,
+          );
+        },
+      ),
       { numRuns: 8 },
     );
   });
 });
 
-describe('property-based: checkpoint file map', () => {
-  it('unicode and nesting survive; traversal is rejected', () => {
-    const tree = fileTreeFromPaths(['src/组件/App.tsx', 'src/nested/deep/file.ts']);
-    expect(flattenFileTree(tree).sort()).toEqual(['src/nested/deep/file.ts', 'src/组件/App.tsx'].sort());
+describe('property-based: generation paths', () => {
+  it('traversal is rejected, unicode nesting survives', () => {
     expect(sanitizeGenerationPath('../etc/passwd').ok).toBe(false);
     expect(sanitizeGenerationPath('src/ok.ts').ok).toBe(true);
+    expect(sanitizeGenerationPath('src/组件/App.tsx').ok).toBe(true);
+    expect(sanitizeGenerationPath('src/nested/deep/file.ts').ok).toBe(true);
   });
 });
 

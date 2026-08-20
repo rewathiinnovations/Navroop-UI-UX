@@ -11,7 +11,10 @@ export {
   writeSnapshot,
 } from './snapshot-store';
 
-/** Same file-tree helper GitHub push uses. Do not add a second reader. */
+/**
+ * Reads through `getCurrentProjectFiles` — the same reader the GitHub push path uses — so a
+ * checkpoint and a publish always see the identical file map. Do not add a second reader.
+ */
 export async function captureFileSnapshot(projectId: string): Promise<FileSnapshotEntry[]> {
   const project = await prisma.project.findFirst({
     where: { id: projectId, deletedAt: null },
@@ -31,4 +34,3 @@ export function snapshotsEqual(left: unknown, right: FileSnapshotEntry[]) {
     return entry.path === other.path && entry.content === other.content;
   });
 }
-

@@ -49,14 +49,23 @@ describe('network guard', () => {
   });
 
   it('does not treat allowHost as a localhost opt-in', () => {
-    expect(() => allowHost('localhost')).toThrow(LOCALHOST_OPT_IN);
-    expect(() => allowHost('127.0.0.1')).toThrow(LOCALHOST_OPT_IN);
+    // `allowHost` takes a reason of its own now, so both calls get past the reason
+    // check and reach the loopback branch this test is about: a loopback host is
+    // refused even with a reason, and the message names the one opt-in that works.
+    expect(() => allowHost('localhost', 'proving allowHost cannot open loopback')).toThrow(
+      LOCALHOST_OPT_IN,
+    );
+    expect(() => allowHost('127.0.0.1', 'proving allowHost cannot open loopback')).toThrow(
+      LOCALHOST_OPT_IN,
+    );
   });
 
   it('lets a test reach loopback after allowLocalhost', async () => {
     allowLocalhost('proving the opt-in reaches the network layer, not the app on :3000');
     // Port 1 is never the app. A connection error means the guard let the request through.
-    await expect(fetch('http://127.0.0.1:1/')).rejects.toThrow(/fetch failed|ECONNREFUSED|connect/i);
+    await expect(fetch('http://127.0.0.1:1/')).rejects.toThrow(
+      /fetch failed|ECONNREFUSED|connect/i,
+    );
   });
 
   it('clears the opt-in after each test', async () => {
@@ -69,4 +78,3 @@ describe('network guard', () => {
     await expect(fetch('http://localhost:3000/api/health')).rejects.toThrow(LOCALHOST_OPT_IN);
   });
 });
-

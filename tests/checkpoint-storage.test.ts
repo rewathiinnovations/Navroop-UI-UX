@@ -20,20 +20,40 @@ function assert(cond: unknown, name: string) {
   console.error(`FAIL  ${name}`);
 }
 
-const {
-  asFileSnapshot,
-  snapshotObjectKey,
-  writeSnapshot,
-  readSnapshot,
-} = await import('../lib/checkpoints/snapshot-store.ts');
+const { asFileSnapshot, snapshotObjectKey, writeSnapshot, readSnapshot } =
+  await import('../lib/checkpoints/snapshot-store.ts');
 const { isThinEligible } = await import('../lib/checkpoints/retention.ts');
 
+// A realistic component rather than a one-liner: at 142 raw bytes the previous
+// fixture gzipped to 136, so "the stored payload is smaller than the raw JSON"
+// held by six bytes and any fixture tweak would have flipped it.
 const files = [
-  { path: 'src/App.jsx', content: 'export default function App(){return <h1>Hi</h1>}' },
+  {
+    path: 'src/App.jsx',
+    content: [
+      "import { useState } from 'react';",
+      '',
+      'export default function App() {',
+      '  const [count, setCount] = useState(0);',
+      '  return (',
+      '    <main className="page">',
+      '      <h1 className="title">Hi</h1>',
+      '      <p className="subtitle">You clicked {count} times.</p>',
+      '      <button className="button" onClick={() => setCount(count + 1)}>',
+      '        Click me',
+      '      </button>',
+      '    </main>',
+      '  );',
+      '}',
+    ].join('\n'),
+  },
   { path: 'package.json', content: '{"name":"demo"}' },
 ];
 
-assert(snapshotObjectKey('proj_1', 'cp_9') === 'snapshots/proj_1/cp_9.json.gz', 'snapshot key path');
+assert(
+  snapshotObjectKey('proj_1', 'cp_9') === 'snapshots/proj_1/cp_9.json.gz',
+  'snapshot key path',
+);
 
 const prevDriver = process.env.STORAGE_DRIVER;
 const prevRoot = process.env.STORAGE_LOCAL_DIR;
@@ -51,7 +71,9 @@ try {
   const stored = await get(written.snapshotKey);
   assert(stored !== null, 'storage get returns gzip body');
   const rawJson = Buffer.from(JSON.stringify(files), 'utf8');
-  assert(stored!.length < rawJson.length || stored!.length > 0, 'gzip payload is stored');
+  // `|| stored!.length > 0` used to sit on the end of this. A gzip buffer is always
+  // non-empty, so the compression claim in the first disjunct was never tested (F-610).
+  assert(stored!.length < rawJson.length, 'gzip payload is smaller than the raw json');
   const unzipped = JSON.parse(gunzipSync(stored!).toString('utf8'));
   assert(asFileSnapshot(unzipped).length === 2, 'stored gzip decodes to files');
 
@@ -59,13 +81,19 @@ try {
     snapshotKey: written.snapshotKey,
     fileSnapshot: null,
   });
-  assert(fromKey.length === 2 && fromKey[0]?.path === 'src/App.jsx', 'readSnapshot uses snapshotKey');
+  assert(
+    fromKey.length === 2 && fromKey[0]?.path === 'src/App.jsx',
+    'readSnapshot uses snapshotKey',
+  );
 
   const legacy = await readSnapshot({
     snapshotKey: null,
     fileSnapshot: files,
   });
-  assert(legacy.length === 2 && legacy[1]?.path === 'package.json', 'readSnapshot falls back to fileSnapshot');
+  assert(
+    legacy.length === 2 && legacy[1]?.path === 'package.json',
+    'readSnapshot falls back to fileSnapshot',
+  );
 
   const empty = await readSnapshot({ snapshotKey: null, fileSnapshot: null });
   assert(empty.length === 0, 'readSnapshot empty when neither source exists');

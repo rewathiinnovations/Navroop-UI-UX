@@ -6,11 +6,12 @@ import { pruneStalePresence } from '@/lib/projects/presence';
 import { pruneAuditLogs } from '@/lib/audit/log';
 import { prunePreviewBuilds } from '@/lib/preview/prune';
 import { pruneObservabilityHistory } from '@/lib/observability/prune';
+import { settleIdleProjects } from '@/lib/signals/collect';
 
 /**
- * The daily maintenance cron. Thinning is only the first of five jobs it carries — presence,
- * audit log, preview build and observability retention all hang off it — so no single failure
- * inside it may take the others down with it.
+ * The daily maintenance cron. Thinning is only the first of six jobs it carries — presence,
+ * audit log, preview build and observability retention plus the quality-signal settle pass
+ * all hang off it — so no single failure inside it may take the others down with it.
  */
 export async function thinCheckpoints() {
   const retentionDays = await checkpointRetentionDays();
@@ -116,6 +117,12 @@ export async function thinCheckpoints() {
     errors.push(`observability history: ${error instanceof Error ? error.message : String(error)}`);
     return { cronRuns: 0, checks: 0, cutoff: null as string | null };
   });
+  // Maintenance, not a read: settling a project's follow-up count writes quality
+  // signals. It used to run as the first statement of the /admin/quality render,
+  // so a GET mutated data — twice if two admins opened the page (F-732).
+  // `withSignalGuard` already swallows its own failures and returns null.
+  const settled = await settleIdleProjects(now);
+  if (settled == null) errors.push('quality signals: settle pass failed');
 
   const problems =
     blocked > 0
@@ -139,6 +146,7 @@ export async function thinCheckpoints() {
     previewReclaimedBytes: preview.reclaimedBytes,
     cronRunsPruned: observability.cronRuns,
     observabilityChecksPruned: observability.checks,
+    projectsSettled: settled ?? 0,
     errors,
   };
   console.info('[thin-checkpoints]', report);

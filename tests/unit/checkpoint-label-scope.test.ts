@@ -54,7 +54,6 @@ vi.mock('@/lib/checkpoints/snapshot', () => ({
   asFileSnapshot: (value: unknown) => value,
   SnapshotReadError: class SnapshotReadError extends Error {},
 }));
-vi.mock('@/lib/checkpoints/thumbnail', () => ({ captureThumbnail: vi.fn(async () => null) }));
 vi.mock('@/lib/plans/limits', () => ({ checkLimit: vi.fn(async () => ({ ok: true })) }));
 vi.mock('@/lib/storage/usage', () => ({
   adjustStorageBytes: vi.fn(async () => undefined),

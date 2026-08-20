@@ -33,6 +33,7 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
+import type { Stats } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { getSetting, getSettings } from '@/lib/settings/resolve';
 import { isObjectNotFoundError } from './s3-errors';
@@ -286,10 +287,20 @@ export async function get(key: string): Promise<Buffer | null> {
   return localGet(key);
 }
 
-async function localListKeys(prefix: string): Promise<string[]> {
+/**
+ * A stored object with the two facts a reclamation pass needs beyond its key: how big it is,
+ * and how long it has been there. Age is what makes deleting an unreferenced object safe —
+ * every writer in this product uploads bytes seconds before it commits the row that points at
+ * them, so "no row references this" is only trustworthy about an object older than any
+ * plausible in-flight write. See lib/backup/orphans.ts.
+ */
+export type StoredObject = { key: string; sizeBytes: number; lastModified: Date | null };
+
+/** `withMetadata: false` skips one `stat` per file, for callers that only want keys. */
+async function localListObjects(prefix: string, withMetadata: boolean): Promise<StoredObject[]> {
   const target = await localTarget(prefix);
   const root = target.root;
-  const keys: string[] = [];
+  const objects: StoredObject[] = [];
 
   async function walk(dir: string) {
     let entries;
@@ -306,16 +317,35 @@ async function localListKeys(prefix: string): Promise<string[]> {
         await walk(full);
         continue;
       }
-      keys.push(relative(root, full).split(sep).join('/'));
+      const key = relative(root, full).split(sep).join('/');
+      if (!withMetadata) {
+        objects.push({ key, sizeBytes: 0, lastModified: null });
+        continue;
+      }
+      let info: Stats | null = null;
+      try {
+        info = await stat(full);
+      } catch (error) {
+        // A file that vanished between readdir and stat is not an error worth aborting a
+        // whole listing for; it is reported with no metadata, which every caller treats as
+        // "too little is known about this to act on it".
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== 'ENOENT') throw error;
+      }
+      objects.push({
+        key,
+        sizeBytes: info?.size ?? 0,
+        lastModified: info ? info.mtime : null,
+      });
     }
   }
 
   await walk(target.path);
-  return keys;
+  return objects;
 }
 
-async function s3ListKeys(prefix: string): Promise<string[]> {
-  const keys: string[] = [];
+async function s3ListObjects(prefix: string): Promise<StoredObject[]> {
+  const objects: StoredObject[] = [];
   let token: string | undefined;
   do {
     const response = await (
@@ -328,16 +358,29 @@ async function s3ListKeys(prefix: string): Promise<string[]> {
       }),
     );
     for (const object of response.Contents ?? []) {
-      if (object.Key) keys.push(object.Key);
+      if (!object.Key) continue;
+      objects.push({
+        key: object.Key,
+        sizeBytes: object.Size ?? 0,
+        lastModified: object.LastModified ?? null,
+      });
     }
     token = response.IsTruncated ? response.NextContinuationToken : undefined;
   } while (token);
-  return keys;
+  return objects;
+}
+
+/** Every object under `prefix`, with size and last-modified time. One listing pass. */
+export async function listObjects(prefix: string): Promise<StoredObject[]> {
+  if ((await driver()) === 's3') return s3ListObjects(prefix);
+  return localListObjects(prefix, true);
 }
 
 export async function listKeys(prefix: string) {
-  if ((await driver()) === 's3') return s3ListKeys(prefix);
-  return localListKeys(prefix);
+  // S3 returns size and date in the same response either way; the local driver would need a
+  // `stat` per file, and the delete paths that call this do not look at either.
+  if ((await driver()) === 's3') return (await s3ListObjects(prefix)).map((object) => object.key);
+  return (await localListObjects(prefix, false)).map((object) => object.key);
 }
 
 /** Alias matching the adapter interface name `delete`. */

@@ -1,9 +1,10 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { VERIFY_STEPS } from '@/lib/verify/orchestrator';
 
 /**
- * Three documentation contracts that drifted silently and cost real money.
+ * Documentation contracts that drifted silently and cost real money.
  *
  * `docs/e2e-test-and-fix-prompt.md` was 659 lines written to be pasted into an agent verbatim
  * (F-531). It mandated `pnpm exec`, started a dev server on the wrong port, and told the agent to
@@ -16,6 +17,21 @@ import { describe, expect, it } from 'vitest';
  * load-bearing configuration and a whole security control that appeared in no document at all.
  * Both assertions are derived from the code, so they go red when the code changes and the docs do
  * not, which is the only direction that matters.
+ *
+ * The rest of this file is the mechanism F-551 asked for: the doc set said `npm run verify` in a
+ * pnpm-only repo, stated three different wrong coverage floors, pointed the security-override
+ * fixer at a file pnpm does not read, named four stack prompts that do not exist, and described
+ * the photo pipeline as "Unsplash stock" while a whole image worker and a keyless Openverse
+ * fallback went unmentioned. Every assertion below reads the number, path, key or list out of the
+ * source and compares, so the doc goes red when the code moves — never the other way round.
+ *
+ * Two of those assertions were themselves wrong, in opposite directions, and both are fixed here.
+ * The `npm run verify` check used a bare `/npm run verify/`, which matches the tail of every
+ * legitimate `pnpm run verify` — fifteen false offenders, i.e. a red gate nobody could act on. The
+ * `pnpm.overrides` check clipped each line to 120 characters *before* testing it for a negation, so
+ * `**Not `pnpm.overrides` in `package.json`**` — the correction itself — was reported as the
+ * offence, because the "Not" sat past the cut. A doc check that cries wolf gets deleted, so the
+ * escape hatch is now the negation in the same clause and the full line is what gets tested.
  */
 
 const ROOT = process.cwd();
@@ -23,6 +39,80 @@ const E2E_BRIEF = join(ROOT, 'docs', 'e2e-test-and-fix-prompt.md');
 
 /** Binaries the repo invokes as `node ./node_modules/…`; `pnpm exec <binary>` is the banned form. */
 const BINARIES = ['tsc', 'tsx', 'eslint', 'vitest', 'prisma', 'playwright', 'next'];
+
+/** Every prose document an agent or operator is expected to trust. */
+const DOC_FILES = [
+  'AGENTS.md',
+  'CLAUDE.md',
+  'README.md',
+  '.cursor/README.md',
+  ...readdirSync(join(ROOT, '.cursor', 'rules')).map((file) => `.cursor/rules/${file}`),
+  ...readdirSync(join(ROOT, 'docs'))
+    .filter((file) => file.endsWith('.md'))
+    .map((file) => `docs/${file}`),
+];
+
+/**
+ * The documents an operator configures credentials and settings from. Setting keys are only
+ * checked here, for two reasons: the comparison write-ups (`codegen-vs-open-lovable.md`)
+ * deliberately quote settings that have since been deleted, as history, and nobody configures
+ * anything from them; and `AGENTS.md` is an agent map rather than a deployment guide — it currently
+ * carries one stale key (`ai.primaryProvider`, from an overlay that only ever shipped
+ * `AI_PRIMARY_MODEL`) which is reported separately, outside this change's scope.
+ */
+const CREDENTIAL_DOCS = [
+  'README.md',
+  '.cursor/README.md',
+  'docs/coolify.md',
+  'docs/release.md',
+  'docs/deployment.md',
+];
+
+/** `{ where, text }` for every line matching `pattern`, across `files`. `pattern` must not be global. */
+function linesMatching(files: string[], pattern: RegExp) {
+  const hits: { where: string; text: string }[] = [];
+  for (const rel of files) {
+    readFileSync(join(ROOT, rel), 'utf8')
+      .split('\n')
+      .forEach((line, index) => {
+        if (pattern.test(line)) hits.push({ where: `${rel}:${index + 1}`, text: line });
+      });
+  }
+  return hits;
+}
+
+/** Readable failure output. The full line is kept above; only the message is clipped. */
+function report(hits: { where: string; text: string }[]) {
+  return hits.map((hit) => `${hit.where} ${hit.text.trim().slice(0, 120)}`);
+}
+
+/**
+ * A document may name a banned form in order to ban it, so mentions need an escape hatch — but a
+ * whole-line one is worthless here. The Verify/release bullets are single 900-character lines full
+ * of the word "never", so exempting a line because it contains a prohibition exempts every
+ * invocation printed on it; and clipping the line to 120 characters before testing it fails the
+ * opposite way, reporting `**Not `pnpm.overrides` in `package.json`**` as an offender because the
+ * negation sits past the cut. The hatch is therefore the negation that precedes the mention in the
+ * same clause: same sentence, within ~72 characters.
+ */
+const NEGATION =
+  /\b(?:not|never|no|nothing|don't|do not|instead of|rather than|forbid\w*|banned|only|avoid)\b[^.!?\n]{0,72}$/i;
+
+/** Every occurrence of `pattern` (global) that no negation in its own clause disowns. */
+function unnegatedMentions(files: string[], pattern: RegExp) {
+  const offenders: string[] = [];
+  for (const rel of files) {
+    readFileSync(join(ROOT, rel), 'utf8')
+      .split('\n')
+      .forEach((line, index) => {
+        for (const hit of line.matchAll(pattern)) {
+          if (NEGATION.test(line.slice(0, hit.index))) continue;
+          offenders.push(`${rel}:${index + 1} "${hit[0]}" in: ${line.trim().slice(0, 100)}`);
+        }
+      });
+  }
+  return offenders;
+}
 
 function apiRouteExists(path: string) {
   // Only the literal head has to resolve: past a dynamic (`[id]`) or wildcard segment nothing can
@@ -91,5 +181,354 @@ describe('docs accuracy', () => {
         `${file} does not mention PREVIEW_PASSWORD`,
       ).toContain('PREVIEW_PASSWORD');
     }
+  });
+
+  it('offers no npm or yarn invocation as a way to run this repo', () => {
+    // F-527/F-528/F-529. `package.json` pins pnpm and the lockfile is `pnpm-lock.yaml`; running a
+    // script through npm resolves `node_modules` differently and writes `package-lock.json`, which
+    // is a logged incident (`.cursor/lessons-learned.md`). `stack.mdc` said `npm run db:migrate`,
+    // `README.md` opened with `pnpm install  # or npm install / yarn install`, and `AGENTS.md` and
+    // `docs/release.md` both offered `pnpm run verify` / `npm run verify` as equals. The lookbehind
+    // is load-bearing: `\b` finds no boundary inside `pnpm`, but a bare `/npm run verify/` matches
+    // the tail of every legitimate `pnpm run verify`, which is how this assertion managed to be
+    // simultaneously too loose (whole-line prohibition hatch) and too strict (fifteen false hits).
+    expect(JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).packageManager).toMatch(
+      /^pnpm@/,
+    );
+    expect(
+      unnegatedMentions(DOC_FILES, /(?<![\w.-])(?:npm|yarn) (?:run|install|add|exec|ci)\b/g),
+      'a document offers npm/yarn as a way to run this repo',
+    ).toEqual([]);
+  });
+
+  it('issues no `pnpm exec <binary>` command in any document', () => {
+    // F-530. `release.md` carries the "never `pnpm exec`" section and then printed
+    // `pnpm exec tsx scripts/rollback.ts` seventy lines later — during a rollback, i.e. with
+    // production already broken. The hooks' form is `node ./node_modules/tsx/dist/cli.mjs`.
+    // No negation hatch: the prohibitions in prose write `pnpm exec <tool>`, never a real binary,
+    // so any document naming one is issuing the command rather than banning it.
+    const banned = new RegExp(`pnpm exec (?:${BINARIES.join('|')})\\b`);
+    expect(
+      report(linesMatching(DOC_FILES, banned)),
+      'a document issues `pnpm exec <binary>`',
+    ).toEqual([]);
+  });
+
+  it('runs every repo script through the hooks\u2019 direct binary', () => {
+    // F-644, and the other half of F-530. One command had three written forms: `AGENTS.md` said
+    // `npx tsx scripts/restore-db.ts`, `README.md` said the same, and `docs/release.md` printed
+    // the bare script path with no runner. It is read once — mid-incident, with production down —
+    // so the copy-pasteable form has to be the one the hooks use. `npx` is banned here for the
+    // same reason as `pnpm exec`: it resolves and may fetch, and neither hook uses it.
+    expect(
+      unnegatedMentions(DOC_FILES, /(?:npx|pnpm exec) [\w@./-]+ (?:\.\/)?scripts\//g),
+      'a document runs a repo script through npx or pnpm exec',
+    ).toEqual([]);
+  });
+
+  it('states no coverage floor that disagrees with vitest.config.ts', () => {
+    // F-532: three documents stated three different floors, all wrong, and all three instructed
+    // the reader to raise them. A ratchet needs exactly one recorded value, so the floors are read
+    // out of the config here and any restatement has to match it.
+    const config = readFileSync(join(ROOT, 'vitest.config.ts'), 'utf8');
+    const thresholds = config.slice(config.indexOf('thresholds: {'));
+    // Per-module globs repeat the same metric names, so stop at the first one.
+    const global = thresholds.slice(0, thresholds.indexOf("'lib/"));
+    const floors = new Map(
+      (['statements', 'branches', 'functions', 'lines'] as const).map((metric) => {
+        const found = new RegExp(`\\b${metric}: (\\d+)`).exec(global);
+        expect(found, `vitest.config.ts has no global ${metric} floor`).not.toBeNull();
+        return [metric, Number(found?.[1])];
+      }),
+    );
+    const wrong: string[] = [];
+    for (const rel of DOC_FILES) {
+      const text = readFileSync(join(ROOT, rel), 'utf8');
+      for (const hit of text.matchAll(
+        /(\d{2,3})(?:\.\d+)?\s*%?\s*(statements|branches|functions|lines)\b/gi,
+      )) {
+        const metric = hit[2].toLowerCase();
+        if (Number(hit[1]) !== floors.get(metric as 'lines')) wrong.push(`${rel}: ${hit[0]}`);
+      }
+      // `.cursor/README.md` used the compact form: "Coverage floors are 49/70/65/49".
+      for (const hit of text.matchAll(
+        /floors?[^\n]{0,24}?(\d{2})\s*\/\s*(\d{2})\s*\/\s*(\d{2})\s*\/\s*(\d{2})/gi,
+      )) {
+        const stated = [Number(hit[1]), Number(hit[2]), Number(hit[3]), Number(hit[4])];
+        const real = ['statements', 'branches', 'functions', 'lines'].map((m) =>
+          floors.get(m as 'lines'),
+        );
+        if (stated.join('/') !== real.join('/')) wrong.push(`${rel}: ${hit[0]}`);
+      }
+    }
+    expect(wrong, 'a document states a coverage floor vitest.config.ts does not set').toEqual([]);
+  });
+
+  it('enumerates the verify gate once, in docs/release.md, step for step', () => {
+    // F-542. `CLAUDE.md` listed eight of thirteen steps and `AGENTS.md` dropped
+    // `playwright-authenticated` — the only automated proof a signed-in user can reach the
+    // dashboard, and a step that had already been silently absent from every run once.
+    const release = readFileSync(join(ROOT, 'docs', 'release.md'), 'utf8');
+    const marker = '`verify` order — the **only** enumeration';
+    expect(release, 'docs/release.md lost the verify enumeration').toContain(marker);
+    const block = release.slice(release.indexOf(marker)).split('\n\n').slice(0, 2).join('\n');
+    const items = block.split('\n').filter((line) => /^\d+\. /.test(line));
+    // Order, not just membership: the gate stops on the first fatal failure, so "which step is
+    // step 7" is the whole value of the list to someone debugging a red run. Membership alone
+    // passes a list that has been silently resequenced.
+    expect(
+      items.map((line) => /`([a-z-]+)`/.exec(line)?.[1]),
+      'docs/release.md does not enumerate VERIFY_STEPS in order',
+    ).toEqual(VERIFY_STEPS.map((step) => step.id));
+    // The other two summaries must point here rather than keep their own list.
+    for (const rel of ['AGENTS.md', 'CLAUDE.md']) {
+      expect(
+        readFileSync(join(ROOT, rel), 'utf8'),
+        `${rel} does not point at the runbook`,
+      ).toContain('docs/release.md');
+    }
+  });
+
+  it('points the dependency overrides at the file pnpm reads them from', () => {
+    // F-533. Three documents sent the fixer to `pnpm.overrides` in `package.json`. pnpm 11 reads
+    // them from `pnpm-workspace.yaml`, so the edit did nothing, `pnpm audit` stayed red, and the
+    // natural next move is dropping the audit step the same documents forbid dropping.
+    const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
+    const workspace = readFileSync(join(ROOT, 'pnpm-workspace.yaml'), 'utf8');
+    if (pkg.pnpm?.overrides) return;
+    expect(workspace, 'pnpm-workspace.yaml has no overrides block').toMatch(/^overrides:/m);
+    expect(
+      unnegatedMentions(DOC_FILES, /pnpm\.overrides/g),
+      'a document sends the overrides fixer to `pnpm.overrides`, which this repo does not have',
+    ).toEqual([]);
+  });
+
+  it('names only per-stack prompt files that exist', () => {
+    // F-540. The comparison doc named six and shipped a self-verification command over all six, so
+    // running it errors on the four missing files instead of proving anything.
+    const present = new Set(readdirSync(join(ROOT, 'lib', 'stack-prompts')));
+    const missing: string[] = [];
+    for (const rel of DOC_FILES) {
+      const text = readFileSync(join(ROOT, rel), 'utf8');
+      // Both the plain form and the brace-expanded shell form the doc used.
+      for (const hit of text.matchAll(/lib\/stack-prompts\/(?:\{([^}]+)\}|([\w-]+))\.ts/g)) {
+        for (const name of (hit[1] ?? hit[2]).split(',')) {
+          if (!present.has(`${name.trim()}.ts`)) missing.push(`${rel}: ${name.trim()}.ts`);
+        }
+      }
+    }
+    expect(missing, 'a document names a stack prompt that does not exist').toEqual([]);
+  });
+
+  it('gives every working tree a port', () => {
+    // F-539. A third worktree existed with no row in the table, so it had no assigned port and no
+    // owner — while sharing one Postgres with the other two. The table is the allocation
+    // mechanism, so an unlisted checkout is an unallocated one.
+    const rule = readFileSync(join(ROOT, '.cursor', 'rules', 'single-dev-server.mdc'), 'utf8');
+    const trees = existsSync(join(ROOT, '.worktrees'))
+      ? readdirSync(join(ROOT, '.worktrees'), { withFileTypes: true }).filter((entry) =>
+          entry.isDirectory(),
+        )
+      : [];
+    for (const tree of trees) {
+      expect(rule, `.worktrees/${tree.name} has no row in the port table`).toContain(
+        `.worktrees/${tree.name}`,
+      );
+    }
+  });
+
+  it('names only settings the registry defines, in the credential docs', () => {
+    // F-535. `docs/coolify.md` sent operators to a `tooling.e2b.apiKey` that no registry entry
+    // has, on a deployment guide, next to a claim that the AI keys are editable in the same place.
+    const registry = readFileSync(join(ROOT, 'lib', 'settings', 'registry.ts'), 'utf8');
+    const known = new Set([...registry.matchAll(/key: '([^']+)'/g)].map((hit) => hit[1]));
+    const unknown: string[] = [];
+    for (const rel of CREDENTIAL_DOCS) {
+      const text = readFileSync(join(ROOT, rel), 'utf8');
+      for (const hit of text.matchAll(
+        /`((?:ai|tooling|storage|backups|email|github|app|preview)\.[a-z][A-Za-z0-9.]*)`/g,
+      )) {
+        if (!known.has(hit[1])) unknown.push(`${rel}: ${hit[1]}`);
+      }
+    }
+    expect(unknown, 'an operator doc names a setting the registry does not define').toEqual([]);
+  });
+
+  it('documents every environment variable the application code reads', () => {
+    // F-546. `SOURCE_COMMIT` decides the release sha a rollback compares against and
+    // `NAVROOP_FILE_CONTEXT_TOKEN_CAP` changes generation cost; neither appeared in any document
+    // or in `.env.example`, so a deployment could report a sha from a variable no runbook names.
+    const documented = [...DOC_FILES, '.env.example']
+      .map((rel) => readFileSync(join(ROOT, rel), 'utf8'))
+      .join('\n');
+    // Set by the platform, never by an operator: Next per bundle, the container, the OS shell, git.
+    const PLATFORM_PROVIDED: Record<string, true> = {
+      NEXT_RUNTIME: true,
+      HOSTNAME: true,
+      USERNAME: true,
+      GIT_AUTHOR_NAME: true,
+    };
+    const sources: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(join(ROOT, dir), { withFileTypes: true })) {
+        if (entry.isDirectory()) walk(`${dir}/${entry.name}`);
+        else if (/\.(?:ts|tsx|mjs)$/.test(entry.name)) sources.push(`${dir}/${entry.name}`);
+      }
+    };
+    for (const dir of ['lib', 'app', 'scripts']) walk(dir);
+    // Root config files too: `PLAYWRIGHT_BASE_URL` (`playwright.config.ts`) was one of the
+    // originally reported gaps and lives outside all three trees, as do the Sentry configs,
+    // `proxy.ts` and `docker-entrypoint.mjs` — the files an operator's environment reaches first.
+    for (const entry of readdirSync(ROOT, { withFileTypes: true })) {
+      if (entry.isFile() && /\.(?:ts|mjs)$/.test(entry.name) && !entry.name.endsWith('.d.ts')) {
+        sources.push(entry.name);
+      }
+    }
+    const undocumented = new Map<string, string>();
+    for (const rel of sources) {
+      for (const hit of readFileSync(join(ROOT, rel), 'utf8').matchAll(
+        /process\.env\.([A-Z][A-Z0-9_]{2,})/g,
+      )) {
+        if (PLATFORM_PROVIDED[hit[1]] || documented.includes(hit[1])) continue;
+        if (!undocumented.has(hit[1])) undocumented.set(hit[1], rel);
+      }
+    }
+    expect(
+      [...undocumented].map((row) => row.join(' <- ')),
+      'undocumented env vars',
+    ).toEqual([]);
+  });
+
+  it('names the image providers the assets pipeline actually has', () => {
+    // F-544. Both maps said "Unsplash stock". The pipeline generates first through a self-hosted
+    // image worker and falls back to keyless Openverse — the thing that makes a no-key install
+    // ship real photographs instead of grey boxes, and it was undiscoverable.
+    const assets = join(ROOT, 'lib', 'assets');
+    for (const [file, claim] of [
+      ['openverse.ts', 'Openverse'],
+      ['image-worker.ts', 'image worker'],
+    ] as const) {
+      if (!existsSync(join(assets, file))) continue;
+      for (const rel of ['AGENTS.md', '.cursor/README.md']) {
+        expect(readFileSync(join(ROOT, rel), 'utf8'), `${rel} does not mention ${claim}`).toContain(
+          claim,
+        );
+      }
+    }
+  });
+
+  it('keeps the doc-freshness rule as wide as the doc set it governs', () => {
+    // F-551. `keep-cursor-current.mdc` is the rule that exists to stop this drift, and its sync
+    // list named `AGENTS.md`, `.cursor/README.md` and four `*.mdc` files. Every finding in this
+    // file was in a document the rule did not cover, `README.md` most of all.
+    const rule = readFileSync(join(ROOT, '.cursor', 'rules', 'keep-cursor-current.mdc'), 'utf8');
+    for (const claim of ['README.md', 'CLAUDE.md', 'AGENTS.md', '.cursor/rules/', 'docs/']) {
+      expect(rule, `keep-cursor-current.mdc does not list ${claim}`).toContain(claim);
+    }
+  });
+
+  it('names every project API route in AGENTS.md', () => {
+    // F-550. Eight routes under `app/api/projects/[id]/` appeared in neither map — including
+    // the three `job/*` endpoints the RecoveryPanel calls and `checkpoints/exit`. The map is
+    // the inventory, so a route outside it is a route nobody reviews when the surface changes.
+    // Reading the surface off the filesystem is what makes the next addition fail here rather
+    // than go unnoticed; `.cursor/README.md` is the compact mirror and is deliberately not
+    // pinned, because two inventories is the failure mode this file exists to catch.
+    const base = join(ROOT, 'app', 'api', 'projects', '[id]');
+    const routes: string[] = [];
+    const walk = (rel: string) => {
+      for (const entry of readdirSync(join(base, rel), { withFileTypes: true })) {
+        const next = rel ? `${rel}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) walk(next);
+        else if (entry.name === 'route.ts' && rel) routes.push(rel);
+      }
+    };
+    walk('');
+    const agents = readFileSync(join(ROOT, 'AGENTS.md'), 'utf8');
+    expect(routes.length).toBeGreaterThan(20);
+    expect(routes.filter((rel) => !agents.includes(`/api/projects/[id]/${rel}`))).toEqual([]);
+  });
+
+  it('maps the Claude Code configuration from AGENTS.md', () => {
+    // F-554. The layout table was headed "Cursor layout" and listed only `.cursor/**`, so half
+    // the agent configuration in the repository was invisible from the file `CLAUDE.md`
+    // designates as the map — including the 204-file `.claude/skills/` tree the Skill tool
+    // actually loads and the gitignored `settings.local.json` that enables an MCP server.
+    // F-548 is the root `.mcp.json`, which no document named at all, and F-549 is
+    // `docs/superpowers/specs/`, the only record of the post-sandbox preview architecture.
+    const agents = readFileSync(join(ROOT, 'AGENTS.md'), 'utf8');
+    for (const claim of [
+      'CLAUDE.md',
+      '.claude/skills/',
+      '.claude/settings.json',
+      '.claude/settings.local.json',
+      '.mcp.json',
+      'docs/superpowers/specs/',
+    ]) {
+      expect(existsSync(join(ROOT, claim)), `${claim} does not exist`).toBe(true);
+      expect(agents, `AGENTS.md does not map ${claim}`).toContain(claim);
+    }
+    // `dev3000` is enabled by default from a gitignored file; naming the server is the point.
+    expect(JSON.parse(readFileSync(join(ROOT, '.mcp.json'), 'utf8')).mcpServers).toHaveProperty(
+      'dev3000',
+    );
+    expect(agents).toContain('dev3000');
+  });
+
+  it('sends each host to the skill tree it actually loads', () => {
+    // F-553. `AGENTS.md`, `.cursor/README.md` and `skills-availability.mdc` all sent every
+    // agent to `.cursor/skills/`, while `CLAUDE.md` says the Skill tool loads `.claude/skills/`.
+    // Byte-identity (`tests/unit/skill-trees-in-sync.test.ts`) makes that harmless today and
+    // wrong the moment one tree is edited alone, which is the failure that test exists to stop.
+    for (const rel of ['AGENTS.md', '.cursor/README.md', '.cursor/rules/skills-availability.mdc']) {
+      const text = readFileSync(join(ROOT, rel), 'utf8');
+      expect(text, `${rel} never mentions .claude/skills/`).toContain('.claude/skills/');
+      expect(text, `${rel} does not name the sync guard`).toContain('skill-trees-in-sync');
+    }
+  });
+
+  it('does not grant a read the Claude Code harness denies', () => {
+    // F-552. `coolify-local-secrets.mdc` is always-on and imported by `CLAUDE.md`, and it said
+    // agents MAY read `.cursor/.env.deploy` or `.env.local`. Both are in `permissions.deny`
+    // (`.env.local` via `./.env.*`), so the rule bought a refused tool call and offered no
+    // fallback. The deny list is the right policy; the rule is what had to change, and this
+    // pins the pair together: deny a path, and the rule that grants it has to say so.
+    const settings = JSON.parse(readFileSync(join(ROOT, '.claude', 'settings.json'), 'utf8')) as {
+      permissions?: { deny?: string[] };
+    };
+    const denied = settings.permissions?.deny ?? [];
+    expect(denied).toContain('Read(./.cursor/.env.deploy)');
+    const rule = readFileSync(join(ROOT, '.cursor', 'rules', 'coolify-local-secrets.mdc'), 'utf8');
+    for (const claim of ['.claude/settings.json', 'permissions.deny', '/admin/integrations']) {
+      expect(rule, `coolify-local-secrets.mdc does not mention ${claim}`).toContain(claim);
+    }
+    // Every env path the harness refuses has to be named in the rule that talks about reading them.
+    const named = denied
+      .filter((entry) => /^Read\(\.\/\.(?:env|cursor\/\.env)/.test(entry))
+      .map((entry) => entry.slice('Read(.'.length, -1));
+    expect(named.length).toBeGreaterThan(0);
+    expect(named.filter((path) => !rule.includes(path))).toEqual([]);
+  });
+
+  it('keeps one install-script policy, and states it', () => {
+    // F-547. `pnpm-workspace.yaml` maintains a ten-package `allowBuilds` allowlist — the
+    // mechanism for deciding whose postinstall may run — and `.npmrc` then set
+    // `dangerouslyAllowAllBuilds=true`, which voids it for every transitive dependency, in a
+    // repo whose verify gate treats a high-severity advisory as fatal. Two files disagreed and
+    // neither said which was the policy. F-700/F-635 deleted the flag; this keeps it deleted
+    // and keeps the allowlist named where an install is configured, so the pair cannot drift
+    // back into silently disagreeing.
+    const workspace = readFileSync(join(ROOT, 'pnpm-workspace.yaml'), 'utf8');
+    const npmrc = readFileSync(join(ROOT, '.npmrc'), 'utf8');
+    expect(workspace).toContain('allowBuilds:');
+    // Naming it in order to forbid it is the whole point of the comment, so match an
+    // assignment rather than a mention.
+    expect(npmrc).not.toMatch(/^\s*dangerouslyAllowAllBuilds\s*=/m);
+    expect(npmrc, '.npmrc does not point at the allowlist it defers to').toContain(
+      'pnpm-workspace.yaml',
+    );
+    expect(npmrc, '.npmrc does not name the flag it refuses').toContain(
+      'dangerouslyAllowAllBuilds',
+    );
   });
 });
