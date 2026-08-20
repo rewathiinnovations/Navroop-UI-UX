@@ -126,7 +126,9 @@ export async function runDbBackup() {
   let retentionError: string | null = null;
   try {
     const objects = await listBackupObjects();
-    const decisions = retentionDecisions(objects);
+    // The run's own dump is protected by key: if the bucket lists it with a wrong
+    // LastModified, no cutoff and no floor ordering may hand it to the delete loop below.
+    const decisions = retentionDecisions(objects, new Date(), { protectedKeys: [objectKey] });
     for (const key of decisions.delete) {
       await deleteBackupObject(key);
     }

@@ -91,10 +91,28 @@ const { restoreDbBackup } = await import('@/lib/backup/restore');
 
 const STARTED_AT = new Date('2026-08-19T02:00:00.000Z');
 
-/** One expired object so the retention pass has something to delete. */
+/**
+ * More expired objects than the keep-newest floor, so the retention pass has something it is
+ * actually allowed to delete — the newest `RETENTION_KEEP_NEWEST` survive regardless of age.
+ */
 const OBJECTS = [
   {
-    key: 'backups/db/db-2024-01-01-aaaaaa.dump',
+    key: 'backups/db/db-2024-01-04-aaaaaa.dump',
+    lastModified: new Date('2024-01-04T02:00:00.000Z'),
+    sizeBytes: 10,
+  },
+  {
+    key: 'backups/db/db-2024-01-03-bbbbbb.dump',
+    lastModified: new Date('2024-01-03T02:00:00.000Z'),
+    sizeBytes: 10,
+  },
+  {
+    key: 'backups/db/db-2024-01-02-cccccc.dump',
+    lastModified: new Date('2024-01-02T02:00:00.000Z'),
+    sizeBytes: 10,
+  },
+  {
+    key: 'backups/db/db-2024-01-01-dddddd.dump',
     lastModified: new Date('2024-01-01T02:00:00.000Z'),
     sizeBytes: 10,
   },
@@ -174,6 +192,34 @@ describe('runDbBackup when the retention pass fails', () => {
     // The detail says both halves, so the digest line cannot be read as a lost backup.
     expect(result.detail).toContain('backup stored');
     expect(result.detail).toContain('retention pass failed');
+  });
+});
+
+describe('retention can never delete the dump this run just wrote (F-702)', () => {
+  it('protects the just-written key even when the bucket lists everything as ancient', async () => {
+    const uploaded = { key: '' };
+    client.uploadBackupFile.mockImplementation(async (_path: string, key: string) => {
+      uploaded.key = key;
+      return 4_096;
+    });
+    // A skewed bucket clock (or restored objects) can report the fresh dump as ancient and
+    // every other object as ancient too — the pass must still not eat its own dump.
+    client.listBackupObjects.mockImplementation(async () => [
+      { key: 'backups/db/decoy-1.dump', lastModified: new Date('2019-01-05T00:00:00.000Z') },
+      { key: 'backups/db/decoy-2.dump', lastModified: new Date('2019-01-04T00:00:00.000Z') },
+      { key: 'backups/db/decoy-3.dump', lastModified: new Date('2019-01-03T00:00:00.000Z') },
+      { key: 'backups/db/decoy-4.dump', lastModified: new Date('2019-01-02T00:00:00.000Z') },
+      { key: uploaded.key, lastModified: new Date('2019-01-01T00:00:00.000Z') },
+    ]);
+
+    const result = await runDbBackup();
+
+    expect(result.ok).toBe(true);
+    expect(uploaded.key).not.toBe('');
+    const deletedKeys = client.deleteBackupObject.mock.calls.map((call) => call[0] as string);
+    expect(deletedKeys).not.toContain(uploaded.key);
+    // Objects past the newest-three floor are still shed; the floor is not "keep everything".
+    expect(deletedKeys).toContain('backups/db/decoy-4.dump');
   });
 });
 
