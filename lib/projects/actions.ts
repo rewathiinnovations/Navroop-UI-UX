@@ -9,7 +9,7 @@ import {
   parseWithZod,
   updateProjectSchema,
 } from '@/lib/projects/schema';
-import { ProviderNotConfiguredError } from '@/lib/ai/providers';
+import { offeredModel, ProviderNotConfiguredError } from '@/lib/ai/providers';
 import { applyCreateProjectPlanFlow, peekActor } from '@/lib/projects/plan';
 import { buildProjectListQuery, type ListProjectsQuery } from '@/lib/projects/list-sql';
 import { createCheckpointAfterGeneration } from '@/lib/checkpoints/actions';
@@ -27,7 +27,7 @@ import { WORKSPACE_ROW_ID } from '@/lib/storage/usage';
 import { bumpContentVersion } from '@/lib/projects/lock';
 import { incrementUsageCount } from '@/lib/templates/usage';
 import { writeAudit } from '@/lib/audit/log';
-import { logError } from '@/lib/logger';
+import { log, logError } from '@/lib/logger';
 import { capturePreviewAfterGeneration } from '@/lib/preview/after-generation';
 
 export type ActionOk<T> = { ok: true; data: T };
@@ -358,7 +358,20 @@ export async function getProject(id: string) {
   });
 
   if (!project) return { ok: true as const, data: null };
-  return { ok: true as const, data: project };
+
+  // The workspace seeds its model state from this row and then sends that value as
+  // `model` on every generation, where a requested model is pushed to the FRONT of the
+  // provider chain. So a row holding an id the product no longer offers — a legacy
+  // vendor id from before DeepSeek, say — outranked `ai.primaryModel` from
+  // Admin → Configuration for the life of the project, silently (F-004). Serving it as
+  // `null` makes it "no explicit choice" again, so the chain resumes at the configured
+  // primary. A value that is still offered is left alone: choosing Pro on a project
+  // whose admin primary is Flash is a preference, not drift.
+  const model = offeredModel(project.model) ?? null;
+  if (project.model && !model) {
+    log.warn('project.model_no_longer_offered', { projectId: project.id, stored: project.model });
+  }
+  return { ok: true as const, data: { ...project, model } };
 }
 
 export async function updateProject(id: string, input: { name?: string; status?: string }) {

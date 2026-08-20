@@ -50,6 +50,8 @@ Set `CRON_SECRET`. Add Coolify scheduled tasks (POST + `Authorization: Bearer $C
 | Daily            | `POST /api/cron/system-checks-digest`    |
 | Hourly           | `POST /api/cron/sweep-tmp`               |
 
+**A `409` from a cron endpoint is not a failure.** Each run claims an in-flight marker first (`AppSetting` key `cron.inflight.<name>`), so a second invocation of the same task while the first is still working answers `409` with code `CRON_ALREADY_RUNNING` instead of doubling the work — do not alert on it, and do not retry it. Only the run holding the claim writes a `CronRun` row, so a refused request never records a red run against the wrong invocation. A claim is considered abandoned after the per-cron budget in `lib/cron/claim.ts` (`CRON_CLAIM_STALE_MS`: 5 minutes for the minute-tick tasks, 30 for the daily maintenance ones, 60 for the dump and object-store ones, 15 by default) — this is an in-flight budget, deliberately not `CRON_STALE_MS`, whose 48-hour entries answer a different question (a task that stopped being scheduled at all). The next invocation after an abandoned claim takes it over and writes the failed `CronRun` row the killed run never got to.
+
 Every task above except `system-checks-digest` is monitored by `CRON_STALE_MS`, so /admin/health and the daily digest name it if it stops running. `system-checks-digest` is the sender and cannot report its own silence: if it is never scheduled, or its task is deleted, nothing in the product notices and total silence looks identical to everything being healthy. Point an external dead-man's-switch (an uptime monitor with an expected-ping schedule) at that task so the digest going dark is itself an alert.
 
 ```bash
@@ -107,6 +109,18 @@ Generated sites are served from a **different origin** than the app (`/preview-s
 | CNAME | `preview-static` | the Navroop app hostname |
 
 That becomes `preview-static.{zone}` (for example `preview-static.navroop.app`). Point it at the same Coolify app. Locally the path form on `localhost:3000` is used; CSP still allows framing only by the app origin.
+
+## Password-protected client previews
+
+A published **preview** can be gated behind HTTP Basic Auth from the workspace Publish sheet. This adds no environment variable to _this_ application — it writes one onto the **client site's** Coolify application:
+
+| Name               | Where                                                                                                   | Label                                                                      |
+| ------------------ | ------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `PREVIEW_PASSWORD` | the generated site's Coolify application, written by `updatePreviewPassword` (`lib/publish/publish.ts`) | Runtime (of the deployed site) — **set by Navroop; do not edit or delete** |
+
+Node (Next.js) previews compare it in a `middleware.ts` that Navroop injects into the deploy repo (`lib/publish/preview-inject.ts`), and fail closed: no `PREVIEW_PASSWORD` means every request gets 401, never an open preview. Static previews use Coolify's own Traefik basic auth instead (`is_http_basic_auth_enabled`, username `preview`) and get no injected file.
+
+The bcrypt hash lives on `Deployment.passwordHash` in Navroop's database; the plaintext exists only as that env var, because middleware cannot verify a hash. Deleting or editing the variable by hand therefore changes a client preview's access posture and nothing in the product notices. Setting a password writes the hash, then the env var, then re-publishes, so the middleware and the value it compares against land in the same build. Known open defects: F-231 (a failed re-publish leaves the new plaintext on the application) and F-232 (the password change runs a full publish inline) — see the Publish bullet in `AGENTS.md`.
 
 ## Deploy drain
 

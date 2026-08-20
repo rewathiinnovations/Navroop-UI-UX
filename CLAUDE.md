@@ -42,17 +42,24 @@ trigger for memory files, so read the matching rule yourself when you touch thes
 
 ## Skills
 
-The Cursor skill packs are copied to `.claude/skills/` so the Skill tool can invoke them
-(`superpowers`, `ui-ux-pro-max`, `ui-styling`, `design`, `design-system`, and the `cursor`
-pack). `.cursor/skills/` remains as it was for anyone still using Cursor. **A skill edited in
-one place must be copied to the other**, or the two drift apart silently.
+The portable Cursor skill packs are copied to `.claude/skills/` so the Skill tool can invoke them
+(`superpowers`, `ui-ux-pro-max`, `ui-styling`, `design`, `design-system`, plus the host-agnostic
+`autopilot` and `split-to-prs`). `.cursor/skills/` remains as it was for anyone still using Cursor.
+**A skill that exists in both trees and is edited in one place must be copied to the other**, or the
+two drift apart silently.
 
-Some of the copied `cursor/*` skills automate Cursor's own mechanics (`create-rule`,
-`create-hook`, `create-subagent`, `update-cursor-settings`, `update-cli-config`, `statusline`,
-`rename-chat`, `migrate-to-skills`, `sdk`, `automate`, `autopilot`, `shell`, `canvas`,
-`onboard`). They describe Cursor, not Claude Code — do not follow their instructions here
-without checking they still make sense. The `loop` skill was not copied: Claude Code ships its
-own `/loop`, and a project skill of that name would shadow it.
+The `cursor/*` pack is **deliberately not copied**. Those skills automate Cursor's own mechanics —
+the `cursor-app-control` MCP tool, the `AskQuestion` / `cursor_dialog` / `SwitchMode` tools, Cursor
+`subagent_type`s, `~/.cursor/**` config paths, `@cursor/sdk` — none of which exist in Claude Code,
+and several of them write `.cursor/rules/*.mdc`, `.cursor/agents/*.md` or `.cursor/hooks.json`
+entries that Claude Code will never load. They also rely on the `disable-model-invocation`
+frontmatter key, which Claude Code ignores, so a slash-only skill could be auto-selected here. The
+excluded set is `automate`, `canvas`, `create-hook`, `create-rule`, `create-skill`,
+`create-subagent`, `loop`, `migrate-to-skills`, `onboard`, `rename-chat`, `review`,
+`review-bugbot`, `review-security`, `sdk`, `shell`, `statusline`, `update-cli-config`,
+`update-cursor-settings`. Read them from `.cursor/skills/cursor/` if you need to know what Cursor
+does; do not re-copy them into `.claude/skills/`. (`loop` is excluded for a second reason: Claude
+Code ships its own `/loop` and a project skill of that name would shadow it.)
 
 ## Commands
 

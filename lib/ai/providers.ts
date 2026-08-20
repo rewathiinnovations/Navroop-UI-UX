@@ -55,6 +55,52 @@ export function isDeepSeekModel(model: string): boolean {
   return DEEPSEEK_MODELS.some((row) => row.id === model);
 }
 
+/** Plain refusal text. Names the id the caller sent and the ids it could have sent. */
+export function unknownModelMessage(model: string): string {
+  const offered = DEEPSEEK_MODELS.map((row) => row.id).join(', ');
+  return `"${model}" is not an available model. Choose one of: ${offered}.`;
+}
+
+/**
+ * Thrown instead of forwarding a model the operator never configured (F-003).
+ *
+ * The old `resolveModel` returned the requested string verbatim, so `client(entry.model)`
+ * sent whatever the request body carried to DeepSeek: any authenticated member could
+ * select an unconfigured — and unpriced — model on every build, and a nonexistent id
+ * came back as `request_rejected`, which reads as an outage rather than a bad choice.
+ */
+export class UnknownModelError extends Error {
+  readonly code = 'unknown_model' as const;
+  readonly requestedModel: string;
+
+  constructor(requestedModel: string) {
+    super(unknownModelMessage(requestedModel));
+    this.name = 'UnknownModelError';
+    this.requestedModel = requestedModel;
+  }
+}
+
+/**
+ * A stored or remembered model, but only while the product still offers it (F-004).
+ *
+ * `Project.model` is a user preference: the workspace seeds its model state from the
+ * row, and a requested model is pushed to the FRONT of the chain, so a row holding a
+ * legacy id outranked `ai.primaryModel` from Admin → Configuration for the life of
+ * that project. A value that is no longer offered is not a preference — it becomes
+ * `undefined` here, which is "no explicit choice", and the chain resumes at the
+ * configured primary. An offered value is kept: choosing Pro on a project whose admin
+ * primary is Flash is a real choice, not drift.
+ *
+ * Unlike `resolveModel` this never throws, and it takes `unknown` because both callers
+ * are boundaries — a request body and a database column. A stale row must not brick the
+ * project; only a live request that names a bad model is refused.
+ */
+export function offeredModel(model: unknown): string | undefined {
+  const candidate = typeof model === 'string' ? model.trim() : '';
+  if (!candidate || !isDeepSeekModel(candidate)) return undefined;
+  return candidate;
+}
+
 export function hasUsableCredential(
   _provider: ProviderName = 'deepseek',
   env: Record<string, string | undefined> = process.env,
@@ -70,12 +116,24 @@ export function providerDisplayName(_provider: ProviderName = 'deepseek') {
   return 'DeepSeek';
 }
 
+/**
+ * The one place a model id becomes the model that will serve.
+ *
+ * A requested model is validated, not passed through: this is the shared entry point
+ * for plan and build, and it is the only thing between the request body and
+ * `client(entry.model)`. It stays explicit-only — an omitted or blank request resolves
+ * to the configured primary rather than to a default, because a "default" that
+ * participates in *ranking* is an override, not a default.
+ */
 export function resolveModel(
   env: Record<string, string | undefined> = process.env,
   requestedModel?: string,
 ): string {
   const requested = requestedModel?.trim();
-  if (requested) return requested;
+  if (requested) {
+    if (!isDeepSeekModel(requested)) throw new UnknownModelError(requested);
+    return requested;
+  }
   const configured = env.AI_PRIMARY_MODEL?.trim();
   return configured || DEFAULT_DEEPSEEK_MODEL;
 }

@@ -83,7 +83,7 @@ Upstream's v3 was substantially _about_ moving to Gemini 3 Pro. We carried the c
 
 ### E. Edit discipline was missing from five of six stacks — fixed
 
-Narrower than a file-tree diff suggests. What is **not** lost: `lib/context-selector.ts` and `lib/edit-examples.ts` are **byte-identical** to upstream and still wired — `selectFilesForEdit` is imported in the generate route and its `buildSystemPrompt()` output is injected into the prompt. That carries the 9 worked edit examples, "DO NOT CREATE NEW FILES WITH SIMILAR NAMES", and the "surgeon making a precise incision" instructions.
+Narrower than a file-tree diff suggests. When this was written, upstream's `lib/context-selector.ts` and `lib/edit-examples.ts` were byte-identical copies in this tree and `selectFilesForEdit` fed `buildSystemPrompt()` output into the generate route. **Both files were deleted on 2026-08-20** by the dead-code sweep: nothing imported them any more (`selectFilesForEdit` now appears nowhere under `lib/` or `app/`), so the 9 worked edit examples, "DO NOT CREATE NEW FILES WITH SIMILAR NAMES" and the "surgeon making a precise incision" framing they carried are no longer in the repository. Edit discipline today is the per-stack rules below — `nextjs.ts`, `react.ts` and `static-html.ts` each carry an `Edits:` block — plus the selective file context in `lib/generation/`. If edit quality regresses on `/admin/quality`, re-add the missing instructions as a stack prompt rule rather than resurrecting the upstream files.
 
 What **was** missing: per-stack file-count discipline. `grep -l "Edits:" lib/stack-prompts/*.ts` returned exactly one file — `react.ts`. `nextjs.ts`, `astro.ts`, `vue.ts`, `svelte.ts`, and `static-html.ts` had no equivalent, and NEXTJS is our default.
 

@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { offeredModel } from '@/lib/ai/providers';
 import type { ActionErr } from '@/lib/projects/actions';
 
 export function actionError(result: ActionErr) {
@@ -60,7 +61,11 @@ export function readGenerationInput(body: Record<string, unknown>) {
 
   return {
     style: body.style as string | null | undefined,
-    model: body.model as string | null | undefined,
+    // A model the product no longer offers is not a preference, so it is not stored as
+    // one: `null` clears the column instead of leaving a legacy id on the row to
+    // outrank `ai.primaryModel` on every future build (F-004). `undefined` still means
+    // "field absent — do not touch", which is what `hasGenerationFields` keys on.
+    model: body.model === undefined ? undefined : (offeredModel(body.model) ?? null),
     // No sandboxId. `Project` lost that column in 20260819010000_drop_sandbox_columns,
     // and accepting it here is what carried a dead field into prisma.project.update,
     // where it threw `Unknown argument` on every generation persist.
