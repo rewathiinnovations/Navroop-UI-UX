@@ -23,10 +23,9 @@ const endpoints = collectRouteEndpoints();
 const EXPECTED_PUBLIC_ENDPOINTS: string[] = [
   'GET /api/health',
   'GET /api/health/sentry-test',
-  'GET /api/integrations/sentry/callback',
   'GET /preview-static/:projectId',
   'GET /preview-static/:projectId/*',
-  'OPTIONS /api/scrape-website',
+  'POST /api/auth/accept-invite',
   'POST /api/auth/dev-login',
   'POST /api/auth/forgot-password',
   'POST /api/auth/login',
@@ -48,6 +47,7 @@ const EXPECTED_PUBLIC_ENDPOINTS: string[] = [
   'POST /api/cron/system-checks-digest',
   'POST /api/cron/thin-checkpoints',
   'POST /api/cron/verify-storage',
+  'POST /api/integrations/github/webhook',
 ];
 
 /**
@@ -252,7 +252,12 @@ describe('allowlist rules', () => {
     expect(matchPublicRoute('/api/health', 'GET')).not.toBeNull();
     expect(matchPublicRoute('/api/health', 'POST')).toBeNull();
     expect(matchPublicRoute('/api/health', 'get')).not.toBeNull();
-    expect(matchPublicRoute('/api/scrape-website', 'OPTIONS')).not.toBeNull();
+    // F-322: `OPTIONS /api/scrape-website` used to answer
+    // `Access-Control-Allow-Origin: *` for any origin. Nothing in the product
+    // makes a cross-origin scrape, the POST returned no CORS headers at all, and
+    // the preflight therefore described a request that could never succeed. Both
+    // the handler and its allowlist entry are gone; neither verb is public now.
+    expect(matchPublicRoute('/api/scrape-website', 'OPTIONS')).toBeNull();
     expect(matchPublicRoute('/api/scrape-website', 'POST')).toBeNull();
   });
 

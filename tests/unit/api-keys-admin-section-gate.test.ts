@@ -33,9 +33,12 @@ describe('api-keys admin section is not rendered during hydration', () => {
   it('sets the gate only after the team defaults have been fetched', () => {
     const loadOrg = source.slice(source.indexOf('const loadOrg'), source.indexOf('useEffect('));
     expect(loadOrg).toContain('setOrgLoaded(true)');
-    // Not before the request can fail — an early return must skip it.
+    // Not before the request can fail — an early return must skip it. The anchor is
+    // asserted first: `indexOf` returns -1 for a missing call, and `-1 < beforeLoaded`
+    // passed on the exact edit this case exists to catch (F-609).
     const beforeError = loadOrg.indexOf('setError(');
     const beforeLoaded = loadOrg.indexOf('setOrgLoaded(true)');
+    expect(beforeError).toBeGreaterThan(-1);
     expect(beforeError).toBeLessThan(beforeLoaded);
   });
 });

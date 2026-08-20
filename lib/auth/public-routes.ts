@@ -102,11 +102,10 @@ export const PUBLIC_API_ROUTES: PublicRouteRule[] = [
     pattern: '/api/auth/register',
     methods: ['POST'],
     reason: 'Kept reachable so the closed-registration message is returned, not a 401.',
-    // Deliberately not "a single-use invite token": the Invite model has no token column,
-    // and nothing in the product creates a claimable invite — `POST /api/admin/invite`
-    // creates the User itself and writes the invite already accepted. Self-serve
-    // registration does not exist, so this route is closed rather than guarded, and the
-    // handler reads no body and touches no table.
+    // Claimable invites now exist (F-351), but they are redeemed at
+    // `/api/auth/accept-invite` by someone the admin already created an account for —
+    // not here. Self-serve registration does not exist, so this route stays closed
+    // rather than guarded, and the handler reads no body and touches no table.
     ownMechanism:
       'Always returns 403 without reading the request or the database; accounts come from an admin invite.',
   },
@@ -142,6 +141,13 @@ export const PUBLIC_API_ROUTES: PublicRouteRule[] = [
     ownMechanism: 'Single-use sha256-hashed token with an expiry.',
   },
   {
+    pattern: '/api/auth/accept-invite',
+    methods: ['POST'],
+    reason: 'An invitee has no account password yet, so no session can exist (F-351).',
+    ownMechanism:
+      'Single-use sha256-hashed invite token with an expiry, claimed by a conditional UPDATE inside the transaction that sets the password.',
+  },
+  {
     pattern: '/api/health',
     methods: ['GET'],
     reason: 'Docker and Coolify probe liveness before the app is usable.',
@@ -160,16 +166,11 @@ export const PUBLIC_API_ROUTES: PublicRouteRule[] = [
     ownMechanism: 'CRON_SECRET bearer token checked by authorizeCron.',
   },
   {
-    pattern: '/api/integrations/sentry/callback',
-    methods: ['GET'],
-    reason: 'Sentry redirects the OAuth callback back to us.',
-    ownMechanism: 'OAuth state parameter minted and verified by us.',
-  },
-  {
-    pattern: '/api/scrape-website',
-    methods: ['OPTIONS'],
-    reason: 'Browsers send the CORS preflight without credentials.',
-    ownMechanism: 'Returns CORS headers only; the POST itself requires a session.',
+    pattern: '/api/integrations/github/webhook',
+    methods: ['POST'],
+    reason: 'GitHub delivers App events from its own infrastructure, with no session.',
+    ownMechanism:
+      'HMAC-SHA256 signature over the raw body (X-Hub-Signature-256) checked against the App webhook secret before the payload is parsed or anything is written; a delivery that will not verify gets 401.',
   },
   {
     pattern: '/preview-static/:projectId',

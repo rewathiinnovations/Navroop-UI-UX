@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createOpenAI } from '@ai-sdk/openai';
 import { streamText } from 'ai';
 import type { ConversationMessage, ConversationEdit } from '@/types/conversation';
 import { appConfig } from '@/config/app.config';
@@ -9,10 +8,17 @@ import { looksLikeUrl } from '@/lib/projects/prompt';
 import { attachGenerationInputTokens, logGenerationEvent } from '@/lib/usage-costs';
 import { buildCachedMessages } from '@/lib/generation/prompt-cache';
 import { filesFromReply, replaceBlockInReply } from '@/lib/generation/parse-blocks';
+import {
+  GENERATION_RATE_LIMIT_MESSAGE,
+  allowGenerationSubmit,
+} from '@/lib/generation/submit-rate-limit';
+import { readUserPrompt, wrapUserRequest } from '@/lib/generation/user-prompt';
+import { readGenerationProjectId } from '@/lib/generation/request-project';
 
 /** Markdown code fence, kept in a constant so prompt strings stay readable. */
 const FENCE = '```';
 import { conversationStateFor } from '@/lib/generation/conversation-state';
+import { shouldSendGeneratedCode } from '@/lib/generation/complete-frame';
 import { StreamedFileTracker } from '@/lib/generation/stream-file-tracker';
 import { StreamedPackageTracker } from '@/lib/generation/stream-package-tracker';
 import { selectFileContext } from '@/lib/generation/selective-context';
@@ -31,7 +37,7 @@ import { prisma } from '@/lib/db';
 import { getCurrentProjectFiles } from '@/lib/github/current-files';
 import { log, logError } from '@/lib/logger';
 import { trackFailure, trackStart, trackSuccess } from '@/lib/observability/track';
-import { holdProjectLock } from '@/lib/projects/lock';
+import { holdProjectLock, LOCK_LOST_MESSAGE, ProjectLockLostError } from '@/lib/projects/lock';
 import { lockConflictJson } from '@/lib/projects/lock-http';
 import {
   beginJobHeartbeat,
@@ -42,7 +48,7 @@ import {
 } from '@/lib/jobs/lifecycle';
 import { settleStreamedGeneration, type StreamSettleResult } from '@/lib/jobs/settle-generation';
 import { applyOutcome } from '@/lib/jobs/copy';
-import { createProgressBatcher } from '@/lib/jobs/progress';
+import { createProgressBatcher, type ProgressBatcher } from '@/lib/jobs/progress';
 import { ensureJobSettled } from '@/lib/jobs/settle';
 import { recordJobStepFailure } from '@/lib/jobs/step-failure';
 import { getJob, updateJobFields } from '@/lib/jobs/store';
@@ -52,11 +58,12 @@ import { JobCapError, JobCapTracker } from '@/lib/consumption/caps';
 import { getPlanCaps } from '@/lib/consumption/plan-caps';
 import { recordJobUsage } from '@/lib/consumption/record';
 import { RunUsage } from '@/lib/consumption/run-usage';
+import { temperatureForModel } from '@/lib/ai/temperature';
+import { isToolCallValidationError } from '@/lib/ai/tool-validation';
 import { getDefaultCircuit } from '@/lib/ai/circuit';
 import { jobErrorCodeForProviderFailure, providerFailureMessage } from '@/lib/ai/failover';
 import { getDefaultProviderQueue, QUEUE_TIMEOUT_MESSAGE } from '@/lib/ai/queue';
 import {
-  getProviderApiKey,
   isDeepSeekModel,
   maxOutputTokensForEntry,
   modelIdForEntry,
@@ -67,7 +74,6 @@ import {
   requireUsableProviderChain,
   unknownModelMessage,
   type ProviderEntry,
-  type ProviderName,
 } from '@/lib/ai/providers';
 import { loadEffectiveProviderEnv } from '@/lib/ai/effective-env';
 import { clientForEntry } from '@/lib/ai/client-for-entry';
@@ -99,12 +105,31 @@ import {
 import { summarizeGenerationOutput } from '@/lib/generation/output-summary';
 import { runBuildValidation } from '@/lib/validation/run-build-validation';
 
+/**
+ * The three fields the prompt builder reads off `context.conversationContext
+ * .scrapedWebsites[]`. The request body arrives from `request.json()`, so `context`
+ * is `any` until F-743 gives the whole payload one schema; naming the element shape
+ * here is what makes these three reads checked rather than assumed.
+ */
+type ScrapedWebsiteContext = {
+  url?: string;
+  timestamp?: string | number;
+  content?: unknown;
+};
+
 // Force dynamic route to enable streaming
 export const dynamic = 'force-dynamic';
+/**
+ * Kept in step with `JOB_TIMEOUT_MS` (lib/jobs/poll.ts), which is 20 minutes: the platform
+ * bound and the job's own hard timeout must agree, or one of them silently wins. The route
+ * had no `maxDuration` at all while the import route next door set 300 (F-030). Next
+ * requires a literal here, so `tests/unit/provider-rest-and-stall.test.ts` asserts the two
+ * numbers still match.
+ */
+export const maxDuration = 1200;
 
 // Check if we're using Vercel AI Gateway
 const isUsingAIGateway = !!process.env.AI_GATEWAY_API_KEY;
-const aiGatewayBaseURL = 'https://ai-gateway.vercel.sh/v1';
 
 /**
  * How much of a fileless reply is echoed back to the model on the corrective ask.
@@ -228,7 +253,7 @@ async function generateAiCodeStream(request: NextRequest) {
   let releaseGenerationLock: (() => Promise<void>) | null = null;
   let generationJob: Awaited<ReturnType<typeof createOrReuseJob>> | null = null;
   let jobHeartbeat: { stop: () => void } | null = null;
-  let jobProgress: ReturnType<typeof createProgressBatcher> | null = null;
+  let jobProgress: ProgressBatcher | null = null;
   let providerSlot: ReturnType<ReturnType<typeof getDefaultProviderQueue>['acquire']> | null = null;
   // Everything the setup region acquires — job heartbeat, provider-queue slot, job row,
   // project lock — released in one place, in reverse acquisition order. Every underlying
@@ -262,7 +287,7 @@ async function generateAiCodeStream(request: NextRequest) {
   };
   try {
     const {
-      prompt,
+      prompt: promptInput,
       model: requestedModelRaw,
       context,
       isEdit = false,
@@ -280,11 +305,19 @@ async function generateAiCodeStream(request: NextRequest) {
     // Reject a bad prompt before anything is acquired. This guard used to sit after the
     // credit check, the project lock (with its 60s renew timer), the Job row, the
     // provider-queue slot and the job heartbeat, and its bare `return` leaked all five
-    // for the life of the process (F-001). Presence and type only; it must stay ahead of
-    // every acquisition below.
-    if (typeof prompt !== 'string' || !prompt.trim()) {
-      return NextResponse.json({ success: false, error: 'Prompt is required' }, { status: 400 });
+    // for the life of the process (F-001). It must stay ahead of every acquisition below.
+    //
+    // `readUserPrompt` is the whole contract: a string, non-empty after trimming, and no
+    // longer than MAX_USER_PROMPT_CHARS. A whitespace-only request used to buy a full build
+    // on no instruction, a non-string was coerced five different ways downstream (F-005),
+    // and nothing bounded the length at all — so an oversized paste was refused by the
+    // provider, after the credit was charged, as a `request_rejected` the recovery panel
+    // offers no Try again for (F-007). Everything below reads the trimmed `prompt`.
+    const promptCheck = readUserPrompt(promptInput);
+    if (!promptCheck.ok) {
+      return NextResponse.json({ success: false, error: promptCheck.message }, { status: 400 });
     }
+    const prompt = promptCheck.prompt;
     // Explicit only: defaulting this to appConfig.ai.defaultModel pushed that
     // model to the front of the chain and demoted the configured primary
     // (AI_PRIMARY_* / Admin -> Configuration). The concrete `model` used for
@@ -305,45 +338,88 @@ async function generateAiCodeStream(request: NextRequest) {
         { status: 400 },
       );
     }
+    // The run's project, resolved once and required. A request with neither `projectId`
+    // nor `context.projectId` used to run the whole build with `generationJob` null, which
+    // skipped the provider-queue slot, the credit charge inside `markJobRunning`, the caps,
+    // the heartbeat, the progress batcher and every terminal settle — a metered feature
+    // turned off by omitting one field (F-035). See `readGenerationProjectId` for why this
+    // is a refusal rather than a workspace-scoped meter. Validated with the prompt and the
+    // model, before the session and before anything is acquired.
+    const projectCheck = readGenerationProjectId(requestProjectId, context?.projectId);
+    if (!projectCheck.ok) {
+      return NextResponse.json({ success: false, error: projectCheck.message }, { status: 400 });
+    }
+    const projectId = projectCheck.projectId;
 
     const sessionUser = await getSessionUser();
     if (!sessionUser) {
       return NextResponse.json({ error: 'Sign in required' }, { status: 401 });
     }
+
+    // The project id comes from the request body, so the session gate above is
+    // not the whole authorization: without this, any signed-in member could name
+    // another member's project and have this handler charge the workspace, take
+    // that project's lock away from its owner, open a Job on it and settle
+    // generated code over its `lastCode`. `persistProjectGeneration`
+    // (lib/projects/actions.ts) already refuses a non-owner for exactly that
+    // reason; this is the same decision on the route that does the writing
+    // (F-313). It runs before the rate limiter, the credit check and the lock:
+    // a refusal that has already spent or locked something is not a refusal.
+    const ownedProject = await prisma.project.findFirst({
+      where: { id: projectId, deletedAt: null },
+      select: { id: true, ownerId: true },
+    });
+    if (!ownedProject) {
+      return jsonError('Project not found', 'NOT_FOUND', 404);
+    }
+    if (sessionUser.id !== ownedProject.ownerId && sessionUser.role !== 'ADMIN') {
+      return jsonError('Forbidden', 'FORBIDDEN', 403);
+    }
+    // Rate, not total. `checkCredits` bounds the month's spend and the
+    // `one_active_job_per_project` index bounds concurrency per *project* — so a loop
+    // creating a project and firing one generation each could spend the whole allowance as
+    // fast as HTTP allows, with the spend ceiling (which trails by the job's own duration)
+    // as the only backstop. Keyed on the member, ahead of the credit check and every
+    // acquisition (F-010).
+    if (!allowGenerationSubmit(sessionUser.id).allowed) {
+      log.warn('generation.rate_limited', { userId: sessionUser.id });
+      return jsonError(GENERATION_RATE_LIMIT_MESSAGE, 'RATE_LIMITED', 429);
+    }
     const creditCheck = await checkCredits(WORKSPACE_ROW_ID, sessionUser.id, 'generation');
     if (!creditCheck.ok) return creditDeniedJson(creditCheck);
 
-    const lockProjectId =
-      (typeof requestProjectId === 'string' && requestProjectId) ||
-      (typeof context?.projectId === 'string' && context.projectId) ||
-      '';
     // `holdProjectLock` rather than the hand-rolled acquire + heartbeat + release triple.
     // `acquireLock` is re-entrant for the same user, so when this user already held a live
     // lock on the project — their own audit or publish, or a hold leaked by an earlier run —
     // the old code took `ok: true`, started a second timer renewing a hold it did not own,
     // and then released the *other* feature's lock in its cleanup (security review NAV-03).
     // The hold knows whether it owns anything, so `release()` is a no-op on re-entry.
-    if (lockProjectId) {
-      const hold = await holdProjectLock(lockProjectId, sessionUser.id, 'generation');
-      if (!hold.ok) return lockConflictJson(hold);
-      releaseGenerationLock = hold.release;
-    }
+    const hold = await holdProjectLock(projectId, sessionUser.id, 'generation');
+    if (!hold.ok) return lockConflictJson(hold);
+    releaseGenerationLock = hold.release;
+    // Aborted the moment a renewal proves this hold is gone. A generation writes
+    // `Project.lastCode` minutes after it takes the lock, so from that moment another run
+    // may be writing the same row: this one has to stop and refuse to persist rather than
+    // finish under a lock that no longer protects the write (F-730).
+    const lockLost = hold.lost;
 
     const idempotencyKey =
       typeof requestIdempotencyKey === 'string' && requestIdempotencyKey.trim()
         ? requestIdempotencyKey.trim()
         : null;
-    generationJob = lockProjectId
-      ? await createOrReuseJob({
-          projectId: lockProjectId,
-          workspaceId: WORKSPACE_ROW_ID,
-          userId: sessionUser.id,
-          kind: isEdit ? 'FOLLOWUP' : 'BUILD',
-          inputPrompt: typeof prompt === 'string' ? prompt : null,
-          idempotencyKey,
-          requestId: getRequestId(),
-        })
-      : null;
+    generationJob = await createOrReuseJob({
+      projectId,
+      workspaceId: WORKSPACE_ROW_ID,
+      userId: sessionUser.id,
+      kind: isEdit ? 'FOLLOWUP' : 'BUILD',
+      // A non-empty string by construction — `readUserPrompt` at the top of the handler
+      // is what makes that true. This used to be
+      // `typeof prompt === 'string' ? prompt : null`, which quietly stored null for a
+      // non-string request and left the recovery panel with nothing to retry (F-033).
+      inputPrompt: prompt,
+      idempotencyKey,
+      requestId: getRequestId(),
+    });
     if (
       generationJob &&
       (generationJob.status === 'RUNNING' || generationJob.status === 'SUCCEEDED')
@@ -422,6 +498,13 @@ async function generateAiCodeStream(request: NextRequest) {
           onInactive: () => jobCancelled.abort(new Error('The build was cancelled')),
         })
       : null;
+    // Losing the project lock stops the run through the same controller, so the in-flight
+    // provider stream unwinds exactly as a Cancel does and no more tokens are bought. What
+    // the two mean is not the same, so the catch below reads `lockLost.aborted` to tell them
+    // apart: a cancel was asked for, a lost lock is a failure that saved nothing (F-730).
+    const abortForLockLoss = () => jobCancelled.abort(lockLost.reason);
+    if (lockLost.aborted) abortForLockLoss();
+    else lockLost.addEventListener('abort', abortForLockLoss, { once: true });
     jobProgress = generationJob ? createProgressBatcher(generationJob.id) : null;
     const planCaps = await getPlanCaps(WORKSPACE_ROW_ID);
     const capTracker = new JobCapTracker(planCaps);
@@ -431,7 +514,7 @@ async function generateAiCodeStream(request: NextRequest) {
     const generationProfile = await resolveRequestGenerationProfile({
       stack: requestStack,
       designDirection: requestDirection,
-      projectId: requestProjectId || context?.projectId,
+      projectId,
     });
     const projectStack = generationProfile.stack;
     const projectDirection = generationProfile.designDirection;
@@ -450,19 +533,38 @@ async function generateAiCodeStream(request: NextRequest) {
       fileCount: context?.currentFiles ? Object.keys(context.currentFiles).length : 0,
     });
 
+    // The GenerationEvent this run's token spend belongs to, resolved now rather than at
+    // settle time (F-749). `attachGenerationInputTokens` used to take a projectId and
+    // write to whichever event was newest for it when the run finished — so a follow-up
+    // that started while this run was streaming stole the count, or already carried one
+    // and the count was dropped silently.
+    let usageEventId: string | null = null;
     if (isEdit) {
-      const projectId =
-        (typeof requestProjectId === 'string' && requestProjectId) ||
-        (typeof context?.projectId === 'string' && context.projectId) ||
-        '';
-      if (sessionUser && projectId) {
-        await logGenerationEvent({
+      usageEventId = await logGenerationEvent({
+        projectId,
+        userId: sessionUser.id,
+        kind: 'followup',
+        isUrlClone: looksLikeUrl(prompt),
+      });
+    } else {
+      // A first build's event is written by `startInitialGeneration` in the request that
+      // approved the plan, so this route never holds its id. Reading it here — before a
+      // single token is spent — still pins the row: a generation that starts later cannot
+      // be the one this picked, which is exactly the interleaving that used to misattribute.
+      //
+      // Build kinds only. `image` events are logged with no token count and never get one,
+      // so "the newest event with no tokens" would happily hand a build's spend to an
+      // image generated in between.
+      const pending = await prisma.generationEvent.findFirst({
+        where: {
           projectId,
-          userId: sessionUser.id,
-          kind: 'followup',
-          isUrlClone: looksLikeUrl(String(prompt || '')),
-        });
-      }
+          inputTokens: null,
+          kind: { in: ['initial', 'followup'] },
+        },
+        orderBy: { createdAt: 'desc' },
+        select: { id: true },
+      });
+      usageEventId = pending?.id ?? null;
     }
 
     // Resolve this run's conversation state.
@@ -473,10 +575,9 @@ async function generateAiCodeStream(request: NextRequest) {
     // that phantom tree instead of following the stack prompt. Everything below
     // reads `conversation`, never the global, so an overlapping request for
     // another project cannot swap this run's history out mid-stream.
-    const conversationProjectId =
-      (typeof requestProjectId === 'string' && requestProjectId) ||
-      (typeof context?.projectId === 'string' && context.projectId) ||
-      null;
+    // The id resolved and required at the top of the handler, under the name the
+    // file-context branches below read it by.
+    const conversationProjectId = projectId;
     const conversation = conversationStateFor(conversationProjectId, sessionUser.id);
     log.info('generation.conversation_state', {
       requestId: getRequestId(),
@@ -485,14 +586,13 @@ async function generateAiCodeStream(request: NextRequest) {
       messages: conversation.context.messages.length,
     });
     // Add user message to conversation history
+    // No `metadata`: the only field it ever carried was `sandboxId`, a leftover of the
+    // deleted sandbox subsystem that is now always undefined (F-766).
     const userMessage: ConversationMessage = {
       id: `msg-${Date.now()}`,
       role: 'user',
       content: prompt,
       timestamp: Date.now(),
-      metadata: {
-        sandboxId: context?.sandboxId,
-      },
     };
     conversation.context.messages.push(userMessage);
 
@@ -678,6 +778,10 @@ async function generateAiCodeStream(request: NextRequest) {
         const uiUxBrief = buildUiUxProMaxBrief({
           prompt,
           styleHint: styleHint || context?.styleName || context?.conversationContext?.style,
+          // The style the user actually picked. Without it the brief fell out of a
+          // keyword tie onto STYLES[0] and shipped Glassmorphism to almost every
+          // prompt (F-829).
+          designDirection: projectDirection,
           isEdit,
         });
 
@@ -735,7 +839,11 @@ async function generateAiCodeStream(request: NextRequest) {
         // was never read, so the model was asked to satisfy the prompt with no sight of
         // the site it was about to overwrite. Request-supplied fields stay optional; the
         // project id is what decides whether this runs.
-        let fullPrompt = prompt;
+        // Wrapped, not spliced. The prompt used to be interpolated bare into instruction
+        // text — inside quotes it could close, under a `USER REQUEST:` header it could
+        // forge more of — next to the stack rules and the fenced-path output contract the
+        // persist step depends on (F-009).
+        let fullPrompt = wrapUserRequest(prompt);
         // Declared out here because the validation below needs the same map: a build check
         // over only the newly generated files reports a correct one-file edit as broken,
         // since every import into the rest of the project resolves to nothing.
@@ -743,9 +851,9 @@ async function generateAiCodeStream(request: NextRequest) {
         if (context || conversationProjectId) {
           const contextParts = [];
 
-          if (context?.sandboxId) {
-            contextParts.push(`Current sandbox ID: ${context.sandboxId}`);
-          }
+          // No "Current sandbox ID" line: the sandbox subsystem is gone, so `context.sandboxId`
+          // is always absent and the branch only ever told the model about a VM that would not
+          // exist if it did fire (F-766).
 
           if (context?.structure) {
             contextParts.push(`Current file structure:\n${context.structure}`);
@@ -783,7 +891,7 @@ async function generateAiCodeStream(request: NextRequest) {
               fileCount: Object.keys(backendFiles).length,
             });
           }
-          let hasBackendFiles = Object.keys(backendFiles).length > 0;
+          const hasBackendFiles = Object.keys(backendFiles).length > 0;
 
           console.log('[generate-ai-code-stream] - File count:', Object.keys(backendFiles).length);
 
@@ -874,9 +982,14 @@ async function generateAiCodeStream(request: NextRequest) {
           if (context?.conversationContext) {
             if (context.conversationContext.scrapedWebsites?.length > 0) {
               contextParts.push('\nScraped Websites in Context:');
-              context.conversationContext.scrapedWebsites.forEach((site: any) => {
+              context.conversationContext.scrapedWebsites.forEach((site: ScrapedWebsiteContext) => {
                 contextParts.push(`\nURL: ${site.url}`);
-                contextParts.push(`Scraped: ${new Date(site.timestamp).toLocaleString()}`);
+                // Naming the element shape turned up that `timestamp` is optional:
+                // `new Date(undefined)` renders the literal string "Invalid Date"
+                // into the prompt, which reads to the model as a real value.
+                if (site.timestamp !== undefined) {
+                  contextParts.push(`Scraped: ${new Date(site.timestamp).toLocaleString()}`);
+                }
                 if (site.content) {
                   // Include a summary of the scraped content
                   const contentPreview =
@@ -894,7 +1007,7 @@ async function generateAiCodeStream(request: NextRequest) {
           }
 
           if (contextParts.length > 0) {
-            fullPrompt = `CONTEXT:\n${contextParts.join('\n')}\n\nUSER REQUEST:\n${prompt}`;
+            fullPrompt = `CONTEXT:\n${contextParts.join('\n')}\n\n${wrapUserRequest(prompt)}`;
           }
         }
 
@@ -944,9 +1057,12 @@ async function generateAiCodeStream(request: NextRequest) {
           stopSequences: [], // Don't stop early
         };
 
-        // DeepSeek's thinking-mode model rejects a temperature.
-        if (!actualModel.includes('-pro')) {
-          streamOptions.temperature = 0.7;
+        // One decision for every provider call this run makes — see `temperatureForModel`
+        // for the two call sites that disagreed (F-041). Left off the object entirely for a
+        // thinking-mode model, which rejects the option rather than ignoring it.
+        const temperature = temperatureForModel(actualModel);
+        if (temperature !== undefined) {
+          streamOptions.temperature = temperature;
         }
         /**
          * What the prompt is worth in tokens when the provider reports no usage
@@ -958,6 +1074,13 @@ async function generateAiCodeStream(request: NextRequest) {
         let files: { path: string; content: string }[] = [];
         let componentCount = 0;
         let providersTried: string[] = [];
+        /**
+         * Whether the browser can already hold the reply from its `stream`
+         * frames, so the `complete` frame does not have to send the largest
+         * payload in the product a second time (F-043). See
+         * `shouldSendGeneratedCode` for what each field means.
+         */
+        const streamedReply = { streamAttempts: 0, replyRewritten: false, streamedChars: 0 };
         try {
           const failover = await executeWithCompletionFailover(
             providerChain,
@@ -982,7 +1105,7 @@ async function generateAiCodeStream(request: NextRequest) {
                 }),
               );
             },
-            async (stream, entry) => {
+            async (stream, entry, collectCtx) => {
               servedProvider = entry.provider;
               servedModel = entry.model;
               generatedCode = '';
@@ -992,6 +1115,7 @@ async function generateAiCodeStream(request: NextRequest) {
               let conversationalBuffer = '';
               const streamedPackages = new StreamedPackageTracker();
               packagesToInstall.length = 0;
+              streamedReply.streamAttempts += 1;
 
               // Stream the response and parse in real-time
               for await (const textPart of stream.textStream || []) {
@@ -1002,6 +1126,10 @@ async function generateAiCodeStream(request: NextRequest) {
                 // was lost. The site is persisted server-side, so finishing
                 // the stream is what lets them come back to it. Writes to the
                 // browser are already skipped while it is gone.
+                // Every chunk rearms the idle bound in `executeWithCompletionFailover`.
+                // Without it, a provider that accepted the request and then went quiet held
+                // this handler, the queue slot and the project lock for 20 minutes (F-030).
+                collectCtx.progress();
                 const text = textPart || '';
                 generatedCode += text;
                 const closedFiles = streamedFiles.push(text);
@@ -1013,9 +1141,6 @@ async function generateAiCodeStream(request: NextRequest) {
                   await jobProgress?.flush();
                   throw capAbort;
                 }
-
-                // Log streaming chunks to console
-                process.stdout.write(text);
 
                 // Check if we're entering or leaving a tag
                 const hasOpenTag =
@@ -1044,17 +1169,15 @@ async function generateAiCodeStream(request: NextRequest) {
                   conversationalBuffer += text;
                 }
 
-                // Stream the raw text for live preview
+                // Stream the raw text for live preview. Counted only when it is
+                // actually written: `sendProgress` is a no-op once the browser
+                // has gone, and a reply nobody received cannot be reused.
+                if (!clientDisconnected) streamedReply.streamedChars += text.length;
                 await sendProgress({
                   type: 'stream',
                   text: text,
                   raw: true,
                 });
-
-                // Debug: Log every 100 characters streamed
-                if (generatedCode.length % 100 < text.length) {
-                  console.log(`[generate-ai-code-stream] Streamed ${generatedCode.length} chars`);
-                }
 
                 // Package tags, for edits only (an initial build installs nothing).
                 // The tracker consumes what it has matched and holds back a bounded
@@ -1109,23 +1232,14 @@ async function generateAiCodeStream(request: NextRequest) {
 
               console.log('\n\n[generate-ai-code-stream] Streaming complete.');
 
-              // A dropped path is not silent. The log line is for us; the warning frame is
-              // for the user, who would otherwise see one fewer file than the model claimed
-              // to write with nothing anywhere saying why. The post-stream parse below drops
-              // the same entries (`sanitizeGenerationPath(...)` then `continue`), so this is
-              // the one place the drop is announced.
-              if (streamedFiles.rejectedPaths.length > 0) {
-                const rejectedPaths = [...streamedFiles.rejectedPaths];
-                log.warn('generation.unsafe_stream_paths', {
-                  jobId: generationJob?.id ?? null,
-                  paths: rejectedPaths,
-                });
-                await sendProgress({
-                  type: 'warning',
-                  message: `Skipped ${rejectedPaths.length} file${rejectedPaths.length === 1 ? '' : 's'} whose path was unsafe.`,
-                  warnings: rejectedPaths,
-                });
-              }
+              // A dropped path is not silent, but the live tracker's list is not the whole
+              // story: `streamedFiles.rejectedPaths` holds only the fences the tracker
+              // recognised as it streamed, while the post-stream parse below runs
+              // `normalizeFenceOpeners` / `sanitizeAssistantOutput` first and so recovers
+              // glued, split and unclosed fences the tracker missed. A path unique to that
+              // recovered set used to drop with a bare `continue` and no notice. Collect
+              // both and announce them together, after the parse.
+              const droppedPaths = new Set<string>(streamedFiles.rejectedPaths);
 
               if (clientDisconnected) {
                 // Note it and carry on. Returning here returned `files` before
@@ -1205,7 +1319,10 @@ async function generateAiCodeStream(request: NextRequest) {
               // closing brace, a stream cut before the final fence.
               for (const [filePath, content] of Object.entries(filesFromReply(generatedCode))) {
                 const safe = sanitizeGenerationPath(filePath);
-                if (!safe.ok) continue;
+                if (!safe.ok) {
+                  droppedPaths.add(filePath);
+                  continue;
+                }
                 files.push({ path: safe.path, content });
                 jobProgress?.addFile(safe.path, content);
 
@@ -1244,6 +1361,22 @@ async function generateAiCodeStream(request: NextRequest) {
                     path: filePath,
                   });
                 }
+              }
+
+              // One frame for both sources — the live tracker's rejects and the ones only
+              // the recovering parse above saw — so the file the user asked for never
+              // vanishes with nothing anywhere saying why.
+              if (droppedPaths.size > 0) {
+                const rejectedPaths = [...droppedPaths];
+                log.warn('generation.unsafe_stream_paths', {
+                  jobId: generationJob?.id ?? null,
+                  paths: rejectedPaths,
+                });
+                await sendProgress({
+                  type: 'warning',
+                  message: `Skipped ${rejectedPaths.length} file${rejectedPaths.length === 1 ? '' : 's'} whose path was unsafe.`,
+                  warnings: rejectedPaths,
+                });
               }
 
               // This attempt is done streaming, so its usage is readable. A
@@ -1392,6 +1525,10 @@ async function generateAiCodeStream(request: NextRequest) {
                 ...streamOptions,
                 model: correctiveClient(correctiveEntry.model),
                 maxOutputTokens: Math.min(outputTokenCap, maxOutputTokensForEntry(correctiveEntry)),
+                // Decided from the entry that will actually serve this ask, not inherited
+                // from `streamOptions`: the corrective entry need not be the model the main
+                // call's decision was made for (F-041).
+                temperature: temperatureForModel(correctiveEntry.model),
                 messages: [
                   ...(streamOptions.messages ?? []),
                   // Its own words back, capped: the claim is what it has to answer for, and
@@ -1403,6 +1540,10 @@ async function generateAiCodeStream(request: NextRequest) {
                 onError: capture.onError,
               }),
             );
+            // Whatever this ask produces, the client's accumulated buffer now
+            // holds the first reply followed by this one, so it can no longer
+            // stand in for `generatedCode` on the `complete` frame (F-043).
+            streamedReply.replyRewritten = true;
             let correctedCode = '';
             for await (const part of corrective.textStream ?? []) {
               const text = part || '';
@@ -1538,7 +1679,7 @@ async function generateAiCodeStream(request: NextRequest) {
                 const completionPrompt = `Complete the following file that was truncated. Provide the FULL file content.
 
 File: ${filePath}
-Original request: ${prompt}
+${wrapUserRequest(prompt)}
 
 Provide the complete file content without any truncation. Include all necessary imports, complete all functions, and close all tags properly.`;
 
@@ -1559,9 +1700,11 @@ Provide the complete file content without any truncation. Include all necessary 
                       },
                       { role: 'user', content: completionPrompt },
                     ],
-                    temperature: recoveryEntry.model.startsWith('gpt-5')
-                      ? undefined
-                      : appConfig.ai.defaultTemperature,
+                    // Was `recoveryEntry.model.startsWith('gpt-5') ? undefined : …` — a dead
+                    // OpenAI test that can never be true for a DeepSeek id, so `-pro` (which
+                    // the main call is careful to exclude) received a temperature and every
+                    // recovery call on that model was rejected by the provider (F-041).
+                    temperature: temperatureForModel(recoveryEntry.model),
                     // truncationRecoveryMaxTokens existed in config but was never passed,
                     // so recovery ran uncapped and could truncate a second time.
                     maxOutputTokens: Math.min(
@@ -1573,8 +1716,12 @@ Provide the complete file content without any truncation. Include all necessary 
                 );
 
                 // Throws whatever the stream reported rather than handing back the empty
-                // string a rejected call resolves to.
-                const completedContent = await collectRecoveredStreamText(completionResult);
+                // string a rejected call resolves to — and charges every chunk to the job's
+                // caps, so N recovery calls cannot outrun `maxTokensPerJob` (F-042).
+                const completedContent = await collectRecoveredStreamText(
+                  completionResult,
+                  (chunk) => capTracker.addChunk(chunk),
+                );
                 runUsage.settle(
                   await completionResult.usage.catch(() => undefined),
                   completedContent,
@@ -1613,9 +1760,13 @@ Provide the complete file content without any truncation. Include all necessary 
                   continue;
                 }
                 generatedCode = repaired;
+                // The repaired block replaces text the browser already received,
+                // so its buffer is no longer the reply (F-043).
+                streamedReply.replyRewritten = true;
 
                 console.log(`[generate-ai-code-stream] Successfully completed ${filePath}`);
               } catch (completionError) {
+                if (completionError instanceof JobCapError) throw completionError;
                 console.error(
                   `[generate-ai-code-stream] Failed to complete ${filePath}:`,
                   completionError,
@@ -1673,10 +1824,6 @@ Provide the complete file content without any truncation. Include all necessary 
           }
         }
 
-        const usageProjectId =
-          (typeof requestProjectId === 'string' && requestProjectId) ||
-          (typeof context?.projectId === 'string' && context.projectId) ||
-          '';
         // Everything this run spent, across every call. `close` charges a call
         // that was announced and never settled — an aborted or rejected stream
         // whose prompt the provider still billed.
@@ -1694,9 +1841,10 @@ Provide the complete file content without any truncation. Include all necessary 
           });
         }
         try {
-          if (usageProjectId) {
-            await attachGenerationInputTokens(usageProjectId, inputTokens);
-          }
+          // Bound to the event this run resolved before it spent anything, not to
+          // whatever row is newest now (F-749). A null id logs the miss inside
+          // `attachGenerationInputTokens` rather than writing to a stranger's event.
+          await attachGenerationInputTokens(usageEventId, inputTokens);
         } catch (tokenError) {
           logError('generation.tokens_failed', tokenError);
         }
@@ -1740,6 +1888,14 @@ Provide the complete file content without any truncation. Include all necessary 
                 files.map((file) => file.path),
               )
             : null;
+
+        // Nothing below may run under a lock this run no longer holds. From the moment the
+        // renewal failed, another run could have taken the project and written
+        // `Project.lastCode`; persisting on top of that is the corruption the lock exists to
+        // prevent, and a `complete` frame would report a write that never happened. Thrown
+        // rather than returned so the catch fails the job as `project_lock_lost` and sends
+        // the error frame, and so the build check is not paid for either (F-730).
+        if (lockLost.aborted) throw new ProjectLockLostError(projectId);
 
         // Check the generated code before anyone is told the build worked.
         //
@@ -1860,6 +2016,13 @@ Provide the complete file content without any truncation. Include all necessary 
               };
             }
           }
+          // The terminal settle has already given the project lock back — `succeedJob`,
+          // `failJob` and `ensureJobSettled` all call `releaseLockQuietly` — so this hold
+          // is over. Handing it back here rather than only in the `finally` is what stops
+          // its heartbeat before the next renewal tick can find the lock gone and report a
+          // loss that is really our own settle (F-730). Idempotent, so the `finally` still
+          // covers every path that does not reach this line.
+          await releaseGenerationLock?.();
         }
 
         if (chatAnswer) {
@@ -1884,7 +2047,7 @@ Provide the complete file content without any truncation. Include all necessary 
           // change that never happened into the project's history.
           await sendProgress({
             type: 'complete',
-            generatedCode,
+            generatedCode: shouldSendGeneratedCode(streamedReply) ? generatedCode : undefined,
             files: 0,
             components: 0,
             model,
@@ -1985,10 +2148,13 @@ Provide the complete file content without any truncation. Include all necessary 
           durationMs: Date.now() - startedAt,
         });
 
-        // Send completion with packages info
+        // Send completion with packages info. `generatedCode` is omitted when the
+        // browser already accumulated this exact text from the `stream` frames:
+        // it is the largest payload in the product and was sent twice on every
+        // build (F-043). `completedCodeFromFrame` reads the buffer back client-side.
         await sendProgress({
           type: 'complete',
-          generatedCode,
+          generatedCode: shouldSendGeneratedCode(streamedReply) ? generatedCode : undefined,
           explanation,
           files: files.length,
           components: componentCount,
@@ -2039,7 +2205,14 @@ Provide the complete file content without any truncation. Include all necessary 
       } catch (error) {
         console.error('[generate-ai-code-stream] Stream processing error:', error);
 
-        if (jobCancelled.signal.aborted) {
+        // A lost project lock aborts the same controller a Cancel does, so it is checked
+        // first: this run was not asked to stop, it stopped because the project stopped
+        // being its to write. It has to be reported as a failure, with the code that says
+        // nothing was saved (F-730).
+        const lostLock = lockLost.aborted;
+        if (lostLock) {
+          log.error('generation.lock_lost', { jobId: generationJob?.id ?? null, projectId });
+        } else if (jobCancelled.signal.aborted) {
           // Cancel / Start over settled the row as CANCELLED before the abort unwound the
           // stream — the person asked for this stop. Nothing to fail (`failJob` only
           // touches an active row and must not overwrite the cancel), and an error frame
@@ -2050,35 +2223,33 @@ Provide the complete file content without any truncation. Include all necessary 
         }
 
         const errorMessage = error instanceof Error ? error.message : String(error);
-        // Reaching this catch means the work stopped, whatever the reason. The tool-validation
-        // branch used to only warn and then fall out of the block, leaving the job RUNNING
-        // with nothing left to settle it.
-        const isToolValidationError = errorMessage.includes('tool call validation failed');
         const cap = error instanceof JobCapError ? error : null;
         const cause =
           error instanceof ProviderRunError
             ? (error.causeError ?? error)
             : error && typeof error === 'object' && 'cause' in error
-              ? (error as { cause: unknown }).cause
+              ? error.cause
               : error;
-        const honest =
-          cap?.message ??
-          (isToolValidationError ? errorMessage : providerFailureMessage(cause, servedProvider));
+        // Decided by the SDK's own type predicates rather than
+        // `errorMessage.includes('tool call validation failed')`, which silently reroutes
+        // this to the generic provider path on any change in the SDK's wording (F-038).
+        const isToolValidationError = isToolCallValidationError(error);
+        const honest = lostLock
+          ? LOCK_LOST_MESSAGE
+          : (cap?.message ??
+            (isToolValidationError ? errorMessage : providerFailureMessage(cause, servedProvider)));
         if (isToolValidationError) {
-          console.error(
-            '[generate-ai-code-stream] Tool call validation error - this may be due to the AI model sending incorrect parameters',
-          );
-          await sendProgress({
-            type: 'warning',
-            message:
-              'Package installation tool encountered an issue. Packages will be detected from imports instead.',
-          });
-        } else {
-          await sendProgress({
-            type: 'error',
-            error: honest,
-          });
+          logError('generation.tool_call_validation_failed', error);
         }
+        // Unconditional. The tool-validation branch used to send a `warning` about package
+        // installation — a subsystem that no longer exists — and skip the error frame, so
+        // the stream closed with no `complete` and no `error`: the client's read loop simply
+        // ended, and the run was reported as a dropped connection. The job is failed either
+        // way, so the frame that says so has to go out either way (F-038).
+        await sendProgress({
+          type: 'error',
+          error: honest,
+        });
         if (generationJob) {
           // A failed run still spent everything it sent. This path used to reach
           // `failJob` with `tokensIn` absent and `tokensOut` set only by a cap
@@ -2108,11 +2279,12 @@ Provide the complete file content without any truncation. Include all necessary 
           }
           try {
             await failJob(generationJob.id, {
-              errorCode:
-                cap?.errorCode ??
-                (isToolValidationError
-                  ? 'tool_call_validation_failed'
-                  : jobErrorCodeForProviderFailure(cause)),
+              errorCode: lostLock
+                ? 'project_lock_lost'
+                : (cap?.errorCode ??
+                  (isToolValidationError
+                    ? 'tool_call_validation_failed'
+                    : jobErrorCodeForProviderFailure(cause))),
               errorMessage: honest,
               tokensIn: burned?.tokensIn,
               // A cap abort counted the output itself; otherwise it is what the
@@ -2162,7 +2334,11 @@ Provide the complete file content without any truncation. Include all necessary 
       logError('generation.detached_work_failed', error);
     });
 
-    // Return the stream with proper headers for streaming support
+    // Streaming headers only. This response used to declare
+    // `Access-Control-Allow-Origin: *` on an authenticated, credit-spending endpoint, and
+    // advertise `Authorization` as an accepted header — inviting a bearer-token integration
+    // the cookie-only auth gate does not support — with no OPTIONS handler for the preflight
+    // it advertised. No other route in the product sets CORS at all (F-012).
     return new Response(stream.readable, {
       headers: {
         'Content-Type': 'text/event-stream',
@@ -2171,9 +2347,6 @@ Provide the complete file content without any truncation. Include all necessary 
         'Transfer-Encoding': 'chunked',
         'Content-Encoding': 'none', // Prevent compression that can break streaming
         'X-Accel-Buffering': 'no', // Disable nginx buffering
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
       },
     });
   } catch (error) {
@@ -2189,6 +2362,11 @@ Provide the complete file content without any truncation. Include all necessary 
       action: 'generation',
       durationMs: Date.now() - startedAt,
     });
-    return jsonError((error as Error).message || 'Generation failed', 'GENERATION_FAILED', 500);
+    // The same sentence `releaseSetup` just recorded on the job. Returning
+    // `(error as Error).message` here made the route contradict itself and put raw
+    // internal text — Prisma connection failures, provider echoes — in the browser
+    // and in `Job.errorMessage`, which any signed-in member can read (F-079).
+    // `trackFailure` above already logged and captured the detail.
+    return jsonError(cap?.message ?? providerFailureMessage(error), 'GENERATION_FAILED', 500);
   }
 }

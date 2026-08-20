@@ -1,264 +1,201 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { NextRequest } from 'next/server';
-
 /**
- * The project write path that resolved an actor and then never compared it to the
- * owner, plus the read contract of the preview route.
+ * Ownership on the two mutating routes that had none (F-313).
  *
- * `persistProjectGeneration` is reachable as `PATCH /api/projects/[id]` whenever
- * the body carries generation fields. It selected `{ id, phase }` — no `ownerId`
- * — so `const user` was dead and any signed-in member could replace another
- * member's `lastCode` (what the preview renders from), repoint `previewUrl`,
- * force `phase: COMPLETE`, and kick off a billable preview build. Its four
- * siblings in the same file all call `canMutate` two lines after the identical
- * lookup. That gate stays.
+ * Both were found by making `tests/unit/server-action-authz.test.ts` mechanical
+ * and then applying the same enumeration to `app/api/**`: they are the route-side
+ * instances of the N-009 shape — a session gate, a project id taken from the
+ * request, and no comparison against the project's owner.
  *
- * `POST /api/projects/[id]/preview` was briefly owner-gated too, on the reasoning
- * that its signed `/preview-static` URL is an anonymous capability. The gate was
- * removed deliberately: this is a single-workspace product where the project list
- * shows every member every project, so owner-only minting rendered a teammate's
- * finished site as "Nothing to preview yet". What is asserted instead is the
- * property that actually matters — the token is scoped to the project id in the
- * URL, never to anything the caller supplies — plus that an anonymous caller is
- * still refused before anything is signed.
+ *   POST /api/generate-ai-code-stream   spends workspace credits, takes the
+ *                                       owner's project lock and settles
+ *                                       generated code onto the project.
+ *   POST /api/projects/[id]/quality-signals  writes a QualitySignal row that
+ *                                       feeds /admin/quality.
  *
- * Goes red if the write gate is removed, if a gate is added whose result is
- * dropped (every write case asserts the post-gate work did not run), or if token
- * minting stops being scoped to the requested project.
+ * The product's decision is already on record one module away:
+ * `persistProjectGeneration` (lib/projects/actions.ts) refuses a non-owner with
+ * 403 precisely so a member cannot replace another member's `lastCode`. These
+ * two routes reached the same state without asking.
  *
- * Modules under test are pulled in with `await import` inside each case, as the
- * sibling unit tests do: a static import would bind before `vi.mock` registers,
- * and `getSessionUser` has to be re-stubbed per actor before the module loads.
+ * Driven, not read: the handler is invoked as an owner, a non-owner MEMBER and a
+ * non-owner ADMIN, and the post-gate work is counted. A gate whose result is
+ * dropped returns 200 *and* does the work, which a source-text check cannot see.
  */
+import { NextRequest } from 'next/server';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { POST as generateStream } from '@/app/api/generate-ai-code-stream/route';
+import { POST as qualitySignals } from '@/app/api/projects/[id]/quality-signals/route';
 
-const db = vi.hoisted(() => ({
-  projectFindFirst: vi.fn(),
-  projectUpdate: vi.fn(),
+type Actor = { id: string; email: string; name: string; role: 'ADMIN' | 'MEMBER' } | null;
+
+const session = vi.hoisted(() => ({ user: null as Actor }));
+
+const work = vi.hoisted(() => ({
+  recordThumbs: 0,
+  generationSubmitChecked: 0,
 }));
-const auth = vi.hoisted(() => ({ getSessionUser: vi.fn() }));
-const preview = vi.hoisted(() => ({ issuePreviewToken: vi.fn(), signedPreviewUrl: vi.fn() }));
-const previewStatus = vi.hoisted(() => ({ getPreviewStatus: vi.fn() }));
+
+const OWNER_ID = 'owner-1';
+const PROJECT_ID = 'proj-1';
+
+const OWNER: Actor = {
+  id: OWNER_ID,
+  email: 'owner@navroop.invalid',
+  name: 'Owner',
+  role: 'MEMBER',
+};
+const OTHER_MEMBER: Actor = {
+  id: 'member-2',
+  email: 'member2@navroop.invalid',
+  name: 'Other Member',
+  role: 'MEMBER',
+};
+const OTHER_ADMIN: Actor = {
+  id: 'admin-1',
+  email: 'admin@navroop.invalid',
+  name: 'Admin',
+  role: 'ADMIN',
+};
+
+vi.mock('@/lib/auth', () => ({
+  getSessionUser: async () => session.user,
+  requireSessionUser: async () =>
+    session.user
+      ? { user: session.user, error: null, status: 200 }
+      : { user: null, error: 'Sign in required', status: 401 },
+  requireAdmin: async () => ({ user: null, error: 'Admin access required', status: 403 }),
+  toPublicUser: (user: Actor) => user,
+  auth: async () => null,
+  signIn: vi.fn(),
+  signOut: vi.fn(),
+  validateEmail: () => true,
+}));
+
+vi.mock('@/auth', () => ({
+  auth: async () => null,
+  handlers: {},
+  signIn: vi.fn(),
+  signOut: vi.fn(),
+  unstable_update: vi.fn(),
+}));
 
 vi.mock('@/lib/db', () => ({
   prisma: {
-    project: { findFirst: db.projectFindFirst, update: db.projectUpdate },
+    project: {
+      findFirst: async () => ({ id: PROJECT_ID, ownerId: OWNER_ID, deletedAt: null }),
+    },
   },
 }));
 
-/** next-auth cannot resolve `next/server` outside the Next runtime. */
-vi.mock('@/lib/auth', () => ({ getSessionUser: auth.getSessionUser }));
-
-/** The AsyncLocalStorage actor seam must stay empty: the session is the gate under test. */
-vi.mock('@/lib/projects/plan', () => ({
-  peekActor: () => undefined,
-  applyCreateProjectPlanFlow: async () => undefined,
-}));
-
-/** Post-gate work for the persist path, so a missed gate is visible as a call count. */
-vi.mock('@/lib/checkpoints/actions', () => ({
-  createCheckpointAfterGeneration: vi.fn(async () => null),
-}));
-vi.mock('@/lib/memory/extract', () => ({ extractMemoriesAfterGeneration: async () => undefined }));
+// The first post-gate step of the quality-signals route. Counting it is what
+// separates an honoured gate from one whose result is thrown away.
 vi.mock('@/lib/signals/collect', () => ({
-  countVisualEditsFromSource: () => 0,
-  recordVisualEditRate: async () => undefined,
-  maybeSettleFollowups: async () => undefined,
+  recordThumbs: async () => {
+    work.recordThumbs += 1;
+    return { id: 'signal-1', kind: 'thumbs', value: 1 };
+  },
 }));
-vi.mock('@/lib/preview/production', () => ({ buildPreviewForProject: async () => ({ ok: true }) }));
 
-/** Post-gate work for the preview route. */
-vi.mock('@/lib/preview/token', () => ({ issuePreviewToken: preview.issuePreviewToken }));
-vi.mock('@/lib/preview/url', () => ({ signedPreviewUrl: preview.signedPreviewUrl }));
-vi.mock('@/lib/preview/status', () => ({ getPreviewStatus: previewStatus.getPreviewStatus }));
+// The first post-gate step of the generation route. The real limiter is keyed on
+// the member and would otherwise leak state between cases.
+vi.mock('@/lib/generation/submit-rate-limit', () => ({
+  GENERATION_RATE_LIMIT_MESSAGE: 'Too many generations',
+  allowGenerationSubmit: () => {
+    work.generationSubmitChecked += 1;
+    return { allowed: false };
+  },
+}));
 
-const OWNER = { id: 'u-owner', email: 'owner@example.com', name: 'Owner', role: 'MEMBER' as const };
-const OTHER = { id: 'u-other', email: 'other@example.com', name: 'Other', role: 'MEMBER' as const };
-const ADMIN = { id: 'u-admin', email: 'admin@example.com', name: 'Admin', role: 'ADMIN' as const };
-const PROJECT = 'p-authz';
-
-function params() {
-  return { params: Promise.resolve({ id: PROJECT }) };
-}
-
-function tokenRequest() {
-  return new NextRequest(`http://localhost:3000/api/projects/${PROJECT}/preview`, {
-    method: 'POST',
-    body: JSON.stringify({ action: 'token' }),
-  });
-}
+const REQUEST_INIT = {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+} as const;
 
 beforeEach(() => {
-  vi.clearAllMocks();
-  db.projectFindFirst.mockResolvedValue({ id: PROJECT, ownerId: OWNER.id, phase: 'BUILDING' });
-  db.projectUpdate.mockResolvedValue({ id: PROJECT, previewUrl: null, owner: OWNER });
-  preview.issuePreviewToken.mockReturnValue('signed.token');
-  preview.signedPreviewUrl.mockResolvedValue(`/preview-static/${PROJECT}/?t=signed.token`);
-  previewStatus.getPreviewStatus.mockResolvedValue({
-    status: 'READY',
-    buildLog: 'secret build log',
-  });
+  session.user = null;
+  work.recordThumbs = 0;
+  work.generationSubmitChecked = 0;
 });
 
-describe('persistProjectGeneration ownership', () => {
-  it('refuses a non-owner member and writes nothing', async () => {
-    auth.getSessionUser.mockResolvedValue(OTHER);
-    const { persistProjectGeneration } = await import('@/lib/projects/actions');
-
-    const result = await persistProjectGeneration(PROJECT, {
-      lastCode: '<file path="src/App.jsx">overwritten</file>',
-      generationStatus: 'ready',
-    });
-
-    expect(result.ok).toBe(false);
-    expect(result).toMatchObject({ status: 403, error: 'Forbidden' });
-    expect(db.projectUpdate).not.toHaveBeenCalled();
-  });
-
-  it('selects ownerId, so the gate has something to compare', async () => {
-    auth.getSessionUser.mockResolvedValue(OTHER);
-    const { persistProjectGeneration } = await import('@/lib/projects/actions');
-
-    await persistProjectGeneration(PROJECT, { lastCode: 'x' });
-
-    // The original bug was not a missing `if` — it was a lookup that never
-    // fetched the field, which is why the dead `user` binding went unnoticed.
-    expect(db.projectFindFirst.mock.calls[0]?.[0]?.select).toMatchObject({ ownerId: true });
-  });
-
-  it('still lets the owner persist', async () => {
-    // Control: the 403s above must not be a broken path.
-    auth.getSessionUser.mockResolvedValue(OWNER);
-    const { persistProjectGeneration } = await import('@/lib/projects/actions');
-
-    const result = await persistProjectGeneration(PROJECT, { lastCode: 'mine' });
-
-    expect(result.ok).toBe(true);
-    expect(db.projectUpdate).toHaveBeenCalledTimes(1);
-  });
-
-  it('still lets an ADMIN persist', async () => {
-    auth.getSessionUser.mockResolvedValue(ADMIN);
-    const { persistProjectGeneration } = await import('@/lib/projects/actions');
-
-    const result = await persistProjectGeneration(PROJECT, { lastCode: 'admin fix' });
-
-    expect(result.ok).toBe(true);
-    expect(db.projectUpdate).toHaveBeenCalledTimes(1);
-  });
-
-  it('refuses an anonymous caller before the lookup', async () => {
-    auth.getSessionUser.mockResolvedValue(null);
-    const { persistProjectGeneration } = await import('@/lib/projects/actions');
-
-    const result = await persistProjectGeneration(PROJECT, { lastCode: 'x' });
-
-    expect(result).toMatchObject({ ok: false, status: 401 });
-    expect(db.projectFindFirst).not.toHaveBeenCalled();
-  });
-});
-
-describe('POST /api/projects/[id]/preview token minting', () => {
-  it('mints for any signed-in member, because the project list already shows them the project', async () => {
-    // Deliberate product decision, and a reversal of the first fix here. Owner-only
-    // minting meant a member who opened a teammate's finished project saw "Nothing
-    // to preview yet" over stored code, because both the Code tab and the in-browser
-    // preview go through this route. Navroop is a single-workspace product.
-    auth.getSessionUser.mockResolvedValue(OTHER);
-    const { POST } = await import('@/app/api/projects/[id]/preview/route');
-
-    const response = await POST(tokenRequest(), params());
-
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({ token: 'signed.token' });
-  });
-
-  it('scopes the minted token to the project in the URL, never to a caller-supplied id', async () => {
-    // This is the property that actually protects `/preview-static`, where the
-    // signature is the only check performed and no session is involved. A token
-    // minted here must not be usable against another project.
-    auth.getSessionUser.mockResolvedValue(OTHER);
-    const { POST } = await import('@/app/api/projects/[id]/preview/route');
-
-    await POST(tokenRequest(), params());
-
-    expect(preview.issuePreviewToken).toHaveBeenCalledWith(
-      expect.objectContaining({ projectId: PROJECT }),
+describe('POST /api/projects/[id]/quality-signals is owner-scoped', () => {
+  const call = () =>
+    qualitySignals(
+      new NextRequest('http://localhost:3000/api/projects/proj-1/quality-signals', {
+        ...REQUEST_INIT,
+        body: JSON.stringify({ kind: 'thumbs', rating: 'up' }),
+      }),
+      { params: Promise.resolve({ id: PROJECT_ID }) },
     );
-    expect(preview.signedPreviewUrl).toHaveBeenCalledWith(
-      expect.objectContaining({ projectId: PROJECT }),
-    );
-  });
 
-  it('mints for the owner', async () => {
-    auth.getSessionUser.mockResolvedValue(OWNER);
-    const { POST } = await import('@/app/api/projects/[id]/preview/route');
-
-    const response = await POST(tokenRequest(), params());
-
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({ token: 'signed.token' });
-    expect(preview.issuePreviewToken).toHaveBeenCalledTimes(1);
-  });
-
-  it('mints for an ADMIN', async () => {
-    auth.getSessionUser.mockResolvedValue(ADMIN);
-    const { POST } = await import('@/app/api/projects/[id]/preview/route');
-
-    const response = await POST(tokenRequest(), params());
-
-    expect(response.status).toBe(200);
-    expect(preview.issuePreviewToken).toHaveBeenCalledTimes(1);
-  });
-
-  it('still refuses an anonymous caller, before signing anything', async () => {
-    auth.getSessionUser.mockResolvedValue(null);
-    const { POST } = await import('@/app/api/projects/[id]/preview/route');
-
-    const response = await POST(tokenRequest(), params());
-
+  it('refuses a signed-out caller with 401 and records nothing', async () => {
+    const response = await call();
     expect(response.status).toBe(401);
-    expect(preview.issuePreviewToken).not.toHaveBeenCalled();
-    expect(preview.signedPreviewUrl).not.toHaveBeenCalled();
+    expect(work.recordThumbs).toBe(0);
+  });
+
+  it('refuses a MEMBER who does not own the project with 403 and records nothing', async () => {
+    session.user = OTHER_MEMBER;
+    const response = await call();
+    expect(response.status).toBe(403);
+    expect(work.recordThumbs).toBe(0);
+  });
+
+  it('accepts the owner', async () => {
+    session.user = OWNER;
+    const response = await call();
+    expect(response.status).toBe(200);
+    expect(work.recordThumbs).toBe(1);
+  });
+
+  it('accepts an ADMIN who does not own the project', async () => {
+    session.user = OTHER_ADMIN;
+    const response = await call();
+    expect(response.status).toBe(200);
+    expect(work.recordThumbs).toBe(1);
   });
 });
 
-describe('GET /api/projects/[id]/preview', () => {
-  it('answers any signed-in member', async () => {
-    auth.getSessionUser.mockResolvedValue(OTHER);
-    const { GET } = await import('@/app/api/projects/[id]/preview/route');
-
-    const response = await GET(
-      new NextRequest(`http://localhost:3000/api/projects/${PROJECT}/preview`),
-      params(),
+describe('POST /api/generate-ai-code-stream is owner-scoped', () => {
+  const call = () =>
+    generateStream(
+      new NextRequest('http://localhost:3000/api/generate-ai-code-stream', {
+        ...REQUEST_INIT,
+        body: JSON.stringify({
+          prompt: 'Add a pricing section to the landing page',
+          projectId: PROJECT_ID,
+        }),
+      }),
     );
 
-    expect(response.status).toBe(200);
-    expect(previewStatus.getPreviewStatus).toHaveBeenCalledTimes(1);
-  });
-
-  it('refuses an anonymous caller before reading status', async () => {
-    auth.getSessionUser.mockResolvedValue(null);
-    const { GET } = await import('@/app/api/projects/[id]/preview/route');
-
-    const response = await GET(
-      new NextRequest(`http://localhost:3000/api/projects/${PROJECT}/preview`),
-      params(),
-    );
-
+  it('refuses a signed-out caller with 401 before the rate limiter', async () => {
+    const response = await call();
     expect(response.status).toBe(401);
-    expect(previewStatus.getPreviewStatus).not.toHaveBeenCalled();
+    expect(work.generationSubmitChecked).toBe(0);
   });
 
-  it('still answers the owner', async () => {
-    auth.getSessionUser.mockResolvedValue(OWNER);
-    const { GET } = await import('@/app/api/projects/[id]/preview/route');
+  it('refuses a MEMBER who does not own the project with 403, before spending anything', async () => {
+    // The ownership check must precede the rate limiter, the credit check and
+    // the project lock: a refusal that has already charged the workspace or
+    // taken the owner's lock is not a refusal.
+    session.user = OTHER_MEMBER;
+    const response = await call();
+    expect(response.status).toBe(403);
+    expect(work.generationSubmitChecked).toBe(0);
+  });
 
-    const response = await GET(
-      new NextRequest(`http://localhost:3000/api/projects/${PROJECT}/preview`),
-      params(),
-    );
+  it('lets the owner past the ownership check (stopped later by the mocked rate limiter)', async () => {
+    // 429 is the positive control: it proves the gate passed and the handler
+    // carried on, rather than the mocks refusing everyone.
+    session.user = OWNER;
+    const response = await call();
+    expect(response.status).toBe(429);
+    expect(work.generationSubmitChecked).toBe(1);
+  });
 
-    expect(response.status).toBe(200);
-    expect(previewStatus.getPreviewStatus).toHaveBeenCalledTimes(1);
+  it('lets an ADMIN who does not own the project past the ownership check', async () => {
+    session.user = OTHER_ADMIN;
+    const response = await call();
+    expect(response.status).toBe(429);
+    expect(work.generationSubmitChecked).toBe(1);
   });
 });

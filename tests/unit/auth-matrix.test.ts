@@ -60,11 +60,13 @@ vi.mock('@/lib/db', () => ({
   prisma: {
     // `writeAudit` runs on the admin success paths and swallows its own
     // failures; stubbing the raw-SQL entry points keeps that from printing an
-    // error that has nothing to do with authorization.
-    $executeRaw: vi.fn(),
-    $executeRawUnsafe: vi.fn(),
-    $queryRaw: vi.fn(),
-    $queryRawUnsafe: vi.fn(),
+    // error that has nothing to do with authorization. The query stubs answer
+    // with an empty row set rather than `undefined`, because that is what Prisma
+    // returns and callers are entitled to index into it.
+    $executeRaw: vi.fn(async () => 0),
+    $executeRawUnsafe: vi.fn(async () => 0),
+    $queryRaw: vi.fn(async () => []),
+    $queryRawUnsafe: vi.fn(async () => []),
     user: { findUnique: dbMock.userFindUnique, create: dbMock.userCreate },
     project: {
       findFirst: dbMock.projectFindFirst,
@@ -220,11 +222,18 @@ function params(id: string) {
 async function readError(response: Response): Promise<string | null> {
   const type = response.headers.get('content-type') ?? '';
   if (!type.includes('application/json')) return null;
-  const body: unknown = await response.clone().json().catch(() => null);
+  const body: unknown = await response
+    .clone()
+    .json()
+    .catch(() => null);
   if (!body || typeof body !== 'object') return null;
   const value = (body as { error?: unknown }).error;
   if (typeof value === 'string') return value;
-  if (value && typeof value === 'object' && typeof (value as { message?: unknown }).message === 'string') {
+  if (
+    value &&
+    typeof value === 'object' &&
+    typeof (value as { message?: unknown }).message === 'string'
+  ) {
     return String((value as { message: string }).message);
   }
   return null;
@@ -510,9 +519,14 @@ describe('mutating routes: actual status per actor', () => {
           expect(outcome.error, `${route.key} as ${actor}`).toBe(expected.error);
         }
         if (expected.work) {
-          expect(outcome.work, `${route.key}: ${route.workLabel} must run for ${actor}`).toBeGreaterThan(0);
+          expect(
+            outcome.work,
+            `${route.key}: ${route.workLabel} must run for ${actor}`,
+          ).toBeGreaterThan(0);
         } else {
-          expect(outcome.work, `${route.key}: ${route.workLabel} must not run for ${actor}`).toBe(0);
+          expect(outcome.work, `${route.key}: ${route.workLabel} must not run for ${actor}`).toBe(
+            0,
+          );
         }
       });
     }
@@ -524,7 +538,9 @@ describe('anonymous is stopped by the proxy as well as the handler', () => {
     const expectedFromProxy = route.path === '/api/auth/forgot-password' ? null : 401;
     it(`${route.key} — no cookie${expectedFromProxy ? ' → 401 at the gate' : ' is allowlisted'}`, async () => {
       const path = route.path.replace('[id]', 'x-1');
-      const response = await proxy(new NextRequest(`http://localhost:3000${path}`, { method: route.method }));
+      const response = await proxy(
+        new NextRequest(`http://localhost:3000${path}`, { method: route.method }),
+      );
       if (expectedFromProxy === null) {
         expect(response.status).not.toBe(401);
       } else {
@@ -578,10 +594,7 @@ describe('the matrix would catch a gate whose result is dropped', () => {
       error: null,
       work: droppedWork.mock.calls.length,
     };
-    expect(problems(droppedOutcome)).toEqual([
-      'status 200, expected 403',
-      'work ran 1 time(s)',
-    ]);
+    expect(problems(droppedOutcome)).toEqual(['status 200, expected 403', 'work ran 1 time(s)']);
   });
 });
 
