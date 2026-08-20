@@ -62,18 +62,25 @@ export function Th({
   );
 }
 
+/**
+ * Deliberately has no `onClick`: a bare `<tr onClick>` is invisible to the
+ * keyboard, and the one caller that used it (usage → by member) hid the page's
+ * whole drill-down behind a mouse. Row-level actions go in a `<button>` inside
+ * a `<Td>`.
+ */
 export function Tr({
   children,
   className,
-  onClick,
+  id,
 }: {
   children: ReactNode;
   className?: string;
-  onClick?: () => void;
+  /** Target for an `aria-controls` on the row that expands this one. */
+  id?: string;
 }) {
   return (
     <tr
-      onClick={onClick}
+      id={id}
       className={cn(
         'border-b border-[var(--studio-line)] transition-colors duration-150 last:border-b-0 hover:bg-[var(--studio-surface-hover)]',
         className,

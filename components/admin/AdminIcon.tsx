@@ -3,7 +3,6 @@ import {
   Archive,
   BarChart3,
   Building2,
-  Cpu,
   Gauge,
   LayoutDashboard,
   LayoutTemplate,

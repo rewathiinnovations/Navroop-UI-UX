@@ -27,8 +27,11 @@ function contrastRatio(a: string, b: string): number {
 }
 
 function lightStudioTokens(css: string): Record<string, string> {
-  const block = css.match(/\.studio-shell\s*\{([^}]+)\}/);
-  if (!block) throw new Error('missing .studio-shell tokens');
+  // The tokens are declared on a selector LIST (`.studio-shell, .studio-portal`) so portaled
+  // modals inherit them, and a later `.studio-shell` rule only consumes them. Match the rule
+  // that actually declares them, and take the first (light) one — `.dark` overrides follow.
+  const block = css.match(/\.studio-shell[^{]*\{([^}]*--studio-bg[^}]*)\}/);
+  if (!block) throw new Error('missing .studio-shell token declarations');
   const tokens: Record<string, string> = {};
   for (const match of block[1].matchAll(/--([a-z-]+):\s*(#[0-9a-fA-F]{6})/g)) {
     tokens[match[1]] = match[2].toLowerCase();
@@ -42,11 +45,17 @@ describe('studio light accent contrast (auth / home)', () => {
 
   it('white CTA text on accent is at least 4.5:1', () => {
     const ratio = contrastRatio(tokens['studio-cta-fg'], tokens['studio-accent']);
-    expect(ratio, `${tokens['studio-cta-fg']} on ${tokens['studio-accent']} is ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(AA);
+    expect(
+      ratio,
+      `${tokens['studio-cta-fg']} on ${tokens['studio-accent']} is ${ratio.toFixed(2)}:1`,
+    ).toBeGreaterThanOrEqual(AA);
   });
 
   it('accent text on studio background is at least 4.5:1', () => {
     const ratio = contrastRatio(tokens['studio-accent'], tokens['studio-bg']);
-    expect(ratio, `${tokens['studio-accent']} on ${tokens['studio-bg']} is ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(AA);
+    expect(
+      ratio,
+      `${tokens['studio-accent']} on ${tokens['studio-bg']} is ${ratio.toFixed(2)}:1`,
+    ).toBeGreaterThanOrEqual(AA);
   });
 });

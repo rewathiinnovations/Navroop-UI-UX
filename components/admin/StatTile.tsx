@@ -1,4 +1,5 @@
 import { ReactNode } from 'react';
+import Link from 'next/link';
 import { cn } from '@/utils/cn';
 
 /**
@@ -22,17 +23,16 @@ export default function StatTile({
   href?: string;
   tone?: 'default' | 'danger' | 'warning';
 }) {
-  const Tag = href ? 'a' : 'div';
-  return (
-    <Tag
-      {...(href ? { href } : {})}
-      className={cn(
-        'relative flex items-start gap-12 overflow-hidden rounded-14 border border-[var(--studio-line)] bg-[var(--studio-surface)] p-16',
-        'shadow-[0_8px_30px_rgba(24,24,27,0.06)] dark:shadow-[0_8px_30px_rgba(0,0,0,0.28)]',
-        href &&
-          'transition-[border-color,background-color,transform] duration-200 hover:-translate-y-1 hover:border-[var(--studio-line-strong)] hover:bg-[var(--studio-surface-hover)]',
-      )}
-    >
+  const className = cn(
+    'relative flex items-start gap-12 overflow-hidden rounded-14 border border-[var(--studio-line)] bg-[var(--studio-surface)] p-16',
+    'shadow-[0_8px_30px_rgba(24,24,27,0.06)] dark:shadow-[0_8px_30px_rgba(0,0,0,0.28)]',
+    href &&
+      'transition-[border-color,background-color,transform] duration-200 hover:-translate-y-1 hover:border-[var(--studio-line-strong)] hover:bg-[var(--studio-surface-hover)]',
+    href &&
+      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--studio-bg)]',
+  );
+  const body = (
+    <>
       {tone !== 'default' && (
         <span
           className={cn(
@@ -61,6 +61,17 @@ export default function StatTile({
         <p className="mt-2 text-[12px] text-[var(--studio-muted)]">{label}</p>
         {hint && <p className="mt-1 text-[11px] text-[var(--studio-faint)]">{hint}</p>}
       </div>
-    </Tag>
+    </>
+  );
+
+  // Every tile href is an internal admin route, so this has to be `next/link` —
+  // a raw `<a>` made each KPI a full document navigation while every other link
+  // in the section routed on the client.
+  return href ? (
+    <Link href={href} className={className}>
+      {body}
+    </Link>
+  ) : (
+    <div className={className}>{body}</div>
   );
 }

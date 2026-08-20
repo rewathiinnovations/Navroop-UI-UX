@@ -16,7 +16,11 @@ const TONE = {
   },
   warning: {
     dot: 'bg-amber-500',
-    classes: 'border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400',
+    // Light theme is the product default, and `bg-amber-500/10` over the white
+    // `--studio-surface` composites to #fef5e7. On that, amber-600 (#d97706) is
+    // 2.95:1 — under the 4.5:1 AA floor for 11px text. amber-800 (#92400e) is
+    // 6.57:1. Dark keeps amber-400 (9.10:1 on the dark composite).
+    classes: 'border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-400',
   },
   danger: {
     dot: 'bg-[var(--studio-danger)]',

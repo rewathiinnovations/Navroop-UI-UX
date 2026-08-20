@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type ReactNode } from 'react';
+import { useId, useState, type ReactNode } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { cn } from '@/utils/cn';
 
@@ -27,7 +27,15 @@ export default function Accordion({
   badge?: ReactNode;
 }) {
   const [open, setOpen] = useState(defaultOpen);
-  const id = `accordion-${title.replace(/\s+/g, '-').toLowerCase()}`;
+  // Derived from useId so N instances with the same `title` do not collide —
+  // `TemplatesAdmin` renders one Accordion per template row.
+  const id = `accordion-${useId()}`;
+  // `grid-rows-[0fr]` + `overflow-hidden` only clipped the panel: its children
+  // stayed in the tab order and in the accessibility tree while invisible, so
+  // an admin tabbing through /admin/templates landed in every collapsed prompt
+  // textarea on the page. `invisible` takes them out of both, `inert` also
+  // blocks pointer and find-in-page, and neither breaks the grid-rows
+  // transition the way `display: none` would.
 
   return (
     <div className="overflow-hidden rounded-14 border border-[var(--studio-line)] bg-[var(--studio-surface)] shadow-[0_8px_30px_rgba(24,24,27,0.06)] dark:shadow-[0_8px_30px_rgba(0,0,0,0.28)]">
@@ -36,7 +44,7 @@ export default function Accordion({
         aria-expanded={open}
         aria-controls={id}
         onClick={() => setOpen((prev) => !prev)}
-        className="flex w-full items-center gap-10 px-20 py-16 text-left transition-colors duration-150 hover:bg-[var(--studio-surface-hover)]"
+        className="flex w-full items-center gap-10 px-20 py-16 text-left transition-colors duration-150 hover:bg-[var(--studio-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--studio-ring)]"
       >
         {icon && (
           <span className="inline-flex size-28 shrink-0 items-center justify-center rounded-8 bg-[var(--studio-bg)] text-[var(--studio-muted)]">
@@ -64,9 +72,10 @@ export default function Accordion({
       </button>
       <div
         id={id}
+        inert={!open}
         className={cn(
           'grid transition-[grid-template-rows] duration-200 ease-out',
-          open ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]',
+          open ? 'grid-rows-[1fr] visible' : 'grid-rows-[0fr] invisible',
         )}
       >
         <div className="overflow-hidden">

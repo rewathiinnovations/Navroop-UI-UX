@@ -37,10 +37,35 @@ describe('admin UI conventions', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('the operator-facing restore command uses pnpm exec, never npx', () => {
+  /**
+   * F-644. Three instructions existed for one command: `/admin/backups` printed `pnpm exec`,
+   * `scripts/restore-db.ts` and AGENTS.md said `npx`, and this assertion pinned the `pnpm exec`
+   * form — the one the lessons file, both git hooks and `docs/release.md` forbid, because
+   * pnpm's dependency-status check can offer to purge `node_modules` before running anything.
+   * A disaster-recovery restore is the worst moment to lose the dependency tree, and `npx` has
+   * separately corrupted `pnpm-workspace.yaml` here. The hooks' direct-binary form is the
+   * only one that is safe, so it is the only one an operator is shown.
+   */
+  it('the operator-facing restore command invokes the binary directly, never pnpm exec or npx', () => {
     const command = restoreCommand('backups/db/db-2026-01-01-abc123.dump');
-    expect(command).toContain('pnpm exec tsx scripts/restore-db.ts');
+    expect(command).toBe(
+      'node ./node_modules/tsx/dist/cli.mjs scripts/restore-db.ts --key backups/db/db-2026-01-01-abc123.dump',
+    );
+    expect(command).not.toContain('pnpm exec');
     expect(command).not.toContain('npx');
+  });
+
+  it('no operator-facing string in lib/backup or the restore script offers a forbidden runner', () => {
+    const sources = [
+      'lib/backup/copy.ts',
+      'lib/backup/admin.ts',
+      'scripts/restore-db.ts',
+      'scripts/rollback.ts',
+    ];
+    const offenders = sources.filter((file) =>
+      /(pnpm exec|npx)\s+tsx\s+scripts\//.test(readFileSync(file, 'utf8')),
+    );
+    expect(offenders).toEqual([]);
   });
 
   it('a failed attempt matching the already-shown job error compresses instead of repeating', () => {
