@@ -1,0 +1,44 @@
+# depcheck's declared ignore list for verify's `depcheck` step.
+#
+# F-645: the step ran with no config and `fatal: false`, so it printed the same ten
+# entries on every run and could block nothing — "a report nobody has to act on is the
+# same shape as a test that cannot fail". With these declared, depcheck exits 0 on a
+# clean tree, so the step is fatal and a *newly* unused dependency turns the gate red
+# instead of scrolling past.
+#
+# Two kinds of entry, kept apart on purpose:
+#
+#   1. Used, but not through an import depcheck can see. Correct and permanent.
+#   2. Genuinely unused, pending removal. Dropping a dependency edits package.json and
+#      therefore pnpm-lock.yaml, which needs a `pnpm install` this checkout cannot run
+#      while two dev servers hold node_modules. Listed so the step is honest today;
+#      delete the entry and the dependency in the same change.
+#
+# knip's own unused-dependency report is wider (it sees the components/shared/*
+# marketing surface as unreachable, F-448) and stays non-fatal for that reason.
+ignores:
+  # (1) postcss.config.mjs names all three as plugins.
+  - autoprefixer
+  - postcss-import
+  - postcss-nesting
+  # (1) Run as vendored binaries by lib/verify/orchestrator.ts, never imported.
+  - depcheck
+  - knip
+  # (1) Selected by vitest.config.ts via `coverage.provider: 'v8'`.
+  - '@vitest/coverage-v8'
+  # (1) Invoked by lint-staged in package.json.
+  - prettier
+  # (2) Unused, pending removal with a lockfile regeneration.
+  - '@eslint/eslintrc'
+  - msw
+  - semver
+
+# Skill packs ship example TypeScript that imports illustrative module names ('~').
+# They are documentation, not part of any build, and depcheck otherwise reports them
+# as a missing dependency and exits non-zero on an otherwise clean tree.
+ignorePatterns:
+  - .cursor
+  - .claude
+  - .worktrees
+  - coverage
+  - generated

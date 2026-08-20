@@ -9,7 +9,6 @@ export interface ConversationMessage {
     editedFiles?: string[]; // Files edited in this interaction
     addedPackages?: string[]; // Packages added in this interaction
     editType?: string; // Type of edit performed
-    sandboxId?: string; // Sandbox ID at time of message
   };
 }
 

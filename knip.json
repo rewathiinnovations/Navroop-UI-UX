@@ -1,4 +1,27 @@
 {
-  "ignore": ["generated/**", "e2e/**", "tests/**", "scripts/**", "coverage/**"],
-  "ignoreDependencies": ["@axe-core/playwright", "fast-check", "msw", "husky", "lint-staged", "prettier"]
+  "ignore": ["generated/**", "coverage/**"],
+  "entry": [
+    "tests/*.test.ts",
+    "tests/setup/vitest.setup.ts",
+    "tests/setup/repo-write-guard.global.ts",
+    "e2e/auth.setup.ts",
+    "scripts/backfill-quality-signals.ts",
+    "scripts/backup-db.ts",
+    "scripts/check-destructive-migrations.ts",
+    "scripts/check-public-routes.ts",
+    "scripts/pre-migrate.ts",
+    "scripts/reconcile-jobs.ts",
+    "scripts/restore-db.ts",
+    "scripts/secret-scan.ts",
+    "scripts/seed-e2e-account.ts",
+    "scripts/verify-storage.ts"
+  ],
+  "ignoreDependencies": [
+    "@axe-core/playwright",
+    "fast-check",
+    "msw",
+    "husky",
+    "lint-staged",
+    "prettier"
+  ]
 }
