@@ -37,7 +37,7 @@ import type { PresenceViewer } from './useProjectPresence';
 import { VersionPills, WorkspaceViewSwitch } from './WorkspaceViewControls';
 
 const ICON_BTN =
-  'inline-flex size-32 items-center justify-center rounded-full text-[var(--studio-muted)] transition-colors hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)] disabled:cursor-not-allowed disabled:opacity-40';
+  'studio-icon-hit inline-flex items-center justify-center rounded-full text-[var(--studio-muted)] transition-colors hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)] disabled:cursor-not-allowed disabled:opacity-40';
 
 function BarDivider() {
   return <span className="mx-2 h-16 w-px shrink-0 bg-[var(--studio-line)]" aria-hidden />;
@@ -48,7 +48,7 @@ function NavroopMark() {
     <Link
       href="/dashboard"
       aria-label="Navroop dashboard"
-      className="inline-flex size-32 shrink-0 items-center justify-center rounded-10 transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
+      className="studio-icon-hit inline-flex shrink-0 items-center justify-center rounded-10 transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
     >
       <svg viewBox="0 0 32 32" className="size-22" fill="none" aria-hidden>
         <defs>
@@ -61,8 +61,8 @@ function NavroopMark() {
             gradientUnits="userSpaceOnUse"
           >
             <stop stopColor="#FF8A3D" />
-            <stop offset="0.48" stopColor="#FF5C7A" />
-            <stop offset="1" stopColor="#C084FC" />
+            <stop offset="0.55" stopColor="#FA4500" />
+            <stop offset="1" stopColor="#D63B00" />
           </linearGradient>
         </defs>
         <path
@@ -156,6 +156,7 @@ export default function WorkspaceTopBar({
   const [exportHint, setExportHint] = useState<string | null>(null);
   const moreRef = useRef<HTMLDivElement>(null);
   const [compactPreview, setCompactPreview] = useState(false);
+  const [compactActions, setCompactActions] = useState(false);
   /**
    * The pills are the widest thing in the middle group, and the header runs out of
    * room before `compactPreview` (1180) admits it: with five pills the bar overflows
@@ -226,6 +227,7 @@ export default function WorkspaceTopBar({
     if (!node) return;
     const observer = new ResizeObserver(([entry]) => {
       setCompactPreview(entry.contentRect.width < 1180);
+      setCompactActions(entry.contentRect.width < 900);
       setRoomForVersions(entry.contentRect.width >= 1360);
     });
     observer.observe(node);
@@ -253,7 +255,7 @@ export default function WorkspaceTopBar({
     <>
       <header
         ref={headerRef}
-        className="relative z-30 flex h-56 shrink-0 items-center gap-8 overflow-visible border-b border-[var(--studio-line)] bg-[var(--studio-header-bg)] px-10 backdrop-blur-xl"
+        className="relative z-30 flex min-h-56 shrink-0 flex-wrap items-center gap-8 overflow-visible border-b border-[var(--studio-line)] bg-[var(--studio-header-bg)] px-10 py-4 backdrop-blur-xl"
       >
         <div className="flex min-w-0 flex-1 items-center gap-6">
           <NavroopMark />
@@ -381,7 +383,7 @@ export default function WorkspaceTopBar({
            * `onToggleLiveMode`, which the switch was gated on, so it could not
            * render either. Do not re-add it — there is no live preview to reach.
            */}
-          {view === 'preview' && onPreviewDeviceChange && onTogglePreviewRotate ? (
+          {view === 'preview' && onPreviewDeviceChange && onTogglePreviewRotate && !compactActions ? (
             <PreviewDeviceToolbar
               device={previewDevice}
               rotated={previewRotated}
@@ -427,7 +429,7 @@ export default function WorkspaceTopBar({
                 aria-haspopup="menu"
                 aria-label="Open preview options"
                 onClick={() => setPreviewOpen((value) => !value)}
-                className={cn(ICON_BTN, 'size-24')}
+                className={ICON_BTN}
               >
                 <ChevronDown className="size-12" />
               </button>
@@ -632,18 +634,36 @@ export default function WorkspaceTopBar({
                       {exportHint}
                     </p>
                   ) : null}
+                  {compactActions ? (
+                    <>
+                      <div className="my-4 h-px bg-[var(--studio-line)]" />
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setMoreOpen(false);
+                          onShare?.();
+                        }}
+                        className="flex w-full rounded-8 px-10 py-8 text-left text-[12px] text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)]"
+                      >
+                        Share
+                      </button>
+                    </>
+                  ) : null}
                 </div>
               ) : null}
             </div>
           ) : null}
           <BarDivider />
-          <button
-            type="button"
-            onClick={onShare}
-            className="inline-flex h-32 items-center rounded-full border border-[var(--studio-line-strong)] px-12 text-[13px] font-medium text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)]"
-          >
-            Share
-          </button>
+          {!compactActions ? (
+            <button
+              type="button"
+              onClick={onShare}
+              className="inline-flex h-44 items-center rounded-full border border-[var(--studio-line-strong)] px-14 text-[13px] font-medium text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
+            >
+              Share
+            </button>
+          ) : null}
           <PublishPanel projectId={projectId} />
         </div>
       </header>

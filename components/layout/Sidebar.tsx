@@ -45,8 +45,8 @@ function NavroopMark() {
             gradientUnits="userSpaceOnUse"
           >
             <stop stopColor="#FF8A3D" />
-            <stop offset="0.48" stopColor="#FF5C7A" />
-            <stop offset="1" stopColor="#C084FC" />
+            <stop offset="0.55" stopColor="#FA4500" />
+            <stop offset="1" stopColor="#D63B00" />
           </linearGradient>
         </defs>
         <path
@@ -78,6 +78,7 @@ function SidebarLink({
       title={collapsed ? String(children) : undefined}
       className={cn(
         'flex min-h-[44px] items-center gap-10 rounded-10 text-[13px] transition-colors duration-200',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]',
         collapsed ? 'justify-center px-0' : 'px-10',
         active
           ? 'bg-[var(--studio-surface-hover)] font-medium text-[var(--studio-fg)]'
@@ -105,6 +106,17 @@ export default function Sidebar({
   const searchParams = useSearchParams();
   const { openPalette } = useCommandPalette();
   const [collapsed, setCollapsed] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 767px)');
+    const apply = () => setIsMobile(media.matches);
+    apply();
+    media.addEventListener('change', apply);
+    return () => media.removeEventListener('change', apply);
+  }, []);
+
+  const railCollapsed = collapsed && !isMobile;
 
   // Read the saved choice after mount only, so the server-rendered (always
   // expanded) markup matches the client's first render and React never sees
@@ -139,24 +151,24 @@ export default function Sidebar({
     <aside
       className={cn(
         'relative z-20 flex h-full min-h-0 shrink-0 flex-col border-r border-[var(--studio-line)] bg-[var(--studio-header-bg)] transition-[width] duration-200',
-        collapsed ? 'w-[68px]' : 'w-[272px]',
+        railCollapsed ? 'w-[68px]' : 'w-[272px]',
       )}
     >
       <div
         className={cn(
           'flex shrink-0 items-center pt-12',
-          collapsed ? 'flex-col gap-8 px-12' : 'justify-between px-12',
+          railCollapsed ? 'flex-col gap-8 px-12' : 'justify-between px-12',
         )}
       >
         <NavroopMark />
         <button
           type="button"
-          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          aria-label={railCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          title={railCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           onClick={toggleCollapsed}
-          className="inline-flex size-[44px] shrink-0 items-center justify-center rounded-10 text-[var(--studio-muted)] transition-colors duration-200 hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
+          className="hidden size-[44px] shrink-0 items-center justify-center rounded-10 text-[var(--studio-muted)] transition-colors duration-200 hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)] md:inline-flex"
         >
-          {collapsed ? (
+          {railCollapsed ? (
             <PanelLeftOpen className="size-16" aria-hidden />
           ) : (
             <PanelLeftClose className="size-16" aria-hidden />
@@ -164,13 +176,13 @@ export default function Sidebar({
         </button>
       </div>
 
-      {!collapsed && (
+      {!railCollapsed && (
         <div className="mt-4 shrink-0">
           <WorkspaceDropdown teamName={teamName} memberCount={memberCount} />
         </div>
       )}
 
-      {!collapsed && (
+      {!railCollapsed && (
         <div className="mt-8 shrink-0 px-10">
           <label className="sr-only" htmlFor="sidebar-search">
             Search projects
@@ -179,14 +191,14 @@ export default function Sidebar({
             type="button"
             id="sidebar-search"
             onClick={openPalette}
-            className="flex h-40 w-full items-center gap-8 rounded-10 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-10 text-left text-[13px] text-[var(--studio-faint)] hover:border-[var(--studio-line-strong)]"
+            className="flex h-44 w-full items-center gap-8 rounded-10 border border-[var(--studio-line)] bg-[var(--studio-surface)] px-10 text-left text-[13px] text-[var(--studio-faint)] hover:border-[var(--studio-line-strong)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
           >
             <Search className="size-14 shrink-0" aria-hidden />
             Search projects
           </button>
         </div>
       )}
-      {collapsed && (
+      {railCollapsed && (
         <div className="mt-8 shrink-0 px-12">
           <button
             type="button"
@@ -202,14 +214,14 @@ export default function Sidebar({
 
       <div className="studio-scroll mt-8 min-h-0 flex-1 pb-12">
         <nav
-          className={cn('flex flex-col gap-2', collapsed ? 'px-12' : 'px-10')}
+          className={cn('flex flex-col gap-2', railCollapsed ? 'px-12' : 'px-10')}
           aria-label="Workspace"
         >
           <SidebarLink
             href="/dashboard"
             icon={<LayoutDashboard className="size-16" />}
             active={onDashboard}
-            collapsed={collapsed}
+            collapsed={railCollapsed}
           >
             Dashboard
           </SidebarLink>
@@ -217,7 +229,7 @@ export default function Sidebar({
             href="/templates"
             icon={<LayoutTemplate className="size-16" />}
             active={pathname === '/templates'}
-            collapsed={collapsed}
+            collapsed={railCollapsed}
           >
             Templates
           </SidebarLink>
@@ -225,7 +237,7 @@ export default function Sidebar({
             href="/connectors"
             icon={<Plug className="size-16" />}
             active={pathname === '/connectors'}
-            collapsed={collapsed}
+            collapsed={railCollapsed}
           >
             Connectors
           </SidebarLink>
@@ -233,7 +245,7 @@ export default function Sidebar({
             href="/deployments"
             icon={<Globe className="size-16" />}
             active={pathname === '/deployments'}
-            collapsed={collapsed}
+            collapsed={railCollapsed}
           >
             Deployments
           </SidebarLink>
@@ -243,14 +255,14 @@ export default function Sidebar({
               href="/admin"
               icon={<Shield className="size-16" />}
               active={pathname === '/admin' || pathname.startsWith('/admin/')}
-              collapsed={collapsed}
+              collapsed={railCollapsed}
             >
               Admin
             </SidebarLink>
           )}
         </nav>
 
-        {!collapsed && (
+        {!railCollapsed && (
           <div className="mt-16 px-10">
             <p className="mb-4 px-10 text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--studio-faint)]">
               Projects
@@ -288,7 +300,7 @@ export default function Sidebar({
           </div>
         )}
 
-        {!collapsed && (
+        {!railCollapsed && (
           <div className="mt-16 px-10">
             <p className="mb-4 px-10 text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--studio-faint)]">
               Recents
@@ -301,7 +313,7 @@ export default function Sidebar({
                 <Link
                   key={project.id}
                   href={`/project/${project.id}`}
-                  className="rounded-10 px-10 py-10 text-[13px] text-[var(--studio-muted)] transition-colors duration-200 hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)]"
+                  className="rounded-10 px-10 py-10 text-[13px] text-[var(--studio-muted)] transition-colors duration-200 hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
                 >
                   <span className="block truncate">{project.name}</span>
                   {project.updatedLabel && (
@@ -317,8 +329,8 @@ export default function Sidebar({
       </div>
 
       <div className="shrink-0 border-t border-[var(--studio-line)] p-10">
-        {!collapsed && <CreditMeter />}
-        {collapsed ? (
+        {!railCollapsed && <CreditMeter />}
+        {railCollapsed ? (
           <button
             type="button"
             aria-label="Expand sidebar to open account menu"

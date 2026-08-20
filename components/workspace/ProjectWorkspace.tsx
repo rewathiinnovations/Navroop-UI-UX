@@ -318,7 +318,7 @@ export default function ProjectWorkspace({
   }, [onViewChange]);
 
   return (
-    <div className="studio-shell relative flex h-dvh flex-col overflow-hidden">
+    <div className="studio-shell relative flex h-full min-h-0 flex-col overflow-hidden">
       <WorkspaceTopBar
         projectName={projectName}
         saveState={saveState}
@@ -368,7 +368,9 @@ export default function ProjectWorkspace({
           data-tour="chat"
           className={cn(
             'flex h-full shrink-0 flex-col border-r border-[var(--studio-line)] bg-[var(--studio-surface)] transition-[width,opacity] duration-200',
-            chatCollapsed ? 'w-0 overflow-hidden opacity-0' : 'w-[380px] opacity-100',
+            chatCollapsed
+              ? 'w-0 overflow-hidden opacity-0'
+              : 'w-[380px] max-lg:w-full opacity-100',
           )}
           aria-hidden={chatCollapsed}
         >
@@ -450,6 +452,7 @@ export default function ProjectWorkspace({
           </PanelErrorBoundary>
         </section>
 
+        <div className={cn('min-h-0 min-w-0 flex-1', !chatCollapsed && 'max-lg:hidden')}>
         <PanelErrorBoundary label="Preview">
           <PreviewPanel
             iframeRef={iframeRef}
@@ -542,6 +545,7 @@ export default function ProjectWorkspace({
             )}
           </PreviewPanel>
         </PanelErrorBoundary>
+        </div>
 
         <ProductTour />
         <VersionHistoryPanel

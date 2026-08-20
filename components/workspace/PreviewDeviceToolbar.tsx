@@ -33,7 +33,7 @@ export default function PreviewDeviceToolbar({
       <div
         role="radiogroup"
         aria-label="Preview device"
-        className="inline-flex h-32 items-center rounded-full border border-[var(--studio-line)] bg-[var(--studio-bg)] p-2"
+        className="inline-flex min-h-[44px] items-center rounded-full border border-[var(--studio-line)] bg-[var(--studio-bg)] p-2"
       >
         {PREVIEW_DEVICES.map((item) => {
           const Icon = DEVICE_ICONS[item.icon];
@@ -48,7 +48,7 @@ export default function PreviewDeviceToolbar({
                 aria-label={item.label}
                 onClick={() => onDeviceChange(item.key)}
                 className={cn(
-                  'inline-flex size-28 items-center justify-center rounded-full transition-colors',
+                  'studio-icon-hit inline-flex items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]',
                   selected
                     ? 'bg-[var(--studio-surface)] text-[var(--studio-fg)] shadow-sm'
                     : 'text-[var(--studio-muted)] hover:text-[var(--studio-fg)]',
@@ -75,7 +75,7 @@ export default function PreviewDeviceToolbar({
             aria-label="Rotate preview"
             aria-pressed={rotated}
             className={cn(
-              'inline-flex size-32 items-center justify-center rounded-full transition-colors',
+              'studio-icon-hit inline-flex items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]',
               rotated
                 ? 'bg-[var(--studio-surface)] text-[var(--studio-fg)] shadow-sm'
                 : 'text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)]',
