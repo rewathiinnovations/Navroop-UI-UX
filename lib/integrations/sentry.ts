@@ -1,7 +1,24 @@
 import { parseSentryDsn } from '@/lib/observability/dsn';
 import type { SentryProjectStats } from '@/lib/observability/types';
 
-export const SENTRY_OAUTH_SCOPES = ['project:read', 'project:write', 'org:read', 'event:admin'] as const;
+export const SENTRY_OAUTH_SCOPES = [
+  'project:read',
+  'project:write',
+  'org:read',
+  'event:admin',
+] as const;
+
+/**
+ * The fingerprint the verification event is sent with and the poll searches for.
+ *
+ * One constant because they were two literals that had drifted: the event carried tags and no
+ * fingerprint at all, while the poll queried `fingerprint:navroop-sentry-verify`. The round
+ * trip could therefore never succeed, and every Verify ended after sixty seconds of polling
+ * with "Event sent but not received. Likely causes: quota exhausted, rate limited, inbound
+ * filter, or wrong project" — an accusation against a correctly configured integration
+ * (F-226). Both ends read this name; they cannot drift again.
+ */
+export const SENTRY_VERIFY_FINGERPRINT = 'navroop-sentry-verify';
 
 export const SENTRY_COPY = {
   malformedDsn: 'The Sentry DSN is malformed. Check the URL, project id, and public key.',
@@ -15,7 +32,15 @@ export const SENTRY_COPY = {
     'Error tracking will stop after the next restart. You will not be notified of application errors.',
   missingProjectRead: 'Auth token is missing the project:read scope',
   refreshFailed: 'Sentry token refresh failed. Reconnect Sentry to restore quota monitoring.',
+  // A token with no refresh material and no recorded expiry. It may work; nothing here can
+  // say so, and that is the state the operator needs to see (F-237).
+  unrefreshable:
+    'The Sentry auth token cannot be refreshed and its expiry is unknown, so quota monitoring will stop without warning. Reconnect Sentry.',
   quotaSkipped: 'skipped: auth token missing',
+  // Sentry returned a token without saying what it can do. Stored as limited rather than
+  // accepted as fully scoped (F-236).
+  scopesUnconfirmed:
+    'Connected — limited. Sentry did not report this token\u2019s permissions, so quota monitoring may fail. Reconnect if issue or quota data does not appear.',
   coolifyRestartTooltip:
     'In Coolify, open the Navroop application and click Restart. Sentry picks up the new DSN only after that restart.',
   restartConfirm: 'Type restart to confirm. This interrupts the application.',
@@ -23,7 +48,8 @@ export const SENTRY_COPY = {
 
 export const SENTRY_FIELD_HINTS = {
   environment: 'Restart required — the environment name is read when Sentry starts',
-  tracesSampleRate: 'Restart required — sample rate changes apply after the application restarts. Higher rates use more quota.',
+  tracesSampleRate:
+    'Restart required — sample rate changes apply after the application restarts. Higher rates use more quota.',
   sessionReplay: 'Restart required — session replay is read when Sentry starts',
   performance: 'Restart required — performance monitoring is read when Sentry starts',
   ignoreList: 'Applies immediately — no restart required',
@@ -79,7 +105,11 @@ export function sentryRestartBanner(input: {
   };
 }
 
-export type SentryVerificationSend = () => Promise<{ ok: boolean; eventId?: string | null; error?: string }>;
+export type SentryVerificationSend = () => Promise<{
+  ok: boolean;
+  eventId?: string | null;
+  error?: string;
+}>;
 export type SentryVerificationPoll = () => Promise<{ id: string; lastSeen: string } | null>;
 
 export async function verifySentryRoundTrip(deps: {
@@ -123,8 +153,9 @@ export async function verifySentryRoundTrip(deps: {
 
   const stats = deps.getStats ? await deps.getStats().catch(() => null) : null;
   const quotaNamed =
-    stats?.dropped.some((row) => /quota|rate_limit|rate_limited/i.test(row.reason) && row.count > 0) ||
-    (stats?.quota.limit ? stats.quota.used / stats.quota.limit >= 1 : false);
+    stats?.dropped.some(
+      (row) => /quota|rate_limit|rate_limited/i.test(row.reason) && row.count > 0,
+    ) || (stats?.quota.limit ? stats.quota.used / stats.quota.limit >= 1 : false);
   const message = quotaNamed
     ? `${SENTRY_COPY.sentNotReceived} Quota is exhausted or events are being dropped.`
     : SENTRY_COPY.sentNotReceived;
@@ -144,7 +175,12 @@ export type ConnectSentryDeps = {
   authToken?: string;
   environment?: string;
   sendVerification: SentryVerificationSend;
-  inspectToken?: () => Promise<{ ok: boolean; missingScope?: string; orgSlug?: string; projectSlug?: string }>;
+  inspectToken?: () => Promise<{
+    ok: boolean;
+    missingScope?: string;
+    orgSlug?: string;
+    projectSlug?: string;
+  }>;
   persist?: (input: {
     dsn: string;
     projectId: string;

@@ -23,8 +23,14 @@ export async function GET(request: NextRequest) {
 
   const code = request.nextUrl.searchParams.get('code');
   const state = request.nextUrl.searchParams.get('state');
-  const csrf = await consumeGithubCsrf(state);
-  if (!csrf || csrf.userId !== user.id) return back('github=error&reason=state');
+  const consumed = await consumeGithubCsrf(state);
+  if (!consumed.ok || consumed.payload.userId !== user.id) {
+    // Per-flow state rows, so the reason distinguishes unknown / expired / already-used
+    // instead of one opaque `state` (F-242).
+    return back(
+      `github=error&reason=${consumed.ok ? 'state-other-user' : `state-${consumed.reason}`}`,
+    );
+  }
   if (!code) return back('github=error&reason=code');
 
   try {

@@ -1,14 +1,14 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { prisma } from '@/lib/db';
 import { DEFAULT_WORKSPACE_ID } from '@/lib/publish/constants';
 import { SENTRY_COPY, SENTRY_OAUTH_SCOPES, sentryOAuthRedirectUrl } from './sentry';
 import { persistSentryConnection } from './sentry-persist';
-import { getIntegration, upsertIntegration } from './store';
+import { getIntegration, setIntegrationLastError, upsertIntegration } from './store';
 import type { DecryptedIntegration } from './store';
-import { consumeRow } from './single-use';
+import { consumeOauthState, createOauthState } from './oauth-state';
 import { appPublicUrl } from '@/lib/settings/app-url';
+import { workspaceDisplayName } from '@/lib/settings/workspace-name';
 
-const CSRF_KEY = 'integration.sentry.oauth';
+const CSRF_PREFIX = 'integration.sentry.oauth';
 const TOKEN_URL = 'https://sentry.io/oauth/token/';
 const AUTHORIZE_URL = 'https://sentry.io/oauth/authorize/';
 const API = 'https://sentry.io/api/0';
@@ -33,34 +33,17 @@ export function createPkce() {
 
 export async function createSentryOauthState(userId: string) {
   const { verifier, challenge } = createPkce();
-  const state = randomBytes(24).toString('hex');
-  const payload: OauthPayload = {
-    state,
+  const payload = await createOauthState<OauthPayload>(CSRF_PREFIX, {
+    state: randomBytes(24).toString('hex'),
     verifier,
     userId,
     expiresAt: Date.now() + TTL_MS,
-  };
-  await prisma.appSetting.upsert({
-    where: { key: CSRF_KEY },
-    create: { key: CSRF_KEY, value: JSON.stringify(payload) },
-    update: { value: JSON.stringify(payload) },
   });
-  return { state, challenge, verifier };
+  return { state: payload.state, challenge, verifier };
 }
 
 export async function consumeSentryOauthState(state: string | null | undefined) {
-  if (!state) return null;
-  const row = await prisma.appSetting.findUnique({ where: { key: CSRF_KEY } });
-  if (!row) return null;
-  let payload: OauthPayload;
-  try {
-    payload = JSON.parse(row.value) as OauthPayload;
-  } catch {
-    return null;
-  }
-  if (payload.state !== state || payload.expiresAt < Date.now()) return null;
-  if (!(await consumeRow(CSRF_KEY, row.value))) return null;
-  return payload;
+  return consumeOauthState<OauthPayload>(CSRF_PREFIX, state);
 }
 
 export async function sentryAuthorizeUrl(input: {
@@ -160,15 +143,25 @@ export async function exchangeSentryCode(input: {
   const scopes = String(body.scope || '')
     .split(/[\s,]+/)
     .filter(Boolean);
-  for (const required of SENTRY_OAUTH_SCOPES) {
-    if (!scopes.includes(required) && scopes.length > 0) {
-      return { ok: false as const, error: `Auth token is missing the ${required} scope` };
+  // An empty list is "we could not tell", not "everything is present". The guard used to be
+  // `!scopes.includes(required) && scopes.length > 0`, so a response with no `scope` field
+  // skipped every check and the token was stored as fully scoped — after which quota,
+  // heartbeat and issue calls failed with a 403 that read as a Sentry outage (F-236). The
+  // caller stores an unverified connection as `limited` and says why.
+  if (scopes.length > 0) {
+    for (const required of SENTRY_OAUTH_SCOPES) {
+      if (!scopes.includes(required)) {
+        return { ok: false as const, error: `Auth token is missing the ${required} scope` };
+      }
     }
   }
   return {
     ok: true as const,
     accessToken: body.access_token,
     refreshToken: body.refresh_token,
+    scopesVerified: scopes.length > 0,
+    // Left undefined when Sentry does not say. `ensureSentryAccessToken` treats an unknown
+    // expiry as due for refresh rather than inventing one (F-237).
     expiresAt: body.expires_in
       ? new Date(Date.now() + body.expires_in * 1000).toISOString()
       : undefined,
@@ -210,17 +203,36 @@ export async function refreshSentryToken(input: {
   };
 }
 
+/**
+ * A usable Sentry access token, refreshing it when it is expiring or when we cannot say.
+ *
+ * An absent `tokenExpiresAt` used to make the comparison `NaN`, so the guard was false and
+ * the existing token was returned unconditionally — "we don't know when this expires"
+ * silently became "it does not expire", and the token was used until Sentry rejected it
+ * (F-237). Unknown now means due: a refresh is cheap and a 401 in the quota cron is not.
+ *
+ * When there is no refresh material the token is still returned, because it is the only one
+ * there is and it may well work — but as `unverified`, with the reason recorded on the row
+ * that `/admin/integrations` and `/admin/health` render. Returning it as plainly `ok` was
+ * how a connection nobody could vouch for looked healthy.
+ */
 export async function ensureSentryAccessToken(row: DecryptedIntegration) {
   const token = row.secrets.authToken?.trim();
   const expiresAt = row.secrets.tokenExpiresAt ? Date.parse(row.secrets.tokenExpiresAt) : NaN;
-  const expiringSoon = !Number.isNaN(expiresAt) && expiresAt - Date.now() < 5 * 60 * 1000;
-  if (token && !expiringSoon) return { ok: true as const, authToken: token };
+  const expiryKnown = !Number.isNaN(expiresAt);
+  const dueForRefresh = !expiryKnown || expiresAt - Date.now() < 5 * 60 * 1000;
+  if (token && !dueForRefresh) return { ok: true as const, authToken: token, unverified: false };
   const refreshToken = row.secrets.refreshToken?.trim();
   const clientId = row.config.oauthClientId?.trim();
   const clientSecret = row.secrets.clientSecret?.trim();
   if (!refreshToken || !clientId || !clientSecret) {
-    if (token) return { ok: true as const, authToken: token };
-    return { ok: false as const, error: SENTRY_COPY.refreshFailed };
+    if (!token) return { ok: false as const, error: SENTRY_COPY.refreshFailed };
+    // Recorded once. This runs on every quota and health check, and rewriting an unchanged
+    // warning on each one would be a database write per cron tick.
+    if (row.lastError !== SENTRY_COPY.unrefreshable) {
+      await setIntegrationLastError({ kind: 'SENTRY', message: SENTRY_COPY.unrefreshable });
+    }
+    return { ok: true as const, authToken: token, unverified: true };
   }
   const refreshed = await refreshSentryToken({ refreshToken, clientId, clientSecret });
   if (!refreshed.ok) {
@@ -234,15 +246,14 @@ export async function ensureSentryAccessToken(row: DecryptedIntegration) {
   await upsertIntegration({
     kind: 'SENTRY',
     status: row.status === 'ERROR' ? 'CONNECTED' : row.status,
-    secrets: {
-      ...row.secrets,
+    mergeSecrets: {
       authToken: refreshed.accessToken,
       refreshToken: refreshed.refreshToken,
       tokenExpiresAt: refreshed.expiresAt,
     },
     lastError: null,
   });
-  return { ok: true as const, authToken: refreshed.accessToken };
+  return { ok: true as const, authToken: refreshed.accessToken, unverified: false };
 }
 
 export async function listSentryOrgs(token: string) {
@@ -321,7 +332,7 @@ export async function finishSentryOauthSelect(input: {
   let projectSlug = input.projectSlug?.trim() || '';
   let projectId = row.config.projectId || '';
   if (input.createProject || !projectSlug) {
-    const workspaceName = process.env.NEXT_PUBLIC_WORKSPACE_NAME?.trim() || 'Navroop';
+    const workspaceName = await workspaceDisplayName();
     const created = await createSentryProject(token, input.orgSlug, workspaceName);
     if (!created.ok) return created;
     projectSlug = created.project.slug;
@@ -342,7 +353,9 @@ export async function finishSentryOauthSelect(input: {
     projectId: parsed.projectId,
     host: parsed.host,
     environment: process.env.NODE_ENV || 'production',
-    limited: false,
+    // Carried through, not asserted: a token whose scopes Sentry never reported stays
+    // `limited` all the way to the connected row (F-236).
+    limited: Boolean(row.config.limited),
     authToken: token,
     refreshToken: row.secrets.refreshToken,
     clientSecret: row.secrets.clientSecret,

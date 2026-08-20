@@ -3,6 +3,7 @@ import { requireAdmin } from '@/lib/auth';
 import { createGithubCsrf } from '@/lib/integrations/csrf';
 import { githubManifest, githubNewAppUrl } from '@/lib/integrations/github-manifest';
 import { appPublicUrl } from '@/lib/settings/app-url';
+import { workspaceDisplayName } from '@/lib/settings/workspace-name';
 
 function escapeAttr(value: string) {
   return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
@@ -14,7 +15,7 @@ export async function GET(request: NextRequest) {
 
   const org = request.nextUrl.searchParams.get('org')?.trim() || '';
   const csrf = await createGithubCsrf(org, user.id);
-  const workspaceName = process.env.NEXT_PUBLIC_WORKSPACE_NAME?.trim() || 'Navroop';
+  const workspaceName = await workspaceDisplayName();
   const manifest = githubManifest({
     workspaceName,
     appUrl: await appPublicUrl(),

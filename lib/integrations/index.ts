@@ -30,7 +30,12 @@ export {
   statusLabel,
 } from './messages';
 
-export { decryptSecretsBlob, encryptSecretsBlob } from './secrets';
-export { chooseCloudflareZone, cloudflarePermissionMessage } from './cloudflare';
+export { SECRETS_UNREADABLE_MESSAGE, encryptSecretsBlob, readSecretsBlob } from './secrets';
+export {
+  chooseCloudflareZone,
+  cloudflarePermissionMessage,
+  CLOUDFLARE_UNAUTHORIZED_CODE,
+  type CloudflareOperation,
+} from './cloudflare';
 export { githubManifest, githubNewAppUrl } from './github-manifest';
 export { hostForSlug } from '@/lib/publish/slug';

@@ -4,6 +4,7 @@ import { Bug, Cloud, Github, Server, X } from 'lucide-react';
 import AdminCard from '@/components/admin/AdminCard';
 import AdminPage from '@/components/admin/AdminPage';
 import StatusBanner from '@/components/admin/StatusBanner';
+import { ConfirmDialog } from '@/components/admin/ConfirmAction';
 import { fetchJson, notify, toMessage } from '@/lib/notify';
 import StatusPill, { type StatusTone } from '@/components/admin/StatusPill';
 import { FormEvent, useMemo, useState, type ReactNode } from 'react';
@@ -38,6 +39,7 @@ type PublicIntegration = {
   zoneName: string | null;
   appSlug: string | null;
   orgSlug?: string | null;
+  repositorySelection?: 'all' | 'selected' | null;
   projectSlug?: string | null;
   projectId?: string | null;
   limited?: boolean;
@@ -88,7 +90,11 @@ export default function IntegrationsAdmin({
   const [cfToken, setCfToken] = useState('');
   const [zones, setZones] = useState<Zone[] | null>(null);
   const [pickedZone, setPickedZone] = useState('');
-  const [coolifyUrl, setCoolifyUrl] = useState('https://coolify.navroop.app');
+  // Empty like every other connector field. This used to default to one
+  // installation's production Coolify host, which shipped that hostname in the
+  // browser bundle of every deployment and pre-filled the wrong value for
+  // everyone else.
+  const [coolifyUrl, setCoolifyUrl] = useState('');
   const [coolifyToken, setCoolifyToken] = useState('');
   const [servers, setServers] = useState<CoolifyServer[] | null>(null);
   const [projects, setProjects] = useState<CoolifyProject[]>([]);
@@ -127,7 +133,6 @@ export default function IntegrationsAdmin({
   const [sentryWindow, setSentryWindow] = useState(
     String(initial.integrations.find((row) => row.kind === 'SENTRY')?.fingerprintWindowSec ?? 300),
   );
-  const [restartConfirm, setRestartConfirm] = useState('');
   const [restartOpen, setRestartOpen] = useState(false);
   const [sentryOrgs, setSentryOrgs] = useState<Array<{ slug: string; name: string }>>([]);
   const [sentryProjects, setSentryProjects] = useState<
@@ -305,25 +310,25 @@ export default function IntegrationsAdmin({
     }
   };
 
-  const restartApp = async () => {
+  // `ConfirmDialog` hands over the phrase the admin typed; the route re-checks
+  // it. Throwing keeps the dialog open with the reason printed inside it.
+  const restartApp = async (confirmedPhrase: string) => {
     setBusy('sentry-restart');
     try {
       const response = await fetch('/api/admin/integrations/sentry/restart', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ confirm: restartConfirm }),
+        body: JSON.stringify({ confirm: confirmedPhrase }),
       });
       const data = await response.json();
-      if (!response.ok) {
-        notify.error(data.error || 'Could not restart the application', { key: 'app-restart' });
-        return;
-      }
-      setRestartOpen(false);
-      notify.success('Restart requested — the application is coming back up.', {
-        key: 'app-restart',
-      });
-    } catch (cause) {
-      notify.error(cause, { fallback: 'Could not restart the application', key: 'app-restart' });
+      if (!response.ok) throw new Error(data.error || 'Could not restart the application');
+      // The route only accepted the request; whether Coolify actually restarted the
+      // container is not knowable here. "coming back up" asserted an outcome this
+      // 2xx does not carry.
+      notify.success(
+        'Restart requested. The application will be unavailable for a moment — reload this page in about a minute.',
+        { key: 'app-restart' },
+      );
     } finally {
       setBusy(null);
     }
@@ -660,6 +665,11 @@ export default function IntegrationsAdmin({
               <p className="text-[12px] text-[var(--studio-faint)]">
                 The organization you want to deploy to
               </p>
+              <p className="text-[12px] text-[var(--studio-muted)]">
+                On GitHub&apos;s install screen, choose <strong>Only select repositories</strong>.
+                This App asks for Contents and Administration write, so an installation on all
+                repositories can create, force-push to and delete any repository in the account.
+              </p>
               <StudioButton type="submit">Connect GitHub</StudioButton>
             </form>
           )}
@@ -673,6 +683,14 @@ export default function IntegrationsAdmin({
               Open GitHub App
             </a>
           )}
+          {byKind.GITHUB_DEPLOY?.status === 'CONNECTED' &&
+            byKind.GITHUB_DEPLOY.repositorySelection === 'all' && (
+              <p className="mt-10 text-[13px] text-[var(--studio-warning,#a16207)]">
+                This installation covers <strong>all repositories</strong> in{' '}
+                {byKind.GITHUB_DEPLOY.org ?? 'the account'}. Narrow it to selected repositories on
+                GitHub to bound what publishing can reach.
+              </p>
+            )}
         </Card>
 
         <Card
@@ -766,6 +784,7 @@ export default function IntegrationsAdmin({
                 label="Coolify URL"
                 value={coolifyUrl}
                 onChange={(event) => setCoolifyUrl(event.target.value)}
+                placeholder="https://coolify.example.com"
                 required
               />
               <StudioField
@@ -1094,94 +1113,37 @@ export default function IntegrationsAdmin({
         </Card>
       </div>
 
-      {restartOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-20">
-          <button
-            type="button"
-            aria-label="Cancel"
-            className="absolute inset-0 bg-[var(--studio-fg)]/20"
-            onClick={() => setRestartOpen(false)}
-          />
-          <div
-            role="dialog"
-            aria-modal="true"
-            className="relative z-10 w-full max-w-[420px] rounded-16 border border-[var(--studio-line)] bg-[var(--studio-surface)] p-24 shadow-lg"
-          >
-            <p className="text-[16px] font-medium text-[var(--studio-fg)]">
-              Restart the application?
-            </p>
-            <p className="mt-8 text-[14px] leading-6 text-[var(--studio-muted)]">
-              Type <strong className="text-[var(--studio-fg)]">restart</strong> to confirm. This
-              interrupts the application.
-            </p>
-            <input
-              className="mt-12 h-40 w-full rounded-10 border border-[var(--studio-line-strong)] bg-[var(--studio-bg)] px-12 text-[14px] text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
-              value={restartConfirm}
-              onChange={(event) => setRestartConfirm(event.target.value)}
-            />
-            <div className="mt-20 flex justify-end gap-8">
-              <StudioButton type="button" variant="ghost" onClick={() => setRestartOpen(false)}>
-                Cancel
-              </StudioButton>
-              <StudioButton
-                type="button"
-                variant="danger"
-                disabled={busy === 'sentry-restart' || restartConfirm !== 'restart'}
-                onClick={() => void restartApp()}
-              >
-                {busy === 'sentry-restart' ? 'Restarting…' : 'Restart application'}
-              </StudioButton>
-            </div>
-          </div>
-        </div>
-      )}
-      {disconnectKind && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-20">
-          <button
-            type="button"
-            aria-label="Cancel"
-            className="absolute inset-0 bg-[var(--studio-fg)]/20"
-            onClick={() => setDisconnectKind(null)}
-          />
-          <div
-            role="dialog"
-            aria-modal="true"
-            className="relative z-10 w-full max-w-[420px] rounded-16 border border-[var(--studio-line)] bg-[var(--studio-surface)] p-24 shadow-lg"
-          >
-            <p className="text-[16px] font-medium text-[var(--studio-fg)]">
-              Disconnect {byKind[disconnectKind].name}?
-            </p>
-            {disconnectWarning && (
-              <p className="mt-8 text-[13px] text-[var(--studio-danger)]">{disconnectWarning}</p>
-            )}
-            <p className="mt-8 text-[14px] leading-6 text-[var(--studio-muted)]">
-              Type{' '}
-              <strong className="text-[var(--studio-fg)]">{byKind[disconnectKind].name}</strong> to
-              confirm
-            </p>
-            <input
-              className="mt-12 h-40 w-full rounded-10 border border-[var(--studio-line-strong)] bg-[var(--studio-bg)] px-12 text-[14px] text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
-              value={disconnectConfirm}
-              onChange={(event) => setDisconnectConfirm(event.target.value)}
-            />
-            <div className="mt-20 flex justify-end gap-8">
-              <StudioButton type="button" variant="ghost" onClick={() => setDisconnectKind(null)}>
-                Cancel
-              </StudioButton>
-              <StudioButton
-                type="button"
-                variant="danger"
-                disabled={
-                  busy === 'disconnect' || disconnectConfirm !== byKind[disconnectKind].name
-                }
-                onClick={() => void disconnect()}
-              >
-                {busy === 'disconnect' ? 'Disconnecting…' : 'Disconnect'}
-              </StudioButton>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Both of these were bespoke type-to-confirm overlays: no focus trap, no
+          focus restore, no accessible name at all. `ConfirmDialog` already owned
+          the pattern they duplicated (F-407). */}
+      <ConfirmDialog
+        open={restartOpen}
+        onOpenChange={setRestartOpen}
+        title="Restart the application?"
+        body="This interrupts the application."
+        confirmPhrase="restart"
+        confirmLabel="Restart application"
+        busyLabel="Restarting…"
+        onConfirm={restartApp}
+      />
+      <ConfirmDialog
+        open={disconnectKind !== null}
+        onOpenChange={(next) => {
+          if (!next) setDisconnectKind(null);
+        }}
+        title={disconnectKind ? `Disconnect ${byKind[disconnectKind].name}?` : 'Disconnect'}
+        body={
+          disconnectWarning ? (
+            <span className="text-[var(--studio-danger)]">{disconnectWarning}</span>
+          ) : (
+            'Projects that already use this integration keep what they have; nothing new can be published or monitored through it until you reconnect.'
+          )
+        }
+        confirmPhrase={disconnectKind ? byKind[disconnectKind].name : undefined}
+        confirmLabel="Disconnect"
+        busyLabel="Disconnecting…"
+        onConfirm={disconnect}
+      />
     </AdminPage>
   );
 }

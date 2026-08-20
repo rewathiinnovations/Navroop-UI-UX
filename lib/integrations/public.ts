@@ -2,6 +2,7 @@ import { DEFAULT_WORKSPACE_ID } from '@/lib/publish/constants';
 import { getBootRuntimeConfig } from '@/lib/observability/runtime-config';
 import { INTEGRATION_KINDS, KIND_LABELS } from './types';
 import { statusLabel } from './messages';
+import { SECRETS_UNREADABLE_MESSAGE } from './secrets';
 import type { DecryptedIntegration } from './store';
 import { listIntegrations } from './store';
 import { getIntegrationHealthAlert } from './health';
@@ -40,6 +41,7 @@ export function publicIntegration(
       activeProjectId: null as string | null,
       configuredProjectId: null as string | null,
       oauthClientId: null as string | null,
+      repositorySelection: null as 'all' | 'selected' | null,
     };
   }
   let detail: string | null = null;
@@ -63,19 +65,22 @@ export function publicIntegration(
           configuredProjectId,
         })
       : { restartRequired: false, activeProjectId: null, configuredProjectId: null };
+  // A row whose credentials will not decrypt is reported as ERROR, not as the CONNECTED its
+  // status column still says. The pill's tone comes from `status`, so the previous view
+  // showed a green "Connected" over an integration that could not authenticate anything —
+  // and only the daily health cron would eventually flip the column (F-212).
+  const status = row.secretsUnreadable ? ('ERROR' as const) : row.status;
   return {
     kind,
     name: KIND_LABELS[kind],
-    status: row.status,
+    status,
     statusLabel:
-      kind === 'SENTRY' &&
-      row.status === 'CONNECTED' &&
-      (row.config.limited || !row.secrets.authToken)
+      kind === 'SENTRY' && status === 'CONNECTED' && (row.config.limited || !row.secrets.authToken)
         ? 'Connected — limited'
-        : statusLabel(row.status),
+        : statusLabel(status),
     detail,
     lastCheckedAt: row.lastCheckedAt?.toISOString() ?? null,
-    lastError: row.lastError,
+    lastError: row.secretsUnreadable ? SECRETS_UNREADABLE_MESSAGE : row.lastError,
     htmlUrl: row.config.htmlUrl ?? null,
     org: row.config.org ?? row.config.accountLogin ?? null,
     zoneName: row.config.zoneName ?? null,
@@ -95,6 +100,9 @@ export function publicIntegration(
     activeProjectId: banner.activeProjectId,
     configuredProjectId: banner.configuredProjectId,
     oauthClientId: row.config.oauthClientId ?? null,
+    // F-270: only meaningful for GITHUB_DEPLOY. `all` means the App's contents+administration
+    // write reaches every repository in the account.
+    repositorySelection: kind === 'GITHUB_DEPLOY' ? (row.config.repositorySelection ?? null) : null,
   };
 }
 

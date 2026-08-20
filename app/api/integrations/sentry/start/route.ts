@@ -22,7 +22,9 @@ export async function POST(request: Request) {
     kind: 'SENTRY',
     status: 'PENDING',
     config: { oauthClientId: clientId },
-    secrets: { clientSecret },
+    // Partial: writing the whole blob here destroyed the live authToken, refreshToken and
+    // tokenExpiresAt every time an admin re-opened this form (F-213).
+    mergeSecrets: { clientSecret },
     connectedById: user.id,
   });
   return NextResponse.json({

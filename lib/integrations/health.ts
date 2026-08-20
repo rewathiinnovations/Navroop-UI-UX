@@ -2,7 +2,7 @@ import { prisma } from '@/lib/db';
 import { DEFAULT_WORKSPACE_ID } from '@/lib/publish/constants';
 import { getInstallationToken } from '@/lib/github/deploy-client';
 import type { IntegrationKind } from './types';
-import { getIntegration, invalidateIntegrationCache } from './store';
+import { getIntegration } from './store';
 import { log } from '@/lib/logger';
 import { trackFailure, trackStart, trackSuccess } from '@/lib/observability/track';
 
@@ -93,7 +93,7 @@ export async function checkIntegration(kind: IntegrationKind, workspaceId = DEFA
         lastCheckedAt: new Date(),
       },
     });
-    invalidateIntegrationCache(workspaceId, kind);
+
     trackSuccess('integrations.health.ok', {
       action: 'integrations',
       workspaceId,
@@ -113,7 +113,7 @@ export async function checkIntegration(kind: IntegrationKind, workspaceId = DEFA
       },
       data: { lastCheckedAt: new Date(), lastError: message, status: 'ERROR' },
     });
-    invalidateIntegrationCache(workspaceId, kind);
+
     return { ok: false as const, error: message, kind };
   }
 }

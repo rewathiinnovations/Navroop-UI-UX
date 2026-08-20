@@ -20,5 +20,12 @@ export async function POST(request: Request) {
   if (result.needsZone) {
     return NextResponse.json({ ...data, needsZone: true, zones: result.zones });
   }
-  return NextResponse.json({ ...data, needsZone: false });
+  // A permission probe that left a TXT record in the operator's zone is theirs to remove,
+  // so it rides back with the success rather than being swallowed (F-238).
+  return NextResponse.json({
+    ...data,
+    needsZone: false,
+    warning: result.warning ?? null,
+    strayRecord: result.strayRecord ?? null,
+  });
 }

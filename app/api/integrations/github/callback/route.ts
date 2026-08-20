@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/auth';
+import { log } from '@/lib/logger';
 import { consumeGithubCsrf } from '@/lib/integrations/csrf';
 import { convertGithubManifest } from '@/lib/integrations/github';
 import { upsertIntegration } from '@/lib/integrations/store';
@@ -12,9 +13,19 @@ export async function GET(request: NextRequest) {
   const origin = await appPublicUrl();
   const code = request.nextUrl.searchParams.get('code');
   const state = request.nextUrl.searchParams.get('state');
-  const csrf = await consumeGithubCsrf(state);
-  if (!csrf || csrf.userId !== user.id) {
-    return NextResponse.redirect(new URL('/admin/integrations?github=error&reason=state', origin));
+  const consumed = await consumeGithubCsrf(state);
+  if (!consumed.ok || consumed.payload.userId !== user.id) {
+    // The state row is now per flow, so this no longer fires merely because a second admin
+    // started a connect. When it does fire, the reason says whether the nonce was unknown,
+    // expired or already used (F-242).
+    log.warn('integrations.github_csrf_refused', {
+      reason: consumed.ok ? 'other-user' : consumed.reason,
+      userId: user.id,
+    });
+    const url = new URL('/admin/integrations', origin);
+    url.searchParams.set('github', 'error');
+    url.searchParams.set('reason', consumed.ok ? 'state-other-user' : `state-${consumed.reason}`);
+    return NextResponse.redirect(url);
   }
   if (!code) {
     return NextResponse.redirect(new URL('/admin/integrations?github=error&reason=code', origin));
@@ -29,7 +40,7 @@ export async function GET(request: NextRequest) {
         appId: converted.id,
         slug: converted.slug,
         htmlUrl: converted.html_url,
-        org: csrf.org,
+        org: consumed.payload.org,
       },
       secrets: {
         pem: converted.pem,

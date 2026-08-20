@@ -1,3 +1,4 @@
+import { GITHUB_WEBHOOK_EVENTS, GITHUB_WEBHOOK_ROUTE } from './github-webhook';
 import type { GithubManifest } from './types';
 
 /**
@@ -21,12 +22,25 @@ export function githubManifest(input: {
     redirect_url: `${base}/api/integrations/github/callback`,
     setup_url: `${base}/api/integrations/github/installed`,
     public: false,
+    // `contents: write` pushes the generated site; `administration: write` is what
+    // `POST /user/repos` needs to create the repository at all — GitHub answers "Resource not
+    // accessible by integration" without it. A manifest cannot request an installation
+    // *scope*, only permissions: whether those permissions reach one repository or every
+    // repository in the account is chosen by the operator on GitHub's install screen. That is
+    // the only control that bounds this App, so /admin/integrations tells the operator to
+    // pick "Only select repositories" before installing and reports `repository_selection`
+    // afterwards (F-270). Do not widen this set; F-202 was a force-push over an unrelated
+    // repository, and these two permissions are its blast radius.
     default_permissions: {
       contents: 'write',
       administration: 'write',
       metadata: 'read',
     },
-    default_events: [],
+    // F-265: the App's webhook_secret used to be stored and never used, because nothing
+    // subscribed and no route existed. Subscribing here is what gives the secret — and the
+    // signature check in `app/api/integrations/github/webhook` — something to verify.
+    hook_attributes: { url: `${base}${GITHUB_WEBHOOK_ROUTE}`, active: true },
+    default_events: [...GITHUB_WEBHOOK_EVENTS],
   };
 }
 

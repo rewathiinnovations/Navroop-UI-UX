@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
 import { requireAdmin } from '@/lib/auth';
-import { saveCoolifySelection } from '@/lib/integrations/coolify-connect';
+import { coolifyWizardCredentials, saveCoolifySelection } from '@/lib/integrations/coolify-connect';
 import { getIntegration } from '@/lib/integrations/store';
 import { listPublicIntegrations } from '@/lib/integrations/public';
+import { DEFAULT_WORKSPACE_ID } from '@/lib/publish/constants';
 
 export async function POST(request: Request) {
   const { user, error, status } = await requireAdmin();
@@ -12,10 +13,11 @@ export async function POST(request: Request) {
     projectName?: string;
     servers?: Array<{ uuid: string; name: string; ip: string; maxDeployments?: number }>;
   };
-  const existing = await getIntegration('default', 'COOLIFY');
-  const token = existing?.secrets.token;
-  const baseUrl = existing?.config.baseUrl;
-  if (!token || !baseUrl) {
+  const existing = await getIntegration(DEFAULT_WORKSPACE_ID, 'COOLIFY');
+  // Prefers the candidate the first half of the wizard staged, falling back to the live
+  // connection so re-picking a project on a connected Coolify does not need a fresh token.
+  const wizard = existing ? coolifyWizardCredentials(existing) : null;
+  if (!wizard) {
     return NextResponse.json({ error: 'Verify the Coolify token first' }, { status: 409 });
   }
   if (!body.projectUuid?.trim()) {
@@ -23,8 +25,8 @@ export async function POST(request: Request) {
   }
   const result = await saveCoolifySelection({
     userId: user.id,
-    baseUrl,
-    token,
+    baseUrl: wizard.baseUrl,
+    token: wizard.token,
     projectUuid: body.projectUuid,
     projectName: body.projectName,
     servers: body.servers ?? [],
