@@ -43,32 +43,104 @@ async function pathBZonesFor(deploymentId: string) {
   );
 }
 
-export async function stopProjectDeployments(projectId: string) {
+/**
+ * One deployment stopped, or the reason it was not.
+ *
+ * `stopped: false` means nothing was mutated at all: the row still carries its previous
+ * status and every hostname is still attached to the Coolify application, so a retry is
+ * the same operation rather than the second half of a half-finished one.
+ */
+export type StopOutcome =
+  { stopped: true; deployment: Deployment } | { stopped: false; reason: string };
+
+/**
+ * The one implementation of "stop this deployment", shared by the `/deployments` Stop
+ * button and project soft-delete.
+ *
+ * The two used to disagree about whether a Coolify failure is fatal: `stopDeployment`
+ * detached the domains and then let the `stopApplication` error propagate out of the
+ * server action, so the hostnames were off the application while the row still said LIVE
+ * and the site was still running; `stopProjectDeployments` swallowed the same error and
+ * wrote STOPPED over a container that was still up (F-223). Both are wrong in the same
+ * way — a status is a claim about the provider, so it may only be written once the
+ * provider agreed.
+ *
+ * Hence the order: ask Coolify first and return the refusal untouched; only a successful
+ * stop earns the domain detach and the STOPPED row. The detach itself stays best-effort
+ * (`log.warn`) because a stopped application serves nothing — a hostname left attached to
+ * it costs the user nothing and the next publish re-attaches it.
+ */
+async function stopOneDeployment(row: Deployment): Promise<StopOutcome> {
+  if (row.coolifyAppUuid) {
+    const ctx = await withServer(row.serverId);
+    if (ctx) {
+      try {
+        await stopApplication(ctx.auth, row.coolifyAppUuid);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        log.warn('publish.stop_failed', { deploymentId: row.id, reason });
+        return { stopped: false, reason };
+      }
+    } else {
+      // The CoolifyServer row is gone, so there is nothing left to ask. Recorded rather
+      // than silent: the application may well still be running on a server this system
+      // no longer knows how to reach.
+      log.warn('publish.stop_server_missing', { deploymentId: row.id, serverId: row.serverId });
+    }
+  }
+  try {
+    await removeDomainsForDeployment(row.id, DETACH_ONLY);
+  } catch (error) {
+    log.warn('publish.stop_domain_detach_failed', {
+      deploymentId: row.id,
+      reason: error instanceof Error ? error.message : String(error),
+    });
+  }
+  const deployment = await prisma.deployment.update({
+    where: { id: row.id },
+    data: { status: 'STOPPED' },
+  });
+  return { stopped: true, deployment };
+}
+
+export type StopProjectDeploymentsResult = {
+  /** How many rows now say STOPPED because Coolify agreed to stop them. */
+  stopped: number;
+  /** The deployments still running, so the caller can report them instead of assuming. */
+  failed: Array<{ deploymentId: string; reason: string }>;
+};
+
+export async function stopProjectDeployments(
+  projectId: string,
+): Promise<StopProjectDeploymentsResult> {
   const rows = await prisma.deployment.findMany({
     where: { projectId, status: { not: 'STOPPED' } },
   });
+  let stopped = 0;
+  const failed: StopProjectDeploymentsResult['failed'] = [];
   for (const row of rows) {
-    try {
-      await removeDomainsForDeployment(row.id, DETACH_ONLY);
-    } catch (error) {
-      console.warn('[publish] custom domain detach failed', row.id, error);
-    }
-    if (row.coolifyAppUuid) {
-      const ctx = await withServer(row.serverId);
-      if (ctx) {
-        try {
-          await stopApplication(ctx.auth, row.coolifyAppUuid);
-        } catch (error) {
-          console.warn('[publish] stop failed', row.id, error);
-        }
-      }
-    }
-    await prisma.deployment.update({
-      where: { id: row.id },
-      data: { status: 'STOPPED' },
-    });
+    // One refusal must not abandon the rest — a soft-deleted project's other deployment
+    // is still costing money.
+    const outcome = await stopOneDeployment(row);
+    if (outcome.stopped) stopped += 1;
+    else failed.push({ deploymentId: row.id, reason: outcome.reason });
   }
-  return rows.length;
+  return { stopped, failed };
+}
+
+/**
+ * The sentence for a soft-delete whose sites did not all come down.
+ *
+ * The project is gone from the dashboard whatever Coolify answered — `deletedAt` is already
+ * stamped and the retention purge is the retry — so this rides on a success rather than
+ * turning the delete into a failure. Saying nothing was the bug: the applications kept
+ * serving the deleted site and kept billing, and the only record was a `console.warn`
+ * (F-806).
+ */
+export function stoppedPartiallyMessage(failed: StopProjectDeploymentsResult['failed']) {
+  const count = failed.length;
+  const subject = count === 1 ? 'deployment is' : 'deployments are';
+  return `The project was deleted, but ${count} ${subject} still running — Coolify refused to stop ${count === 1 ? 'it' : 'them'}. ${count === 1 ? 'It keeps' : 'They keep'} costing money until the teardown succeeds; it is retried automatically.`;
 }
 
 /**
@@ -137,7 +209,10 @@ export async function destroyDeployment(
   try {
     await removeDomainsForDeployment(row.id);
   } catch (error) {
-    console.warn('[publish] custom domain cleanup failed', row.id, error);
+    log.warn('publish.custom_domain_cleanup_failed', {
+      deploymentId: row.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
   if (keptCloudflareZones.length > 0) {
     log.warn('publish.path_b_zones_kept', { deploymentId: row.id, zones: keptCloudflareZones });
@@ -149,7 +224,11 @@ export async function destroyDeployment(
     try {
       await deleteApplication(ctx.auth, row.coolifyAppUuid);
     } catch (error) {
-      console.warn('[publish] delete Coolify app failed', row.id, error);
+      log.warn('publish.coolify_delete_failed', {
+        deploymentId: row.id,
+        coolifyAppUuid: row.coolifyAppUuid,
+        error: error instanceof Error ? error.message : String(error),
+      });
       failures.push('coolify');
     }
   }
@@ -157,7 +236,11 @@ export async function destroyDeployment(
     try {
       await deleteRecord(row.dnsRecordId);
     } catch (error) {
-      console.warn('[publish] delete DNS failed', row.id, error);
+      log.warn('publish.dns_delete_failed', {
+        deploymentId: row.id,
+        dnsRecordId: row.dnsRecordId,
+        error: error instanceof Error ? error.message : String(error),
+      });
       failures.push('dns');
     }
   }
@@ -165,7 +248,11 @@ export async function destroyDeployment(
     try {
       await deleteDeployRepo(row.repoFullName, row.workspaceId || DEFAULT_WORKSPACE_ID);
     } catch (error) {
-      console.warn('[publish] delete deploy repo failed', row.id, error);
+      log.warn('publish.repo_delete_failed', {
+        deploymentId: row.id,
+        repoFullName: row.repoFullName,
+        error: error instanceof Error ? error.message : String(error),
+      });
       failures.push('repo');
     }
   }
@@ -223,20 +310,8 @@ export async function purgeProjectPublishResources(
   return { deployments: rows.length, resources, keptCloudflareZones, failures };
 }
 
-export async function stopDeployment(id: string) {
+export async function stopDeployment(id: string): Promise<StopOutcome> {
   const row = await prisma.deployment.findUnique({ where: { id } });
   if (!row) throw new Error('Deployment not found');
-  try {
-    await removeDomainsForDeployment(row.id, DETACH_ONLY);
-  } catch (error) {
-    console.warn('[publish] custom domain detach failed', row.id, error);
-  }
-  if (row.coolifyAppUuid) {
-    const ctx = await withServer(row.serverId);
-    if (ctx) await stopApplication(ctx.auth, row.coolifyAppUuid);
-  }
-  return prisma.deployment.update({
-    where: { id },
-    data: { status: 'STOPPED' },
-  });
+  return stopOneDeployment(row);
 }

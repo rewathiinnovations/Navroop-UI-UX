@@ -9,7 +9,10 @@ import RecoveryPanel from './RecoveryPanel';
 import { isPublishRunning, type PublicGenerationJob } from '@/lib/jobs/types';
 import { PUBLISH_STEPPER, stepperIndex, type PublishStepKey } from '@/lib/publish/steps';
 import { deployRepoName } from '@/lib/publish/naming';
-import type { PublicDeployment } from '@/lib/publish/serialize';
+import { deploymentFailure } from '@/lib/publish/failure-copy';
+import { PREVIEW_SIGN_IN_HINT, previewPasswordNotice } from '@/lib/publish/preview-password-copy';
+import type { PublicDeployment } from '@/lib/publish/types';
+import { formatAdminDateTime } from '@/app/(app)/admin/format-admin-date';
 import { notify } from '@/lib/notify';
 
 type PublishState = {
@@ -23,13 +26,6 @@ type PublishState = {
   deployments: PublicDeployment[];
   job?: PublicGenerationJob | null;
 };
-
-function formatWhen(value: string | null) {
-  if (!value) return '';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '';
-  return date.toLocaleString();
-}
 
 function stepStatus(
   current: string | null | undefined,
@@ -70,6 +66,10 @@ export default function PublishPanel({
     () => state?.deployments.find((row) => row.kind === sheetKind) ?? null,
     [state, sheetKind],
   );
+  // F-260: one shaper for both surfaces, so the sheet and /deployments cannot disagree
+  // about which step died — and so a row that failed with no recorded message says that
+  // instead of rendering an empty paragraph.
+  const failure = useMemo(() => (deployment ? deploymentFailure(deployment) : null), [deployment]);
 
   const load = async () => {
     if (!projectId) return;
@@ -233,9 +233,10 @@ export default function PublishPanel({
       const data = (await response.json()) as PublishState;
       setState(data);
       setPassword('');
-      notify.success(next ? 'Password protection on.' : 'Password protection off.', {
-        key: 'publish-password',
-      });
+      // A node stack applies the gate through a build that is still running when this
+      // returns, so the toast must not report protection the container is not serving yet.
+      const notice = previewPasswordNotice(next, data.job ?? null);
+      notify[notice.tone](notice.message, { key: 'publish-password' });
     } catch (cause) {
       notify.error(cause, {
         fallback: 'Could not update the password',
@@ -347,7 +348,7 @@ export default function PublishPanel({
                   </a>
                 </div>
                 <p className="text-[12px] text-[var(--studio-muted)]">
-                  Last published {formatWhen(deployment.publishedAt)}
+                  Last published {formatAdminDateTime(deployment.publishedAt)}
                   {deployment.publishedBy ? ` · ${deployment.publishedBy.name}` : ''}
                 </p>
                 <button
@@ -370,6 +371,11 @@ export default function PublishPanel({
                       placeholder={deployment.hasPassword ? 'New password' : 'Preview password'}
                       className="h-40 w-full rounded-10 border border-[var(--studio-line)] px-10 text-[13px]"
                     />
+                    {deployment.hasPassword && (
+                      <p className="text-[12px] text-[var(--studio-faint)]">
+                        {PREVIEW_SIGN_IN_HINT}
+                      </p>
+                    )}
                     <div className="flex gap-8">
                       <button
                         type="button"
@@ -501,22 +507,25 @@ export default function PublishPanel({
                     <p className="text-[13px] text-[var(--studio-muted)]">Talk to an admin</p>
                   </div>
                 )}
-                {deployment?.status === 'FAILED' && (
+                {failure && (
                   <div className="space-y-8 rounded-12 border border-[var(--studio-danger)]/30 p-12">
-                    <p className="text-[13px] text-[var(--studio-danger)]">
-                      {deployment.lastError}
+                    <p className="text-[13px] font-medium text-[var(--studio-danger)]">
+                      {failure.headline}
                     </p>
-                    {deployment.lastRequestId && (
+                    <p className="break-words text-[13px] text-[var(--studio-fg)]">
+                      {failure.reason}
+                    </p>
+                    {failure.requestId && (
                       <p className="text-[11px] text-[var(--studio-faint)]">
-                        Request {deployment.lastRequestId}
+                        Request {failure.requestId}
                       </p>
                     )}
-                    {deployment.buildLogUrl && (
+                    {failure.buildLogUrl && (
                       <a
-                        href={deployment.buildLogUrl}
+                        href={failure.buildLogUrl}
                         target="_blank"
                         rel="noreferrer"
-                        className="text-[13px] text-[var(--studio-accent)]"
+                        className="block text-[13px] text-[var(--studio-accent)]"
                       >
                         View build log
                       </a>

@@ -120,7 +120,19 @@ export async function pushViaGitDataApi(input: {
       `${base}/git/ref/heads/main`,
     );
   }
+  // Could not look ≠ nothing there (F-251). Only 404 is the branch being absent; a 403, a
+  // 500 or a body with no sha used to become `undefined` and route into the "create the
+  // ref" branch below, where GitHub answered "Reference already exists" (422) after a
+  // parentless commit had been built over the user's own repository.
+  if (!ref.ok && ref.status !== 404) {
+    throw new Error(
+      `Could not read main in ${fullName}: ${ref.data.message || `GitHub returned ${ref.status}`}`,
+    );
+  }
   const parentSha = ref.ok ? ref.data.object?.sha : undefined;
+  if (ref.ok && !parentSha) {
+    throw new Error(`Could not read main in ${fullName}: GitHub returned no commit for the ref.`);
+  }
 
   // The delta base: the head commit's tree. Skipped under the force opt-in,
   // where the caller explicitly asked for a full replacement.

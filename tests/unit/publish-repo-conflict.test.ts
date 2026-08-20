@@ -65,6 +65,8 @@ vi.mock('@/lib/coolify/client', () => ({
   addApplicationDomain: vi.fn(),
   createApplication: vi.fn(),
   getCoolifyDeployment: vi.fn(),
+  pinApplicationCommit: vi.fn(),
+  COOLIFY_STATUS_UNREPORTED: 'unreported',
   triggerDeploy: vi.fn(),
 }));
 vi.mock('@/lib/coolify/servers', () => ({
@@ -120,6 +122,9 @@ function spyDeps(repo: { repoId: string; created: boolean }): { deps: PublishDep
     },
     async addAppDomain() {},
     async applyRedirects() {},
+    async pinCommit(_auth, _appUuid, sha) {
+      return { ok: true as const, sha };
+    },
     async startDeploy() {
       return { deploymentUuid: 'coolify-deployment-1' };
     },

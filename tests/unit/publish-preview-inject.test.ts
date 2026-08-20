@@ -64,15 +64,21 @@ describe('injectPreviewFiles — static HTML preview', () => {
 });
 
 describe('injectPreviewFiles — Next.js preview', () => {
-  it('patches an existing next.config and does not invent a second one', () => {
+  it('leaves an existing next.config untouched — the header is the middleware’s job', () => {
+    // The old helper only appended a comment that happened to contain the string
+    // "X-Robots-Tag", and its own `includes('X-Robots-Tag')` guard then counted
+    // that comment as "already handled" (F-230). The middleware sets the header
+    // unconditionally, so patching arbitrary config source buys nothing and can
+    // only misparse it.
+    const original = 'export default { poweredByHeader: false };';
     const files = injectPreviewFiles(
-      { 'app/page.tsx': PAGE, 'next.config.mjs': 'export default { poweredByHeader: false };' },
+      { 'app/page.tsx': PAGE, 'next.config.mjs': original },
       { stack: 'NEXTJS', deployType: 'node' },
     );
 
-    expect(files['next.config.mjs']).toContain('X-Robots-Tag');
-    expect(files['next.config.mjs']).toContain('poweredByHeader: false');
+    expect(files['next.config.mjs']).toBe(original);
     expect(files).not.toHaveProperty('next.config.js');
+    // The real noindex header comes from the middleware, not the config.
     expect(files['middleware.ts']).toContain('X-Robots-Tag');
     expect(files['middleware.ts']).not.toContain('PREVIEW_PASSWORD');
   });
@@ -110,5 +116,63 @@ describe('injectPreviewFiles — Next.js preview', () => {
     // An unreferenced function would fail lint in the generated project.
     expect(files['middleware.ts']).not.toContain('unauthorized');
     expect(files['middleware.ts']).toContain('X-Robots-Tag');
+  });
+});
+
+describe('injectPreviewFiles — a project that already has middleware (F-230)', () => {
+  const PROJECT_MW = `import { NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
+export function middleware(request: NextRequest) {
+  if (!request.cookies.get('session')) {
+    return NextResponse.redirect(new URL('/login', request.url));
+  }
+  return NextResponse.next();
+}
+export const config = { matcher: ['/dashboard/:path*'] };
+`;
+
+  it('preserves the project middleware instead of overwriting it', () => {
+    const files = injectPreviewFiles(
+      { 'app/page.tsx': PAGE, 'middleware.ts': PROJECT_MW },
+      { stack: 'NEXTJS', deployType: 'node' },
+    );
+
+    // The project's auth redirect must survive somewhere, not be deleted.
+    const preserved = Object.entries(files).find(
+      ([path, content]) => path !== 'middleware.ts' && content.includes("new URL('/login'"),
+    );
+    expect(preserved).toBeTruthy();
+    // And the deployed middleware still runs the preview gate.
+    expect(files['middleware.ts']).toContain('X-Robots-Tag');
+    // The wrapper delegates to the project's middleware rather than dropping it.
+    expect(files['middleware.ts']).toMatch(/middleware\.project/);
+  });
+
+  it('runs the password gate before delegating, so an unauthenticated request never reaches project code', () => {
+    const files = injectPreviewFiles(
+      { 'app/page.tsx': PAGE, 'middleware.ts': PROJECT_MW },
+      { stack: 'NEXTJS', deployType: 'node', passwordProtected: true },
+    );
+
+    const wrapper = files['middleware.ts'];
+    const gateAt = wrapper.indexOf('PREVIEW_PASSWORD');
+    // The delegate *call*, not the top-of-file import of the sibling.
+    const delegateAt = wrapper.indexOf('await run(request)');
+    expect(gateAt).toBeGreaterThanOrEqual(0);
+    expect(delegateAt).toBeGreaterThanOrEqual(0);
+    // Fail-closed gate is upstream of the delegate call site.
+    expect(gateAt).toBeLessThan(delegateAt);
+    expect(wrapper).toContain('if (!expected) return unauthorized();');
+  });
+
+  it('writes a fresh middleware for a project that has none', () => {
+    const files = injectPreviewFiles(
+      { 'app/page.tsx': PAGE },
+      { stack: 'NEXTJS', deployType: 'node' },
+    );
+
+    expect(files['middleware.ts']).toContain('X-Robots-Tag');
+    // No project middleware to wrap, so no sibling module is emitted.
+    expect(files).not.toHaveProperty('middleware.project.ts');
   });
 });

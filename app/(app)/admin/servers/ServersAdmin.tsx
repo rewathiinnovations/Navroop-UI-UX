@@ -19,17 +19,30 @@ export type PublicServer = {
   projectUuid: string;
   isActive: boolean;
   maxDeployments: number;
-  last4: string;
+  /**
+   * Null when the stored token could not be decrypted. It used to be the last four
+   * characters of the *ciphertext*, which read as a plausible token on exactly the instance
+   * that could not use it (F-216).
+   */
+  last4: string | null;
+  tokenUnreadable: boolean;
   deploymentCount: number;
 };
 
 export default function ServersAdmin({ initial }: { initial: PublicServer[] }) {
   const [servers, setServers] = useState(initial);
   const [busy, setBusy] = useState<string | null>(null);
+  /**
+   * Reloads the table. Returns false when the reload itself failed — the caller
+   * has already reported its own success, so a silently stale table would leave
+   * the operator reading numbers that are no longer the server's.
+   */
   const refresh = async () => {
     const response = await fetch('/api/admin/servers');
     const data = await response.json().catch(() => ({}));
-    if (response.ok && Array.isArray(data.servers)) setServers(data.servers);
+    if (!response.ok || !Array.isArray(data.servers)) return false;
+    setServers(data.servers);
+    return true;
   };
 
   const test = async (id: string) => {
@@ -70,7 +83,11 @@ export default function ServersAdmin({ initial }: { initial: PublicServer[] }) {
         return;
       }
       notify.success(server.isActive ? `${server.name} deactivated.` : `${server.name} activated.`);
-      await refresh();
+      if (!(await refresh())) {
+        notify.warning('Saved, but the server list could not be reloaded — reload the page.', {
+          key: `server-toggle-${server.id}-refresh`,
+        });
+      }
     } catch (cause) {
       notify.error(cause, { fallback: 'Could not update the server' });
     } finally {
@@ -78,8 +95,12 @@ export default function ServersAdmin({ initial }: { initial: PublicServer[] }) {
     }
   };
 
-  // Fired on blur of the inline limit input, where the toast is the only
-  // confirmation the value was actually persisted.
+  /**
+   * Fired on blur of the inline limit input, where the toast is the only
+   * confirmation the value was actually persisted. Returns whether it was: the
+   * input is uncontrolled, so on failure the caller writes the known-good limit
+   * back rather than leaving a rejected number on screen.
+   */
   const saveMax = async (id: string, maxDeployments: number) => {
     setBusy(`max:${id}`);
     try {
@@ -89,13 +110,20 @@ export default function ServersAdmin({ initial }: { initial: PublicServer[] }) {
         body: JSON.stringify({ maxDeployments }),
       });
       if (!response.ok) {
-        notify.error('Could not save the limit', { key: `server-max-${id}` });
-        return;
+        const data = await response.json().catch(() => ({}));
+        notify.error(data.error || 'Could not save the limit', { key: `server-max-${id}` });
+        return false;
       }
       notify.success(`Deployment limit set to ${maxDeployments}.`, { key: `server-max-${id}` });
-      await refresh();
+      if (!(await refresh())) {
+        notify.warning('Saved, but the server list could not be reloaded — reload the page.', {
+          key: `server-max-${id}-refresh`,
+        });
+      }
+      return true;
     } catch (cause) {
       notify.error(cause, { fallback: 'Could not save the limit', key: `server-max-${id}` });
+      return false;
     } finally {
       setBusy(null);
     }
@@ -141,7 +169,11 @@ export default function ServersAdmin({ initial }: { initial: PublicServer[] }) {
               </Td>
               <Td muted>{server.serverIp}</Td>
               <Td mono muted>
-                ••••{server.last4}
+                {server.tokenUnreadable ? (
+                  <span className="text-[var(--studio-danger)]">unreadable</span>
+                ) : (
+                  `••••${server.last4 ?? ''}`
+                )}
               </Td>
               <Td>
                 <div className="flex items-center gap-6">
@@ -153,10 +185,16 @@ export default function ServersAdmin({ initial }: { initial: PublicServer[] }) {
                     aria-label={`Max deployments for ${server.name}`}
                     defaultValue={server.maxDeployments}
                     className="h-32 w-64 rounded-8 border border-[var(--studio-line)] bg-[var(--studio-bg)] px-6 text-[12px] text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
-                    onBlur={(event) => {
-                      const value = Number(event.target.value);
-                      if (value > 0 && value !== server.maxDeployments)
-                        void saveMax(server.id, value);
+                    onBlur={async (event) => {
+                      const input = event.currentTarget;
+                      const value = Number(input.value);
+                      const known = String(server.maxDeployments);
+                      // A value the API refused — or one at or below zero, which it
+                      // would refuse — must not stay on screen looking saved.
+                      if (value === server.maxDeployments) return;
+                      if (value <= 0 || !(await saveMax(server.id, value))) {
+                        input.value = known;
+                      }
                     }}
                   />
                 </div>

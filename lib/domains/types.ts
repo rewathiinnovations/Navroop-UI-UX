@@ -41,10 +41,15 @@ export type PublicCustomDomain = CustomDomainRow & {
   timeline: Array<{ id: string; label: string; done: boolean; current: boolean }>;
 };
 
+export type DnsLookup<T> =
+  | { status: 'records'; records: T }
+  | { status: 'no-records' }
+  | { status: 'failed'; reason: string };
+
 export type DomainDns = {
-  resolveTxt: (name: string) => Promise<string[][]>;
-  resolve4: (name: string) => Promise<string[]>;
-  resolveCname: (name: string) => Promise<string[]>;
+  resolveTxt: (name: string) => Promise<DnsLookup<string[][]>>;
+  resolve4: (name: string) => Promise<DnsLookup<string[]>>;
+  resolveCname: (name: string) => Promise<DnsLookup<string[]>>;
 };
 
 export const CUSTOM_DOMAIN_LOCKED_MESSAGE = 'This feature is not on your plan yet';

@@ -1,5 +1,4 @@
 import { randomBytes } from 'node:crypto';
-import { Prisma } from '@/generated/prisma';
 import { prisma } from '@/lib/db';
 import type { CustomDomainPath, CustomDomainRow, CustomDomainStatus } from './types';
 

@@ -1,3 +1,4 @@
+import { log } from '@/lib/logger';
 import { shouldCheckDomain } from './backoff';
 import { listCheckableCustomDomains } from './store';
 import { checkDomain } from './verify';
@@ -31,7 +32,10 @@ export async function checkDueCustomDomains(now = new Date()) {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       errors.push(`${row.id}: ${message}`);
-      console.warn('[domains] cron check failed', row.id, error);
+      // Structured, not `console.warn`: this domain's status was not refreshed at all and
+      // nothing else records that, so it has to be findable in the log search an operator
+      // uses when /admin/health goes red (F-245).
+      log.warn('domains.cron_check_failed', { domainId: row.id, error: message });
     }
   }
   return {

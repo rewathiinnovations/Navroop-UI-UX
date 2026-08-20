@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSessionUser } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import type { DeploymentKind } from '@/generated/prisma';
-import { getMissingIntegrations } from '@/lib/integrations/store';
+import { getPublishReadiness } from '@/lib/integrations/store';
 import { publishBlockedMessage } from '@/lib/integrations/messages';
 import { getPublishState, startPublish } from '@/lib/publish/actions';
 import { DEFAULT_WORKSPACE_ID } from '@/lib/publish/constants';
@@ -59,8 +59,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
-  const missing = await getMissingIntegrations(DEFAULT_WORKSPACE_ID);
-  const setupMessage = publishBlockedMessage(missing, user.role === 'ADMIN');
+  const readiness = await getPublishReadiness(DEFAULT_WORKSPACE_ID);
+  const missing = readiness.missing;
+  const setupMessage = publishBlockedMessage(missing, user.role === 'ADMIN', readiness.unreadable);
   if (setupMessage) {
     return NextResponse.json(
       { error: setupMessage, missingIntegrations: missing },

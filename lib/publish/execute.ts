@@ -1,8 +1,10 @@
 import { prisma } from '@/lib/db';
 import {
   addApplicationDomain,
+  COOLIFY_STATUS_UNREPORTED,
   createApplication,
   getCoolifyDeployment,
+  pinApplicationCommit,
   triggerDeploy,
   type CoolifyServerAuth,
   type CreateApplicationInput,
@@ -22,7 +24,13 @@ import { claimJobRun, getJob, updateJobFields } from '@/lib/jobs/store';
 import { getInstanceId } from '@/lib/runtime/instance';
 import type { JobResourceIds, JobStep } from '@/lib/jobs/types';
 import { log } from '@/lib/logger';
-import { PUBLISH_POLL_MS, PUBLISH_POLL_TIMEOUT_MS } from './constants';
+import {
+  DEFAULT_DEPLOY_BRANCH,
+  PUBLISH_POLL_MS,
+  PUBLISH_POLL_TIMEOUT_MS,
+  PUBLISH_UNREPORTED_RETRY_MS,
+  PUBLISH_UNREPORTED_STATUS_READS,
+} from './constants';
 import { collectPublishFiles, publishJobErrorCode, withoutNeverPublishedPaths } from './files';
 import { injectPreviewFiles } from './preview-inject';
 import { coolifyAppName, dnsLabel, deployRepoName } from './naming';
@@ -66,11 +74,17 @@ export type PublishDeps = {
   rootDomain: (workspaceId: string) => Promise<string>;
   /** Find-or-create; the returned id and `created` flag feed the F-202 ownership guard. */
   ensureRepo: (repoSlug: string, workspaceId: string) => Promise<EnsuredRepo>;
+  /**
+   * `branch` is the same value `createApp` is given. Coolify was told to build
+   * `deployment.repoBranch || 'main'` while the push hardcoded `refs/heads/main`, so a
+   * non-default `repoBranch` would have had Coolify deploying a branch nothing wrote (F-253).
+   */
   pushFiles: (
     repoFullName: string,
     files: Record<string, string>,
     message: string,
     workspaceId: string,
+    branch: string,
   ) => Promise<string>;
   createApp: (auth: CoolifyServerAuth, input: CreateApplicationInput) => Promise<{ uuid: string }>;
   upsertDns: (label: string, ip: string) => Promise<string>;
@@ -82,6 +96,16 @@ export type PublishDeps = {
   addAppDomain: (auth: CoolifyServerAuth, appUuid: string, host: string) => Promise<void>;
   /** Re-asserts primary + alias 301s after the publish host is (re-)attached. */
   applyRedirects: (deploymentId: string) => Promise<void>;
+  /**
+   * Selects the commit Coolify's next deploy builds, proven by a read-back. Runs
+   * immediately before `startDeploy`; a refusal fails the step rather than deploying
+   * whatever release the application happens to be pinned to (F-264).
+   */
+  pinCommit: (
+    auth: CoolifyServerAuth,
+    appUuid: string,
+    sha: string,
+  ) => Promise<{ ok: true; sha: string } | { ok: false; error: string }>;
   startDeploy: (
     auth: CoolifyServerAuth,
     appUuid: string,
@@ -107,6 +131,7 @@ export const livePublishDeps: PublishDeps = {
   upsertDns: upsertARecord,
   addAppDomain: addApplicationDomain,
   applyRedirects: applyPrimaryRedirects,
+  pinCommit: pinApplicationCommit,
   startDeploy: triggerDeploy,
   deploymentStatus: getCoolifyDeployment,
 };
@@ -394,7 +419,12 @@ export async function runPublishJob(jobId: string, deps: PublishDeps = livePubli
     const root = await deps.rootDomain(deployment.workspaceId);
     const host = hostForSlug(slug, kind, root);
     const repoSlug = deployRepoName(slug, kind);
+    // One value, read once: the push writes this ref and Coolify is told to build it.
+    const branch = deployment.repoBranch || DEFAULT_DEPLOY_BRANCH;
     const auth = serverAuth(server);
+    // Which commit Coolify must build. Seeded from the row so a resumed job (whose
+    // `github` step already succeeded and is skipped) still knows what it pushed.
+    let pushedCommitSha: string | null = deployment.commitSha ?? null;
 
     await step('github', async () => {
       // Always resolve the repo, even on re-publish: the guard compares the recorded
@@ -429,7 +459,9 @@ export async function runPublishJob(jobId: string, deps: PublishDeps = livePubli
         files,
         `Publish ${kind.toLowerCase()} ${slug}`,
         deployment.workspaceId,
+        branch,
       );
+      pushedCommitSha = commitSha;
       await persistProgress(jobId, deployment.id, {
         steps,
         currentStep: 'github',
@@ -444,7 +476,7 @@ export async function runPublishJob(jobId: string, deps: PublishDeps = livePubli
       const created = await withProviderRetry(() =>
         deps.createApp(auth, {
           repoUrl: `https://github.com/${resourceIds.githubRepo || deployment.repoFullName}`,
-          branch: deployment.repoBranch || 'main',
+          branch,
           domain: host,
           deployType: stack.deployType,
           buildCommand: stack.buildCommand,
@@ -496,6 +528,20 @@ export async function runPublishJob(jobId: string, deps: PublishDeps = livePubli
     await step('deploy', async () => {
       const appUuid = resourceIds.coolifyAppUuid || deployment.coolifyAppUuid;
       if (!appUuid) throw new Error('Coolify app missing — publish again');
+      // Coolify builds `git_commit_sha` when the application carries one, and a rollback
+      // (F-264) deliberately leaves it carrying an older release. Without re-pinning, the
+      // next publish would push a new commit and then rebuild the release the user had
+      // just rejected — and report a successful publish. Pinning to the commit this job
+      // pushed is also stricter than clearing the pin: it builds exactly what was
+      // published, not whatever the branch head is by the time Coolify clones it.
+      if (pushedCommitSha) {
+        const pinned = await deps.pinCommit(auth, appUuid, pushedCommitSha);
+        if (!pinned.ok) {
+          throw new Error(
+            `${pinned.error} Nothing was deployed, so the site is unchanged — try publishing again.`,
+          );
+        }
+      }
       const triggered = await deps.startDeploy(auth, appUuid);
       buildLogUrl = `${server.apiUrl.replace(/\/+$/, '')}/application/${appUuid}`;
       // Onto `resourceIds`, not just `lastRequestId`: `poll` is a separate step, so a
@@ -526,8 +572,24 @@ export async function runPublishJob(jobId: string, deps: PublishDeps = livePubli
       const deadline = Date.now() + PUBLISH_POLL_TIMEOUT_MS;
       let lastHealth: DeploymentHealth = 'building';
       let lastStatus = 'queued';
+      // Coolify answered but named no status. `getCoolifyDeployment` returns the sentinel
+      // rather than reading the application's hostname list as a health string (F-218);
+      // the poll must not read it as a queue state either, or a partial response costs
+      // ten minutes and then blames a build Coolify never described.
+      let unreported = 0;
       while (Date.now() < deadline) {
         const state = await deps.deploymentStatus(auth, deploymentUuid);
+        if (state.status === COOLIFY_STATUS_UNREPORTED) {
+          unreported += 1;
+          if (unreported >= PUBLISH_UNREPORTED_STATUS_READS) {
+            throw new Error(
+              `Coolify did not report a status for this build after ${unreported} checks. Open the build log to see what it did.`,
+            );
+          }
+          await sleep(PUBLISH_UNREPORTED_RETRY_MS);
+          continue;
+        }
+        unreported = 0;
         lastHealth = state.health;
         lastStatus = state.status;
         if (state.health === 'healthy') break;

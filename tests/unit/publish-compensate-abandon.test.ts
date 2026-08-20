@@ -90,7 +90,11 @@ beforeEach(() => {
   seedFirstDeployment();
   db.deploymentUpdate.mockResolvedValue({});
   store.updateJobFields.mockResolvedValue(undefined);
-  compensate.compensateJobResources.mockResolvedValue({ rolledBack: false, compensated: [] });
+  compensate.compensateJobResources.mockResolvedValue({
+    outcome: 'kept_live',
+    compensated: [],
+    failed: [],
+  });
 });
 
 describe('compensateAbandonedPublish — settling the Deployment row', () => {
@@ -132,8 +136,9 @@ describe('compensateAbandonedPublish — settling the Deployment row', () => {
 
   it('clears the ids of the resources it actually tore down', async () => {
     compensate.compensateJobResources.mockResolvedValue({
-      rolledBack: true,
+      outcome: 'rolled_back',
       compensated: ['coolify', 'dns'],
+      failed: [],
     });
 
     await expect(compensateAbandonedPublish(JOB_ID)).resolves.toBe('rolled_back');
@@ -167,6 +172,40 @@ describe('compensateAbandonedPublish — settling the Deployment row', () => {
 
     expect(compensate.compensateJobResources).not.toHaveBeenCalled();
     expect(db.deploymentUpdate).not.toHaveBeenCalled();
+  });
+
+  it('records a half-finished rollback as partial and leaves the surviving ids alone', async () => {
+    // The Coolify app is still up. Blanking its uuid would hide it from the orphan cron,
+    // which only deletes a resource this system recorded creating (F-046).
+    compensate.compensateJobResources.mockResolvedValue({
+      outcome: 'partial',
+      compensated: ['dns'],
+      failed: ['coolify'],
+    });
+
+    await expect(compensateAbandonedPublish(JOB_ID)).resolves.toBe('partial');
+
+    const data = db.deploymentUpdate.mock.calls[0][0].data;
+    expect(data).not.toHaveProperty('coolifyAppUuid');
+    expect(data.dnsRecordId).toBeNull();
+    expect(store.updateJobFields).toHaveBeenCalledWith(
+      JOB_ID,
+      expect.objectContaining({
+        resourceIds: expect.objectContaining({ compensation: 'partial', coolifyAppUuid: 'app-1' }),
+      }),
+    );
+  });
+
+  it('retries a job whose previous rollback was only partial', async () => {
+    // The single-shot marker used to swallow this case: a rollback in which every delete
+    // 5xx'd recorded `rolled_back` and was never attempted again.
+    seedJob({
+      resourceIds: { coolifyAppUuid: 'app-1', dnsRecordId: 'dns-1', compensation: 'partial' },
+    });
+
+    await compensateAbandonedPublish(JOB_ID);
+
+    expect(compensate.compensateJobResources).toHaveBeenCalled();
   });
 
   it('writes no status when there is no Deployment row left to settle', async () => {

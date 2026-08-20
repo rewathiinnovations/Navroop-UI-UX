@@ -62,8 +62,15 @@ describe('a disconnected client does not abandon the generation', () => {
 
   it('keeps the heartbeat beating while the work continues', () => {
     const source = live(LIFECYCLE);
-    const onAbort = source.slice(source.indexOf('function onAbort()'));
-    const body = onAbort.slice(0, onAbort.indexOf('\n  }'));
+    // Anchor first: a rename or reformat of `onAbort` makes `indexOf` return -1, and an
+    // unguarded `slice` then yields an empty body that passes `not.toContain('stop()')`
+    // green — the guard would vanish silently (F-608). Fail loudly instead.
+    const anchorAt = source.indexOf('function onAbort()');
+    expect(anchorAt).toBeGreaterThan(-1);
+    const onAbort = source.slice(anchorAt);
+    const closeAt = onAbort.indexOf('\n  }');
+    expect(closeAt).toBeGreaterThan(-1);
+    const body = onAbort.slice(0, closeAt);
     // Stopping here is what made live work look stale to watchdog and reaper.
     expect(body).not.toContain('stop()');
   });

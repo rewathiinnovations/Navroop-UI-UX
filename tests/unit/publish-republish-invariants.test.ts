@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as PublishFiles from '@/lib/publish/files';
+import type * as CoolifyClient from '@/lib/coolify/client';
 import type { PublishDeps, PublishServer } from '@/lib/publish/execute';
 
 /**
@@ -77,12 +78,18 @@ vi.mock('@/lib/publish/files', async (importOriginal) => {
 });
 vi.mock('@/lib/github/deploy-client', () => ({ ensureDeployRepo: vi.fn(), pushFiles: vi.fn() }));
 vi.mock('@/lib/cloudflare/dns', () => ({ upsertARecord: vi.fn() }));
-vi.mock('@/lib/coolify/client', () => ({
-  addApplicationDomain: vi.fn(),
-  createApplication: vi.fn(),
-  getCoolifyDeployment: vi.fn(),
-  triggerDeploy: vi.fn(),
-}));
+vi.mock('@/lib/coolify/client', async (importOriginal) => {
+  // Partial: the sentinel the poll reads (`COOLIFY_STATUS_UNREPORTED`) has to be the
+  // real one, or the poll test would assert against a value it made up itself.
+  const actual = await importOriginal<typeof CoolifyClient>();
+  return {
+    ...actual,
+    addApplicationDomain: vi.fn(),
+    createApplication: vi.fn(),
+    getCoolifyDeployment: vi.fn(),
+    triggerDeploy: vi.fn(),
+  };
+});
 vi.mock('@/lib/coolify/servers', () => ({
   pickCoolifyServer: vi.fn(),
   serverAuth: () => ({ apiUrl: 'https://coolify.test', apiToken: 'stub' }),
@@ -92,6 +99,8 @@ vi.mock('@/lib/domains/redirects', () => ({ applyPrimaryRedirects: vi.fn() }));
 // Dynamic: the loop's provider imports must resolve to the mocks above, which only exist
 // once the factories are registered.
 const { runPublishJob } = await import('@/lib/publish/execute');
+const { COOLIFY_STATUS_UNREPORTED } = await import('@/lib/coolify/client');
+const { PUBLISH_UNREPORTED_STATUS_READS } = await import('@/lib/publish/constants');
 
 const JOB = 'job_republish';
 const PROJECT = 'proj_1';
@@ -149,6 +158,12 @@ function spyDeps(): { deps: PublishDeps; seen: Seen } {
     async applyRedirects(deploymentId) {
       seen.order.push('applyRedirects');
       seen.redirectsFor = deploymentId;
+    },
+    // Deliberately not pushed onto `seen.order`: that list is the domain/redirect
+    // ordering invariant this file owns. The pin-before-deploy ordering is asserted
+    // in tests/integration/publish-execute.test.ts.
+    async pinCommit(_auth, _appUuid, sha) {
+      return { ok: true as const, sha };
     },
     async startDeploy() {
       return { deploymentUuid: 'coolify-deployment-1' };
@@ -246,5 +261,77 @@ describe('runPublishJob — preview password gate', () => {
     expect(middleware).toContain('X-Robots-Tag');
     expect(middleware).not.toContain('PREVIEW_PASSWORD');
     expect(middleware).not.toContain('unauthorized()');
+  });
+});
+
+/**
+ * A build whose status Coolify never named.
+ *
+ * `getCoolifyDeployment` used to read `String(row.status ?? row.fqdn ?? '')`, so a
+ * response without `status` was answered from the application's hostname list — a host
+ * containing `error` read as `failed`, anything else read as `building`. The client now
+ * returns the `COOLIFY_STATUS_UNREPORTED` sentinel instead of inventing a status, and
+ * this is the other half: the poll has to act on it. Reading it as a queue state means
+ * ten minutes of polling and then "did not finish this build within 10 minutes" for a
+ * site that may well be up (F-218).
+ */
+describe('runPublishJob — poll with no status from Coolify', () => {
+  it('gives up after a bounded number of unreported reads and says why', async () => {
+    vi.useFakeTimers();
+    try {
+      const { deps } = spyDeps();
+      let reads = 0;
+      deps.deploymentStatus = async () => {
+        reads += 1;
+        return { health: 'building' as const, status: COOLIFY_STATUS_UNREPORTED };
+      };
+
+      // The assertion is attached before the timers run so the rejection is never
+      // unhandled: `runPublishJob` fails the job and then rethrows.
+      const settled = expect(runPublishJob(JOB, deps)).rejects.toThrow(
+        /Coolify did not report a status/,
+      );
+      await vi.runAllTimersAsync();
+      await settled;
+
+      // Bounded: the ten-minute deadline would have allowed 120 reads.
+      expect(reads).toBe(PUBLISH_UNREPORTED_STATUS_READS);
+      expect(lifecycle.succeedJob).not.toHaveBeenCalled();
+      expect(lifecycle.failJob).toHaveBeenCalledWith(
+        JOB,
+        expect.objectContaining({
+          errorMessage: expect.stringContaining('Coolify did not report a status'),
+        }),
+      );
+      // Not the timeout sentence — that one tells the user to wait for a build Coolify
+      // is not talking about.
+      const [, fields] = lifecycle.failJob.mock.calls[0] as [string, { errorMessage: string }];
+      expect(fields.errorMessage).not.toContain('within 10 minutes');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('carries on when a later read does name a status', async () => {
+    vi.useFakeTimers();
+    try {
+      const { deps } = spyDeps();
+      let reads = 0;
+      deps.deploymentStatus = async () => {
+        reads += 1;
+        return reads === 1
+          ? { health: 'building' as const, status: COOLIFY_STATUS_UNREPORTED }
+          : { health: 'healthy' as const, status: 'finished' };
+      };
+
+      const run = runPublishJob(JOB, deps);
+      await vi.runAllTimersAsync();
+      await run;
+
+      expect(lifecycle.succeedJob).toHaveBeenCalledWith(JOB, { lastStep: 'live' });
+      expect(lifecycle.failJob).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

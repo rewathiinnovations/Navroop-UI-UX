@@ -1,5 +1,18 @@
 import { isBlockedIp } from '@/lib/security/url-guard';
 
+/**
+ * The current check could not reach the resolver (F-219): SERVFAIL, a timeout, or no resolver in
+ * the container. This is not a verdict on the customer's DNS — `checkDomain` throws it so
+ * `checkDueCustomDomains` counts it in `errors` and turns the run red, instead of the swallowed
+ * `[]` that used to read as "the records are missing".
+ */
+export class DomainCheckUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DomainCheckUnavailableError';
+  }
+}
+
 export function formatRecordMismatch(input: {
   recordType: 'A' | 'CNAME' | 'TXT';
   hostname: string;

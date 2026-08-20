@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  COOLIFY_STATUS_UNREPORTED,
   deploymentHealthFromStatus,
   getCoolifyDeployment,
   type CoolifyServerAuth,
@@ -84,6 +85,22 @@ describe('getCoolifyDeployment', () => {
       health: 'building',
       status: 'not_found',
     });
+  });
+
+  it('marks a response that names no status as unreported, never healthy', async () => {
+    // Coolify answered, but the body carried no usable status string. Reading an absent
+    // status as `''` used to map to `building`, so the poll waited ten minutes and then
+    // reported "did not finish within 10 minutes" — a queue state Coolify never reported.
+    // The sentinel lets the poll fail fast on "Coolify did not report a status" instead.
+    stubFetch(() => Response.json({ id: 7, created_at: '2026-08-20T00:00:00Z' }));
+
+    await expect(getCoolifyDeployment(SERVER, 'dep-1')).resolves.toMatchObject({
+      health: 'building',
+      status: COOLIFY_STATUS_UNREPORTED,
+    });
+    expect(COOLIFY_STATUS_UNREPORTED).toBe('unreported');
+    // The sentinel is not a Coolify word, so the exact-match verdict keeps it building.
+    expect(deploymentHealthFromStatus(COOLIFY_STATUS_UNREPORTED)).toBe('building');
   });
 
   it('propagates a real API failure rather than reporting a state', async () => {

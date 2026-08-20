@@ -5,8 +5,8 @@
  * until a newer one is set. Does not revert the database — restore from backup
  * separately.
  *
- *   pnpm exec tsx scripts/rollback.ts
- *   pnpm exec tsx scripts/rollback.ts --sha <gitsha>
+ *   node ./node_modules/tsx/dist/cli.mjs scripts/rollback.ts
+ *   node ./node_modules/tsx/dist/cli.mjs scripts/rollback.ts --sha <gitsha>
  */
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
@@ -76,6 +76,6 @@ console.log(
   'Watch the deployment in Coolify to confirm it finishes. The application stays pinned to this commit until you deploy a newer one.',
 );
 console.log(
-  'Database was not reverted. If schema changed, restore from backup: npx tsx scripts/restore-db.ts --key …',
+  'Database was not reverted. If schema changed, restore from backup:\n  node ./node_modules/tsx/dist/cli.mjs scripts/restore-db.ts --key …',
 );
 await prisma.$disconnect();

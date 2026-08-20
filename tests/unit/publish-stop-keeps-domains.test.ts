@@ -94,8 +94,9 @@ beforeEach(() => {
 
 describe('stopDeployment', () => {
   it('detaches the domains instead of deleting their rows', async () => {
-    await stopDeployment(DEPLOYMENT);
+    const result = await stopDeployment(DEPLOYMENT);
 
+    expect(result).toEqual({ stopped: true, deployment: { ...ROW, status: 'STOPPED' } });
     expect(domains.removeDomainsForDeployment).toHaveBeenCalledWith(DEPLOYMENT, {
       deleteRows: false,
     });
@@ -106,17 +107,83 @@ describe('stopDeployment', () => {
       data: { status: 'STOPPED' },
     });
   });
+
+  // Detaching first is what made a failed stop destructive: the hostnames were already
+  // off the application when the Coolify error propagated out of the server action.
+  it('asks Coolify to stop before it detaches any hostname', async () => {
+    const order: string[] = [];
+    coolify.stopApplication.mockImplementation(async () => {
+      order.push('stop');
+    });
+    domains.removeDomainsForDeployment.mockImplementation(async () => {
+      order.push('detach');
+      return 1;
+    });
+
+    await stopDeployment(DEPLOYMENT);
+
+    expect(order).toEqual(['stop', 'detach']);
+  });
+
+  it('reports a refused stop and leaves the deployment exactly as it was', async () => {
+    coolify.stopApplication.mockRejectedValue(new Error('Coolify 502 /applications/stop'));
+
+    const result = await stopDeployment(DEPLOYMENT);
+
+    // Not a throw: the caller needs an answer it can render. The row still says LIVE and
+    // the hostnames are still attached, so a retry is the same operation rather than the
+    // second half of a half-finished one (F-223).
+    expect(result).toEqual({ stopped: false, reason: 'Coolify 502 /applications/stop' });
+    expect(domains.removeDomainsForDeployment).not.toHaveBeenCalled();
+    expect(db.deploymentUpdate).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      'publish.stop_failed',
+      expect.objectContaining({ deploymentId: DEPLOYMENT }),
+    );
+  });
 });
 
 describe('stopProjectDeployments', () => {
   it('detaches on soft-delete, so a restore still has its domains', async () => {
-    const stopped = await stopProjectDeployments('proj_1');
+    const result = await stopProjectDeployments('proj_1');
 
-    expect(stopped).toBe(1);
+    expect(result).toEqual({ stopped: 1, failed: [] });
     expect(domains.removeDomainsForDeployment).toHaveBeenCalledWith(DEPLOYMENT, {
       deleteRows: false,
     });
     expect(db.deploymentDelete).not.toHaveBeenCalled();
+  });
+
+  // The soft-delete path used to write STOPPED whatever Coolify said, so the two code
+  // paths for one concept disagreed about whether a Coolify failure is fatal (F-223).
+  it('does not mark a deployment STOPPED that Coolify refused to stop', async () => {
+    coolify.stopApplication.mockRejectedValue(new Error('connect ECONNREFUSED'));
+
+    const result = await stopProjectDeployments('proj_1');
+
+    expect(result).toEqual({
+      stopped: 0,
+      failed: [{ deploymentId: DEPLOYMENT, reason: 'connect ECONNREFUSED' }],
+    });
+    expect(db.deploymentUpdate).not.toHaveBeenCalled();
+    expect(domains.removeDomainsForDeployment).not.toHaveBeenCalled();
+  });
+
+  it('keeps going after one deployment refuses to stop', async () => {
+    const second = { ...ROW, id: 'dep_2', coolifyAppUuid: 'coolify-app-2' };
+    db.deploymentFindMany.mockResolvedValue([ROW, second]);
+    coolify.stopApplication.mockImplementation(async (_auth: unknown, uuid: string) => {
+      if (uuid === 'coolify-app-1') throw new Error('nope');
+    });
+
+    const result = await stopProjectDeployments('proj_1');
+
+    expect(result.stopped).toBe(1);
+    expect(result.failed).toEqual([{ deploymentId: DEPLOYMENT, reason: 'nope' }]);
+    expect(db.deploymentUpdate).toHaveBeenCalledWith({
+      where: { id: 'dep_2' },
+      data: { status: 'STOPPED' },
+    });
   });
 });
 

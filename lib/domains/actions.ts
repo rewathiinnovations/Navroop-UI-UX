@@ -19,6 +19,7 @@ import type { CustomDomainPath, PublicCustomDomain } from './types';
 import { toPublicCustomDomain, publishedHostFor } from './instructions';
 import { peekRootDomain } from '@/lib/integrations/store';
 import { writeAudit } from '@/lib/audit/log';
+import { log } from '@/lib/logger';
 
 function canMutate(user: { id: string; role: string }, ownerId: string) {
   return user.id === ownerId || user.role === 'ADMIN';
@@ -121,7 +122,13 @@ export async function makeProjectDomainPrimary(projectId: string, domainId: stri
   try {
     await applyPrimaryRedirects(row.deploymentId);
   } catch (error) {
-    console.warn('[domains] primary redirect failed', domainId, error);
+    // The row is already primary; only the Coolify 301s are missing. Reported as a
+    // structured event rather than a console line, because the fix is an operator action.
+    log.warn('domains.primary_redirect_failed', {
+      domainId,
+      deploymentId: row.deploymentId,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
   const data = await asPublic(projectId, domainId);
   if (!data) return { ok: false as const, error: 'Domain not found', status: 404 as const };
@@ -152,10 +159,19 @@ export async function removeProjectDomain(
   try {
     await removeDomainFromCoolify({ deploymentId: row.deploymentId, hostname: row.hostname });
   } catch (error) {
-    console.warn('[domains] Coolify remove failed', domainId, error);
+    // The detach failed, so the hostname is still served by Coolify. Keep the row as the surviving
+    // receipt (F-222), do not write a `domain.remove` audit row as if it succeeded, and hand the
+    // user an error they can act on.
+    const reason = error instanceof Error ? error.message : String(error);
+    log.warn('domains.detach_failed', { domainId, hostname: row.hostname, reason });
+    return {
+      ok: false as const,
+      error: `Could not remove ${row.hostname} from the server: ${reason}. It is still on your list — try again.`,
+      status: 502 as const,
+    };
   }
   if (row.path === 'B' && row.cloudflareZoneId) {
-    console.warn('[domains] Path B zone kept (not deleted)', row.cloudflareZoneId, row.hostname);
+    log.warn('domains.path_b_zone_kept', { zoneId: row.cloudflareZoneId, hostname: row.hostname });
   }
   await deleteCustomDomainRow(row.id);
   await writeAudit({

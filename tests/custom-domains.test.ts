@@ -215,9 +215,9 @@ try {
 
   const checked = await checkDomain(createdDomain.data.id, {
     dns: {
-      resolveTxt: async () => [[createdDomain.data.verifyToken]],
-      resolve4: async () => [FOUND_IP],
-      resolveCname: async () => [],
+      resolveTxt: async () => ({ status: 'records', records: [[createdDomain.data.verifyToken]] }),
+      resolve4: async () => ({ status: 'records', records: [FOUND_IP] }),
+      resolveCname: async () => ({ status: 'no-records' }),
     },
     addToCoolify: async () => {
       throw new Error('Coolify should not run when A record is wrong');

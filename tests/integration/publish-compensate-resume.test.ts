@@ -197,6 +197,9 @@ function publishSpy(
     },
     async addAppDomain() {},
     async applyRedirects() {},
+    async pinCommit(_auth, _appUuid, sha) {
+      return { ok: true as const, sha };
+    },
     async startDeploy() {
       return { deploymentUuid: 'coolify-deployment-1' };
     },

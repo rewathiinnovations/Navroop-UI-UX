@@ -21,7 +21,16 @@ import { pushProjectToGitHubForUser } from '../lib/github/push.js';
 config({ path: resolve(process.cwd(), '.env.local') });
 config({ path: resolve(process.cwd(), '.env') });
 
-if (!process.env.AUTH_SECRET && !process.env.NEXTAUTH_SECRET && !process.env.ENCRYPTION_KEY) {
+/**
+ * This suite is loaded by `tests/integration/legacy-db-suites.test.ts`, so anything
+ * it writes to `process.env` is inherited by every suite the same worker loads after
+ * it. Setting AUTH_SECRET here and walking away made a later auth test pass or fail
+ * depending on load order (F-617); the `finally` at the bottom puts it back, the way
+ * `tests/unit/api-route-auth.test.ts` does.
+ */
+const injectAuthSecret =
+  !process.env.AUTH_SECRET && !process.env.NEXTAUTH_SECRET && !process.env.ENCRYPTION_KEY;
+if (injectAuthSecret) {
   process.env.AUTH_SECRET = 'gh-oauth-test';
 }
 
@@ -391,4 +400,7 @@ try {
   console.error(error);
   await prisma.$disconnect();
   process.exit(1);
+} finally {
+  // Hand the worker back the environment it lent us (F-617).
+  if (injectAuthSecret) delete process.env.AUTH_SECRET;
 }

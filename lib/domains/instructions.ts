@@ -1,11 +1,14 @@
 import { hostForSlug } from '@/lib/publish/slug';
-import { isApexHostname, verifyTxtName } from './hostname';
+import { isApexHostname, subdomainLabelFor, verifyTxtName } from './hostname';
 import {
   TIMELINE_STEPS,
   type CustomDomainRow,
   type DnsInstruction,
   type PublicCustomDomain,
 } from './types';
+
+/** Cloudflare delegates a zone to exactly two nameservers, so Path B always shows two rows. */
+const NAMESERVERS_PER_ZONE = 2;
 
 export function publishedHostFor(input: { slug: string; kind: 'LIVE' | 'PREVIEW'; zone: string }) {
   return hostForSlug(input.slug, input.kind, input.zone);
@@ -29,27 +32,40 @@ export function buildDnsInstructions(
   >,
 ): DnsInstruction[] {
   if (row.path === 'B') {
-    const nameservers = row.nameservers?.length ? row.nameservers : ['Pending nameservers'];
-    return nameservers
-      .slice(0, 2)
-      .map((value, index) => ({
-        type: 'NS' as const,
+    // One row per *distinct* nameserver. The old shape mapped the first two and then
+    // concatenated the first one again when only one was known, so a zone mid-assignment
+    // told the customer to add the same nameserver twice (and printed the placeholder
+    // twice) — F-246. Cloudflare delegates a zone to two, so when fewer than two are
+    // known the missing rows say so instead of repeating what is known.
+    const known: string[] = [];
+    for (const value of row.nameservers ?? []) {
+      const trimmed = value.trim();
+      if (!trimmed || known.includes(trimmed)) continue;
+      known.push(trimmed);
+      if (known.length === NAMESERVERS_PER_ZONE) break;
+    }
+    const rows: DnsInstruction[] = known.map((value) => ({
+      type: 'NS' as const,
+      name: '@',
+      value,
+      ttl: 'Auto',
+    }));
+    while (rows.length < NAMESERVERS_PER_ZONE) {
+      rows.push({
+        type: 'NS',
         name: '@',
-        value,
+        value: `Pending nameserver ${rows.length + 1} of ${NAMESERVERS_PER_ZONE}`,
         ttl: 'Auto',
-      }))
-      .concat(
-        nameservers.length === 1
-          ? [{ type: 'NS' as const, name: '@', value: nameservers[0] ?? '', ttl: 'Auto' }]
-          : [],
-      );
+      });
+    }
+    return rows;
   }
 
   const apex = isApexHostname(row.hostname);
-  const hostLabel = row.hostname.split('.')[0] ?? row.hostname;
+  const label = subdomainLabelFor(row.hostname);
   const records: DnsInstruction[] = apex
-    ? [{ type: 'A', name: '@', value: row.expectedTarget, ttl: '300' }]
-    : [{ type: 'CNAME', name: hostLabel, value: row.expectedTarget, ttl: '300' }];
+    ? [{ type: 'A', name: label, value: row.expectedTarget, ttl: '300' }]
+    : [{ type: 'CNAME', name: label, value: row.expectedTarget, ttl: '300' }];
   records.push({
     type: 'TXT',
     name: verifyTxtName(row.hostname),

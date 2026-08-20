@@ -27,6 +27,20 @@ export function dnsLabel(slug: string, kind: DeploymentKind | 'LIVE' | 'PREVIEW'
   return kind === 'PREVIEW' ? `preview-${slug}` : slug;
 }
 
+/**
+ * The seeded, address-less slug: `startPublishJob` writes `pending-<8 hex>` when it
+ * creates a Deployment row, and the `slug` step replaces it with the claimed one.
+ *
+ * Matched by exact shape rather than by prefix because a project name slugifies into the
+ * same namespace: "Pending Order App" becomes `pending-order-app`, a genuine claimed slug
+ * that `startsWith('pending-')` reads as "no address yet". That mistake is how the publish
+ * sheet rendered somebody else's host (F-244), so anything that decides what address to
+ * show a user must ask this, never the prefix.
+ */
+export function isPlaceholderSlug(slug: string) {
+  return /^pending-[0-9a-f]{8}$/.test(slug);
+}
+
 export function publishIdempotencyKey(projectId: string, kind: string, attempt = 'active') {
   return `publish:${projectId}:${kind}:${attempt}`;
 }

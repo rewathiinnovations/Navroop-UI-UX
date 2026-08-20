@@ -83,12 +83,22 @@ export async function GET(request: NextRequest) {
       return finish(request, 'error');
     }
 
+    // The grant GitHub reports on a real API call, not the one the token response claimed.
+    // This used to be stored as `tokenJson.scope || 'repo'`, so a token that had been granted
+    // nothing was filed as a full `repo` grant — and nothing read the column before pushing
+    // either way (F-271). Empty stays empty: a GitHub App user-to-server token carries no
+    // scope list, and `scopeAllowsPrivatePush` reads that as "GitHub decides", not "denied".
+    const grantedScope = (
+      ghUserRes.headers.get('x-oauth-scopes') ??
+      (typeof tokenJson.scope === 'string' ? tokenJson.scope : '')
+    ).trim();
+
     await upsertGitHubConnection(prisma, {
       userId: user.id,
       githubUserId: String(ghUser.id),
       githubUsername: ghUser.login,
       accessToken: tokenJson.access_token,
-      scope: tokenJson.scope || 'repo',
+      scope: grantedScope,
     });
 
     return finish(request, 'connected');

@@ -1,12 +1,22 @@
+/**
+ * The ten-step publish machine.
+ *
+ * Every label is distinct. Three pairs used to share one — `files`/`slug`, `dns`/`domain`,
+ * `deploy`/`poll` — on the grounds that `PUBLISH_STEPPER` collapses them for the sheet. But
+ * these labels are also written onto `GenerationJob.steps` and rendered one per line by
+ * `RecoveryPanel`, so a failure at `slug` was reported to the user as "Preparing files" —
+ * the name of the step that had already succeeded — and the recovery list printed three
+ * duplicate rows (F-253). The stepper still collapses; the steps now name themselves.
+ */
 export const PUBLISH_STEPS = [
   { id: 1, key: 'limit', label: 'Checking limits' },
   { id: 2, key: 'files', label: 'Preparing files' },
-  { id: 3, key: 'slug', label: 'Preparing files' },
+  { id: 3, key: 'slug', label: 'Reserving the address' },
   { id: 4, key: 'github', label: 'Sending code to GitHub' },
   { id: 5, key: 'app', label: 'Creating the app on the server' },
-  { id: 6, key: 'dns', label: 'Connecting the domain' },
+  { id: 6, key: 'dns', label: 'Pointing DNS at the server' },
   { id: 7, key: 'domain', label: 'Connecting the domain' },
-  { id: 8, key: 'deploy', label: 'Build in progress' },
+  { id: 8, key: 'deploy', label: 'Starting the build' },
   { id: 9, key: 'poll', label: 'Build in progress' },
   { id: 10, key: 'live', label: 'Site is live' },
 ] as const;

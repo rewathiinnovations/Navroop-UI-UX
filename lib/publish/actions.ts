@@ -8,14 +8,24 @@ import { DEFAULT_WORKSPACE_ID } from './constants';
 import { assertPublishSlot, PublishLimitError } from './limits';
 import { getLatestJobByKind, toPublicJob } from '@/lib/jobs';
 import { runPublishJob } from './execute';
-import { getProjectDeployments, startPublishJob, updatePreviewPassword } from './publish';
+import type { PreviewPasswordUpdate } from './publish';
+import {
+  getProjectDeployments,
+  PublishConflictError,
+  startPublishJob,
+  updatePreviewPassword,
+} from './publish';
 import { destroyDeployment, partialTeardownMessage, stopDeployment } from './cleanup';
 import { confirmRepoOverwrite } from './overwrite';
+import { ROLLBACK_CONFIRM_PHRASE } from '@/lib/deploy/rollback';
+import { planDeploymentRollback, rollbackCommitMessage } from './rollback';
+import { readReleaseHistory, settleRollback, startRollback } from './rollback-run';
 import { projectHasPublishableFiles } from './files';
 import { serializeDeployment } from './serialize';
 import { mapPrimaryHosts } from '@/lib/domains/store';
-import { getMissingIntegrations, peekRootDomain } from '@/lib/integrations/store';
+import { getPublishReadiness, peekRootDomain } from '@/lib/integrations/store';
 import { publishBlockedMessage } from '@/lib/integrations/messages';
+import { isPlaceholderSlug } from './naming';
 import { resolveUniqueSlug, urlForSlug } from './slug';
 import { log } from '@/lib/logger';
 import { holdProjectLock } from '@/lib/projects/lock';
@@ -48,31 +58,35 @@ export async function getPublishState(projectId: string) {
   });
   if (!project) return { ok: false as const, error: 'Project not found', status: 404 as const };
 
-  const [deployments, filesState, missing, root] = await Promise.all([
+  const [deployments, filesState, readiness, root] = await Promise.all([
     getProjectDeployments(projectId),
     projectHasPublishableFiles(projectId),
-    getMissingIntegrations(DEFAULT_WORKSPACE_ID),
+    getPublishReadiness(DEFAULT_WORKSPACE_ID),
     peekRootDomain(DEFAULT_WORKSPACE_ID),
   ]);
+  const missing = readiness.missing;
   const isAdmin = user.role === 'ADMIN';
   // `unavailable` is not "no files" — the Publish button hint must not say
   // "Generate the project first" during a storage outage.
   const hasFiles = filesState.status === 'ready';
   const filesHint = filesState.status === 'unavailable' ? filesState.reason : null;
-  const setupMessage = filesHint ?? publishBlockedMessage(missing, isAdmin);
+  const setupMessage = filesHint ?? publishBlockedMessage(missing, isAdmin, readiness.unreadable);
   const canPublish = filesState.status === 'ready' && missing.length === 0;
 
   const existingPreview = deployments.find((row) => row.kind === 'PREVIEW')?.slug ?? null;
   const existingLive = deployments.find((row) => row.kind === 'LIVE')?.slug ?? null;
+  // A placeholder is "not claimed yet", so the candidate is derived from the project
+  // name; a real slug is kept. `isPlaceholderSlug` matches the seeded shape exactly —
+  // `startsWith('pending-')` also matched genuine slugs like `pending-order-app`.
   const previewSlug = await resolveUniqueSlug({
     name: project.name,
     kind: 'PREVIEW',
-    existingSlug: existingPreview?.startsWith('pending-') ? null : existingPreview,
+    existingSlug: existingPreview && isPlaceholderSlug(existingPreview) ? null : existingPreview,
   });
   const liveSlug = await resolveUniqueSlug({
     name: project.name,
     kind: 'LIVE',
-    existingSlug: existingLive?.startsWith('pending-') ? null : existingLive,
+    existingSlug: existingLive && isPlaceholderSlug(existingLive) ? null : existingLive,
   });
   const primaries = await mapPrimaryHosts(deployments.map((row) => row.id));
   const publishJob = await getLatestJobByKind(projectId, 'PUBLISH');
@@ -86,22 +100,11 @@ export async function getPublishState(projectId: string) {
       missingIntegrations: missing,
       setupMessage,
       job: publishJob ? toPublicJob(publishJob) : null,
-      previewUrl: root
-        ? urlForSlug(
-            previewSlug.startsWith('pending-')
-              ? previewSlug.replace(/^pending-/, 'site')
-              : previewSlug,
-            'PREVIEW',
-            root,
-          )
-        : '',
-      liveUrl: root
-        ? urlForSlug(
-            liveSlug.startsWith('pending-') ? liveSlug.replace(/^pending-/, 'site') : liveSlug,
-            'LIVE',
-            root,
-          )
-        : '',
+      // `resolveUniqueSlug` has already resolved the address this publish will claim, so
+      // show that. The old code replaced a `pending-` prefix with the literal `site`,
+      // which is both a wrong address and a slug another project can own (F-244).
+      previewUrl: root ? urlForSlug(previewSlug, 'PREVIEW', root) : '',
+      liveUrl: root ? urlForSlug(liveSlug, 'LIVE', root) : '',
       deployments: deployments.map((row) =>
         serializeDeployment(row, root ?? '', { canonicalHost: primaries.get(row.id) ?? null }),
       ),
@@ -129,8 +132,13 @@ export async function startPublish(
     return { ok: false as const, error: 'Generate the project first', status: 400 as const };
   }
 
-  const missing = await getMissingIntegrations(DEFAULT_WORKSPACE_ID);
-  const setupMessage = publishBlockedMessage(missing, loaded.user.role === 'ADMIN');
+  const readiness = await getPublishReadiness(DEFAULT_WORKSPACE_ID);
+  const missing = readiness.missing;
+  const setupMessage = publishBlockedMessage(
+    missing,
+    loaded.user.role === 'ADMIN',
+    readiness.unreadable,
+  );
   if (setupMessage) {
     return {
       ok: false as const,
@@ -227,19 +235,66 @@ export async function retryPublish(projectId: string, kind: DeploymentKind) {
   return startPublish(projectId, kind);
 }
 
+/**
+ * Sets or clears the preview password, then returns.
+ *
+ * The node-stack path needs a build to carry the new gate, and that build used to be
+ * awaited here: a ten-minute Coolify poll inside a server action that no platform lets
+ * run that long, with no project lock held, so it could interleave with a generation or
+ * another publish and then report "Password update fail" for a publish that was still
+ * running (F-232). It now takes the same lock, runs under the same `after()` and is
+ * followed through the same job as every other publish — the UI already renders that job's
+ * steps.
+ */
 export async function setPreviewPasswordAction(projectId: string, password: string | null) {
   const loaded = await loadMutableProject(projectId);
   if ('error' in loaded) return { ok: false as const, error: loaded.error, status: loaded.status };
+
+  const hold = await holdProjectLock(projectId, loaded.user.id, 'publish');
+  if (!hold.ok) return lockConflictAction(hold);
+
+  let update: PreviewPasswordUpdate;
   try {
-    await updatePreviewPassword({ projectId, userId: loaded.user.id, password });
-    return getPublishState(projectId);
+    update = await updatePreviewPassword({ projectId, userId: loaded.user.id, password });
   } catch (error) {
+    await hold.release();
     return {
       ok: false as const,
       error: error instanceof Error ? error.message : 'Password update fail',
-      status: 400 as const,
+      // A publish of the other kind already running is a retry-later, not a bad request.
+      status: error instanceof PublishConflictError ? (409 as const) : (400 as const),
     };
   }
+
+  // Static stacks are gated by Traefik on the application itself: nothing to build, so the
+  // change is already in force and the lock is not needed past this point.
+  const finish = update.finish;
+  if (!finish) {
+    await hold.release();
+    return getPublishState(projectId);
+  }
+
+  const run = async () => {
+    try {
+      await finish();
+    } finally {
+      await hold.release();
+    }
+  };
+  const report = (error: unknown) => {
+    log.warn('publish.preview_password_background_failed', {
+      projectId,
+      jobId: update.jobId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  };
+  try {
+    after(() => run().catch(report));
+  } catch {
+    void run().catch(report);
+  }
+
+  return getPublishState(projectId);
 }
 
 export async function listWorkspaceDeployments() {
@@ -274,7 +329,18 @@ export async function stopDeploymentAction(id: string) {
   if (!row) return { ok: false as const, error: 'Deployment not found', status: 404 as const };
   if (!canMutate(user, row.project.ownerId))
     return { ok: false as const, error: 'Forbidden', status: 403 as const };
-  const updated = await stopDeployment(id);
+  const outcome = await stopDeployment(id);
+  if (!outcome.stopped) {
+    // Nothing was written, so the deployment is exactly as the user left it: still
+    // running, still serving its custom domains. Saying that is the difference between
+    // "retry this" and a row that claims LIVE under an error toast (F-223).
+    return {
+      ok: false as const,
+      error: `Coolify would not stop this deployment (${outcome.reason}). It is still running and its custom domains are still attached — try again once Coolify is reachable.`,
+      status: 502 as const,
+    };
+  }
+  const updated = outcome.deployment;
   await writeAudit({
     actorId: user.id,
     actorEmail: user.email,
@@ -303,6 +369,151 @@ export async function redeployAction(id: string) {
   if (!canMutate(user, row.project.ownerId))
     return { ok: false as const, error: 'Forbidden', status: 403 as const };
   return startPublish(row.projectId, row.kind);
+}
+
+/**
+ * The releases this deployment could be rolled back to (F-264).
+ *
+ * Owner-gated even though it only reads: the payload is the commit history of a
+ * private deploy repository, and a member who cannot publish the project has no
+ * business enumerating it.
+ */
+export async function listDeploymentReleasesAction(id: string) {
+  const user = await getSessionUser();
+  if (!user) return { ok: false as const, error: 'Sign in required', status: 401 as const };
+  const row = await prisma.deployment.findUnique({
+    where: { id },
+    include: { project: { select: { ownerId: true, deletedAt: true } } },
+  });
+  if (!row || row.project.deletedAt)
+    return { ok: false as const, error: 'Deployment not found', status: 404 as const };
+  if (!canMutate(user, row.project.ownerId))
+    return { ok: false as const, error: 'Forbidden', status: 403 as const };
+  const history = await readReleaseHistory(row);
+  if (!history.ok) return { ok: false as const, error: history.error, status: 502 as const };
+  return {
+    ok: true as const,
+    data: { releases: history.releases, confirmPhrase: ROLLBACK_CONFIRM_PHRASE },
+  };
+}
+
+/**
+ * Deploy a previous release of a published site.
+ *
+ * The pin-and-prove sequence and the release-list membership check both live in
+ * `./rollback.ts`; this is the gate, the project lock, the audit entry and the
+ * hand-off of the build watch to `after()`. What it must never do is report
+ * success for a request that only redeployed the current release — see
+ * `executeDeploymentRollback`.
+ */
+export async function rollbackDeploymentAction(
+  id: string,
+  targetSha: string,
+  confirmation: string,
+) {
+  const user = await getSessionUser();
+  if (!user) return { ok: false as const, error: 'Sign in required', status: 401 as const };
+  const row = await prisma.deployment.findUnique({
+    where: { id },
+    include: { project: { select: { ownerId: true, deletedAt: true } } },
+  });
+  if (!row || row.project.deletedAt)
+    return { ok: false as const, error: 'Deployment not found', status: 404 as const };
+  if (!canMutate(user, row.project.ownerId))
+    return { ok: false as const, error: 'Forbidden', status: 403 as const };
+
+  const history = await readReleaseHistory(row);
+  if (!history.ok) {
+    return {
+      ok: false as const,
+      error: `${history.error} Nothing was deployed.`,
+      status: 502 as const,
+    };
+  }
+  const plan = planDeploymentRollback({
+    deployment: row,
+    releases: history.releases,
+    targetSha: typeof targetSha === 'string' ? targetSha : '',
+    confirmation: typeof confirmation === 'string' ? confirmation : '',
+  });
+  if (!plan.ok) return { ok: false as const, error: plan.error, status: plan.status };
+  // `planDeploymentRollback` refuses a row without one, so this is a narrowing, not a check.
+  const coolifyAppUuid = row.coolifyAppUuid as string;
+
+  const hold = await holdProjectLock(row.projectId, user.id, 'publish');
+  if (!hold.ok) return lockConflictAction(hold);
+
+  let started;
+  try {
+    started = await startRollback({
+      deployment: { id: row.id, serverId: row.serverId, coolifyAppUuid },
+      target: plan.target,
+    });
+  } catch (error) {
+    await hold.release();
+    throw error;
+  }
+  if (!started.ok) {
+    // Nothing was deployed and the row was not touched, so the lock goes straight
+    // back: there is no build for anyone to wait on.
+    await hold.release();
+    return { ok: false as const, error: started.error, status: started.status };
+  }
+
+  const watch = async () => {
+    try {
+      await settleRollback({
+        deploymentId: row.id,
+        serverId: row.serverId,
+        coolifyDeploymentUuid: started.deploymentUuid,
+        target: plan.target,
+      });
+    } finally {
+      await hold.release();
+    }
+  };
+  try {
+    after(() =>
+      watch().catch((error) => {
+        log.warn('publish.rollback_watch_failed', {
+          deploymentId: row.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }),
+    );
+  } catch {
+    void watch().catch((error) => {
+      log.warn('publish.rollback_watch_failed', {
+        deploymentId: row.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
+
+  await writeAudit({
+    actorId: user.id,
+    actorEmail: user.email,
+    action: 'deployment.rollback',
+    targetType: 'deployment',
+    targetId: row.id,
+    before: { commitSha: row.commitSha },
+    after: {
+      slug: row.slug,
+      kind: row.kind,
+      commitSha: started.sha,
+      coolifyDeploymentUuid: started.deploymentUuid,
+    },
+  });
+
+  return {
+    ok: true as const,
+    data: {
+      id: row.id,
+      sha: started.sha,
+      buildLogUrl: started.buildLogUrl,
+      message: `Deploying ${rollbackCommitMessage(plan.target)}. The site will switch over when the build finishes.`,
+    },
+  };
 }
 
 export async function deleteDeploymentAction(id: string, confirmSlug: string) {

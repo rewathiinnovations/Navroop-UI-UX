@@ -123,7 +123,7 @@ const first = await compensateJobResources({
     },
   },
 });
-assert(first.rolledBack === true, 'first-time abandon rolls back');
+assert(first.outcome === 'rolled_back', 'first-time abandon rolls back');
 assert(firstDeleted.includes('coolify:app-1'), 'first-time abandon deletes the Coolify app');
 assert(firstDeleted.includes('repo:org/acme'), 'first-time abandon archives the repo');
 assert(
@@ -148,7 +148,7 @@ const live = await compensateJobResources({
     },
   },
 });
-assert(live.rolledBack === false, 're-publish abandon rolls back nothing');
+assert(live.outcome === 'kept_live', 're-publish abandon rolls back nothing');
 assert(liveDeleted.length === 0, 're-publish abandon deletes no Coolify/DNS/repo');
 
 const now = new Date('2026-08-17T12:00:00.000Z');
@@ -240,7 +240,7 @@ const compensatedAfterKill = await compensateJobResources({
   },
 });
 assert(
-  compensatedAfterKill.rolledBack === true,
+  compensatedAfterKill.outcome === 'rolled_back',
   'abandoned first-time publish cleans up the orphaned Coolify app',
 );
 assert(firstDeleted.includes('postkill:app-new'), 'the orphaned Coolify app is the one deleted');
@@ -266,7 +266,7 @@ const republishCompensate = await compensateJobResources({
     },
   },
 });
-assert(republishCompensate.rolledBack === false, 're-publish interrupt keeps the live site');
+assert(republishCompensate.outcome === 'kept_live', 're-publish interrupt keeps the live site');
 assert(republishDeleted.length === 0, 're-publish interrupt deletes nothing');
 
 // Create-once is NOT an in-process de-duplication map — `execute.ts` has none. It comes

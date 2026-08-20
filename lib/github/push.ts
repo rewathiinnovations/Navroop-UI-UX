@@ -1,4 +1,9 @@
-import { CONNECT_FIRST_MESSAGE, decryptCallerAccessToken } from './connection';
+import {
+  CONNECT_FIRST_MESSAGE,
+  GITHUB_INSUFFICIENT_SCOPE_MESSAGE,
+  readCallerGithubAuth,
+  scopeAllowsPrivatePush,
+} from './connection';
 import { buildRepoFiles } from '@/lib/deploy/repo-files';
 import { getCurrentProjectFiles } from './current-files';
 import { createPrivateRepo, pushViaGitDataApi, type GithubFetch } from './git-data';
@@ -66,8 +71,8 @@ type PushDb = {
   gitHubConnection: {
     findUnique: (args: {
       where: { userId: string };
-      select?: { githubUsername?: boolean; accessTokenEncrypted?: boolean };
-    }) => Promise<{ githubUsername: string; accessTokenEncrypted?: string } | null>;
+      select?: { githubUsername?: boolean; accessTokenEncrypted?: boolean; scope?: boolean };
+    }) => Promise<{ githubUsername: string; accessTokenEncrypted?: string; scope?: string } | null>;
   };
   project: {
     findFirst: (args: {
@@ -130,10 +135,17 @@ export async function pushProjectToGitHubForUser(
     return { ok: false as const, error: 'Forbidden', status: 403 as const };
   }
 
-  const token = await decryptCallerAccessToken(db, user.id);
-  if (!token) {
+  const auth = await readCallerGithubAuth(db, user.id);
+  if (!auth) {
     return { ok: false as const, error: CONNECT_FIRST_MESSAGE, status: 400 as const };
   }
+  // Refuse a grant that provably cannot do this before creating anything (F-271). GitHub
+  // would otherwise answer "Resource not accessible" from inside `createPrivateRepo`, which
+  // names neither the cause nor the fix.
+  if (!scopeAllowsPrivatePush(auth.scope)) {
+    return { ok: false as const, error: GITHUB_INSUFFICIENT_SCOPE_MESSAGE, status: 400 as const };
+  }
+  const token = auth.token;
 
   const generated = deps.getFiles
     ? await deps.getFiles({ lastCode: project.lastCode })

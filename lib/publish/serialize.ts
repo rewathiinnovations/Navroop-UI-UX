@@ -1,27 +1,7 @@
-import type { Deployment, DeploymentKind, DeploymentStatus } from '@/generated/prisma';
+import type { Deployment } from '@/generated/prisma';
+import { isPlaceholderSlug } from './naming';
 import { urlForSlug } from './slug';
-
-export type PublicDeployment = {
-  id: string;
-  projectId: string;
-  workspaceId: string;
-  kind: DeploymentKind;
-  status: DeploymentStatus;
-  slug: string;
-  url: string | null;
-  expectedUrl: string;
-  progressStep: string | null;
-  lastError: string | null;
-  lastRequestId: string | null;
-  buildLogUrl: string | null;
-  publishedAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-  hasPassword: boolean;
-  publishedBy: { id: string; name: string } | null;
-  projectName?: string;
-  canonicalUrl: string;
-};
+import type { PublicDeployment } from './types';
 
 export function serializeDeployment(
   row: Deployment & {
@@ -32,9 +12,13 @@ export function serializeDeployment(
   root: string,
   opts?: { canonicalHost?: string | null },
 ): PublicDeployment {
-  const expectedUrl = root
-    ? urlForSlug(row.slug.startsWith('pending-') ? 'site' : row.slug, row.kind, root)
-    : row.url || '';
+  // No address until the slug is claimed. Substituting the literal `site` produced
+  // `https://site.<zone>` — and `slugFromName` returns `site` for any name that
+  // slugifies to nothing, so that host can be another project's live site. An empty
+  // string is the honest answer and every consumer already renders one (a missing
+  // root domain produces the same).
+  const expectedUrl =
+    root && !isPlaceholderSlug(row.slug) ? urlForSlug(row.slug, row.kind, root) : row.url || '';
   const canonicalUrl = opts?.canonicalHost ? `https://${opts.canonicalHost}` : expectedUrl;
   return {
     id: row.id,

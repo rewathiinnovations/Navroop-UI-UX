@@ -4,6 +4,7 @@ import { testPrismaClient } from '../setup/db';
 import type { CreateApplicationInput, DeploymentHealth } from '@/lib/coolify/client';
 import { getJob, insertJobRaw, updateJobFields } from '@/lib/jobs/store';
 import { runPublishJob, type PublishDeps, type PublishServer } from '@/lib/publish/execute';
+import { DEFAULT_DEPLOY_BRANCH } from '@/lib/publish/constants';
 import { coolifyAppName, deployRepoName, dnsLabel } from '@/lib/publish/naming';
 import { PUBLISH_STEPS } from '@/lib/publish/steps';
 
@@ -188,6 +189,8 @@ type PublishSpy = {
     repoSlug: string | null;
     pushedTo: string | null;
     pushedPaths: string[];
+    /** The ref the push wrote. Must be the branch Coolify is told to build (F-253). */
+    pushedBranch: string | null;
     pushedFiles: Record<string, string>;
     createApp: CreateApplicationInput | null;
     dnsLabel: string | null;
@@ -196,6 +199,8 @@ type PublishSpy = {
     redirectsFor: string | null;
     deployedUuid: string | null;
     polledDeploymentUuid: string | null;
+    /** The commit the loop pinned the application to before deploying (F-264). */
+    pinnedSha: string | null;
   };
 };
 
@@ -223,6 +228,8 @@ function publishSpy(
     /** Runs inside `upsertDns` before it returns; throwing here fails the `dns` step. */
     onDns?: () => Promise<void>;
     onCreateApp?: () => Promise<void>;
+    /** Models Coolify accepting the pin write but not applying it. */
+    pinRefusal?: string;
   } = {},
 ): PublishSpy {
   const calls: string[] = [];
@@ -236,6 +243,7 @@ function publishSpy(
     upsertDns: 0,
     addAppDomain: 0,
     applyRedirects: 0,
+    pinCommit: 0,
     startDeploy: 0,
     deploymentStatus: 0,
   };
@@ -243,6 +251,7 @@ function publishSpy(
     repoSlug: null,
     pushedTo: null,
     pushedPaths: [],
+    pushedBranch: null,
     pushedFiles: {},
     createApp: null,
     dnsLabel: null,
@@ -251,6 +260,7 @@ function publishSpy(
     redirectsFor: null,
     deployedUuid: null,
     polledDeploymentUuid: null,
+    pinnedSha: null,
   };
   const record = (name: keyof PublishDeps) => {
     calls.push(name);
@@ -282,11 +292,12 @@ function publishSpy(
           }
         : { fullName: `deploy-org/${repoSlug}`, repoId: `repo-id-${repoSlug}`, created: true };
     },
-    async pushFiles(repoFullName, files) {
+    async pushFiles(repoFullName, files, _message, _workspaceId, branch) {
       record('pushFiles');
       seen.pushedTo = repoFullName;
       seen.pushedPaths = Object.keys(files).sort();
       seen.pushedFiles = files;
+      seen.pushedBranch = branch;
       return 'commit-sha-1';
     },
     async createApp(_auth, input) {
@@ -310,6 +321,13 @@ function publishSpy(
     async applyRedirects(deploymentId) {
       record('applyRedirects');
       seen.redirectsFor = deploymentId;
+    },
+    async pinCommit(_auth, _appUuid, sha) {
+      record('pinCommit');
+      seen.pinnedSha = sha;
+      return options.pinRefusal
+        ? { ok: false as const, error: options.pinRefusal }
+        : { ok: true as const, sha };
     },
     async startDeploy(_auth, appUuid) {
       record('startDeploy');
@@ -397,6 +415,7 @@ describe('runPublishJob — the shipped ten-step loop', () => {
       'upsertDns',
       'addAppDomain',
       'applyRedirects',
+      'pinCommit',
       'startDeploy',
       'deploymentStatus',
     ]);
@@ -451,7 +470,18 @@ describe('runPublishJob — the shipped ten-step loop', () => {
       `https://github.com/deploy-org/${expectedSlug('happy')}`,
     );
     expect(spy.seen.createApp?.projectUuid).toBe('project-uuid-happy');
+    // Coolify builds the branch the push wrote. These used to be two independent
+    // expressions — `deployment.repoBranch || 'main'` for Coolify, a hardcoded
+    // `refs/heads/main` in the push — so a non-default `repoBranch` would have had Coolify
+    // deploying a ref nothing ever wrote (F-253).
+    expect(spy.seen.pushedBranch).toBe(spy.seen.createApp?.branch);
+    expect(spy.seen.pushedBranch).toBe(DEFAULT_DEPLOY_BRANCH);
     expect(spy.seen.deployedUuid).toBe('coolify-app-1');
+    // Coolify builds `git_commit_sha` when the application carries one, and a rollback
+    // (F-264) leaves it carrying an older release on purpose. Publish therefore re-pins
+    // to the commit it just pushed; without this the build after a rollback would ship
+    // the release the user had just rejected and report a successful publish.
+    expect(spy.seen.pinnedSha).toBe('commit-sha-1');
     // The poll reads the deployment Coolify returned, never the application.
     expect(spy.seen.polledDeploymentUuid).toBe('coolify-deployment-1');
 
@@ -849,6 +879,30 @@ describe('runPublishJob — the shipped ten-step loop', () => {
 
     // Nothing to poll and nothing to guess from: unverifiable is a failure, not a pass.
     expect(spy.counts.startDeploy).toBe(1);
+    expect(spy.counts.deploymentStatus).toBe(0);
+
+    const deployment = await prisma.deployment.findUniqueOrThrow({
+      where: { id: seeded.deploymentId },
+    });
+    expect(deployment.status).toBe('FAILED');
+    expect(deployment.publishedAt).toBeNull();
+  });
+
+  it('deploys nothing when Coolify will not select the commit that was just pushed', async () => {
+    // A rollback (F-264) leaves the application pinned to an older release. If the pin
+    // cannot be moved to the commit this publish pushed, Coolify would build the old
+    // release and the loop would call it a successful publish of the new one.
+    const seeded = await seedCase({ key: 'pinrefused', kind: 'LIVE' });
+    const jobId = await queuePublishJob(seeded, 'LIVE');
+
+    const spy = publishSpy(seeded.server, {
+      pinRefusal: 'Coolify still reports commit older-sha for this application.',
+    });
+
+    await expect(runPublishJob(jobId, spy.deps)).rejects.toThrow('older-sha');
+
+    expect(spy.counts.pinCommit).toBe(1);
+    expect(spy.counts.startDeploy).toBe(0);
     expect(spy.counts.deploymentStatus).toBe(0);
 
     const deployment = await prisma.deployment.findUniqueOrThrow({

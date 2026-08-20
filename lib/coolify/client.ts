@@ -1,14 +1,35 @@
-import { decrypt, isEncrypted } from '@/lib/crypto';
+import { decryptServerToken } from './server-token';
 import { CoolifyApiError, coolifyErrorMessage } from './errors';
+import { scrubSensitive } from '@/lib/sentry/scrub';
 import { getCoolifyCredentials } from './settings';
 
 export type CoolifyClient = {
   baseUrl: string;
   last4: string;
-  source: 'env' | 'stored';
+  /**
+   * Always `'stored'`. The union used to include `'env'`, which nothing could ever produce
+   * (no Coolify token is read from the environment), so the admin branches on it were dead
+   * (F-252).
+   */
+  source: 'stored';
   request: (path: string, init?: RequestInit) => Promise<Response>;
   getJson: <T = unknown>(path: string) => Promise<{ ok: boolean; status: number; data: T | null }>;
 };
+
+/**
+ * Identify the product, not a browser. Both request paths used to send a full desktop Chrome
+ * `User-Agent`, which made every server-to-server call indistinguishable from a human in
+ * Coolify's own access log — so an operator could not attribute deploy traffic to us, and the
+ * spoof read like an attempt to get past something (F-272).
+ */
+const COOLIFY_USER_AGENT = `Navroop/${process.env.npm_package_version ?? '0.1.0'} (+coolify-api)`;
+
+/**
+ * `coolifyFetch` has always had this; the `getCoolifyClient` path had none, so an unresponsive
+ * Coolify hung `testCoolifyApiConnection` and `restartNavroopApplication` until the platform
+ * killed the request (F-273).
+ */
+const COOLIFY_TIMEOUT_MS = 30_000;
 
 /** Coolify Integration store first, then encrypted AppSetting. No env token. */
 export async function getCoolifyClient(): Promise<CoolifyClient | null> {
@@ -23,10 +44,12 @@ export async function getCoolifyClient(): Promise<CoolifyClient | null> {
       headers: {
         Accept: 'application/json',
         Authorization: `Bearer ${creds.token}`,
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': COOLIFY_USER_AGENT,
         ...(init?.headers ?? {}),
       },
+      // A caller-supplied signal wins: it is the only one that can carry a shorter deadline
+      // or a cancellation the caller actually owns.
+      signal: init?.signal ?? AbortSignal.timeout(COOLIFY_TIMEOUT_MS),
     });
   };
 
@@ -107,18 +130,16 @@ function normalizeBase(url: string) {
   return url.trim().replace(/\/+$/, '');
 }
 
+/**
+ * The bearer token for one server.
+ *
+ * `decryptServerToken` decides "encrypted or not" from the `enc:v1:` envelope, so the old
+ * `includes('==') || length > 80` heuristics are gone — and so is the `catch` that turned a
+ * failed decrypt into "send the ciphertext and hope" (F-216). An enc:v1 value that will not
+ * open raises before any request is made.
+ */
 function tokenForServer(server: CoolifyServerAuth) {
-  const raw = server.apiToken.trim();
-  try {
-    // enc:v1 values are always ciphertext; the includes('==')/length heuristics
-    // only remain for rows written before the envelope existed.
-    if (isEncrypted(raw) || raw.includes('==') || raw.length > 80) {
-      return decrypt(raw);
-    }
-  } catch {
-    /* stored plaintext during create before encrypt, or already decrypted */
-  }
-  return raw;
+  return decryptServerToken(server.apiToken);
 }
 
 async function parseBody(response: Response) {
@@ -131,46 +152,65 @@ async function parseBody(response: Response) {
   }
 }
 
+/**
+ * Retry is opt-in per call site, never inferred from the method.
+ *
+ * `coolifyFetch` used to retry any `status >= 500` regardless of method, so a 502 that
+ * arrived after Coolify had already created the application re-POSTed
+ * `/api/v1/applications/public` — a duplicate that runs and bills forever with nothing in
+ * the product pointing at it, since cleanup deletes strictly by recorded provenance
+ * (F-215). Only pure reads pass `retryOnServerError`. Mutating calls are re-driven by the
+ * publish step machine, which persists resource ids and skips completed steps;
+ * `createApplication` additionally re-reads by name (`findApplicationByName`) before every
+ * attempt, which is the idempotency guard the audit accepts. Note that `triggerDeploy` and
+ * `stopApplication` are GETs but MUTATE, so they must never be retried by the transport.
+ */
+type CoolifyFetchOptions = { retryOnServerError?: boolean };
+
+// One retry: a single transient 5xx on a read is worth absorbing; a persistent one is a
+// real failure the caller should see.
+const SERVER_ERROR_RETRIES = 1;
+
 async function coolifyFetch(
   server: CoolifyServerAuth,
   path: string,
   init: RequestInit = {},
-  retried = false,
+  { retryOnServerError = false }: CoolifyFetchOptions = {},
 ): Promise<{ status: number; data: unknown }> {
   const url = `${normalizeBase(server.apiUrl)}${path.startsWith('/') ? path : `/${path}`}`;
-  let response: Response;
-  try {
-    // Trusted host — do not route through safeFetch.
-    response = await fetch(url, {
-      ...init,
-      headers: {
-        Accept: 'application/json',
-        Authorization: `Bearer ${tokenForServer(server)}`,
-        'Content-Type': 'application/json',
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        ...(init.headers ?? {}),
-      },
-      signal: AbortSignal.timeout(30_000),
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Coolify request failed';
-    throw new CoolifyApiError(message, 0, null, path);
+  const maxAttempts = retryOnServerError ? SERVER_ERROR_RETRIES + 1 : 1;
+  for (let attempt = 1; ; attempt += 1) {
+    let response: Response;
+    try {
+      // Trusted host — do not route through safeFetch.
+      response = await fetch(url, {
+        ...init,
+        headers: {
+          Accept: 'application/json',
+          Authorization: `Bearer ${tokenForServer(server)}`,
+          'Content-Type': 'application/json',
+          'User-Agent': COOLIFY_USER_AGENT,
+          ...(init.headers ?? {}),
+        },
+        signal: AbortSignal.timeout(COOLIFY_TIMEOUT_MS),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Coolify request failed';
+      throw new CoolifyApiError(message, 0, null, path);
+    }
+
+    const data = await parseBody(response);
+    if (response.ok) return { status: response.status, data };
+
+    if (response.status >= 500 && attempt < maxAttempts) continue;
+
+    throw new CoolifyApiError(
+      coolifyErrorMessage(data, `Coolify ${response.status} ${path}`),
+      response.status,
+      data,
+      path,
+    );
   }
-
-  const data = await parseBody(response);
-  if (response.ok) return { status: response.status, data };
-
-  if (!retried && response.status >= 500) {
-    return coolifyFetch(server, path, init, true);
-  }
-
-  throw new CoolifyApiError(
-    coolifyErrorMessage(data, `Coolify ${response.status} ${path}`),
-    response.status,
-    data,
-    path,
-  );
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -187,7 +227,7 @@ function pickUuid(value: unknown): string | null {
 }
 
 async function resolveServerUuid(server: CoolifyServerAuth, serverIp: string) {
-  const { data } = await coolifyFetch(server, '/api/v1/servers');
+  const { data } = await coolifyFetch(server, '/api/v1/servers', {}, { retryOnServerError: true });
   const list = Array.isArray(data)
     ? data
     : Array.isArray(asRecord(data).data)
@@ -237,8 +277,46 @@ export async function setApplicationEnvVars(
   }
 }
 
+/**
+ * The current value of one application env var, or null when the application carries no
+ * such key.
+ *
+ * Reading before writing is what makes a preview-password change reversible: the plaintext
+ * lives on the Coolify application and nowhere else, so overwriting `PREVIEW_PASSWORD`
+ * without first holding the previous value means a failed re-publish can never put the
+ * application back — the row said one password and the container's next build would have
+ * accepted another (F-231).
+ *
+ * The value is a secret. It is returned to one caller and never logged; `lib/coolify/errors.ts`
+ * already keeps env payloads out of error text (F-229).
+ */
+export async function getApplicationEnvVar(
+  server: CoolifyServerAuth,
+  appUuid: string,
+  key: string,
+): Promise<string | null> {
+  const { data } = await coolifyFetch(
+    server,
+    `/api/v1/applications/${appUuid}/envs`,
+    {},
+    { retryOnServerError: true },
+  );
+  const list = Array.isArray(data) ? data : [];
+  for (const entry of list) {
+    const row = asRecord(entry);
+    if (row.key !== key) continue;
+    return typeof row.value === 'string' ? row.value : '';
+  }
+  return null;
+}
+
 export async function listApplications(server: CoolifyServerAuth) {
-  const { data } = await coolifyFetch(server, '/api/v1/applications');
+  const { data } = await coolifyFetch(
+    server,
+    '/api/v1/applications',
+    {},
+    { retryOnServerError: true },
+  );
   const list = Array.isArray(data)
     ? data
     : Array.isArray(asRecord(data).data)
@@ -389,6 +467,14 @@ export function deploymentHealthFromStatus(status: string): DeploymentHealth {
 }
 
 /**
+ * Coolify answered but named no status. Distinct from `''`, which the poll read as a
+ * queue state and waited out; the publish poll treats this sentinel as "Coolify did not
+ * report a status" and fails fast after a bounded retry (F-218). Health stays `building`
+ * — an exact-match, non-Coolify word — so it is never mistaken for success.
+ */
+export const COOLIFY_STATUS_UNREPORTED = 'unreported';
+
+/**
  * The state of one deployment — the build this publish job actually triggered.
  *
  * The poll used to read `GET /api/v1/applications/{uuid}` and derive health from the
@@ -411,6 +497,8 @@ export async function getCoolifyDeployment(
     ({ data } = await coolifyFetch(
       server,
       `/api/v1/deployments/${encodeURIComponent(deploymentUuid)}`,
+      {},
+      { retryOnServerError: true },
     ));
   } catch (error) {
     if (error instanceof CoolifyApiError && error.status === 404) {
@@ -420,12 +508,25 @@ export async function getCoolifyDeployment(
   }
   const row = asRecord(data);
   const nested = asRecord(row.data);
-  const status = String(row.status ?? nested.status ?? '');
+  const reported = row.status ?? nested.status;
+  // Coolify answered but named no status. Reading that as `''` mapped to `building`, so
+  // the poll waited the full ten minutes and then reported a queue state Coolify never
+  // reported (F-218). The sentinel keeps health `building` — never `healthy` — and lets
+  // the publish poll fail fast on "Coolify did not report a status" after a bounded retry.
+  if (typeof reported !== 'string' || !reported.trim()) {
+    return { health: 'building', status: COOLIFY_STATUS_UNREPORTED, raw: data };
+  }
+  const status = reported;
   return { health: deploymentHealthFromStatus(status), status, raw: data };
 }
 
 export async function getApplication(server: CoolifyServerAuth, appUuid: string) {
-  const { data } = await coolifyFetch(server, `/api/v1/applications/${appUuid}`);
+  const { data } = await coolifyFetch(
+    server,
+    `/api/v1/applications/${appUuid}`,
+    {},
+    { retryOnServerError: true },
+  );
   return asRecord(data);
 }
 
@@ -514,21 +615,6 @@ export function applicationListsHostname(app: Record<string, unknown>, hostname:
   return parseFqdnList(app.fqdn ?? app.domains).some((entry) => hostFromFqdn(entry) === host);
 }
 
-export function applicationSslReady(app: Record<string, unknown>, hostname: string) {
-  if (!applicationListsHostname(app, hostname)) return false;
-  const raw = JSON.stringify(app).toLowerCase();
-  if (
-    raw.includes('ssl_certificate') ||
-    raw.includes('letsencrypt') ||
-    raw.includes('certificate_id')
-  ) {
-    return true;
-  }
-  return String(app.fqdn ?? '')
-    .toLowerCase()
-    .includes(`https://${hostname.toLowerCase()}`);
-}
-
 export async function setBasicAuth(
   server: CoolifyServerAuth,
   appUuid: string,
@@ -552,6 +638,50 @@ export async function stopApplication(server: CoolifyServerAuth, appUuid: string
   await coolifyFetch(server, `/api/v1/applications/${appUuid}/stop`);
 }
 
+/**
+ * Select which commit the application's next deploy builds, and prove the write
+ * landed before anyone acts on it.
+ *
+ * `/api/v1/deploy` has no parameter naming a release, so this is the only way to
+ * deploy anything other than the branch head. Because it is a *configuration*
+ * write with a deploy behind it, the read-back is not optional: a PATCH that
+ * Coolify accepted but did not apply would otherwise be followed by a deploy of
+ * the release the caller was trying to replace, reported as a success. That
+ * exact bug is why the instance-level rollback was rewritten (F-264), so the
+ * mismatch is a typed refusal rather than a `void` return the caller can ignore.
+ *
+ * Callers: the F-264 project rollback, and the `pin` step of every publish —
+ * which re-pins to the commit it just pushed, so an application left pinned by a
+ * rollback does not silently rebuild the rolled-back release.
+ */
+export async function pinApplicationCommit(
+  server: CoolifyServerAuth,
+  appUuid: string,
+  sha: string,
+): Promise<{ ok: true; sha: string } | { ok: false; error: string }> {
+  try {
+    await coolifyFetch(server, `/api/v1/applications/${appUuid}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ git_commit_sha: sha }),
+    });
+  } catch (error) {
+    const detail = error instanceof CoolifyApiError ? `${error.status}` : 'unreachable';
+    return {
+      ok: false,
+      error: `Coolify refused to select commit ${sha.slice(0, 7)} for this application (${detail}).`,
+    };
+  }
+  const app = await getApplication(server, appUuid);
+  const actual = typeof app.git_commit_sha === 'string' ? app.git_commit_sha : null;
+  if (actual !== sha) {
+    return {
+      ok: false,
+      error: `Coolify still reports commit ${actual ?? 'unknown'} for this application, so the release was not selected.`,
+    };
+  }
+  return { ok: true, sha };
+}
+
 export async function deleteApplication(server: CoolifyServerAuth, appUuid: string) {
   try {
     await coolifyFetch(server, `/api/v1/applications/${appUuid}`, { method: 'DELETE' });
@@ -563,14 +693,27 @@ export async function deleteApplication(server: CoolifyServerAuth, appUuid: stri
 
 export async function testServerConnection(server: CoolifyServerAuth) {
   try {
-    const { status, data } = await coolifyFetch(server, '/api/v1/version');
+    const { status, data } = await coolifyFetch(
+      server,
+      '/api/v1/version',
+      {},
+      { retryOnServerError: true },
+    );
     const row = asRecord(data);
     const version =
       typeof data === 'string' ? data : typeof row.version === 'string' ? row.version : 'ok';
     return { ok: true as const, status, version };
   } catch (error) {
     if (error instanceof CoolifyApiError) {
-      return { ok: false as const, status: error.status, error: error.message, body: error.body };
+      // The admin UI shows this body. `scrubSensitive` is the one redactor the logger,
+      // the audit log and Sentry also use (F-684), so an echoed payload never carries a
+      // token or basic-auth password out of the client (F-229).
+      return {
+        ok: false as const,
+        status: error.status,
+        error: error.message,
+        body: scrubSensitive(error.body),
+      };
     }
     return {
       ok: false as const,

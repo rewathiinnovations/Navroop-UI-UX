@@ -6,7 +6,6 @@ import { cn } from '@/utils/cn';
 import { notify } from '@/lib/notify';
 import {
   addProjectDomain,
-  checkProjectDomain,
   emailProjectDomain,
   listProjectDomains,
   makeProjectDomainPrimary,
@@ -55,13 +54,7 @@ async function copyText(value: string) {
   }
 }
 
-function InstructionTable({
-  rows,
-  onCopied,
-}: {
-  rows: DnsInstruction[];
-  onCopied: (label: string) => void;
-}) {
+function InstructionTable({ rows, onCopied }: { rows: DnsInstruction[]; onCopied: () => void }) {
   return (
     <div className="overflow-x-auto rounded-12 border border-[var(--studio-line)]">
       <table className="w-full text-left text-[12px]">
@@ -88,7 +81,7 @@ function InstructionTable({
                 <button
                   type="button"
                   className="inline-flex items-center gap-4 text-[var(--studio-muted)] hover:text-[var(--studio-fg)]"
-                  onClick={() => void copyText(row.value).then(() => onCopied(row.value))}
+                  onClick={() => void copyText(row.value).then(onCopied)}
                 >
                   <Copy className="size-12" />
                   Copy
@@ -111,7 +104,15 @@ export default function DomainsPanel({ projectId }: { projectId: string }) {
   const [busy, setBusy] = useState('');
   const [emailById, setEmailById] = useState<Record<string, string>>({});
   const [confirmById, setConfirmById] = useState<Record<string, string>>({});
+  // Which card's Copy was pressed, cleared on a timer. This used to hold the
+  // copied *value* and was never reset, so "Copied" sat under every domain card
+  // for the life of the page (F-155).
   const [copied, setCopied] = useState('');
+
+  const markCopied = useCallback((domainId: string) => {
+    setCopied(domainId);
+    window.setTimeout(() => setCopied(''), 1500);
+  }, []);
 
   const load = useCallback(async () => {
     const result = await listProjectDomains(projectId);
@@ -383,7 +384,7 @@ export default function DomainsPanel({ projectId }: { projectId: string }) {
               </p>
             ) : null}
 
-            <InstructionTable rows={domain.instructions} onCopied={(value) => setCopied(value)} />
+            <InstructionTable rows={domain.instructions} onCopied={() => markCopied(domain.id)} />
             <div className="flex flex-wrap items-center gap-8">
               <button
                 type="button"
@@ -393,13 +394,15 @@ export default function DomainsPanel({ projectId }: { projectId: string }) {
                     domain.instructions
                       .map((row) => `${row.type} ${row.name} ${row.value} ${row.ttl}`)
                       .join('\n'),
-                  ).then(() => setCopied('all'))
+                  ).then(() => markCopied(domain.id))
                 }
               >
                 Copy all
               </button>
-              {copied ? (
-                <span className="text-[11px] text-[var(--studio-muted)]">Copied</span>
+              {copied === domain.id ? (
+                <span className="text-[11px] text-[var(--studio-muted)]" role="status">
+                  Copied
+                </span>
               ) : null}
             </div>
 

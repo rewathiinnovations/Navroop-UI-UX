@@ -117,4 +117,54 @@ describe('pushViaGitDataApi', () => {
     const created = repo.calls.find((c) => c.method === 'POST' && c.url.endsWith('/git/refs'));
     expect(created?.body?.ref).toBe('refs/heads/main');
   });
+
+  /**
+   * F-251: `parentSha = ref.ok ? … : undefined` treated every failed read as "there is no
+   * main". On the user's OWN repository that meant building a parentless commit and then
+   * asking GitHub to create a ref that already existed — a 422 "Reference already exists"
+   * the user reads as a product bug, not as "we could not read your branch".
+   */
+  it('refuses when the branch could not be read, instead of assuming it is absent', async () => {
+    for (const status of [403, 500, 502]) {
+      const repo = fakeRepo({ head: null });
+      const original = repo.fetcher;
+      const failingRead: GithubFetch = (url, init) => {
+        if (
+          (init?.method || 'GET').toUpperCase() === 'GET' &&
+          url.includes('/git/ref/heads/main')
+        ) {
+          return Promise.resolve(json(status, { message: `GitHub says ${status}` }));
+        }
+        return original(url, init);
+      };
+      await expect(
+        pushViaGitDataApi({
+          githubFetch: failingRead,
+          token: 'test-key',
+          fullName: 'octocat/site',
+          files: { 'index.html': '<h1>Hi</h1>' },
+        }),
+      ).rejects.toThrow(/could not read main/i);
+      expect(repo.calls.some((c) => c.url.endsWith('/git/refs'))).toBe(false);
+    }
+  });
+
+  it('refuses when the read succeeded but named no commit', async () => {
+    const repo = fakeRepo();
+    const original = repo.fetcher;
+    const shapelessRead: GithubFetch = (url, init) => {
+      if ((init?.method || 'GET').toUpperCase() === 'GET' && url.includes('/git/ref/heads/main')) {
+        return Promise.resolve(json(200, { object: {} }));
+      }
+      return original(url, init);
+    };
+    await expect(
+      pushViaGitDataApi({
+        githubFetch: shapelessRead,
+        token: 'test-key',
+        fullName: 'octocat/site',
+        files: { 'index.html': '<h1>Hi</h1>' },
+      }),
+    ).rejects.toThrow(/could not read main/i);
+  });
 });

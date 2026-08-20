@@ -1,20 +1,10 @@
-import { decrypt, encrypt } from '@/lib/crypto';
 import { prisma } from '@/lib/db';
 import { last4FromSecret } from '@/lib/api-keys';
 import { NO_SERVER_MESSAGE } from '@/lib/publish/constants';
 import { testServerConnection, type CoolifyServerAuth } from './client';
+import { decryptServerToken } from './server-token';
 
-export function encryptServerToken(token: string) {
-  return encrypt(token);
-}
-
-export function decryptServerToken(stored: string) {
-  try {
-    return decrypt(stored);
-  } catch {
-    return stored;
-  }
-}
+export { ServerTokenUnreadableError, decryptServerToken, encryptServerToken } from './server-token';
 
 export function serverAuth(row: { apiUrl: string; apiToken: string }): CoolifyServerAuth {
   return { apiUrl: row.apiUrl, apiToken: decryptServerToken(row.apiToken) };
@@ -32,7 +22,16 @@ export function publicServer(row: {
   createdAt: Date;
   _count?: { deployments: number };
 }) {
-  const token = decryptServerToken(row.apiToken);
+  // `last4` is never derived from a value that failed to decrypt. Computing it over the
+  // ciphertext made /admin/servers confirm a plausible-looking token was present on exactly
+  // the instance that could not use it.
+  let last4: string | null = null;
+  let tokenUnreadable = false;
+  try {
+    last4 = last4FromSecret(decryptServerToken(row.apiToken));
+  } catch {
+    tokenUnreadable = true;
+  }
   return {
     id: row.id,
     name: row.name,
@@ -42,7 +41,8 @@ export function publicServer(row: {
     isActive: row.isActive,
     maxDeployments: row.maxDeployments,
     createdAt: row.createdAt,
-    last4: last4FromSecret(token),
+    last4,
+    tokenUnreadable,
     deploymentCount: row._count?.deployments ?? 0,
   };
 }

@@ -53,9 +53,9 @@ beforeEach(() => {
 
 describe('removeDomainsForDeployment', () => {
   it('detaches from Coolify and keeps the rows when deleteRows is false', async () => {
-    const removed = await removeDomainsForDeployment(DEPLOYMENT, { deleteRows: false });
+    const result = await removeDomainsForDeployment(DEPLOYMENT, { deleteRows: false });
 
-    expect(removed).toBe(1);
+    expect(result).toEqual({ removed: 0, failures: [] });
     expect(coolify.removeApplicationDomain).toHaveBeenCalledWith(
       expect.anything(),
       'app-uuid',

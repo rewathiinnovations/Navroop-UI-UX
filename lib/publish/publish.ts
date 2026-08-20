@@ -1,17 +1,17 @@
 import { randomUUID } from 'node:crypto';
-import type { DeploymentKind } from '@/generated/prisma';
+import type { Deployment, DeploymentKind } from '@/generated/prisma';
 import { prisma } from '@/lib/db';
-import { setApplicationEnvVars, setBasicAuth } from '@/lib/coolify/client';
+import { getApplicationEnvVar, setApplicationEnvVars, setBasicAuth } from '@/lib/coolify/client';
 import { pickCoolifyServer, serverAuth } from '@/lib/coolify/servers';
-import { getMissingIntegrations } from '@/lib/integrations/store';
+import { getPublishReadiness } from '@/lib/integrations/store';
 import { publishBlockedMessage } from '@/lib/integrations/messages';
 import { getStack } from '@/lib/stacks';
 import { createOrReuseJob, getActiveJob } from '@/lib/jobs';
 import { WORKSPACE_ROW_ID } from '@/lib/storage/usage';
 import { log } from '@/lib/logger';
 import { trackStart } from '@/lib/observability/track';
-import { DEFAULT_WORKSPACE_ID, PREVIEW_BASIC_USER } from './constants';
-import { assertPublishSlot } from './limits';
+import { DEFAULT_WORKSPACE_ID, PREVIEW_BASIC_USER, PREVIEW_PASSWORD_ENV } from './constants';
+import { assertPublishSlot, reservePublishSlot } from './limits';
 import { publishIdempotencyKey } from './naming';
 import { runPublishJob } from './execute';
 import { PUBLISH_STEPS } from './steps';
@@ -30,9 +30,22 @@ export class PublishSetupError extends Error {
   }
 }
 
+/**
+ * A publish of the *other* kind is already in flight. 409, not a failure: the caller
+ * can retry once that build finishes.
+ */
+export class PublishConflictError extends Error {
+  readonly status = 409 as const;
+  constructor(message: string) {
+    super(message);
+    this.name = 'PublishConflictError';
+  }
+}
+
 async function assertIntegrationsReady(workspaceId: string) {
-  const missing = await getMissingIntegrations(workspaceId);
-  const message = publishBlockedMessage(missing, true);
+  const readiness = await getPublishReadiness(workspaceId);
+  const missing = readiness.missing;
+  const message = publishBlockedMessage(missing, true, readiness.unreadable);
   if (message) throw new PublishSetupError(message, missing);
 }
 
@@ -44,7 +57,8 @@ export type PublishInput = {
 
 export type PublishStartResult = {
   jobId: string;
-  deploymentId: string;
+  /** Null when this kind has no Deployment row yet — never another id in its place. */
+  deploymentId: string | null;
 };
 
 /**
@@ -74,45 +88,80 @@ export async function startPublishJob(input: PublishInput): Promise<PublishStart
 
   const active = await getActiveJob(input.projectId);
   if (active && (active.status === 'QUEUED' || active.status === 'RUNNING')) {
-    if (active.kind === 'PUBLISH') {
+    // `inputPrompt` carries the kind of a PUBLISH job. Only the job for the *same* kind
+    // may be re-joined: the check used to stop at `kind === 'PUBLISH'`, so clicking
+    // "Go live" during a preview build returned the preview job, a second runner was put
+    // on it, and the live publish never started while the UI followed the preview's
+    // steps to completion (F-239).
+    const activeKind =
+      active.kind === 'PUBLISH' &&
+      (active.inputPrompt === 'LIVE' || active.inputPrompt === 'PREVIEW')
+        ? active.inputPrompt
+        : null;
+    if (activeKind === input.kind) {
       const existing = await prisma.deployment.findUnique({
         where: { projectId_kind: { projectId: input.projectId, kind: input.kind } },
       });
-      return { jobId: active.id, deploymentId: existing?.id || active.id };
+      // No row for this kind yet: say so. `active.id` was a job id in the slot a
+      // Deployment id belongs in — type-correct and wrong, so any caller that trusted
+      // it addressed a row that does not exist.
+      return { jobId: active.id, deploymentId: existing?.id ?? null };
+    }
+    if (activeKind) {
+      throw new PublishConflictError(
+        `A ${activeKind.toLowerCase()} publish is still running for this project. Wait for it to finish, then publish again.`,
+      );
     }
     throw new Error('Wait for the current build to finish');
   }
 
-  let deployment = await prisma.deployment.findUnique({
+  const existing = await prisma.deployment.findUnique({
     where: { projectId_kind: { projectId: input.projectId, kind: input.kind } },
   });
 
-  if (!deployment) {
-    const placeholderSlug = `pending-${requestId.slice(0, 8)}`;
+  const restart = {
+    status: existing?.status === 'LIVE' ? ('LIVE' as const) : ('QUEUED' as const),
+    progressStep: 'limit',
+    lastError: null,
+    lastRequestId: requestId,
+    publishedById: input.userId,
+  };
+
+  // Which write takes a slot: `currentForLimit` counts non-STOPPED deployments, so the
+  // insert and the revival of a STOPPED row each increase the count, while a re-publish of
+  // a row that is already running does not. `assertPublishSlot` above is the pre-flight
+  // that gives the user a 402 before any work starts; the ceiling itself has to hold at
+  // the write, or two concurrent publishes at the ceiling both pass the count and both
+  // insert, over-committing the Coolify server past what the plan sells (F-307).
+  let deployment: Deployment;
+  if (!existing) {
+    // Outside the reservation on purpose: picking a server has no business holding the
+    // limit lock.
     const server = await pickCoolifyServer();
-    deployment = await prisma.deployment.create({
-      data: {
-        projectId: input.projectId,
-        workspaceId,
-        serverId: server.id,
-        kind: input.kind,
-        status: 'QUEUED',
-        slug: placeholderSlug,
-        publishedById: input.userId,
-        lastRequestId: requestId,
-        progressStep: 'limit',
-      },
-    });
+    const placeholderSlug = `pending-${requestId.slice(0, 8)}`;
+    deployment = await reservePublishSlot(workspaceId, input.kind, (tx) =>
+      tx.deployment.create({
+        data: {
+          projectId: input.projectId,
+          workspaceId,
+          serverId: server.id,
+          kind: input.kind,
+          status: 'QUEUED',
+          slug: placeholderSlug,
+          publishedById: input.userId,
+          lastRequestId: requestId,
+          progressStep: 'limit',
+        },
+      }),
+    );
+  } else if (existing.status === 'STOPPED') {
+    deployment = await reservePublishSlot(workspaceId, input.kind, (tx) =>
+      tx.deployment.update({ where: { id: existing.id }, data: restart }),
+    );
   } else {
     deployment = await prisma.deployment.update({
-      where: { id: deployment.id },
-      data: {
-        status: deployment.status === 'LIVE' ? 'LIVE' : 'QUEUED',
-        progressStep: 'limit',
-        lastError: null,
-        lastRequestId: requestId,
-        publishedById: input.userId,
-      },
+      where: { id: existing.id },
+      data: restart,
     });
   }
 
@@ -160,7 +209,13 @@ export async function startPublishJob(input: PublishInput): Promise<PublishStart
 export async function publishProjectAndWait(input: PublishInput) {
   const started = await startPublishJob(input);
   await runPublishJob(started.jobId);
-  return prisma.deployment.findUniqueOrThrow({ where: { id: started.deploymentId } });
+  // Re-joining an in-flight job of the same kind can come back without a row (nothing
+  // has been created for this kind yet), and the runner may have created one since.
+  return started.deploymentId
+    ? prisma.deployment.findUniqueOrThrow({ where: { id: started.deploymentId } })
+    : prisma.deployment.findUniqueOrThrow({
+        where: { projectId_kind: { projectId: input.projectId, kind: input.kind } },
+      });
 }
 
 export async function getProjectDeployments(projectId: string) {
@@ -174,11 +229,37 @@ export async function getProjectDeployments(projectId: string) {
   });
 }
 
+/**
+ * What a preview-password change left to do once the request can safely return.
+ *
+ * Setting a password on a node stack needs a build: the gate is injected into the deploy
+ * repo and the value it compares against is an env var on the Coolify application, so
+ * neither reaches the running container until the next publish. That publish used to be
+ * awaited *inside* the server action, which polls Coolify for up to ten minutes — past
+ * every platform request timeout, after which the user was told "Password update fail"
+ * for a publish that was still running, and with no project lock held the whole time
+ * (F-232). So the request starts the job and hands `finish` back; the caller runs it in
+ * the background under the same lock every other publish entry point takes, and the UI
+ * follows the job's steps exactly as it does for a normal publish.
+ */
+export type PreviewPasswordUpdate = {
+  /** The PREVIEW deployment row as it stands after the password write. */
+  deployment: Deployment;
+  /** The PUBLISH job that carries the new gate into a build; null for static stacks. */
+  jobId: string | null;
+  /**
+   * Runs that build. Node stacks only. Rejects with the build's error after putting the
+   * hash *and* the Coolify env var back, so the row and the application never disagree
+   * about which password is in force.
+   */
+  finish: (() => Promise<void>) | null;
+};
+
 export async function updatePreviewPassword(input: {
   projectId: string;
   userId: string;
   password: string | null;
-}) {
+}): Promise<PreviewPasswordUpdate> {
   const deployment = await prisma.deployment.findUnique({
     where: { projectId_kind: { projectId: input.projectId, kind: 'PREVIEW' } },
     include: { server: true, project: { select: { stack: true } } },
@@ -186,6 +267,24 @@ export async function updatePreviewPassword(input: {
   if (!deployment?.coolifyAppUuid) {
     throw new Error('Publish a preview first');
   }
+  const appUuid = deployment.coolifyAppUuid;
+  const stack = getStack(deployment.project.stack);
+  const auth = serverAuth(deployment.server);
+  const previousHash = deployment.passwordHash;
+
+  // Node stacks only, and before anything is written: the plaintext lives on the Coolify
+  // application and nowhere else, so this read is the only way a failed change can be
+  // undone. Letting the failure out here is deliberate — nothing has been written yet, so
+  // the user retries one operation rather than being left with a row and an application
+  // that disagree (F-231). A Coolify this unreachable would fail the publish anyway.
+  const previousPlaintext =
+    stack.deployType === 'static'
+      ? null
+      : ((await getApplicationEnvVar(auth, appUuid, PREVIEW_PASSWORD_ENV)) ?? '');
+
+  // Dynamic on purpose: `@/lib/password` pulls bcrypt (a native addon) at module scope,
+  // and this is the only path in the publish graph that hashes anything. A static import
+  // would load it for every publish, every job runner and every `getPublishState`.
   const { hashPassword } = await import('@/lib/password');
   const passwordHash = input.password ? await hashPassword(input.password) : null;
   await prisma.deployment.update({
@@ -193,56 +292,80 @@ export async function updatePreviewPassword(input: {
     data: { passwordHash },
   });
 
-  const stack = getStack(deployment.project.stack);
-  const auth = serverAuth(deployment.server);
   if (stack.deployType === 'static') {
+    // Traefik enforces the gate on the application itself, so there is nothing to build.
     await setBasicAuth(
       auth,
-      deployment.coolifyAppUuid,
+      appUuid,
       input.password ? { username: PREVIEW_BASIC_USER, password: input.password } : null,
     );
-  } else {
-    // Node stacks gate in middleware, which reads PREVIEW_PASSWORD from the container.
-    // The Coolify application is the only home for the plaintext (the DB keeps the bcrypt
-    // hash, which middleware cannot verify), so write the env var first, then re-publish:
-    // the injected middleware and the value it compares against land in the same build.
-    // Clearing writes an empty string so a removed password does not linger on the app.
-    await setApplicationEnvVars(auth, deployment.coolifyAppUuid, {
-      PREVIEW_PASSWORD: input.password ?? '',
-    });
-    const started = await startPublishJob({
+    return { deployment: await reloadDeployment(deployment.id), jobId: null, finish: null };
+  }
+
+  // Node stacks gate in middleware, which reads PREVIEW_PASSWORD from the container.
+  // The env var has to be written before the build: Coolify applies it on deploy, so the
+  // injected middleware and the value it compares against land together. Clearing writes
+  // an empty string so a removed password does not linger on the app.
+  const rollback = async () => {
+    // Both writes go back together. Restoring only the hash left the abandoned plaintext
+    // on the application, where the next successful publish would have deployed a gate
+    // accepting a password the product had already told the user was not set (F-231).
+    try {
+      await prisma.deployment.update({
+        where: { id: deployment.id },
+        data: { passwordHash: previousHash },
+      });
+    } catch (error) {
+      log.error('publish.preview_password_rollback_failed', {
+        deploymentId: deployment.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    try {
+      await setApplicationEnvVars(auth, appUuid, {
+        [PREVIEW_PASSWORD_ENV]: previousPlaintext ?? '',
+      });
+    } catch (error) {
+      log.error('publish.preview_password_env_rollback_failed', {
+        deploymentId: deployment.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  let started: PublishStartResult;
+  try {
+    await setApplicationEnvVars(auth, appUuid, { [PREVIEW_PASSWORD_ENV]: input.password ?? '' });
+    started = await startPublishJob({
       projectId: input.projectId,
       kind: 'PREVIEW',
       userId: input.userId,
     });
+  } catch (error) {
+    await rollback();
+    throw error;
+  }
+
+  const finish = async () => {
     try {
       const finished = await runPublishJob(started.jobId);
-      // A runner declines when a publish is already in flight on this job (the F-203
-      // claim), and it returns rather than throws. The middleware carrying the new gate
-      // was therefore never built, so this is the same failure as a build that broke.
+      // A runner declines when a publish is already in flight on this job (the `claimJobRun`
+      // guard), and it returns rather than throws. The middleware carrying the new gate was
+      // therefore never built, so this is the same failure as a build that broke.
       if (finished?.status !== 'SUCCEEDED') {
         throw new Error(
           'A publish is already running for this project. Wait for it to finish, then set the preview password again.',
         );
       }
     } catch (error) {
-      // The gate is injected from the hash, so the hash has to be written before the build.
-      // If the build never lands, the running app still serves the previous middleware —
-      // put the row back rather than let `hasPassword` claim protection nobody deployed.
-      try {
-        await prisma.deployment.update({
-          where: { id: deployment.id },
-          data: { passwordHash: deployment.passwordHash },
-        });
-      } catch (rollbackError) {
-        log.error('publish.preview_password_rollback_failed', {
-          deploymentId: deployment.id,
-          error: rollbackError instanceof Error ? rollbackError.message : String(rollbackError),
-        });
-      }
+      await rollback();
       throw error;
     }
-  }
+  };
 
-  return prisma.deployment.findUniqueOrThrow({ where: { id: deployment.id } });
+  return { deployment: await reloadDeployment(deployment.id), jobId: started.jobId, finish };
+}
+
+function reloadDeployment(id: string) {
+  return prisma.deployment.findUniqueOrThrow({ where: { id } });
 }
