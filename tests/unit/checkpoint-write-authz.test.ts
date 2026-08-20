@@ -8,8 +8,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  * `Project.lastCode` write without the check — so any signed-in member could roll
  * another member's project back to an arbitrary earlier checkpoint, and, with no lock
  * taken either, could land that write in the middle of a running generation and bump
- * `contentVersion` underneath the generating client. Despite its name, "preview" is a
- * write. `toggleCheckpointBookmark` did not even fetch `ownerId`.
+ * `contentVersion` underneath the generating client. `toggleCheckpointBookmark` did not
+ * even fetch `ownerId`.
+ *
+ * Preview and exit no longer touch `lastCode` at all (F-102): they write
+ * `Project.previewingCheckpointId`, and the read path serves the checkpoint's snapshot. The
+ * gate did not move — a preview still changes what every client of the project is served, so
+ * it is still owner-only and still taken under the project lock. What the cases below assert
+ * is the new write, because guarding the old one would guard nothing.
  *
  * Storage-failure semantics for these same three functions live in
  * `checkpoint-restore-storage.test.ts`; this file only asks who is allowed through.
@@ -23,6 +29,7 @@ const db = vi.hoisted(() => ({
   projectUpdate: vi.fn(),
   checkpointFindFirst: vi.fn(),
   checkpointUpdate: vi.fn(),
+  executeRaw: vi.fn(),
 }));
 const actor = vi.hoisted(() => ({ peek: vi.fn() }));
 const lock = vi.hoisted(() => ({ withProjectLock: vi.fn(), bumpContentVersion: vi.fn() }));
@@ -32,6 +39,9 @@ vi.mock('@/lib/db', () => ({
   prisma: {
     project: { findFirst: db.projectFindFirst, update: db.projectUpdate },
     checkpoint: { findFirst: db.checkpointFindFirst, update: db.checkpointUpdate },
+    // Preview and exit write `Project.previewingCheckpointId` with raw SQL, because the
+    // generated client may predate the column (`lib/checkpoints/preview-state.ts`).
+    $executeRaw: db.executeRaw,
   },
 }));
 
@@ -83,6 +93,7 @@ beforeEach(() => {
     fileSnapshot: null,
   });
   db.projectUpdate.mockResolvedValue(undefined);
+  db.executeRaw.mockResolvedValue(1);
   db.checkpointUpdate.mockImplementation(async () => ({
     ...(await db.checkpointFindFirst()),
     isBookmarked: true,
@@ -125,6 +136,9 @@ describe("a non-owning member cannot write another member's project", () => {
         error: 'This project belongs to someone else',
       });
       expect(db.projectUpdate).not.toHaveBeenCalled();
+      // Preview and exit write the previewing pointer with raw SQL rather than through the
+      // `project` delegate, so the refusal has to cover that too.
+      expect(db.executeRaw).not.toHaveBeenCalled();
       // The gate must also stop short of the lock: acquiring it would park the
       // owner's own next generation behind a request that is about to be refused.
       expect(lock.withProjectLock).not.toHaveBeenCalled();
@@ -157,7 +171,7 @@ describe("a non-owning member cannot write another member's project", () => {
 
 describe('the owner and an ADMIN still get through', () => {
   for (const who of [OWNER, ADMIN]) {
-    it(`previewCheckpoint writes lastCode under the project lock for ${who.role}`, async () => {
+    it(`previewCheckpoint marks the previewed version under the project lock for ${who.role}`, async () => {
       // Control: the 403s above must not be a path that is simply broken.
       actor.peek.mockReturnValue(who);
 
@@ -166,15 +180,17 @@ describe('the owner and an ADMIN still get through', () => {
       ).previewCheckpoint(PROJECT, CHECKPOINT);
 
       expect(result.ok).toBe(true);
-      expect(db.projectUpdate).toHaveBeenCalledTimes(1);
-      const written = db.projectUpdate.mock.calls[0]?.[0]?.data?.lastCode as string;
-      expect(written).toContain('src/App.jsx');
-      // The lock is the second half of the fix: this write raced generation before.
+      // A preview no longer writes `Project.lastCode` (F-102). It writes only the pointer, so
+      // that is what the owner gate is guarding now.
+      expect(db.projectUpdate).not.toHaveBeenCalled();
+      expect(db.executeRaw).toHaveBeenCalledTimes(1);
+      // The lock is the second half of the original fix. It stays: a preview changes what
+      // every client of this project is served, so it must not land mid-generation.
       expect(lock.withProjectLock).toHaveBeenCalledTimes(1);
       expect(lock.withProjectLock.mock.calls[0]?.[2]).toBe('generation');
     });
 
-    it(`exitCheckpointPreview writes lastCode under the project lock for ${who.role}`, async () => {
+    it(`exitCheckpointPreview clears the pointer under the project lock for ${who.role}`, async () => {
       actor.peek.mockReturnValue(who);
 
       const result = await (
@@ -182,7 +198,8 @@ describe('the owner and an ADMIN still get through', () => {
       ).exitCheckpointPreview(PROJECT);
 
       expect(result.ok).toBe(true);
-      expect(db.projectUpdate).toHaveBeenCalledTimes(1);
+      expect(db.projectUpdate).not.toHaveBeenCalled();
+      expect(db.executeRaw).toHaveBeenCalledTimes(1);
       expect(lock.withProjectLock).toHaveBeenCalledTimes(1);
     });
   }

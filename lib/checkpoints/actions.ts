@@ -21,6 +21,12 @@ import { gzipSync } from 'node:zlib';
 import { toLastCode } from '@/lib/projects/last-code';
 import { bumpContentVersion, withProjectLock } from '@/lib/projects/lock';
 import { lockConflictAction } from '@/lib/projects/lock-http';
+import {
+  clearPreviewingCheckpoint,
+  markPreviewingCheckpoint,
+  PREVIEW_NOT_MIGRATED_MESSAGE,
+  readPreviewingCheckpointId,
+} from './preview-state';
 
 export type CheckpointTrigger = 'initial' | 'followup' | 'restore';
 
@@ -267,7 +273,14 @@ export async function getCheckpoints(projectId: string) {
     },
   });
 
-  return { ok: true as const, data: rows.map(toPublic) };
+  // Reported alongside the list because it is the only thing that can tell a freshly
+  // loaded page it is looking at an old version (F-102). The workspace used to hold that
+  // in a `useState`, so a reload forgot it while the data stayed rolled back.
+  return {
+    ok: true as const,
+    data: rows.map(toPublic),
+    previewingCheckpointId: await readPreviewingCheckpointId(projectId),
+  };
 }
 
 async function loadProjectForWrite(projectId: string) {
@@ -327,11 +340,24 @@ async function loadSnapshotFiles(
 }
 
 /**
- * Despite the name this is a *write*: it replaces `Project.lastCode`, so it needs the
- * same two guards as `restoreCheckpoint` below. Both were missing. Without the owner
- * check any signed-in member could roll another member's project back to an arbitrary
- * checkpoint; without the lock the write raced a running generation and bumped
- * `contentVersion` underneath the generating client.
+ * Shows an earlier version *without* changing the project.
+ *
+ * This used to write the old snapshot into `Project.lastCode` (F-102). That made previewing
+ * an unmarked, unreversible rollback of the row the product renders, publishes, exports and
+ * checkpoints from — the only note that it was temporary was a `useState`, so one reload left
+ * the project silently *being* the old version, with publish and ZIP export serving it and
+ * the next generation building on it.
+ *
+ * Nothing is written now except `Project.previewingCheckpointId`, and
+ * `lib/checkpoints/served-files.ts` answers the Code tab and the preview pane from that
+ * checkpoint's snapshot. The snapshot is read *first*, so a preview is only ever marked for a
+ * version that can actually be shown — a flag pointing at unreadable bytes would put a
+ * "viewing v3" banner over v9's content.
+ *
+ * The owner check and the project lock stay. Both were added when this wrote content, and
+ * both still earn their place: a preview changes what every client of this project is served,
+ * so landing one mid-generation would show the reader an old tree while a generation writes a
+ * new one.
  */
 export async function previewCheckpoint(projectId: string, checkpointId: string) {
   const { user, err } = await requireActor();
@@ -349,17 +375,34 @@ export async function previewCheckpoint(projectId: string, checkpointId: string)
 
   const loaded = await loadSnapshotFiles(checkpoint);
   if (!loaded.ok) return loaded.err;
-  const files = loaded.files;
-  if (files.length === 0) return prunedError();
+  if (loaded.files.length === 0) return prunedError();
 
   const locked = await withProjectLock(projectId, user.id, 'generation', () =>
-    writeCheckpointFiles(projectId, files),
+    markPreviewingCheckpoint(projectId, checkpointId),
   );
   if (!locked.ok) return lockConflictAction(locked);
+  // The UPDATE's own answer, not a re-read. Each outcome is reported as itself: a project that
+  // vanished under the write is a 404, and an environment whose migration has not been applied
+  // is a 503 an operator can act on. Reporting either as success would promise a preview the
+  // read path will not serve.
+  if (locked.value === 'no-such-project') return notFound();
+  if (locked.value === 'not-migrated') {
+    return { ok: false as const, error: PREVIEW_NOT_MIGRATED_MESSAGE, status: 503 };
+  }
 
   return { ok: true as const, data: toPublic(checkpoint) };
 }
 
+/**
+ * Returns the project to its current version.
+ *
+ * This used to write the newest checkpoint's snapshot back over `lastCode`, because the
+ * preview it was undoing had overwritten it. There is nothing to undo now: clearing the flag
+ * is the whole operation, and the current files were never touched.
+ *
+ * Idempotent by design — the postcondition ("this project is on its current version") holds
+ * whether or not a preview was on, so a second click is not an error.
+ */
 export async function exitCheckpointPreview(projectId: string) {
   const { user, err } = await requireActor();
   if (!user) return err;
@@ -368,25 +411,12 @@ export async function exitCheckpointPreview(projectId: string) {
   if (!project) return notFound();
   if (!canRestore(user, project.ownerId)) return forbidden();
 
-  const latest = await prisma.checkpoint.findFirst({
-    where: { projectId },
-    orderBy: { createdAt: 'desc' },
-  });
-  if (!latest) {
-    return { ok: false as const, error: 'No current checkpoint to restore', status: 409 };
-  }
-
-  const loaded = await loadSnapshotFiles(latest);
-  if (!loaded.ok) return loaded.err;
-  const files = loaded.files;
-  if (latest.snapshotPruned || files.length === 0) return prunedError();
-
   const locked = await withProjectLock(projectId, user.id, 'generation', () =>
-    writeCheckpointFiles(projectId, files),
+    clearPreviewingCheckpoint(projectId),
   );
   if (!locked.ok) return lockConflictAction(locked);
 
-  return { ok: true as const, data: toPublic(latest) };
+  return { ok: true as const, data: null };
 }
 
 export async function restoreCheckpoint(projectId: string, checkpointId: string) {
@@ -432,6 +462,9 @@ export async function restoreCheckpoint(projectId: string, checkpointId: string)
     }
 
     await writeCheckpointFiles(projectId, files);
+    // A restore makes this version the current one, so any preview of it is over. Left set,
+    // the read path would keep serving the pre-restore checkpoint under a stale banner.
+    await clearPreviewingCheckpoint(projectId);
     const created = await createCheckpoint(projectId, {
       trigger: 'restore',
       sourceMessage: null,

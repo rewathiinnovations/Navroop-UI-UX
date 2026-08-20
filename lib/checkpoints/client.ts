@@ -25,6 +25,7 @@ async function readJson(response: Response) {
   return (await response.json().catch(() => null)) as {
     checkpoints?: CheckpointPayload[];
     checkpoint?: CheckpointPayload;
+    previewingCheckpointId?: string | null;
     error?: string;
     code?: string;
     heldBy?: { name?: string };
@@ -33,13 +34,25 @@ async function readJson(response: Response) {
   } | null;
 }
 
-export async function fetchCheckpoints(projectId: string): Promise<Checkpoint[]> {
+/**
+ * The history *and* which version the project is currently previewing.
+ *
+ * The previewing flag comes from the server because it is a column now (F-102): the old
+ * client-only `useState` was lost on reload, so a project that had been rolled back by
+ * "Preview this version" looked like its own current version.
+ */
+export async function fetchCheckpoints(
+  projectId: string,
+): Promise<{ checkpoints: Checkpoint[]; previewingCheckpointId: string | null }> {
   const response = await fetch(`/api/projects/${projectId}/checkpoints`);
   const data = await readJson(response);
   if (!response.ok) {
     throw new Error(data?.error || 'Could not load version history');
   }
-  return (data?.checkpoints ?? []).map(toCheckpoint);
+  return {
+    checkpoints: (data?.checkpoints ?? []).map(toCheckpoint),
+    previewingCheckpointId: data?.previewingCheckpointId ?? null,
+  };
 }
 
 /**

@@ -240,6 +240,18 @@ export function versionPillList(
 }
 
 /**
+ * The `vN` label for one checkpoint, counted the same way the pills count: `checkpoints` is
+ * newest-first, and v7 means the seventh checkpoint ever, not the seventh from the end. Used
+ * for versions outside the newest few, which the pills never show — the preview banner has to
+ * be able to name any version the project is parked on after a reload (F-102).
+ */
+export function versionLabelFor(checkpoints: Checkpoint[], id: string | null): string | null {
+  if (!id) return null;
+  const index = checkpoints.findIndex((checkpoint) => checkpoint.id === id);
+  return index === -1 ? null : `v${checkpoints.length - index}`;
+}
+
+/**
  * A shortcut to the last few versions. Clicking one runs the same preview call the
  * chat's "view this version" button and the history panel restore path already use —
  * a thinned checkpoint has no snapshot to preview, and the server answers those with

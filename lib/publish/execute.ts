@@ -12,7 +12,7 @@ import {
 } from '@/lib/coolify/client';
 import { pickCoolifyServer, serverAuth } from '@/lib/coolify/servers';
 import { upsertARecord } from '@/lib/cloudflare/dns';
-import { applyPrimaryRedirects } from '@/lib/domains/redirects';
+import { applyPrimaryRedirects, type RedirectOutcome } from '@/lib/domains/redirects';
 import { ensureDeployRepo, pushFiles } from '@/lib/github/deploy-client';
 import { getRootDomain } from '@/lib/integrations/store';
 import { getStack } from '@/lib/stacks';
@@ -94,8 +94,15 @@ export type PublishDeps = {
    * while the Domains tab still showed them ACTIVE.
    */
   addAppDomain: (auth: CoolifyServerAuth, appUuid: string, host: string) => Promise<void>;
-  /** Re-asserts primary + alias 301s after the publish host is (re-)attached. */
-  applyRedirects: (deploymentId: string) => Promise<void>;
+  /**
+   * Re-asserts primary + alias 301s after the publish host is (re-)attached.
+   *
+   * Answers an outcome rather than throwing: "no live custom domain" is the normal state for
+   * most publishes, and "the Cloudflare zone is unknown" is a refusal this step must not turn
+   * into a failed publish — `addAppDomain` above already merged the publish host on, so the
+   * site is reachable either way and the refusal is recorded on the domain row (F-207).
+   */
+  applyRedirects: (deploymentId: string) => Promise<RedirectOutcome>;
   /**
    * Selects the commit Coolify's next deploy builds, proven by a read-back. Runs
    * immediately before `startDeploy`; a refusal fails the step rather than deploying

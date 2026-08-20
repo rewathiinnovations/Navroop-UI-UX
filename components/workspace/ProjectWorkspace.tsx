@@ -18,6 +18,7 @@ import VersionHistoryPanel from './VersionHistoryPanel';
 import ProductTour from './ProductTour';
 import WorkspaceTopBar from './WorkspaceTopBar';
 import { useCheckpoints } from './useCheckpoints';
+import { versionLabelFor } from './WorkspaceViewControls';
 import { useStaticPreview } from './useStaticPreview';
 import { useLivePreviewMode } from './useLivePreviewMode';
 import { useProjectPlan } from './useProjectPlan';
@@ -132,12 +133,6 @@ export default function ProjectWorkspace({
   const [chatCollapsed, setChatCollapsed] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   /**
-   * Which checkpoint the reader asked to see, so the matching header pill reads as
-   * selected. It is only ever trusted while `previewing` is true — the hook owns
-   * whether a preview is on at all, so this cannot outlive one.
-   */
-  const [previewedVersionId, setPreviewedVersionId] = useState<string | null>(null);
-  /**
    * The iframe `BrowserPreview` renders, and whether a document is in it.
    *
    * This is the only preview a reader ever sees. The workspace used to hand
@@ -156,10 +151,17 @@ export default function ProjectWorkspace({
     isJobActive,
     generationStatus,
   });
+  /**
+   * `previewingId` is the server's answer, not local state (F-102). It used to be a
+   * `useState` here, set after a preview call that had overwritten `Project.lastCode` — so a
+   * reload dropped the marker while the files stayed rolled back and the project silently
+   * *was* the old version. Nothing local may shadow it.
+   */
   const {
     checkpoints,
     latestCheckpoint,
     previewing,
+    previewingId,
     preview: previewCheckpoint,
     exitPreview,
     restore,
@@ -256,10 +258,7 @@ export default function ProjectWorkspace({
    */
   const handlePreviewCheckpoint = (id: string) => {
     void previewCheckpoint(id).then((result) => {
-      if (result.ok) {
-        setPreviewedVersionId(id);
-        return;
-      }
+      if (result.ok) return;
       if (!('locked' in result && result.locked)) onThreadMessage?.(result.error, 'system');
     });
     onPreviewCheckpoint?.(id);
@@ -391,7 +390,7 @@ export default function ProjectWorkspace({
         sourceUrl={sourceUrl}
         presenceViewers={presence.others}
         checkpoints={checkpoints}
-        activeVersionId={previewing ? previewedVersionId : null}
+        activeVersionId={previewingId}
         onPreviewVersion={handlePreviewCheckpoint}
       />
       <StaleViewBanner
@@ -429,7 +428,7 @@ export default function ProjectWorkspace({
               }
               header={chatHeader}
               onPreviewCheckpoint={handlePreviewCheckpoint}
-              previewedVersionId={previewing ? previewedVersionId : null}
+              previewedVersionId={previewingId}
               latestCheckpoint={latestCheckpoint}
               phase={phase}
               jobStatus={generationJob.job?.status}
@@ -519,6 +518,7 @@ export default function ProjectWorkspace({
             phase={phase}
             planTrigger={plan?.trigger}
             previewing={previewing}
+            previewingLabel={versionLabelFor(checkpoints, previewingId)}
             onExitPreview={() => {
               void exitPreview().then((result) => {
                 if (!result.ok && !('locked' in result && result.locked)) {
@@ -596,6 +596,14 @@ export default function ProjectWorkspace({
           onClose={() => setHistoryOpen(false)}
           projectId={projectId}
           checkpoints={checkpoints}
+          previewingId={previewingId}
+          onExitPreview={() => {
+            void exitPreview().then((result) => {
+              if (!result.ok && !('locked' in result && result.locked)) {
+                onThreadMessage?.(result.error, 'system');
+              }
+            });
+          }}
           onRestore={(id) => {
             void restore(id).then((result) => {
               if (

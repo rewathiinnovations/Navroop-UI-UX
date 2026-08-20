@@ -4,6 +4,7 @@ import {
   readCallerGithubAuth,
   scopeAllowsPrivatePush,
 } from './connection';
+import { clearGitHubConnectionError, noteGitHubConnectionError } from './connection-error';
 import { buildRepoFiles } from '@/lib/deploy/repo-files';
 import { getCurrentProjectFiles } from './current-files';
 import { createPrivateRepo, pushViaGitDataApi, type GithubFetch } from './git-data';
@@ -30,24 +31,19 @@ function pushFailureMessage(message: string): string {
 }
 
 /**
- * Record a rejected token against the connector so /connectors and the health
- * page stop reporting CONNECTED. Best effort — a push already failed, and
- * failing to write the note must not replace that error with a worse one.
+ * Record a rejected token against the *connection that was rejected* — this member's
+ * `GitHubConnection` row — so `/connectors` stops telling them they are connected.
+ *
+ * It used to write `status: 'ERROR'` onto the workspace-wide `GITHUB_DEPLOY` Integration,
+ * which holds the GitHub App credentials publish uses and has nothing to do with any member's
+ * personal OAuth grant. Since the publish gate counts only CONNECTED, one member's expired
+ * authorisation blocked publishing for the whole workspace and pointed an admin at an App
+ * that was never broken (F-206). The deploy App's status may only be written by a check that
+ * actually exercised the App's credentials (F-212).
  */
-async function noteGitHubAuthFailure(message: string): Promise<void> {
+async function noteGitHubAuthFailure(userId: string, message: string): Promise<void> {
   if (!isGitHubAuthFailure(message)) return;
-  try {
-    const [{ prisma }, { WORKSPACE_ROW_ID }] = await Promise.all([
-      import('@/lib/db'),
-      import('@/lib/storage/usage'),
-    ]);
-    await prisma.integration.updateMany({
-      where: { workspaceId: WORKSPACE_ROW_ID, kind: 'GITHUB_DEPLOY' },
-      data: { status: 'ERROR', lastError: GITHUB_REAUTH_MESSAGE, lastCheckedAt: new Date() },
-    });
-  } catch {
-    /* the push error is the one that matters */
-  }
+  await noteGitHubConnectionError(userId, GITHUB_REAUTH_MESSAGE);
 }
 
 export type PushActor = { id: string; role: string };
@@ -172,7 +168,7 @@ export async function pushProjectToGitHubForUser(
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Could not create GitHub repository';
-      await noteGitHubAuthFailure(message);
+      await noteGitHubAuthFailure(user.id, message);
       return { ok: false as const, error: pushFailureMessage(message), status: 502 as const };
     }
   }
@@ -185,7 +181,7 @@ export async function pushProjectToGitHubForUser(
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Could not push to GitHub';
-    await noteGitHubAuthFailure(message);
+    await noteGitHubAuthFailure(user.id, message);
     return {
       ok: false as const,
       error: pushFailureMessage(message),
@@ -194,6 +190,10 @@ export async function pushProjectToGitHubForUser(
     };
   }
 
+  // This member's grant demonstrably works, so any earlier rejection note is stale. Cleared
+  // here rather than only on reconnect: a token that started working again (a re-authorised
+  // App install, a restored network) would otherwise keep warning them on /connectors.
+  await clearGitHubConnectionError(user.id);
   const lastPushedAt = new Date();
   await db.project.update({
     where: { id: project.id },

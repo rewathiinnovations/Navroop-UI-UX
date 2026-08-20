@@ -244,7 +244,11 @@ export async function checkDomain(
     isPrimary: !hasPrimary || row.isPrimary,
   });
   try {
-    await applyPrimaryRedirects(row.deploymentId);
+    const redirects = await applyPrimaryRedirects(row.deploymentId);
+    // A refusal writes its reason to this row's `lastError` (F-207), and `row` above was read
+    // before that write. Returning the stale copy would hand the caller a domain that looks
+    // clean while the Domains tab shows the warning — so re-read it.
+    if (!redirects.ok) row = (await findCustomDomain(id)) ?? row;
   } catch {
     /* Coolify redirect update is best-effort; domain is already live */
   }

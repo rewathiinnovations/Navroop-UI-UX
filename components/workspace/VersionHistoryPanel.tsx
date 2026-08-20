@@ -13,15 +13,24 @@ export default function VersionHistoryPanel({
   onClose,
   projectId,
   checkpoints = [],
+  previewingId = null,
   onRestore,
   onBookmark,
+  onExitPreview,
 }: {
   open: boolean;
   onClose: () => void;
   projectId?: string | null;
   checkpoints?: Checkpoint[];
+  /**
+   * The version the project is currently *viewing*, from `Project.previewingCheckpointId`
+   * (F-102). Previewing no longer rewrites the project, so this panel is where a reader who
+   * came back to a previewing tab finds out which version they are on and gets out of it.
+   */
+  previewingId?: string | null;
   onRestore?: (id: string) => void;
   onBookmark?: (id: string) => void;
+  onExitPreview?: () => void;
 }) {
   const [exportingId, setExportingId] = useState<string | null>(null);
   const [exportHint, setExportHint] = useState<string | null>(null);
@@ -62,6 +71,7 @@ export default function VersionHistoryPanel({
           )}
           {checkpoints.map((checkpoint) => {
             const pruned = Boolean(checkpoint.snapshotPruned);
+            const isPreviewing = checkpoint.id === previewingId;
             /** Used for a missing thumbnail and for one that fails to load (F-129). */
             const thumbnailPlaceholder = (
               <div className="flex size-full items-center justify-center bg-gradient-to-br from-zinc-100 to-zinc-200 text-[11px] text-[var(--studio-faint)] dark:from-zinc-800 dark:to-zinc-900">
@@ -71,9 +81,12 @@ export default function VersionHistoryPanel({
             return (
               <li
                 key={checkpoint.id}
-                className={`mb-8 rounded-12 border border-[var(--studio-line)] p-12 ${
-                  pruned ? 'opacity-50 grayscale' : ''
-                }`}
+                aria-current={isPreviewing ? 'true' : undefined}
+                className={`mb-8 rounded-12 border p-12 ${
+                  isPreviewing
+                    ? 'border-[var(--studio-line-strong)] bg-[var(--studio-surface-hover)]'
+                    : 'border-[var(--studio-line)]'
+                } ${pruned ? 'opacity-50 grayscale' : ''}`}
               >
                 <div className="mb-10 h-72 overflow-hidden rounded-8 bg-[var(--studio-skeleton)]">
                   {checkpoint.thumbnailUrl ? (
@@ -108,6 +121,20 @@ export default function VersionHistoryPanel({
                 <p className="mb-10 text-[11px] text-[var(--studio-faint)]">
                   {formatRelativeTime(checkpoint.createdAt)}
                 </p>
+                {isPreviewing ? (
+                  <div className="mb-10 flex flex-wrap items-center gap-8">
+                    <p className="text-[11px] font-medium text-[var(--studio-fg)]">
+                      You are viewing this version
+                    </p>
+                    <button
+                      type="button"
+                      onClick={onExitPreview}
+                      className="inline-flex min-h-[28px] items-center rounded-full border border-[var(--studio-line-strong)] px-10 text-[11px] font-medium text-[var(--studio-fg)] hover:bg-[var(--studio-surface)]"
+                    >
+                      Back to current
+                    </button>
+                  </div>
+                ) : null}
                 {pruned ? (
                   <p className="text-[12px] text-[var(--studio-muted)]">
                     Old checkpoint — cannot restore

@@ -24,6 +24,7 @@ const db = vi.hoisted(() => ({
   checkpointUpdate: vi.fn(),
   checkpointDelete: vi.fn(),
   checkpointFindUniqueOrThrow: vi.fn(),
+  executeRaw: vi.fn(),
 }));
 const snapshot = vi.hoisted(() => ({ capture: vi.fn(), read: vi.fn(), write: vi.fn() }));
 const order = vi.hoisted(() => ({ events: [] as string[] }));
@@ -38,6 +39,9 @@ vi.mock('@/lib/db', () => ({
       delete: db.checkpointDelete,
       findUniqueOrThrow: db.checkpointFindUniqueOrThrow,
     },
+    // `restoreCheckpoint` clears `Project.previewingCheckpointId` (F-102), written with raw
+    // SQL because the generated client may predate the column.
+    $executeRaw: db.executeRaw,
   },
   Prisma: { DbNull: null },
 }));

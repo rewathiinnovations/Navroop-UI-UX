@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { PROJECT_FILES_CHANGED_EVENT } from '@/lib/preview/events';
 import {
   exitCheckpointPreview,
   fetchCheckpoints,
@@ -39,14 +40,35 @@ export function useCheckpoints({
   onRefresh?: () => void;
 }) {
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
+  /**
+   * Which version is being previewed, as the *server* reports it (F-102).
+   *
+   * This used to be local state set on a successful preview call, while the preview itself
+   * overwrote `Project.lastCode`. A reload therefore dropped the "you are viewing an old
+   * version" marker and left the rolled-back files in place, with no UI trace and no way
+   * back. The preview writes no files now, and this is seeded from `Project` on every
+   * refresh, so it survives F5 and a second tab agrees with the first.
+   */
   const [previewingId, setPreviewingId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  /**
+   * Tells the preview pane and the Code tab to refetch. `/api/projects/[id]/files` answers
+   * from the previewed checkpoint when one is set, so entering or leaving a preview changes
+   * what that route returns without anything having been written to the project.
+   */
+  const reloadServedFiles = useCallback(() => {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent(PROJECT_FILES_CHANGED_EVENT));
+    }
+  }, []);
 
   const refresh = useCallback(async () => {
     if (!projectId) return;
     try {
-      const rows = await fetchCheckpoints(projectId);
-      setCheckpoints(rows);
+      const loaded = await fetchCheckpoints(projectId);
+      setCheckpoints(loaded.checkpoints);
+      setPreviewingId(loaded.previewingCheckpointId);
     } catch {
       /* keep last known list */
     }
@@ -69,6 +91,7 @@ export function useCheckpoints({
       try {
         await previewCheckpoint(projectId, id);
         setPreviewingId(id);
+        reloadServedFiles();
         onRefresh?.();
         return { ok: true as const };
       } catch (error) {
@@ -77,7 +100,7 @@ export function useCheckpoints({
         setBusy(false);
       }
     },
-    [busy, onRefresh, projectId],
+    [busy, onRefresh, projectId, reloadServedFiles],
   );
 
   const exitPreview = useCallback(async () => {
@@ -86,6 +109,7 @@ export function useCheckpoints({
     try {
       await exitCheckpointPreview(projectId);
       setPreviewingId(null);
+      reloadServedFiles();
       onRefresh?.();
       return { ok: true as const };
     } catch (error) {
@@ -93,7 +117,7 @@ export function useCheckpoints({
     } finally {
       setBusy(false);
     }
-  }, [busy, onRefresh, projectId]);
+  }, [busy, onRefresh, projectId, reloadServedFiles]);
 
   const restore = useCallback(
     async (id: string) => {
@@ -104,6 +128,7 @@ export function useCheckpoints({
         await restoreCheckpoint(projectId, id);
         setPreviewingId(null);
         await refresh();
+        reloadServedFiles();
         onRefresh?.();
         return { ok: true as const };
       } catch (error) {
@@ -112,7 +137,7 @@ export function useCheckpoints({
         setBusy(false);
       }
     },
-    [busy, onRefresh, projectId, refresh],
+    [busy, onRefresh, projectId, refresh, reloadServedFiles],
   );
 
   const bookmark = useCallback(
@@ -140,6 +165,8 @@ export function useCheckpoints({
     checkpoints,
     latestCheckpoint: checkpoints[0] ?? null,
     previewing: Boolean(previewingId),
+    /** Which version, so the banner and the header pill can name it. */
+    previewingId,
     preview,
     exitPreview,
     restore,

@@ -15,11 +15,20 @@ export default function ConnectorsGitHubCard({
   githubUsername,
   banner,
   isAdmin = false,
+  connectionError = null,
 }: {
   connected: boolean;
   githubUsername?: string;
   banner: 'connected' | 'error' | 'unconfigured' | null;
   isAdmin?: boolean;
+  /**
+   * This member's own outstanding credential problem, from `GitHubConnection.lastError`
+   * (F-206). Not dismissable and not tied to a query param: it describes durable state that
+   * only reconnecting fixes, unlike the `banner` values which report what just happened in
+   * the OAuth round trip. It used to be written to the workspace GITHUB_DEPLOY integration,
+   * where it blocked publishing for everyone and was never shown to this person at all.
+   */
+  connectionError?: string | null;
 }) {
   const router = useRouter();
   const [visibleBanner, setVisibleBanner] = useState(banner);
@@ -123,6 +132,11 @@ export default function ConnectorsGitHubCard({
                 ? `Connected as ${githubUsername}`
                 : 'Push generated projects to a repo in your GitHub account'}
             </p>
+            {connectionError ? (
+              <p role="alert" className="mt-8 text-[13px] leading-5 text-[var(--studio-danger)]">
+                {connectionError}
+              </p>
+            ) : null}
           </div>
         </div>
 

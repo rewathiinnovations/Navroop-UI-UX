@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionUser } from '@/lib/auth';
 import { prisma } from '@/lib/db';
-import { getCurrentProjectFiles } from '@/lib/github/current-files';
+import { servedProjectFiles } from '@/lib/checkpoints/served-files';
 import { withRequest } from '@/lib/api/with-request';
 
 /**
@@ -35,13 +35,23 @@ async function getFiles(params: Promise<{ id: string }>) {
   // owner-gated (`canMutate`); reading what the project list already advertises
   // is not the boundary worth defending.
 
-  const files = getCurrentProjectFiles({ lastCode: project.lastCode });
+  // A preview is a read: `Project.previewingCheckpointId` decides whether this answers with
+  // the live files or that checkpoint's snapshot, and `Project.lastCode` is never rewritten
+  // to show an old version (F-102). A preview whose snapshot cannot be read is an error here
+  // rather than a quiet fall back to the live files — the pane would otherwise put a
+  // "viewing v3" banner over v9's content.
+  const served = await servedProjectFiles(project);
+  if (!served.ok) {
+    return NextResponse.json({ error: served.error }, { status: served.status });
+  }
+  const files = served.files;
   // `success` and `structure` keep the shape the Code tab already reads, which
   // it used to get from the sandbox file listing.
   return NextResponse.json({
     success: true,
     stack: project.stack,
     contentVersion: project.contentVersion,
+    previewing: served.previewing,
     files,
     structure: Object.keys(files).sort().join('\n'),
   });

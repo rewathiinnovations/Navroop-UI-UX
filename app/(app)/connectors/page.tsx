@@ -5,6 +5,7 @@ import ConnectorsGitHubCard from '@/components/connectors/ConnectorsGitHubCard';
 import { loginModalHref } from '@/lib/auth/public-login';
 import { prisma } from '@/lib/db';
 import { getGitHubConnectionStatusForUser } from '@/lib/github/connection';
+import { readGitHubConnectionError } from '@/lib/github/connection-error';
 
 export default async function ConnectorsPage({
   searchParams,
@@ -16,7 +17,14 @@ export default async function ConnectorsPage({
     redirect(loginModalHref('/connectors'));
   }
 
-  const status = await getGitHubConnectionStatusForUser(prisma, session.user.id);
+  // Two reads, one per row that can be broken: the connection itself, and this member's own
+  // outstanding rejection (F-206). The rejection used to be written to the workspace-wide
+  // GITHUB_DEPLOY integration, which blocked publishing for everyone and was never shown to
+  // the person whose token had actually expired.
+  const [status, connectionError] = await Promise.all([
+    getGitHubConnectionStatusForUser(prisma, session.user.id),
+    readGitHubConnectionError(session.user.id),
+  ]);
   const params = await searchParams;
   const banner =
     params.github === 'connected'
@@ -39,6 +47,7 @@ export default async function ConnectorsPage({
           githubUsername={status.connected ? status.githubUsername : undefined}
           banner={banner}
           isAdmin={isAdmin}
+          connectionError={connectionError}
         />
       </main>
     </StudioShell>

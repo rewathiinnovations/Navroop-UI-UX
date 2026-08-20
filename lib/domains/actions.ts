@@ -5,7 +5,7 @@ import { prisma } from '@/lib/db';
 import { createCustomDomain, type DomainActionResult } from './create';
 import { getProjectDomainState } from './list';
 import { emailDomainInstructions } from './notify';
-import { applyPrimaryRedirects } from './redirects';
+import { applyPrimaryRedirects, type RedirectOutcome } from './redirects';
 import { removeDomainFromCoolify } from './cleanup';
 import { checkDomain } from './verify';
 import { buildDnsInstructions } from './instructions';
@@ -119,8 +119,9 @@ export async function makeProjectDomainPrimary(projectId: string, domainId: stri
   }
   await clearPrimaryForDeployment(row.deploymentId, row.id);
   await updateCustomDomain(row.id, { isPrimary: true });
+  let redirects: RedirectOutcome = { ok: false, reason: 'Redirects were not attempted' };
   try {
-    await applyPrimaryRedirects(row.deploymentId);
+    redirects = await applyPrimaryRedirects(row.deploymentId);
   } catch (error) {
     // The row is already primary; only the Coolify 301s are missing. Reported as a
     // structured event rather than a console line, because the fix is an operator action.
@@ -128,6 +129,17 @@ export async function makeProjectDomainPrimary(projectId: string, domainId: stri
       domainId,
       deploymentId: row.deploymentId,
       error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  // A refusal is not a failed request: the row *is* primary now. But the user has to be told
+  // the 301s did not follow, or they will keep reloading a hostname nothing redirects (F-207).
+  // `applyPrimaryRedirects` has already written the reason to `lastError`, which `asPublic`
+  // reads, so the payload below carries it — this only makes sure it is not silently dropped.
+  if (!redirects.ok) {
+    log.warn('domains.primary_redirect_incomplete', {
+      domainId,
+      deploymentId: row.deploymentId,
+      reason: redirects.reason,
     });
   }
   const data = await asPublic(projectId, domainId);
@@ -183,10 +195,24 @@ export async function removeProjectDomain(
     after: { hostname: row.hostname },
   });
   if (row.isPrimary) {
+    // The removed hostname is already off Coolify, so the site is not depending on this call.
+    // Both a throw and a refusal are logged rather than swallowed: F-207 was a write that
+    // *did* run with partial state, and the paired risk is one that quietly does not run.
     try {
-      await applyPrimaryRedirects(row.deploymentId);
-    } catch {
-      /* remaining domains may still be applied later */
+      const redirects = await applyPrimaryRedirects(row.deploymentId);
+      if (!redirects.ok) {
+        log.warn('domains.primary_redirect_incomplete', {
+          domainId,
+          deploymentId: row.deploymentId,
+          reason: redirects.reason,
+        });
+      }
+    } catch (error) {
+      log.warn('domains.primary_redirect_failed', {
+        domainId,
+        deploymentId: row.deploymentId,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
   return { ok: true as const, data: { id: domainId } };

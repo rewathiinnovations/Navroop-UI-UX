@@ -58,6 +58,7 @@ export default function PreviewPanel({
   phase,
   planTrigger,
   previewing = false,
+  previewingLabel = null,
   onExitPreview,
   previewKind = 'static',
   preparingPreview = false,
@@ -81,6 +82,8 @@ export default function PreviewPanel({
   phase?: ProjectPhase | null;
   planTrigger?: PlanTrigger | null;
   previewing?: boolean;
+  /** `v3`, when the version being previewed is known. Names it in the banner (F-102). */
+  previewingLabel?: string | null;
   onExitPreview?: () => void;
   previewKind?: 'static' | 'live';
   preparingPreview?: boolean;
@@ -180,15 +183,27 @@ export default function PreviewPanel({
        * both the buttons and the banner are gone. Do not re-add them without a
        * server that can actually serve a live preview.
        */}
+      {/*
+       * F-102: the banner is driven by `Project.previewingCheckpointId` now, so it is still
+       * here after a reload. It used to be client-only state over a preview that had
+       * overwritten `Project.lastCode` — reload and the warning vanished while the project
+       * stayed on the old version. It names the version because "an older version" left the
+       * reader with no way to tell which, and no way back except guessing.
+       */}
       {previewing && (
-        <div className="flex items-center justify-between gap-12 border-b border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-8">
+        <div
+          role="status"
+          className="flex items-center justify-between gap-12 border-b border-[var(--studio-line)] bg-[var(--studio-surface)] px-16 py-8"
+        >
           <p className="text-[13px] font-medium text-[var(--studio-fg)]">
-            Viewing an older version
+            {previewingLabel
+              ? `Viewing ${previewingLabel} — an older version. Your current version is safe.`
+              : 'Viewing an older version. Your current version is safe.'}
           </p>
           <button
             type="button"
             onClick={onExitPreview}
-            className="inline-flex min-h-[32px] items-center rounded-full border border-[var(--studio-line-strong)] px-12 text-[12px] font-medium text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)]"
+            className="inline-flex min-h-[32px] shrink-0 items-center rounded-full border border-[var(--studio-line-strong)] px-12 text-[12px] font-medium text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)]"
           >
             Back to current
           </button>

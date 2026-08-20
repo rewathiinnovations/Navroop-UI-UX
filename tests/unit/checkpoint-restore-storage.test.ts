@@ -25,6 +25,8 @@ const db = vi.hoisted(() => ({
   projectFindFirst: vi.fn(),
   projectUpdate: vi.fn(),
   checkpointFindFirst: vi.fn(),
+  executeRaw: vi.fn(),
+  queryRaw: vi.fn(),
 }));
 const actor = vi.hoisted(() => ({ peek: vi.fn() }));
 
@@ -42,6 +44,10 @@ vi.mock('@/lib/db', () => ({
   prisma: {
     project: { findFirst: db.projectFindFirst, update: db.projectUpdate },
     checkpoint: { findFirst: db.checkpointFindFirst },
+    // The preview flag is written with raw SQL (`lib/checkpoints/preview-state.ts`), because
+    // the generated client may predate the column.
+    $executeRaw: db.executeRaw,
+    $queryRaw: db.queryRaw,
   },
 }));
 
@@ -125,6 +131,8 @@ beforeEach(() => {
   db.projectFindFirst.mockReset();
   db.checkpointFindFirst.mockReset();
   db.projectUpdate.mockReset();
+  db.executeRaw.mockReset();
+  db.queryRaw.mockReset();
   actor.peek.mockReturnValue({ id: 'user_owner', role: 'MEMBER', email: 'owner@example.com' });
 
   db.projectFindFirst.mockResolvedValue({
@@ -147,6 +155,8 @@ beforeEach(() => {
     fileSnapshot: null,
   });
   db.projectUpdate.mockResolvedValue(undefined);
+  db.executeRaw.mockResolvedValue(1);
+  db.queryRaw.mockResolvedValue([{ previewingCheckpointId: null }]);
 });
 
 afterEach(() => {
@@ -159,10 +169,16 @@ afterEach(() => {
 
 type ActionResult = { ok: boolean; status?: number; error?: string };
 
+/**
+ * `exitCheckpointPreview` is deliberately not here any more. It used to write the newest
+ * snapshot back over `lastCode` — because the preview it was undoing had overwritten it — so a
+ * storage outage trapped the user in a rolled-back project with no way out. A preview writes
+ * no files now (F-102), so exiting reads no snapshot and has no storage failure mode; the
+ * dedicated case below proves it still works while storage is refusing every request.
+ */
 const PATHS = [
   ['restoreCheckpoint', () => restoreCheckpoint(PROJECT, CHECKPOINT)],
   ['previewCheckpoint', () => previewCheckpoint(PROJECT, CHECKPOINT)],
-  ['exitCheckpointPreview', () => exitCheckpointPreview(PROJECT)],
 ] as const;
 
 describe('a storage failure is not reported as a pruned checkpoint', () => {
@@ -198,16 +214,29 @@ describe('a genuinely pruned checkpoint still says so', () => {
     });
   }
 
-  it('previewCheckpoint writes the files when storage answers', async () => {
+  it('previewCheckpoint marks the version when storage answers, without writing files', async () => {
     // Proof the 503 and 409 cases are not passing because the path is broken outright.
     sdk.send.mockResolvedValue(snapshotBody());
 
     const result: ActionResult = await previewCheckpoint(PROJECT, CHECKPOINT);
 
     expect(result.ok).toBe(true);
-    expect(db.projectUpdate).toHaveBeenCalledTimes(1);
-    const written = db.projectUpdate.mock.calls[0]?.[0]?.data?.lastCode as string;
-    expect(written).toContain('<file path=');
+    // The F-102 contract: the snapshot was read and found good, and the *only* thing written
+    // is the pointer. `Project.lastCode` — what publish, export and the next generation read —
+    // is untouched.
+    expect(db.projectUpdate).not.toHaveBeenCalled();
+    expect(db.executeRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it('exitCheckpointPreview gets the user out even while storage is down', async () => {
+    // The old implementation could not: it needed to read the newest snapshot to put the
+    // files back, so an outage meant staying on the old version.
+    sdk.send.mockRejectedValue(accessDenied());
+
+    const result: ActionResult = await exitCheckpointPreview(PROJECT);
+
+    expect(result.ok).toBe(true);
+    expect(db.projectUpdate).not.toHaveBeenCalled();
   });
 });
 
