@@ -19,11 +19,18 @@ Batch mode (generates multiple variants):
 """
 
 import argparse
+import io
 import os
 import sys
 import time
 from pathlib import Path
 from datetime import datetime
+
+# Force UTF-8 for stdout/stderr to handle emojis on Windows (cp1252 default)
+if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+if sys.stderr.encoding and sys.stderr.encoding.lower() != 'utf-8':
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 # Load environment variables
 def load_env():

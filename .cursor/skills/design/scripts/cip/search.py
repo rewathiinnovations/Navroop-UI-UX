@@ -5,6 +5,7 @@ CIP Design Search CLI - Search corporate identity design guidelines
 """
 
 import argparse
+import io
 import json
 import sys
 from pathlib import Path
@@ -12,6 +13,12 @@ from pathlib import Path
 # Add parent directory for imports
 sys.path.insert(0, str(Path(__file__).parent))
 from core import search, search_all, get_cip_brief, CSV_CONFIG
+
+# Force UTF-8 for stdout/stderr to handle emojis on Windows (cp1252 default)
+if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+if sys.stderr.encoding and sys.stderr.encoding.lower() != 'utf-8':
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 
 def format_results(results, domain):

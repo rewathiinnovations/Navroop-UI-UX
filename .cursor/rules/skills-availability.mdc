@@ -5,10 +5,39 @@ alwaysApply: true
 
 # Skills in this repo
 
-Project skills live under `.cursor/skills/`. Read `SKILL.md` before using a skill. Superpowers process skills come first (brainstorming, systematic-debugging, TDD), then implementation skills.
+Project skills live in **two trees**: `.claude/skills/` is the one Claude Code's Skill tool loads,
+`.cursor/skills/` is the one Cursor loads. They are copies of each other and
+`tests/unit/skill-trees-in-sync.test.ts` fails if a paired file differs by a byte, so reading either
+gives the same text — read the one your host actually loads, and when you edit a skill, copy the
+edit to the other tree (`CLAUDE.md`, "Skills"). Read `SKILL.md` before using a skill. Superpowers
+process skills come first (brainstorming, systematic-debugging, TDD), then implementation skills.
 
-**In this repo:** Superpowers, Cursor core (`create-rule`, `create-skill`, canvas, …), and UI/design (`ui-ux-pro-max`, `ui-styling`, `design`, `design-system`).
+**In this repo:** Superpowers, Cursor core (`create-rule`, `create-skill`, canvas, …), and UI/design
+(`ui-ux-pro-max`, `ui-styling`, `design`, `design-system`). The Cursor core pack is
+`.cursor/skills/cursor/` only and is deliberately absent from `.claude/skills/` — it automates
+Cursor's own tools and paths (`CLAUDE.md` lists the excluded set).
 
-**Not copied (still available from the user profile `~/.cursor/skills/`):** `omni-*`, `gstack-*`, `coolify*`, `whm-cpanel`, `cloudflare*`, `cli-*`, `banner-design`, `brand`, `slides`, `omniroute`, `ponytail`. Do not vendor those trees into this repo.
+## Skills that spend money
+
+Only `design` does, through three of its commands, and it is auto-selectable — its `description:`
+advertises logo, icon and CIP generation, so a request like "design a logo" can reach it without
+anyone deciding to spend. All three call Google's **paid** Gemini API with `GEMINI_API_KEY`:
+
+| Command | What a single run bills |
+| ------- | ----------------------- |
+| `design/scripts/logo/generate.py` | 1 paid image; `--batch N` is N images (max 9) |
+| `design/scripts/cip/generate.py` | 1 paid image per deliverable; `--set` is 5; `--model pro` costs more each |
+| `design/scripts/icon/generate.py` | 1 paid text request; `--sizes "16,24,32,48"` is one per size |
+
+`GEMINI_API_KEY` is also the environment fallback for the `ai.google.apiKey` setting, which the
+product uses for Imagen-3 image generation (`lib/assets/generate-image.ts`) and asset alt text
+(`lib/assets/alt-text.ts`) — so this spends against the same Google billing account as user-facing
+generation, with no `checkCredits` call and nothing on `/admin/usage`. Confirm with the key's owner
+first. The `search.py` briefs, `render-html.py`, Slides, Banner and Social Photos are local and
+free; so is every other vendored skill.
+
+**Not copied (still available from the user profile `~/.cursor/skills/`):** `omni-*`, `gstack-*`,
+`coolify*`, `whm-cpanel`, `cloudflare*`, `cli-*`, `banner-design`, `brand`, `slides`, `omniroute`,
+`ponytail`. Do not vendor those trees into this repo.
 
 See `.cursor/README.md` and `AGENTS.md` for the directory map.

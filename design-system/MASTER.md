@@ -3,7 +3,8 @@
 Product UI for auth and dashboard. Generated websites use a per-request UI/UX Pro Max brief at creation time.
 
 ## Product chrome
-- Keep the existing Firecrawl heat/orange brand (`#FA4500`)
+
+- Brand accent is Navroop's own heat scale: `--heat-4` … `--heat-200`, declared in `styles/design-system/colors.css` (`--heat-100` is `#fa5d19`). Reach for `var(--heat-*)` or the `heat-*` Tailwind utility, never a literal hex — the two literals left in the tree (`#FA4500` in `components/ui/shadcn/checkbox.tsx` and `toggle.tsx`) are hover states that predate the token and do not match it. Product chrome is Navroop's, per `.cursor/rules/navroop-product.mdc`; no other company's identity is to be preserved here.
 - Surfaces: white cards on `background-base`
 - Type: Inter / existing Geist stack
 - Motion: 150-200ms color/opacity/transform only
@@ -11,13 +12,14 @@ Product UI for auth and dashboard. Generated websites use a per-request UI/UX Pr
 - Controls: 44px minimum, visible focus rings, labeled inputs
 
 ## Generated websites
+
 `lib/ui-ux-pro-max/build-design-brief.ts` selects style, color, type, and landing pattern from the user prompt + selected style, then injects it into the generation system prompt.
 
 ## Admin (`/admin/**`)
 
 Everything under `/admin` renders through `components/admin/*`, not hand-rolled markup. A page that needs a new pattern extends one of these rather than reinventing it, so the whole section stays one system instead of fourteen ad hoc ones.
 
-- **Navigation**: `components/admin/admin-nav.ts` is the *only* place admin routes, labels, descriptions, and icons are declared — `AdminNav` (rail), the admin home cards, and `AdminPage` breadcrumbs all read from it. Adding a page means adding one entry here; nothing else needs to change, and `tests/unit/admin-nav-coverage.test.ts` fails if a route exists with no entry.
+- **Navigation**: `components/admin/admin-nav.ts` is the _only_ place admin routes, labels, descriptions, and icons are declared — `AdminNav` (rail), the admin home cards, and `AdminPage` breadcrumbs all read from it. Adding a page means adding one entry here; nothing else needs to change, and `tests/unit/admin-nav-coverage.test.ts` fails if a route exists with no entry.
 - **Icons**: one icon per admin section, resolved through `AdminIcon.tsx` from the `AdminIconName` union — never inline a different icon for the same section in two places. Within a page, give each card and stat tile its own icon too; an admin screen with no icons reads as a wall of text.
 - **Page header**: every page opens with `<AdminPage icon="…" title="…" description="…">`. `title` is the page's own name, never the word "Admin" — the heading is how someone confirms which of fourteen pages they're on.
 - **Sections**: wrap distinct concerns in `<AdminCard icon title description>`, not a bare `<section>` or a raw bordered `<div>`. A page with four or more anchor-worthy sections (Config, Health) also gets a jump-nav chip row (`<a href="#id">`) right under the header, one chip per card `id`.

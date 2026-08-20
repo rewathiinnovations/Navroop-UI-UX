@@ -17,9 +17,13 @@ Optional aliases: `AUTH_URL`, `NEXTAUTH_SECRET`. Optional first-admin: `SEED_ADM
 
 ## Optional
 
-`POSTGRES_USER`, `POSTGRES_DB` (defaults `navroop`), `PORT` (default `3000`), `NEXT_PUBLIC_WORKSPACE_NAME`, `APP_URL`, `ENCRYPTION_KEY` (≥ 32 bytes), `CRON_SECRET`, `DATA_DIR` (default `/data`), `OBSERVABILITY_CONFIG_PATH` (default `/data/config/observability.json`), `STORAGE_DRIVER`, `ELK_*`, `BACKUP_*`, `S3_PUBLIC_URL`, `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET`, `GITHUB_OAUTH_CALLBACK_URL`, `FIRECRAWL_API_KEY`, `AI_GATEWAY_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `MORPH_API_KEY`.
+`POSTGRES_USER`, `POSTGRES_DB` (defaults `navroop`), `PORT` (default `3000`), `NEXT_PUBLIC_WORKSPACE_NAME`, `APP_URL`, `ENCRYPTION_KEY` (≥ 32 bytes), `CRON_SECRET`, `DATA_DIR` (default `/data`), `OBSERVABILITY_CONFIG_PATH` (default `/data/config/observability.json`), `STORAGE_DRIVER`, `ELK_*`, `BACKUP_*`, `S3_PUBLIC_URL`, `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET`, `GITHUB_OAUTH_CALLBACK_URL`, `FIRECRAWL_API_KEY`, `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `GIT_SHA` / `SOURCE_COMMIT`.
 
-Most of those are also editable in `/admin/config` (runtime), where a saved value wins over the env variable — `APP_URL`, `CRON_SECRET`, `STORAGE_DRIVER`, `ELK_*`, `BACKUP_*`, `S3_PUBLIC_URL`, `GITHUB_OAUTH_*`, `FIRECRAWL_API_KEY`, `MORPH_API_KEY` and the AI keys. Container-level values (`POSTGRES_*`, `PORT`, `DATA_DIR`, `OBSERVABILITY_CONFIG_PATH`, `ENCRYPTION_KEY`, `NEXT_PUBLIC_WORKSPACE_NAME`) are env only. `E2B_API_KEY` is still read into the `tooling.e2b.apiKey` setting but nothing consumes it: generated code no longer runs in a sandbox VM.
+`.env.example` is the authoritative list and carries a build-time/runtime label per variable; this section is the deployment-shaped subset. Two corrections it took a while to make: `AI_GATEWAY_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY` and `MORPH_API_KEY` used to be listed here and no code reads them — `GROQ_API_KEY` and `AI_GATEWAY_API_KEY` survive only in one diagnostic log line (`app/api/generate-ai-code-stream/route.ts`), Morph Fast Apply was deleted — while `DEEPSEEK_API_KEY`, the only key planning and building need, was missing, so a service with every listed variable set still failed with "DeepSeek is not configured". `GIT_SHA` is the release sha `/admin/health` and the rollback runbook compare against (runtime; Coolify sets it per deploy) and `SOURCE_COMMIT` is the fallback name read when `GIT_SHA` is absent (`lib/deploy/release.ts`, `lib/health/check.ts`) — a deployment that sets only `SOURCE_COMMIT` still reports a version, which is worth knowing before a rollback.
+
+Most of those are also editable in `/admin/config` (runtime), where a saved value wins over the env variable — `APP_URL`, `CRON_SECRET`, `STORAGE_DRIVER`, `ELK_*`, `BACKUP_*`, `S3_PUBLIC_URL`, `GITHUB_OAUTH_*`, `FIRECRAWL_API_KEY` and `DEEPSEEK_API_KEY`. That page renders entirely from `lib/settings/registry.ts`, so a variable with no registry entry has no field on it. Container-level values (`POSTGRES_*`, `PORT`, `DATA_DIR`, `OBSERVABILITY_CONFIG_PATH`, `ENCRYPTION_KEY`, `NEXT_PUBLIC_WORKSPACE_NAME`) are env only.
+
+**There are two credential stores and this section used to describe them as one.** `/admin/config` is the settings registry (`AppSetting` rows). The image keys are the other store: `OPENAI_API_KEY` and `GEMINI_API_KEY` resolve per request as personal `ApiKey` row → team `OrgApiKey` row → environment (`getEffectiveApiKey`, `lib/api-keys.ts`), and `/settings/api-keys` offers Firecrawl alone (`SETTINGS_API_KEY_PROVIDERS`), so on a deployment those two are set here, on the service. The sentence this replaces said "and the AI keys" were editable in `/admin/config`, which sent operators looking for fields that do not exist, and it documented an `E2B_API_KEY` feeding a `tooling` E2B setting — no registry entry defines that setting and no file under `lib/`, `app/`, `config/` or `scripts/` reads that variable. Generated code no longer runs in a sandbox VM, so neither the variable nor the setting is real. `tests/unit/docs-accuracy.test.ts` fails this file if it names a setting the registry does not define.
 
 Publish integrations (GitHub App, Cloudflare, Coolify) are configured in `/admin/integrations` — not env. Public host `162.35.99.80`. Local agent logins live in gitignored `.cursor/.env.deploy` — do not commit.
 
@@ -52,7 +56,16 @@ Set `CRON_SECRET`. Add Coolify scheduled tasks (POST + `Authorization: Bearer $C
 
 **A `409` from a cron endpoint is not a failure.** Each run claims an in-flight marker first (`AppSetting` key `cron.inflight.<name>`), so a second invocation of the same task while the first is still working answers `409` with code `CRON_ALREADY_RUNNING` instead of doubling the work — do not alert on it, and do not retry it. Only the run holding the claim writes a `CronRun` row, so a refused request never records a red run against the wrong invocation. A claim is considered abandoned after the per-cron budget in `lib/cron/claim.ts` (`CRON_CLAIM_STALE_MS`: 5 minutes for the minute-tick tasks, 30 for the daily maintenance ones, 60 for the dump and object-store ones, 15 by default) — this is an in-flight budget, deliberately not `CRON_STALE_MS`, whose 48-hour entries answer a different question (a task that stopped being scheduled at all). The next invocation after an abandoned claim takes it over and writes the failed `CronRun` row the killed run never got to.
 
-Every task above except `system-checks-digest` is monitored by `CRON_STALE_MS`, so /admin/health and the daily digest name it if it stops running. `system-checks-digest` is the sender and cannot report its own silence: if it is never scheduled, or its task is deleted, nothing in the product notices and total silence looks identical to everything being healthy. Point an external dead-man's-switch (an uptime monitor with an expected-ping schedule) at that task so the digest going dark is itself an alert.
+Every task above except `system-checks-digest` is monitored by `CRON_STALE_MS`, so /admin/health and the daily digest name it if it stops running. `system-checks-digest` is the sender and cannot report its own silence: if it is never scheduled, or its task is deleted, nothing in the product notices and total silence looks identical to everything being healthy.
+
+**External dead-man's-switch (do this, or nothing watches the watcher).** Every digest run calls one outbound URL, and a _missing_ call is the alert. The monitor is yours to own; the product only pings it.
+
+1. Create a heartbeat/push check on any monitor that alerts on a missed ping — Healthchecks.io ("ping URL"), Better Stack heartbeats, Uptime Kuma push monitor, Cronitor.
+2. Set its expected period to **one day** with a grace of a few hours, matching the digest's daily schedule above. A shorter period alerts on every normal day; a longer one delays the alert past the point of usefulness.
+3. Paste the ping URL into **Admin → Configuration → Application → Monitoring heartbeat URL** (runtime; no rebuild, no restart — it is read per run). Leave it blank and no ping is made and nothing complains, which is the pre-existing blind spot.
+4. Confirm it once by firing `POST /api/cron/system-checks-digest` by hand (see below) and checking the monitor recorded a ping.
+
+The digest calls the URL on every run, including the quiet run where nothing is stale — that quiet run is the common case, so a ping only on bad news would prove nothing. A ping that does not leave the building (DNS failure, non-2xx answer, malformed URL) makes the digest run itself fail, so it appears in Coolify's task history and on /admin/health rather than being swallowed. Nothing is retried: one missed ping on a daily schedule is what the monitor's grace period is for.
 
 ```bash
 curl -X POST https://YOUR_HOST/api/cron/check-domains \
@@ -99,6 +112,21 @@ curl -X POST https://YOUR_HOST/api/cron/sweep-tmp \
 ```
 
 Optional env: `CHECKPOINT_RETENTION_DAYS` (default 7), `PURGE_DELETED_DAYS` (default 30). Both are also editable in `/admin/config` (runtime), where a saved value wins over the env variable.
+
+## Unreferenced objects in the bucket
+
+`verify-storage` (weekly, above) does three things: it HEADs a page of checkpoint snapshots and reads the newest one back, it diffs every prefix this product writes against the rows that reference it, and it recomputes `Workspace.storageBytes` from those rows — which is also what repairs the ledger if a purge died halfway.
+
+The snapshot check is **paged**: `VERIFY_CHECKPOINT_LIMIT` snapshots per run, resuming from an `AppSetting` cursor (`backup.verifyCursor`) and wrapping to the start when it reaches the end. So a large installation verifies its whole bucket over several weeks rather than timing out every week. The run reports `checked`, `totalSnapshots` and `nextCursor`.
+
+The diff covers `snapshots/`, `previews/`, `projects/`, `users/` and `templates/`. An object under one of those prefixes that no row points at is **orphaned** — abandoned by a failed upload, a delete that half-completed, or a prune whose object delete failed. Two settings in **Admin → Configuration → Storage** control what happens (both runtime; no rebuild, no restart):
+
+| Setting                             | Default     | Meaning                                                                                                                                                                    |
+| ----------------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Orphaned object grace period (days) | 14          | An orphan younger than this is never touched. Uploads happen seconds before the row that references them, so a short window would flag files that are about to be claimed. |
+| Orphaned objects                    | Report only | `Report only` counts them on /admin/backups. `Delete after the grace period` also removes them, at most a few hundred per run.                                             |
+
+**Start on Report only.** Read the counts on /admin/backups for a week or two and confirm they look like abandoned uploads and not your live files, then switch to Delete. The classifier is only as good as its list of prefixes, so reporting a false orphan has to stay the cheap mistake. When orphans grow past a tenth of the storage the installation is billed for, the run adds a warning naming the bytes and what switching the setting would reclaim.
 
 ## Static preview hostname
 

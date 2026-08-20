@@ -4,61 +4,65 @@ Corporate Identity Program design with 50+ deliverables, 20 styles, 20 industrie
 
 ## Scripts
 
-| Script | Purpose |
-|--------|---------|
-| `scripts/cip/search.py` | Search deliverables, styles, industries; generate CIP briefs |
-| `scripts/cip/generate.py` | Generate CIP mockups with Gemini (Flash/Pro) |
-| `scripts/cip/render-html.py` | Render HTML presentation from CIP mockups |
-| `scripts/cip/core.py` | BM25 search engine for CIP data |
+| Script                       | Purpose                                                      |
+| ---------------------------- | ------------------------------------------------------------ |
+| `scripts/cip/search.py`      | Search deliverables, styles, industries; generate CIP briefs |
+| `scripts/cip/generate.py`    | Generate CIP mockups with Gemini (Flash/Pro)                 |
+| `scripts/cip/render-html.py` | Render HTML presentation from CIP mockups                    |
+| `scripts/cip/core.py`        | BM25 search engine for CIP data                              |
+
+> Commands below run **from the repository root** with `SKILL_DIR` set to this skill's directory —
+> `.claude/skills/design` under Claude Code, `.cursor/skills/design` under Cursor. See "Where the
+> scripts live" in `SKILL.md`. On Windows use `python` in place of `python3`.
 
 ## Commands
 
 ### CIP Brief (Start Here)
 
 ```bash
-python3 ~/.claude/skills/design/scripts/cip/search.py "tech startup" --cip-brief -b "BrandName"
+python3 "$SKILL_DIR/scripts/cip/search.py" "tech startup" --cip-brief -b "BrandName"
 ```
 
 ### Search Domains
 
 ```bash
 # Deliverables
-python3 ~/.claude/skills/design/scripts/cip/search.py "business card letterhead" --domain deliverable
+python3 "$SKILL_DIR/scripts/cip/search.py" "business card letterhead" --domain deliverable
 
 # Design styles
-python3 ~/.claude/skills/design/scripts/cip/search.py "luxury premium elegant" --domain style
+python3 "$SKILL_DIR/scripts/cip/search.py" "luxury premium elegant" --domain style
 
 # Industry guidelines
-python3 ~/.claude/skills/design/scripts/cip/search.py "hospitality hotel" --domain industry
+python3 "$SKILL_DIR/scripts/cip/search.py" "hospitality hotel" --domain industry
 
 # Mockup contexts
-python3 ~/.claude/skills/design/scripts/cip/search.py "office reception" --domain mockup
+python3 "$SKILL_DIR/scripts/cip/search.py" "office reception" --domain mockup
 ```
 
 ### Generate Mockups
 
 ```bash
 # With logo (RECOMMENDED - uses image editing)
-python3 ~/.claude/skills/design/scripts/cip/generate.py --brand "TopGroup" --logo /path/to/logo.png --deliverable "business card" --industry "consulting"
+python3 "$SKILL_DIR/scripts/cip/generate.py" --brand "TopGroup" --logo /path/to/logo.png --deliverable "business card" --industry "consulting"
 
 # Full CIP set with logo
-python3 ~/.claude/skills/design/scripts/cip/generate.py --brand "TopGroup" --logo /path/to/logo.png --industry "consulting" --set
+python3 "$SKILL_DIR/scripts/cip/generate.py" --brand "TopGroup" --logo /path/to/logo.png --industry "consulting" --set
 
 # Pro model for 4K text rendering
-python3 ~/.claude/skills/design/scripts/cip/generate.py --brand "TopGroup" --logo logo.png --deliverable "business card" --model pro
+python3 "$SKILL_DIR/scripts/cip/generate.py" --brand "TopGroup" --logo logo.png --deliverable "business card" --model pro
 
 # Custom deliverables with aspect ratio
-python3 ~/.claude/skills/design/scripts/cip/generate.py --brand "GreenLeaf" --logo logo.png --industry "organic food" --deliverables "letterhead,packaging,vehicle" --ratio 16:9
+python3 "$SKILL_DIR/scripts/cip/generate.py" --brand "GreenLeaf" --logo logo.png --industry "organic food" --deliverables "letterhead,packaging,vehicle" --ratio 16:9
 
 # Without logo (AI generates interpretation)
-python3 ~/.claude/skills/design/scripts/cip/generate.py --brand "TechFlow" --deliverable "business card" --no-logo-prompt
+python3 "$SKILL_DIR/scripts/cip/generate.py" --brand "TechFlow" --deliverable "business card" --no-logo-prompt
 ```
 
 ### Render HTML Presentation
 
 ```bash
-python3 ~/.claude/skills/design/scripts/cip/render-html.py --brand "TopGroup" --industry "consulting" --images /path/to/cip-output
-python3 ~/.claude/skills/design/scripts/cip/render-html.py --brand "TopGroup" --industry "consulting" --images ./topgroup-cip --output presentation.html
+python3 "$SKILL_DIR/scripts/cip/render-html.py" --brand "TopGroup" --industry "consulting" --images /path/to/cip-output
+python3 "$SKILL_DIR/scripts/cip/render-html.py" --brand "TopGroup" --industry "consulting" --images ./topgroup-cip --output presentation.html
 ```
 
 ## Models
@@ -68,28 +72,28 @@ python3 ~/.claude/skills/design/scripts/cip/render-html.py --brand "TopGroup" --
 
 ## Deliverable Categories
 
-| Category | Items |
-|----------|-------|
-| Core Identity | Logo, Logo Variations |
-| Stationery | Business Card, Letterhead, Envelope, Folder, Notebook, Pen |
-| Security/Access | ID Badge, Lanyard, Access Card |
+| Category           | Items                                                            |
+| ------------------ | ---------------------------------------------------------------- |
+| Core Identity      | Logo, Logo Variations                                            |
+| Stationery         | Business Card, Letterhead, Envelope, Folder, Notebook, Pen       |
+| Security/Access    | ID Badge, Lanyard, Access Card                                   |
 | Office Environment | Reception Signage, Wayfinding, Meeting Room Signs, Wall Graphics |
-| Apparel | Polo Shirt, T-Shirt, Cap, Jacket, Apron |
-| Promotional | Tote Bag, Gift Box, USB Drive, Water Bottle, Mug, Umbrella |
-| Vehicle | Car Sedan, Van, Truck |
-| Digital | Social Media, Email Signature, PowerPoint, Document Templates |
-| Product | Packaging Box, Labels, Tags, Retail Display |
-| Events | Trade Show Booth, Banner Stand, Table Cover, Backdrop |
+| Apparel            | Polo Shirt, T-Shirt, Cap, Jacket, Apron                          |
+| Promotional        | Tote Bag, Gift Box, USB Drive, Water Bottle, Mug, Umbrella       |
+| Vehicle            | Car Sedan, Van, Truck                                            |
+| Digital            | Social Media, Email Signature, PowerPoint, Document Templates    |
+| Product            | Packaging Box, Labels, Tags, Retail Display                      |
+| Events             | Trade Show Booth, Banner Stand, Table Cover, Backdrop            |
 
 ## Design Styles
 
-| Style | Colors | Best For |
-|-------|--------|----------|
-| Corporate Minimal | Navy, White, Blue | Finance, Legal, Consulting |
-| Modern Tech | Purple, Cyan, Green | Tech, Startups, SaaS |
-| Luxury Premium | Black, Gold, White | Fashion, Jewelry, Hotels |
-| Warm Organic | Brown, Green, Cream | Food, Organic, Artisan |
-| Bold Dynamic | Red, Orange, Black | Sports, Entertainment |
+| Style             | Colors              | Best For                   |
+| ----------------- | ------------------- | -------------------------- |
+| Corporate Minimal | Navy, White, Blue   | Finance, Legal, Consulting |
+| Modern Tech       | Purple, Cyan, Green | Tech, Startups, SaaS       |
+| Luxury Premium    | Black, Gold, White  | Fashion, Jewelry, Hotels   |
+| Warm Organic      | Brown, Green, Cream | Food, Organic, Artisan     |
+| Bold Dynamic      | Red, Orange, Black  | Sports, Entertainment      |
 
 ## HTML Presentation Features
 
@@ -114,6 +118,11 @@ python3 ~/.claude/skills/design/scripts/cip/render-html.py --brand "TopGroup" --
 - `references/cip-prompt-engineering.md` - AI generation prompts
 
 ## Setup
+
+This key is billed. `scripts/cip/generate.py` calls the paid Gemini image API: one image per
+deliverable, five for `--set`, and `--model pro` costs more per image. `search.py` and
+`render-html.py` need no key. Full breakdown, and why this key is shared with the product, in the
+"Cost" section of `SKILL.md`.
 
 ```bash
 export GEMINI_API_KEY="your-key"

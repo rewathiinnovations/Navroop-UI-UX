@@ -15,6 +15,13 @@ what it documents.
 `.cursor/README.md` is the map of the Cursor layout. `.cursor/lessons-learned.md` is a
 self-evolving mistake log — read it before starting, and append to it when corrected.
 
+`AGENTS.md`'s first section, **Agent configuration layout**, is the one table that lists both
+halves of the agent config: this file, `.cursor/rules/`, both skill trees, `.claude/settings.json`
+and the gitignored `settings.local.json`, the two duplicate MCP files (`.mcp.json` and
+`.cursor/mcp.json`, both declaring `dev3000`), and `docs/superpowers/specs/`, where the
+`brainstorming` and `writing-plans` skills put dated design specs. Start there rather than
+inferring the layout from what you happen to open.
+
 ## Always-on rules
 
 These are the `alwaysApply: true` Cursor rules, imported verbatim so they apply in every
@@ -46,7 +53,11 @@ The portable Cursor skill packs are copied to `.claude/skills/` so the Skill too
 (`superpowers`, `ui-ux-pro-max`, `ui-styling`, `design`, `design-system`, plus the host-agnostic
 `autopilot` and `split-to-prs`). `.cursor/skills/` remains as it was for anyone still using Cursor.
 **A skill that exists in both trees and is edited in one place must be copied to the other**, or the
-two drift apart silently.
+two drift apart silently. `tests/unit/skill-trees-in-sync.test.ts` enforces that: it fails if a
+paired file differs by a byte, if a skill copied into `.claude/skills/` has no declared
+`.cursor/skills/` pack, or if a Cursor-only skill is copied into `.claude/skills/`. Commands in a
+skill's docs must run from the repository root through `$SKILL_DIR`, never through `~/.claude/...`
+or `~/.cursor/...`; the same test fails on a home-profile invocation.
 
 The `cursor/*` pack is **deliberately not copied**. Those skills automate Cursor's own mechanics —
 the `cursor-app-control` MCP tool, the `AskQuestion` / `cursor_dialog` / `SwitchMode` tools, Cursor
@@ -69,10 +80,12 @@ Use **pnpm**, never npm — keep `pnpm-lock.yaml`, never create `package-lock.js
 pnpm run verify
 ```
 
-The pre-push gate: tsc, eslint `--max-warnings 0`, the public-route allowlist, prisma validate
-
-- migrate diff, the destructive-migration detector, vitest with coverage, `next build`, and the
-  Playwright `critical` project. `pnpm run verify:full` runs every Playwright project.
+The pre-push gate. **Its step list is single-sourced in `docs/release.md`, section “`verify` order”** —
+thirteen steps, each named by its `VERIFY_STEPS` id (`lib/verify/orchestrator.ts`). Read it there;
+this file used to carry eight of them and stopped at the Playwright `critical` project, which
+silently dropped the fatal `playwright-authenticated` step, `depcheck`, `knip` and the fatal
+dependency `audit`. `pnpm run verify:full` runs every Playwright project instead of the two
+per-project steps.
 
 Read the **Verify / release** section of `AGENTS.md` before running it. In particular it
 explains why you must not run `pnpm exec <tool>` in an agent shell (pnpm's dependency-status

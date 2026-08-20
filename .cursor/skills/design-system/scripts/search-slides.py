@@ -5,6 +5,7 @@ Slide Search CLI - Search slide design databases for strategies, layouts, copy, 
 """
 
 import sys
+import io
 import json
 import argparse
 from slide_search_core import (
@@ -12,6 +13,12 @@ from slide_search_core import (
     search_with_context, get_layout_for_goal, get_typography_for_slide,
     get_color_for_emotion, get_background_config
 )
+
+# Force UTF-8 for stdout/stderr to handle emojis on Windows (cp1252 default)
+if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+if sys.stderr.encoding and sys.stderr.encoding.lower() != 'utf-8':
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 
 def format_result(result, domain):

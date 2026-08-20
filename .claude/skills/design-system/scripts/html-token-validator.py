@@ -12,11 +12,18 @@ Usage:
   python html-token-validator.py --fix              # Auto-fix issues (WIP)
 """
 
+import io
 import re
 import json
 import sys
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
+
+# Force UTF-8 for stdout/stderr to handle emojis on Windows (cp1252 default)
+if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+if sys.stderr.encoding and sys.stderr.encoding.lower() != 'utf-8':
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 # Project root relative to this script
 PROJECT_ROOT = Path(__file__).parent.parent.parent.parent.parent

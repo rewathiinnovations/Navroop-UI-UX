@@ -4,92 +4,96 @@ AI-powered SVG icon generation using Gemini 3.1 Pro Preview. 15 styles, 12 categ
 
 ## Scripts
 
-| Script | Purpose |
-|--------|---------|
+| Script                     | Purpose                                        |
+| -------------------------- | ---------------------------------------------- |
 | `scripts/icon/generate.py` | Generate SVG icons with Gemini 3.1 Pro Preview |
+
+> Commands below run **from the repository root** with `SKILL_DIR` set to this skill's directory —
+> `.claude/skills/design` under Claude Code, `.cursor/skills/design` under Cursor. See "Where the
+> scripts live" in `SKILL.md`. On Windows use `python` in place of `python3`.
 
 ## Commands
 
 ### Generate Single Icon
 
 ```bash
-python3 ~/.claude/skills/design/scripts/icon/generate.py --prompt "settings gear" --style outlined
-python3 ~/.claude/skills/design/scripts/icon/generate.py --prompt "shopping cart" --style filled --color "#6366F1"
-python3 ~/.claude/skills/design/scripts/icon/generate.py --name "dashboard" --category navigation --style duotone
+python3 "$SKILL_DIR/scripts/icon/generate.py" --prompt "settings gear" --style outlined
+python3 "$SKILL_DIR/scripts/icon/generate.py" --prompt "shopping cart" --style filled --color "#6366F1"
+python3 "$SKILL_DIR/scripts/icon/generate.py" --name "dashboard" --category navigation --style duotone
 ```
 
 ### Generate Batch Variations
 
 ```bash
-python3 ~/.claude/skills/design/scripts/icon/generate.py --prompt "cloud upload" --batch 4 --output-dir ./icons
-python3 ~/.claude/skills/design/scripts/icon/generate.py --prompt "notification bell" --batch 6 --style outlined --output-dir ./icons
+python3 "$SKILL_DIR/scripts/icon/generate.py" --prompt "cloud upload" --batch 4 --output-dir ./icons
+python3 "$SKILL_DIR/scripts/icon/generate.py" --prompt "notification bell" --batch 6 --style outlined --output-dir ./icons
 ```
 
 ### Generate Multiple Sizes
 
 ```bash
-python3 ~/.claude/skills/design/scripts/icon/generate.py --prompt "user profile" --sizes "16,24,32,48" --output-dir ./icons
+python3 "$SKILL_DIR/scripts/icon/generate.py" --prompt "user profile" --sizes "16,24,32,48" --output-dir ./icons
 ```
 
 ### List Styles/Categories
 
 ```bash
-python3 ~/.claude/skills/design/scripts/icon/generate.py --list-styles
-python3 ~/.claude/skills/design/scripts/icon/generate.py --list-categories
+python3 "$SKILL_DIR/scripts/icon/generate.py" --list-styles
+python3 "$SKILL_DIR/scripts/icon/generate.py" --list-categories
 ```
 
 ## CLI Options
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--prompt, -p` | Icon description | required |
-| `--name, -n` | Icon name (for filename) | - |
-| `--style, -s` | Icon style (15 options) | - |
-| `--category, -c` | Icon category for context | - |
-| `--color` | Primary hex color | currentColor |
-| `--size` | Display size in px | 24 |
-| `--viewbox` | SVG viewBox size | 24 |
-| `--output, -o` | Output file path | auto |
-| `--output-dir` | Output directory (batch) | ./icons |
-| `--batch` | Number of variations | - |
-| `--sizes` | Comma-separated sizes | - |
+| Option           | Description               | Default      |
+| ---------------- | ------------------------- | ------------ |
+| `--prompt, -p`   | Icon description          | required     |
+| `--name, -n`     | Icon name (for filename)  | -            |
+| `--style, -s`    | Icon style (15 options)   | -            |
+| `--category, -c` | Icon category for context | -            |
+| `--color`        | Primary hex color         | currentColor |
+| `--size`         | Display size in px        | 24           |
+| `--viewbox`      | SVG viewBox size          | 24           |
+| `--output, -o`   | Output file path          | auto         |
+| `--output-dir`   | Output directory (batch)  | ./icons      |
+| `--batch`        | Number of variations      | -            |
+| `--sizes`        | Comma-separated sizes     | -            |
 
 ## Available Styles
 
-| Style | Stroke | Fill | Best For |
-|-------|--------|------|----------|
-| outlined | 2px | none | UI interfaces, web apps |
-| filled | 0 | solid | Mobile apps, nav bars |
-| duotone | 0 | dual | Marketing, landing pages |
-| thin | 1-1.5px | none | Luxury brands, editorial |
-| bold | 3px | none | Headers, hero sections |
-| rounded | 2px | none | Friendly apps, health |
-| sharp | 2px | none | Tech, fintech, enterprise |
-| flat | 0 | solid | Material design, Google-style |
-| gradient | 0 | gradient | Modern brands, SaaS |
-| glassmorphism | 1px | semi | Modern UI, overlays |
-| pixel | 0 | solid | Gaming, retro |
-| hand-drawn | varies | none | Artisan, creative |
-| isometric | 1-2px | partial | Tech docs, infographics |
-| glyph | 0 | solid | System UI, compact |
-| animated-ready | 2px | varies | Interactive UI, onboarding |
+| Style          | Stroke  | Fill     | Best For                      |
+| -------------- | ------- | -------- | ----------------------------- |
+| outlined       | 2px     | none     | UI interfaces, web apps       |
+| filled         | 0       | solid    | Mobile apps, nav bars         |
+| duotone        | 0       | dual     | Marketing, landing pages      |
+| thin           | 1-1.5px | none     | Luxury brands, editorial      |
+| bold           | 3px     | none     | Headers, hero sections        |
+| rounded        | 2px     | none     | Friendly apps, health         |
+| sharp          | 2px     | none     | Tech, fintech, enterprise     |
+| flat           | 0       | solid    | Material design, Google-style |
+| gradient       | 0       | gradient | Modern brands, SaaS           |
+| glassmorphism  | 1px     | semi     | Modern UI, overlays           |
+| pixel          | 0       | solid    | Gaming, retro                 |
+| hand-drawn     | varies  | none     | Artisan, creative             |
+| isometric      | 1-2px   | partial  | Tech docs, infographics       |
+| glyph          | 0       | solid    | System UI, compact            |
+| animated-ready | 2px     | varies   | Interactive UI, onboarding    |
 
 ## Icon Categories
 
-| Category | Icons |
-|----------|-------|
-| navigation | arrows, menus, home, chevrons |
-| action | edit, delete, save, download, upload |
-| communication | email, chat, phone, notification |
-| media | play, pause, volume, camera |
-| file | document, folder, archive, cloud |
-| user | person, group, profile, settings |
-| commerce | cart, bag, wallet, credit card |
-| data | chart, graph, analytics, dashboard |
-| development | code, terminal, bug, git, API |
-| social | heart, star, bookmark, trophy |
-| weather | sun, moon, cloud, rain |
-| map | pin, location, compass, globe |
+| Category      | Icons                                |
+| ------------- | ------------------------------------ |
+| navigation    | arrows, menus, home, chevrons        |
+| action        | edit, delete, save, download, upload |
+| communication | email, chat, phone, notification     |
+| media         | play, pause, volume, camera          |
+| file          | document, folder, archive, cloud     |
+| user          | person, group, profile, settings     |
+| commerce      | cart, bag, wallet, credit card       |
+| data          | chart, graph, analytics, dashboard   |
+| development   | code, terminal, bug, git, API        |
+| social        | heart, star, bookmark, trophy        |
+| weather       | sun, moon, cloud, rain               |
+| map           | pin, location, compass, globe        |
 
 ## SVG Best Practices
 
@@ -115,6 +119,10 @@ python3 ~/.claude/skills/design/scripts/icon/generate.py --list-categories
 5. Multi-size export → `--sizes "16,24,32,48"`
 
 ## Setup
+
+This key is billed. `scripts/icon/generate.py` calls the paid Gemini text API: one request per
+run, still one for `--batch N`, but one **per size** for `--sizes "16,24,32,48"`. Full breakdown,
+and why this key is shared with the product, in the "Cost" section of `SKILL.md`.
 
 ```bash
 export GEMINI_API_KEY="your-key"

@@ -2,46 +2,68 @@
 
 This folder is project-scoped Cursor config. Existing `mcp.json` is kept. Rules and skills here are meant to be committed (secrets and caches are gitignored). Use **pnpm**, not npm (`pnpm-lock.yaml` is the lockfile; do not create `package-lock.json`).
 
+This is one half of the agent configuration. The other half is Claude Code's, and it is committed
+too — `AGENTS.md` carries the combined table under "Agent configuration layout". Both are listed
+here so neither is invisible from the file that claims to map it.
+
 ## Layout
 
 ```
 .cursor/
-  mcp.json                 # existing MCP servers (do not wipe)
+  mcp.json                 # MCP servers Cursor reads — duplicate of the root .mcp.json
   README.md                # this file
   lessons-learned.md       # self-evolving mistake log (read before tasks; append on corrections)
-  rules/                   # project rules (*.mdc)
+  rules/                   # project rules (*.mdc) — the content source for both hosts
   skills/
     superpowers/           # Superpowers process skills (vendored)
-    cursor/                # Cursor core skills (create-rule, canvas, …)
+    cursor/                # Cursor core skills (create-rule, canvas, …) — Cursor only, not copied
     ui-ux-pro-max/         # UI/UX research + briefs
     ui-styling/            # Tailwind / shadcn styling
-    design/                # logos, icons, CIP, slides
+    design/                # logos, icons, CIP, slides — three commands call a paid Gemini API
     design-system/         # tokens and component specs
+
+CLAUDE.md                  # Claude Code entry point; imports the always-on rules from .cursor/rules
+.claude/
+  skills/                  # what the Skill tool loads: same files, flat, minus the Cursor-only skills
+                           #   (autopilot and split-to-prs are the two kept from cursor/)
+  settings.json            # committed permissions (deny .env*/.cursor/.env.deploy/e2e/.auth)
+  settings.local.json      # personal state — GITIGNORED, so what it enables is not reviewable
+.mcp.json                  # MCP servers Claude Code reads — same dev3000 entry as .cursor/mcp.json
+docs/superpowers/specs/    # dated design specs from brainstorming / writing-plans
 ```
+
+`dev3000` is the single MCP server both files declare (`http://localhost:3684/mcp`). It is an
+external dev tool that must already be running; nothing here starts it and it is not a dependency.
+The two files are duplicates with no generator — edit one, edit the other.
+
+`docs/superpowers/specs/` currently holds one spec,
+`2026-08-19-interactive-generation-ux-design.md`, which is the only written record of the
+post-sandbox preview architecture. Once a spec's decisions are load-bearing they belong in the
+Product map below; the spec stays as the reasoning behind them.
 
 Nested Firecrawl/home rules under `components/` and `styles/` are unchanged. Merge with those; do not delete them.
 
 ## Rules
 
-| Rule                        | When                                                                                                     |
-| --------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `navroop-product.mdc`       | Always — invite-only Navroop shell                                                                       |
-| `secrets.mdc`               | Always — never commit `.env.local`                                                                       |
-| `coolify-local-secrets.mdc` | Always — read `.cursor/.env.deploy` for Coolify/SSH; never commit or echo                                |
-| `skills-availability.mdc`   | Always — what is in-repo vs profile-only                                                                 |
-| `multi-agent-ownership.mdc` | Always — wait, re-read, merge; one owner per area                                                        |
-| `single-dev-server.mdc`     | Always — one `:3000` server; dedicated agent only (also `prisma generate` / locked Next+Prisma binaries) |
-| `keep-cursor-current.mdc`   | Always — refresh this map after product/schema/API/layout changes                                        |
-| `stack.mdc`                 | App/lib/prisma TypeScript                                                                                |
-| `brand-theme.mdc`           | UI — Navroop, light default                                                                              |
-| `studio-generation.mdc`     | Studio chrome + `GenerationProvider`                                                                     |
-| `admin-ownership.mdc`       | Admin team/usage/invite files                                                                            |
+| Rule                        | When                                                                                                                                                                                     |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `navroop-product.mdc`       | Always — invite-only Navroop shell                                                                                                                                                       |
+| `secrets.mdc`               | Always — never commit `.env.local`                                                                                                                                                       |
+| `coolify-local-secrets.mdc` | Always — read `.cursor/.env.deploy` for Coolify/SSH; never commit or echo                                                                                                                |
+| `skills-availability.mdc`   | Always — what is in-repo vs profile-only                                                                                                                                                 |
+| `multi-agent-ownership.mdc` | Always — wait, re-read, merge; one owner per area                                                                                                                                        |
+| `single-dev-server.mdc`     | Always — one server per checkout on that checkout's own port (this tree `:3001`, `.worktrees/main` `:3000`); dedicated agent only (also `prisma generate` / locked Next+Prisma binaries) |
+| `keep-cursor-current.mdc`   | Always — refresh this map after product/schema/API/layout changes                                                                                                                        |
+| `stack.mdc`                 | App/lib/prisma TypeScript                                                                                                                                                                |
+| `brand-theme.mdc`           | UI — Navroop, light default                                                                                                                                                              |
+| `studio-generation.mdc`     | Studio chrome + `GenerationProvider`                                                                                                                                                     |
+| `admin-ownership.mdc`       | Admin team/usage/invite files                                                                                                                                                            |
 
 ## Product map
 
-- **API auth gate** — `proxy.ts` denies `/api` and `/preview-static` by default; the only exceptions are `PUBLIC_API_ROUTES` in `lib/auth/public-routes.ts` (explicit path + methods + reason + mechanism, no wildcards). Coarse JWT check only — no Prisma in the proxy; per-route membership/ADMIN/`isActive` checks stay put. 401s are JSON with a request id. Guarded by `tests/unit/api-route-auth.test.ts`, the `public-routes` verify step, and the probe in `scripts/smoke-test.ts`.
+- **API auth gate** — `proxy.ts` denies `/api` and `/preview-static` by default; the only exceptions are `PUBLIC_API_ROUTES` in `lib/auth/public-routes.ts` (explicit path + methods + reason + mechanism, no wildcards). Coarse JWT check only — no Prisma in the proxy; per-route membership/ADMIN/`isActive` checks stay put. 401s are JSON with a request id. Guarded by `tests/unit/api-route-auth.test.ts`, the `public-routes` verify step, and the probe in `scripts/smoke-test.ts`. Cookie-authenticated writes also need a same-origin `Origin` / `Sec-Fetch-Site` (`lib/auth/csrf.ts`, 403 `CROSS_ORIGIN_REFUSED`); `ORIGIN_CHECK_EXEMPT` is empty and `tests/unit/api-csrf-origin.test.ts` drives every mutating endpoint through the proxy. Server Actions keep Next's own Origin/Host check (F-350).
 - **No self-fetch between routes** — routes never call sibling routes over HTTP. Shared work sits in `lib/` (`lib/generation/analyze-edit-intent.ts` is the surviving example); routes are thin wrappers. `internalCallHeaders` is deleted — do not bring it back. Failures are typed results and are logged; inside a Job use `recordJobStepFailure` (`lib/jobs/step-failure.ts`). Apply close copy comes from `applyOutcome` (`lib/jobs/copy.ts`); GenerationWorkspace reuses that sentence via `applyPageCopy` (`lib/generation/apply-page-copy.ts`). `/generation` is not a route; `proxy.ts` has no `/generation` redirect.
-- **Lint** — eslint `no-empty` is error so a bare `catch {}` cannot return. A comment inside a catch is allowed only when the failure is a documented expected fallback (see Morph relative/absolute `cat` in `lib/morph-fast-apply.ts`).
+- **Lint** — eslint `no-empty` is error so a bare `catch {}` cannot return. A comment inside a catch is allowed only when the failure is a documented expected fallback (see the malformed-meta fall-through in `lib/sentry/client.ts`, which drops to the build-time DSN rather than crashing every page load).
 - **Instance self-identity** — `lib/runtime/self.ts` `getSelfIdentity()` → `{ coolifyAppUuid, gitSha, instanceId, environment }`. Only reader of `COOLIFY_APP_UUID`; Sentry restart, health rollback route, and `scripts/rollback.ts` share `SELF_UUID_NOT_CONFIGURED`. Shown on `/admin/health`.
 - **Projects API** — `/api/projects`, Prisma `Project` (`lib/projects`)
 - **Plan/Build** — `ProjectPhase` + `/api/projects/[id]/plan`; workspace chat `plan` \| `build`. First build waits for plan Approve (`decidePendingPromptAction`); opening a project boots nothing (`shouldRequestSandbox` in `lib/workspace/sandbox-request.ts` is a permanent false gate). A dead first plan with no site resumes to PLANNING, not COMPLETE (`resumablePhaseFromEvidence`; job `filesWritten` is not site evidence). `settleStreamedGeneration` (`lib/jobs/settle-generation.ts`) persists the streamed `<file>` blocks server-side (merged over the existing site) and fails `no_files_generated` / `stack_mismatch` when nothing usable arrived — a finished stream is not SUCCEEDED + COMPLETE by itself. Recovery Try again starts a new billed build.
@@ -61,7 +83,7 @@ Nested Firecrawl/home rules under `components/` and `styles/` are unchanged. Mer
 - **Connectors / GitHub** — `/connectors`, `/api/github`
 - **Checkpoints** — `/api/projects/[id]/checkpoints`. The latest snapshot is the source of truth for publish and ZIP export. `readSnapshot` throws `SnapshotReadError` on a storage/gunzip miss — empty means empty, never "could not read".
 - **Browser preview / bundling** — `components/workspace/BrowserPreview.tsx` compiles the project in the browser with `esbuild-wasm` (deps pinned to esm.sh URLs in `lib/preview/deps.ts` — React 19) and renders it in a sandboxed iframe; no VM, no dev server. The wasm binary is copied by `scripts/copy-preview-vendor.mjs` into `public/preview-vendor/` (gitignored) ahead of `next dev` / `next build`; `next.config.ts` keeps `esbuild` in `serverExternalPackages` for the server-side twin. The sandbox VM subsystem (`lib/sandbox/`, `SandboxProviderConfig`, e2b/modal/daytona drivers, `/api/projects/[id]/sandbox`, `/admin/sandbox-providers`, `reap-sandboxes` / `check-sandbox-providers` crons, `SANDBOX_IDLE_MINUTES`) was deleted in migration `20260819010000_drop_sandbox_columns`; `lib/workspace/sandbox-request.ts` keeps the leftover workspace branches unreachable. Design history: `docs/superpowers/specs/2026-08-19-interactive-generation-ux-design.md`; generated-code validation: `docs/build-autofix.md`.
-- **Assets** — `ProjectAsset`, `lib/assets`, `lib/storage`, workspace Assets tab, `/api/projects/[id]/assets`. `s3Get` / `s3Exists` / `localExists` rethrow anything that is not not-found.
+- **Assets** — `ProjectAsset`, `lib/assets`, `lib/storage`, workspace Assets tab, `/api/projects/[id]/assets`. `s3Get` / `s3Exists` / `localExists` rethrow anything that is not not-found. A `NEED_IMAGE:` token is **generated first, then falls back to stock** (`lib/assets/fulfill.ts`): the self-hosted **image worker** (`tooling.images.workerUrl` / `.token` / `.model`, default `lucid-origin`, ~12s, three concurrent, free and unmetered — `lib/assets/image-worker.ts`) → OpenAI `gpt-image-1` → Google Imagen 3 (both metered, reached only with no worker) → Unsplash when `tooling.unsplash.accessKey` is set → **Openverse**, keyless and CC0/public-domain only (`lib/assets/openverse.ts`), which is why an install with no photo key still ships real photographs. Unfulfilled tokens are reported, not silently placeholdered.
 - **URL import** — `ImportSource`, `lib/import/`, `POST /api/projects/[id]/import`. Reimagine (default) or replicate. Multi-pass capture → rehost → segment → generate. SSRF: `lib/security/url-guard.ts` + `safeFetch`. Untrusted HTML wrap before prompts. Private-range reject counts on `/admin/usage`. Firecrawl text is typed (`lib/import/firecrawl.ts`) — a failed scrape is not “empty markdown”; chat + `recordJobStepFailure`. Playwright abort vs one-section continue. Empty `filesXml` is not success. Route passes `jobId` to `runProjectUrlImport`. Hard aborts use `import_failed`. SSE client reads `errorPayload.message`. IMPORT Try again is `streamProjectImport`, not a generated build.
 - **Skills** — Prisma `Skill`, `lib/skills/`, `/settings/skills` + Brain tab section. Conditional; after cacheable prefix; ADMIN mutations. Distinct from Brain memory.
 - **Brain memory** — `MemoryEntry`, `lib/memory/`, workspace Brain tab. Always-on; inside cacheable prefix. Extraction toggle on `/admin/usage`.
@@ -78,17 +100,22 @@ Nested Firecrawl/home rules under `components/` and `styles/` are unchanged. Mer
 - **Backup / restore** — `lib/backup/`, Prisma `BackupRun`, `scripts/backup-*` / `restore-db` / `verify-storage`, `/admin/backups`. Separate `BACKUP_*` bucket from `ELK_*`. Daily 02:00 `POST /api/cron/backup-db`, weekly `POST /api/cron/verify-storage`.
 - **Integrations** — Prisma `Integration`, `lib/integrations/`, `/admin/integrations`. GitHub Manifest + Cloudflare token/zone + Coolify discover + Sentry DSN/OAuth. No publish env vars. Root domain = Cloudflare zone name. Sentry is not required for publish.
 - **Publish** — Coolify Preview/Live under the connected zone. `lib/publish/`, GitHub App `lib/github/deploy-client.ts`, Cloudflare `lib/cloudflare/dns.ts`. `/deployments` + workspace Publish sheet. Slot limits via `checkLimit('liveSites'|'previewSites')`, not credits. Requires all three integrations CONNECTED. Files come from the latest Checkpoint snapshot, else a fresh capture of `lastCode` (`collectPublishFiles`); a `SnapshotReadError` is `unavailable` (503), never a silent stale publish.
-- **Preview access control** — a PREVIEW deploy can be password-gated. Three stores: `Deployment.passwordHash` (bcrypt, the only flag — `execute.ts` derives `passwordProtected` from it, `serialize.ts` derives `hasPassword`), the plaintext as a `PREVIEW_PASSWORD` env var on the Coolify application (middleware cannot verify a hash), and the `middleware.ts` that `lib/publish/preview-inject.ts` injects into the deploy repo for node stacks — Basic Auth, fail-closed (no env var → 401). Static stacks use Coolify Traefik basic auth (`setBasicAuth`, user `preview`) and get no file gate. `updatePreviewPassword` (`lib/publish/publish.ts`) writes hash → Coolify env var → re-publish, in that order; `POST`/`DELETE /api/projects/[id]/publish/password`. Do not hand-edit `PREVIEW_PASSWORD` on a client app. Open defects: F-231 (non-constant-time compare, username ignored, plaintext not rolled back when the re-publish fails), F-232 (inline `runPublishJob` in the server action, no lock). Full detail: `AGENTS.md` Publish bullet.
+- **Preview access control** — a PREVIEW deploy can be password-gated. Three stores: `Deployment.passwordHash` (bcrypt, the only flag — `execute.ts` derives `passwordProtected` from it, `serialize.ts` derives `hasPassword`), the plaintext as a `PREVIEW_PASSWORD` env var on the Coolify application (middleware cannot verify a hash), and the `middleware.ts` that `lib/publish/preview-inject.ts` injects into the deploy repo for node stacks — Basic Auth, fail-closed (no env var → 401), username checked against `preview` as well as the password, both compared as SHA-256 digests through `timingSafeEqual`, and `runtime: 'nodejs'` pinned in the emitted `config` only when the gate is present (Edge cannot resolve `node:crypto`). Static stacks use Coolify Traefik basic auth (`setBasicAuth`, user `preview`) and get no file gate. `updatePreviewPassword` (`lib/publish/publish.ts`) reads the existing plaintext back via `getApplicationEnvVar` **before writing anything** (only copy; a read failure refuses the change), then hash → env var → start the PREVIEW job, and rolls back **both** stores on failure. `setPreviewPasswordAction` holds the project lock, hands the run to `after()` and returns at once — the publish is not inline; the route declares `maxDuration = 600`. `POST`/`DELETE /api/projects/[id]/publish/password`. Do not hand-edit `PREVIEW_PASSWORD` on the Coolify app.
 - **Custom domains** — `lib/domains/`, Prisma `CustomDomain`, workspace Domains tab + `/project/[id]/domains`. Path A client DNS / Path B Cloudflare zone (do not auto-delete). `POST /api/cron/check-domains` every 2 min. `Plan.allowCustomDomain`.
 - **Project lock / presence** — `lib/projects/lock.ts` + `ProjectPresence`. Atomic lock on generate/import/publish/audit/restore. Presence GET/POST `/api/projects/[id]/presence`. Workspace avatars, lock bar, stale banner (`contentVersion`). Daily prune via thin-checkpoints.
 - **Coolify** — `docker-compose.yml` + `Dockerfile` (see `docs/coolify.md`); local Postgres `docker-compose.dev.yml` on `5433`. `NEXT_PUBLIC_APP_URL` is set in the compose file and `assertInternalOrigin()` refuses to boot in production if it is unset, unparseable, or a different host from `APP_URL` (warn-only elsewhere). API client `lib/coolify/`; token from Integration / `CoolifyServer`. `POST /api/admin/servers` is 410 — configure at `/admin/integrations`. No `COOLIFY_*` compose env. Local logins: `.cursor/.env.deploy` (gitignored).
-- **Verify / release** — `pnpm run verify` / `verify:full` (includes the `public-routes` allowlist step, which prints the allowlist size). Vitest in `tests/unit` + `tests/integration` (legacy tsx suites wired). Unit-test `fetch` to loopback needs `allowLocalhost('reason')` (`tests/setup/network-guard.ts`). Coverage floors are 49/70/65/49 — raise, never lower. Only one `vitest --coverage` in a checkout (`coverage/.tmp`). Repo-write guard is Vitest `globalSetup`. Secret scan exit 2 is a broken gate, not a pass. Playwright `e2e/` (`critical` = journeys 1–4). Playwright CI `webServer` inherits env from `lib/verify/playwright-env.ts` (`.env` / `.env.local` + test-only `ENCRYPTION_KEY` fallback). Test DB `TEST_DATABASE_URL` ≠ `DATABASE_URL`. Schema drift shadow DB `openlovable_shadow` / `SHADOW_DATABASE_URL` (never the app or test DB). High/critical audit via `pnpm.overrides` (do not drop `pnpm audit --audit-level=high`; install only after `:3000` is stopped). `tsc --noEmit` excludes generated `.next` / `next-env.d.ts` route types (`types/next-env.d.ts` keeps `next` refs). Husky + `.github/workflows/verify.yml`. Rollback on `/admin/health`. Runbook `docs/release.md`.
+- **Verify / release** — `pnpm run verify` / `verify:full`. **The step list is single-sourced in `docs/release.md` (“`verify` order”)** — do not restate it here; the summaries that did dropped the fatal `playwright-authenticated` step. Vitest in `tests/unit` + `tests/integration` (legacy tsx suites wired). Unit-test `fetch` to loopback needs `allowLocalhost('reason')` (`tests/setup/network-guard.ts`). Coverage floors live only in `vitest.config.ts` (`thresholds`) — raise, never lower, and never restate the numbers in prose. Only one `vitest --coverage` in a checkout (`coverage/.tmp`). Repo-write guard is Vitest `globalSetup`. Secret scan exit 2 is a broken gate, not a pass. Playwright `e2e/` (`critical` = journeys 1–4). Playwright CI `webServer` inherits env from `lib/verify/playwright-env.ts` (`.env` / `.env.local` + test-only `ENCRYPTION_KEY` fallback). Test DB `TEST_DATABASE_URL` ≠ `DATABASE_URL`. Schema drift shadow DB is disposable. Doc claims that can be read out of the source — floors, step ids, setting keys, env vars, stack prompts, worktree ports, banned `npm` / `pnpm exec` forms — are pinned by `tests/unit/docs-accuracy.test.ts`.
 
 ## Superpowers
 
 Skills are copies of the Superpowers plugin so agents do not depend only on the user plugin cache.
+They exist twice: `.cursor/skills/superpowers/` for Cursor and `.claude/skills/` for Claude Code,
+byte-identical and kept that way by `tests/unit/skill-trees-in-sync.test.ts`. Either copy reads the
+same, but only `.claude/skills/` is what the Claude Code Skill tool loads, so read the tree your own
+host loads and mirror every edit into the other.
 
-1. Read `.cursor/skills/superpowers/using-superpowers/SKILL.md` at the start of a task.
+1. Read `using-superpowers/SKILL.md` at the start of a task — `.cursor/skills/superpowers/` under
+   Cursor, `.claude/skills/` under Claude Code.
 2. If a skill might apply, read that skill’s `SKILL.md` **before** exploring or editing.
 3. Common triggers:
    - New feature → `brainstorming`, then `writing-plans`

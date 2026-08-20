@@ -65,6 +65,8 @@ e2b-template-*
 .cursor/**/*.pem
 .cursor/skills/**/cache/
 .cursor/**/.sync-manifest.json
+.cursor/skills/**/__pycache__/
+.cursor/skills/**/*.pyc
 
 # Local object storage (STORAGE_DRIVER=local)
 /public/uploads
@@ -89,6 +91,8 @@ bun.lockb
 .claude/worktrees/
 .claude/**/.env
 .claude/**/.env.*
+.claude/skills/**/__pycache__/
+.claude/skills/**/*.pyc
 
 # In-browser preview vendor asset (copied from node_modules/esbuild-wasm at install)
 public/preview-vendor/esbuild.wasm

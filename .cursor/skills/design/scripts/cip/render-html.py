@@ -8,6 +8,7 @@ with detailed descriptions, concepts, and brand guidelines.
 """
 
 import argparse
+import io
 import json
 import os
 import sys
@@ -18,6 +19,12 @@ from datetime import datetime
 # Add parent directory for imports
 sys.path.insert(0, str(Path(__file__).parent))
 from core import search, get_cip_brief
+
+# Force UTF-8 for stdout/stderr to handle emojis on Windows (cp1252 default)
+if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+if sys.stderr.encoding and sys.stderr.encoding.lower() != 'utf-8':
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 # Deliverable descriptions for presentation
 DELIVERABLE_INFO = {

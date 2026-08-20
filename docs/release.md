@@ -24,11 +24,21 @@ pnpm db:test:migrate  # migrations only, when the schema moved after setup
 
 Add `TEST_DATABASE_URL` to `.env.local` (see `.env.example`). Do not commit it.
 
+Four more variables steer that bootstrap, and none of them had appeared in any document or in
+`.env.example`. All are **runtime**, for the setup scripts only — never set them in Coolify:
+
+| Name                      | Read by                     | Default                                          | What it does                                                                                                                           |
+| ------------------------- | --------------------------- | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `TEST_DATABASE_ADMIN_URL` | `scripts/ensure-test-db.ts` | `TEST_DATABASE_URL` with the `postgres` database | The connection the `CREATE DATABASE` statements run on, when the test role cannot create databases itself                              |
+| `TEST_DATABASE_NAME`      | `scripts/ensure-test-db.ts` | `openlovable_test`                               | Renames the test database. `db:test:migrate` still refuses any name but `openlovable_test`, so changing this disables the migrate step |
+| `SHADOW_DATABASE_NAME`    | `scripts/ensure-test-db.ts` | `openlovable_shadow`                             | Renames the disposable schema-drift database                                                                                           |
+| `POSTGRES_CONTAINER`      | `lib/verify/ensure-db.ts`   | `open-lovable-db`                                | Which Docker container `verify` starts/waits on when Postgres is not already up                                                        |
+
 ## Commands
 
 | Script                               | What                                                                                                                                                                                                             |
 | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pnpm run verify` / `npm run verify` | Pre-push gate (stop on first fatal failure)                                                                                                                                                                      |
+| `pnpm run verify`                    | Pre-push gate (stop on first fatal failure). **pnpm only** — never `npm run verify`; npm resolves `node_modules` differently in a pnpm workspace and writes `package-lock.json`                                  |
 | `pnpm run verify:full`               | Everything, with one `playwright test` over **every** project replacing the two per-project Playwright steps                                                                                                     |
 | `pnpm run verify:bypass -- "reason"` | Log a hook bypass, then `git push --no-verify`                                                                                                                                                                   |
 | `pnpm db:test`                       | Create `openlovable_test` / `openlovable_shadow`, then migrate the test DB                                                                                                                                       |
@@ -38,24 +48,29 @@ Add `TEST_DATABASE_URL` to `.env.local` (see `.env.example`). Do not commit it.
 | `pnpm smoke`                         | Live smoke (`SMOKE_URL`, optional `SMOKE_CLIENT_URL`)                                                                                                                                                            |
 | `pnpm rollback`                      | Coolify rollback of the **main Navroop app** only                                                                                                                                                                |
 
-`verify` order (fatal unless noted):
+`verify` order — the **only** enumeration of this gate in the repository. `AGENTS.md`, `CLAUDE.md`
+and `.cursor/README.md` point here instead of keeping their own copies, because the copies they did
+keep each dropped a fatal step. Each entry names its `VERIFY_STEPS` id from
+`lib/verify/orchestrator.ts`; `tests/unit/docs-accuracy.test.ts` fails when this list and that array
+disagree in length or in ids. Fatal unless the row says otherwise:
 
-1. `tsc --noEmit` (excludes generated `.next` / `next-env.d.ts` route types; `types/next-env.d.ts` keeps `next` refs)
-2. `eslint . --max-warnings 0`
-3. Public API allowlist (`scripts/check-public-routes.ts`)
-4. `prisma validate`
-5. `prisma migrate diff --from-migrations` vs committed schema (`--shadow-database-url`, dedicated `openlovable_shadow` — never the app or test DB)
-6. Destructive-migration detector (`ALLOW_DESTRUCTIVE_MIGRATION=true` required for DROP TABLE/COLUMN / ALTER TYPE)
-7. `vitest run --coverage`
-8. `next build`
-9. `playwright test --project=critical`
-10. `playwright test --project=authenticated` — the `setup` project seeds the E2E account and signs in first, so this is the step that proves a real signed-in user can reach the dashboard and create a project
-11. depcheck and knip — **report only** (non-fatal, but the tick is now truthful: knip's `--no-exit-code` was removed)
-12. `pnpm audit --audit-level=high` — high severity blocks
+1. `tsc` — `tsc --noEmit` (excludes generated `.next` / `next-env.d.ts` route types; `types/next-env.d.ts` keeps `next` refs)
+2. `eslint` — `eslint . --max-warnings 0`
+3. `public-routes` — public API allowlist (`scripts/check-public-routes.ts`)
+4. `prisma-validate` — `prisma validate`
+5. `schema-drift` — `prisma migrate diff --from-migrations` vs committed schema (`--shadow-database-url`, dedicated `openlovable_shadow` — never the app or test DB)
+6. `destructive` — destructive-migration detector (`ALLOW_DESTRUCTIVE_MIGRATION=true` required for DROP TABLE/COLUMN / ALTER TYPE)
+7. `vitest` — `vitest run --coverage`
+8. `next-build` — `next build`
+9. `playwright-critical` — `playwright test --project=critical`
+10. `playwright-authenticated` — `playwright test --project=authenticated`; the `setup` project seeds the E2E account and signs in first as a declared dependency, so this is the step that proves a real signed-in user can reach the dashboard and create a project. Separate from `critical` on purpose: merged into one command, a silently empty `authenticated` project would hide behind `critical`'s passing count
+11. `depcheck` — **fatal** since 2026-08-21 (F-645). It was report-only with no config, printing the same ten entries on every run and blocking nothing. `.depcheckrc.yml` declares those ten — split into "used, but not via an import depcheck can see" (`autoprefixer`, `postcss-import`, `postcss-nesting`, `depcheck`, `knip`, `@vitest/coverage-v8`, `prettier`) and "unused, pending removal with a lockfile regeneration" (`@eslint/eslintrc`, `msw`, `semver`) — so a clean tree exits 0 and a _newly_ unused dependency is a red gate
+12. `knip` — **report only**, non-fatal, but the tick is now truthful (`--no-exit-code` was removed)
+13. `audit` — `pnpm audit --audit-level=high`; high severity blocks
 
 Every step runs a vendored binary (`node ./node_modules/…`) except `pnpm audit`, which resolves the lockfile itself and has no binary equivalent. That is not cosmetic: `verify` runs from `.husky/pre-push`, and `pnpm run` / `pnpm exec` first run a dependency-status check that can purge `node_modules` mid-push on a TTY. The hook avoided the shim; until 2026-08-19 every step it ran put it straight back.
 
-High/critical findings are forced via `pnpm.overrides` in `package.json` (same-major patches; `deepmerge-ts` to `^8` without a Prisma major). Isolated copies under eslint-config-next inflate path counts; unique packages are the real list. Overrides do not apply until `pnpm install` after `:3000` is stopped. Do not drop this step.
+High/critical findings are forced via the top-level **`overrides` block in `pnpm-workspace.yaml`** (21 entries, same-major patches; `deepmerge-ts` to `^8` without a Prisma major). **Not `pnpm.overrides` in `package.json`** — `package.json` has no `pnpm` key at all, and pnpm 11 reads overrides from the workspace file, so a fixer patching a new advisory in `package.json` changes nothing, watches the audit stay red, and reaches for dropping the step. The same file also holds `allowBuilds` and `minimumReleaseAgeExclude`, so it is one place to look. Isolated copies under eslint-config-next inflate path counts; unique packages are the real list. Overrides do not apply until `pnpm install` runs with this checkout's own dev server stopped (see the port table in `.cursor/rules/single-dev-server.mdc` — not necessarily `:3000`). Do not drop this step.
 
 On failure the summary prints the exact command to reproduce.
 
@@ -80,27 +95,26 @@ A shell that exports `CI` next to a live server on the APP_URL port now goes red
 
 ### Coverage floors
 
-The floors in `vitest.config.ts` are a **ratchet set just under what is actually measured**, not an aspiration. Global floors across `lib/**`: **41% statements, 68% branches, 58% functions, 41% lines**. Raise the floors when a run reports more; never lower them so a change fits.
+The floors are a **ratchet set just under what is actually measured**, not an aspiration.
 
-Measured 2026-08-18 across three runs an hour apart — 42.70 / 69.64 / 59.08 / 42.70, then 43.51 / 69.07 / 59.80 / 43.51, then 43.61 / 69.31 / 60.00 / 43.61 (statements / branches / functions / lines). Statements and lines had climbed from 36.88, so the old floors of 36 carried 6+ points of slack and no longer gated anything.
+**`vitest.config.ts` (`thresholds`) is the only place the numbers live.** Do not restate them here or
+in `AGENTS.md` or `.cursor/README.md`. This section used to, and so did those two, and all three
+disagreed with the config and with each other: this file said 41/68/58/41 and backed it with a
+measurement table taken before the sandbox subsystem was deleted, while the other two said
+49/70/65/49 against a config that had been recalibrated below both. A contributor following the
+instruction all three gave — "raise, never lower" — was raising a number the config did not hold,
+and the run failed for a reason none of the documents could explain. A ratchet needs exactly one
+recorded value. `tests/unit/docs-accuracy.test.ts` now fails any document that states a floor the
+config does not set.
 
-**Functions is the volatile column and needs the wider margin.** It read 57.13, 57.32, 59.08, 59.80 and 60.00 inside one hour, purely because modules were imported and the publish suite landed — v8 enumerates every function in a module the moment something imports it, so the number moves without any test getting better or worse. A floor one point under the high would go red for reasons unrelated to test quality, and a gate that flaps gets switched off, so 58 sits under the whole observed range. It still bites: set to 60 against a measured 59.80, the run fails with `ERROR: Coverage for functions (59.8%) does not meet global threshold (60%)`.
+What to know without a number in front of you:
 
-Every reading was taken with unrelated test files failing, which can only understate coverage, so the floors are a lower bound on the truth. Note that a failing run normally prints **no** coverage table at all (`coverage.reportOnFailure` defaults to false) — pass `--coverage.reportOnFailure` to measure while something else is red.
-
-Per-tree, as measured (statements / branches / functions) — these trees have **no** 85% floor and are nowhere near one:
-
-| Tree                | Stmts | Branch | Funcs |
-| ------------------- | ----- | ------ | ----- |
-| `lib/verify`        | 100   | 96     | 100   |
-| `lib/security`      | 80.18 | 71.84  | 95    |
-| `lib/deploy`        | 74.11 | 94.28  | 87.5  |
-| `lib/jobs`          | 61.41 | 71.38  | 71.59 |
-| `lib/plans`         | 45.98 | 73.33  | 78.37 |
-| `lib/publish`       | 44.1  | 79.88  | 34.37 |
-| `lib/` (root files) | 22.62 | 83.83  | 47.94 |
-
-Stricter per-module floors are enforced on the pipeline modules (`lib/verify`, `lib/publish`, `lib/generation/parse-files.ts`, `lib/secret-scan.ts`, `lib/deploy`); files matching those globs still count towards the global numbers. Untested bulk: `lib/generation/generation-runtime.ts` (excluded — huge stream parser), Coolify/import/sandbox drivers, and UI-adjacent lib.
+- Each threshold in `vitest.config.ts` carries its measurement date and the reading it was derived from in a comment directly above it. Read those before touching a floor; the current global ones were recalibrated on 2026-08-19, when deleting ~20k lines of heavily tested sandbox code lowered the ratio without a single test being lost.
+- Raise a floor when a run reports more. Never lower one so a change fits.
+- **The functions column is the volatile one and keeps the widest margin.** v8 enumerates every function in a module the moment something imports it, so the figure moves several points inside an hour purely because a suite landed elsewhere — with no test getting better or worse. A floor one point under the high goes red for reasons unrelated to test quality, and a gate that flaps gets switched off.
+- The per-glob floors (`lib/verify/**`, `lib/publish/**`, `lib/generation/parse-files.ts`, `lib/secret-scan.ts`, `lib/deploy/release.ts`, `lib/deploy/rollback.ts`) are stricter than the global ones and still count towards them. They carry their own dated comments for the same reason.
+- A failing run normally prints **no** coverage table at all (`coverage.reportOnFailure` defaults to false) — pass `--coverage.reportOnFailure` to measure while something else is red. Readings taken that way can only understate coverage, so they are a lower bound.
+- Untested bulk, for context on why the globals sit where they do: `lib/generation/generation-runtime.ts` (excluded — huge stream parser), the Coolify and import drivers, and UI-adjacent `lib/`.
 
 ### The test suite may not write the repository
 
@@ -133,6 +147,13 @@ The EXPLAIN check is a **soft skip** on a small test DB. It is not meaningful un
 ### Previous-schema migrate
 
 A full previous-schema fixture is not checked in. Subset: empty DB + `prisma migrate deploy` on `TEST_DATABASE_URL`, plus the destructive detector on committed SQL. For a real upgrade, restore a backup of the previous production schema into a scratch database and migrate there first.
+
+**What is and is not automated (F-603).** `tests/integration/seed-migrate.test.ts` used to carry a case named "documents previous-schema migrate as a subset" whose whole body was `expect(true).toBe(true)`. It now asserts what can be asserted without provisioning a second database: every folder under `prisma/migrations` has a non-rolled-back row in `_prisma_migrations`, every such row has a folder, and the timestamp-prefixed names are in deploy order. That catches a migration deleted or renamed after release — the first thing a previous-schema deploy trips over.
+
+Two things are still covered by nothing, deliberately recorded here rather than implied by a green tick:
+
+- **The deploy itself.** Migrating an empty database to the second-newest migration and then `migrate deploy`-ing to head needs a scratch database the test harness cannot create.
+- **Checksum drift on an already-applied migration.** If a committed `migration.sql` is edited after a database has applied it, `prisma migrate deploy` against that database fails (`P3006`, "migration modified after it was applied") — a fresh CI database never sees it, so `verify` is green while a production upgrade is broken. Measured 2026-08-21 against `openlovable_test`: 44 of 46 recorded checksums match their file, and **two do not** — `20260819010000_drop_sandbox_columns` and `20260819020000_template_stack_no_default`, both amended during the sandbox-subsystem removal. Before the next production deploy, confirm whether either migration had already been applied to production; if so, the edit has to be reverted and the change re-issued as a new migration. Not asserted in the suite because the result depends on the age of the local test database, not on the repository.
 
 ## Git hooks
 
@@ -212,18 +233,35 @@ Review checklist: backup object key quoted; no DROP without flag; `ENCRYPTION_KE
 ### Rollback
 
 ```bash
-pnpm exec tsx scripts/rollback.ts
+node ./node_modules/tsx/dist/cli.mjs scripts/rollback.ts
 # or from /admin/health → Roll back to previous release (type "roll back")
 ```
 
-This redeploys the previous **git sha** image for the main app (`COOLIFY_APP_UUID`). **The database is not auto-reverted.** If the release included a migration, restore from backup (`scripts/restore-db.ts --key …` into `RESTORE_DATABASE_URL`).
+Direct binary, matching `.husky/pre-commit` and every `verify` step — **never `pnpm exec <tool>`**,
+which is what this block used to print. Two sections above forbid that form because pnpm's
+dependency-status check can purge `node_modules` before the command runs; an agent shell survives it
+only for want of a TTY, and a human terminal has one. That would be a `node_modules` purge during a
+rollback, i.e. with production already broken.
+
+This redeploys the previous **git sha** image for the main app (`COOLIFY_APP_UUID`). The sha the app
+reports is resolved in order `GIT_SHA` → `SOURCE_COMMIT` → `COOLIFY_CONTAINER_NAME` → `unknown`
+(`currentRelease`, `lib/deploy/release.ts`; `/api/health` uses the same first two —
+`lib/health/check.ts`). Only `GIT_SHA` was documented, so a deployment that sets `SOURCE_COMMIT`
+instead reports a release from a variable this runbook did not name — which matters here, because
+comparing shas is how you confirm a rollback landed. Both are **runtime**; `SOURCE_COMMIT` and
+`COOLIFY_CONTAINER_NAME` are typically injected by the platform. **The database is not
+auto-reverted.** If the release included a migration, restore from backup:
+`node ./node_modules/tsx/dist/cli.mjs scripts/restore-db.ts --key …` into `RESTORE_DATABASE_URL`
+(which must differ from `DATABASE_URL`). One restore command, in the hooks' direct-binary form —
+this line used to give the script path with no runner and `AGENTS.md` said `npx tsx`, so neither
+was copy-pasteable in the one situation where it is read.
 
 ### Staging
 
 Create a **second Coolify application** (not a second client site):
 
 - Own Postgres
-- Own `SandboxProviderConfig` (small budget, free_first)
+- Own object storage bucket (`ELK_*`) and backup bucket (`BACKUP_*`)
 - Own `APP_URL` / zone labels
 - Same image pipeline, smaller `Plan` limits
 
@@ -290,4 +328,4 @@ The gate runs **projects**, so read this per project; `node ./node_modules/@play
 
 ## i18n
 
-There is no translation catalog. Tests assert user-facing `app/` + `components/` strings contain no Hindi and no “klarco”.
+There is no translation catalog. Tests assert user-facing `app/` + `components/` + `lib/` strings contain no Hindi and no “klarco”. Both rules, and why `klarco` is banned, are documented in `lib/i18n/user-copy.ts`; the ban is also asserted over the built-in template rows (`tests/templates.test.ts`) and the rendered sign-in page (`e2e/journeys-critical.spec.ts`).

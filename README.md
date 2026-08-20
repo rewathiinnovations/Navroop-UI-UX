@@ -11,8 +11,15 @@ Chat with AI to build React apps instantly. An example app made by the [Firecraw
 ```bash
 git clone https://github.com/firecrawl/open-lovable.git
 cd open-lovable
-pnpm install  # or npm install / yarn install
+pnpm install
 ```
+
+**pnpm only — not `npm install`, not `yarn install`.** This repo pins `packageManager: pnpm@11.21.0`
+and uses a pnpm workspace; `pnpm-workspace.yaml` carries the security `overrides` the verify gate's
+`pnpm audit` step depends on, plus `verifyDepsBeforeRun: false`. Another package manager resolves
+modules differently, writes a `package-lock.json` that makes editors switch manager, and can rewrite
+that file. The same applies to every script below: `pnpm dev`, never `npm run dev` / `yarn dev` /
+`npx next dev`.
 
 2. **Add `.env.local`**
 
@@ -23,19 +30,28 @@ pnpm install  # or npm install / yarn install
 FIRECRAWL_API_KEY=your_firecrawl_api_key    # https://firecrawl.dev
 
 # =================================================================
-# AI PROVIDER - Choose your LLM
+# GENERATION — DeepSeek, and nothing else (lib/ai/providers.ts)
 # =================================================================
-GEMINI_API_KEY=your_gemini_api_key        # https://aistudio.google.com/app/apikey
-ANTHROPIC_API_KEY=your_anthropic_api_key  # https://console.anthropic.com
-OPENAI_API_KEY=your_openai_api_key        # https://platform.openai.com
-GROQ_API_KEY=your_groq_api_key            # https://console.groq.com
+DEEPSEEK_API_KEY=your_deepseek_api_key      # https://platform.deepseek.com
 
 # =================================================================
-# FAST APPLY (Optional - for faster edits)
+# IMAGES (optional) — generation and alt text only, never generation of code
 # =================================================================
-MORPH_API_KEY=your_morphllm_api_key    # https://morphllm.com/dashboard
-
+OPENAI_API_KEY=                             # tried first for images
+GEMINI_API_KEY=                             # Imagen fallback
 ```
+
+`.env.example` is the full list and the authority; it splits **required Coolify env** from
+**optional, admin-managed** values. Two things this block used to get wrong: `ANTHROPIC_API_KEY`,
+`GROQ_API_KEY`, `AI_GATEWAY_API_KEY` and `MORPH_API_KEY` are read by nothing that generates code
+(Morph Fast Apply was deleted; the first three survive only in a log line), and `DEEPSEEK_API_KEY` —
+the one key planning and building actually need — was absent, so a fully filled-in file still gave
+"No AI provider is configured" on the first project.
+
+Most of these are also editable in **Admin → Configuration**, which is the primary control and
+overrides the env value. The two image keys are not: they resolve per user through
+**Settings → API Keys** (`ApiKey` / `OrgApiKey` rows), then env — a different store from the admin
+settings registry.
 
 3. **Run**
 
@@ -43,11 +59,11 @@ MORPH_API_KEY=your_morphllm_api_key    # https://morphllm.com/dashboard
 pnpm dev
 ```
 
-Always start the dev server with `pnpm dev` — not `npm run dev`, `yarn dev`, or `npx next dev`.
-This repo pins `packageManager: pnpm@11.21.0` and uses a pnpm workspace; running it through
-another package manager resolves modules differently and can rewrite `pnpm-workspace.yaml`.
-
-Open [http://localhost:3000](http://localhost:3000)
+Open the port this checkout is assigned. **Two working trees, two ports:** the
+`ai-genration-improvements` checkout serves [http://localhost:3001](http://localhost:3001) and the
+`main` worktree under `.worktrees/main` serves [http://localhost:3000](http://localhost:3000). One
+dev server per checkout, and only the dedicated dev-server agent starts or restarts it — the
+allocation table is in `.cursor/rules/single-dev-server.mdc`.
 
 ## Verify
 
@@ -189,8 +205,8 @@ Quote the object key printed by `scripts/pre-migrate.ts` or `/admin/backups`. Re
 1. Provision a scratch Postgres (must not be the live `DATABASE_URL`).
 2. Set `RESTORE_DATABASE_URL` to that scratch URL. It must differ from `DATABASE_URL` (the script refuses a same-URL restore).
 3. Set the original `ENCRYPTION_KEY` from your password manager (keep the key off the server). Losing it means reconnecting every integration and API key by hand.
-4. List dumps: `npx tsx scripts/restore-db.ts`
-5. Restore the named dump: `npx tsx scripts/restore-db.ts --key backups/db/db-YYYY-MM-DD-xxxxxx.dump`
+4. List dumps: `node ./node_modules/tsx/dist/cli.mjs scripts/restore-db.ts`
+5. Restore the named dump: `node ./node_modules/tsx/dist/cli.mjs scripts/restore-db.ts --key backups/db/db-YYYY-MM-DD-xxxxxx.dump`
 6. Verify the printed table counts. Spot-check an admin login against the scratch DB if needed.
 7. Promote: stop the app, point `DATABASE_URL` at the verified restore (or swap the volume), then start. Point object storage at the same ElasticLake app bucket (`ELK_*`).
 8. Redeploy.

@@ -15,6 +15,7 @@ Image Editing (text-and-image-to-image):
 """
 
 import argparse
+import io
 import json
 import os
 import sys
@@ -24,6 +25,12 @@ from datetime import datetime
 # Add parent directory for imports
 sys.path.insert(0, str(Path(__file__).parent))
 from core import search, get_cip_brief
+
+# Force UTF-8 for stdout/stderr to handle emojis on Windows (cp1252 default)
+if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+if sys.stderr.encoding and sys.stderr.encoding.lower() != 'utf-8':
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 # Model options
 MODELS = {
@@ -427,7 +434,8 @@ Image Editing Mode:
         action = check_logo_required(args.brand, skip_prompt=args.no_logo_prompt)
         if action == 'generate':
             print("\n💡 To generate a logo, use the logo-design skill:")
-            print(f"   python ~/.claude/skills/design/scripts/logo/generate.py --brand \"{args.brand}\" --industry \"{args.industry}\"")
+            logo_script = Path(__file__).resolve().parent.parent / "logo" / "generate.py"
+            print(f"   python \"{logo_script}\" --brand \"{args.brand}\" --industry \"{args.industry}\"")
             print("\n   Then re-run this command with --logo <generated_logo.png>")
             sys.exit(0)
         elif action == 'exit':

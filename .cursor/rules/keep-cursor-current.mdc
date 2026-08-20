@@ -5,13 +5,17 @@ alwaysApply: true
 
 # Keep Cursor docs current
 
-After meaningful product, schema, API, or layout changes, update `.cursor` docs in the **same session** (or at the next natural pause). Do not wait for the user to ask again.
+After meaningful product, schema, API, or layout changes, update the docs in the **same session** (or at the next natural pause). Do not wait for the user to ask again.
 
 ## Keep in sync
 
-- `AGENTS.md`
+- `AGENTS.md` and `CLAUDE.md`
+- `README.md` — the first file a new operator reads, and the one that goes stale unnoticed
 - `.cursor/README.md`
-- Relevant `*.mdc` rules: `navroop-product`, `multi-agent-ownership`, `single-dev-server`, `secrets`
+- **Every** file under `.cursor/rules/` — a glob-scoped rule fires on files whose subsystem may have moved, so `stack`, `admin-ownership`, `studio-generation`, `brand-theme` and `skills-availability` count as much as the always-on ones
+- **Every** file under `docs/`
+
+Removing a subsystem is not done until the doc set has been grepped for its name. `tests/unit/docs-accuracy.test.ts` mechanises the part of this that can be: coverage floors, the verify step list, setting keys, env vars, stack prompts, worktree ports, the runner every documented repo script is invoked through, and the banned `npm` / `yarn` / `pnpm exec` command forms are all read out of the source and compared. It cannot check prose, which is why this rule still exists.
 
 ## Rules
 

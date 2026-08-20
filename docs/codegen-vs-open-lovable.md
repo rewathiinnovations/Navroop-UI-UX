@@ -2,7 +2,7 @@
 
 A comparison of our generation pipeline against [firecrawl/open-lovable](https://github.com/firecrawl/open-lovable), the project this repo forked from.
 
-Dated 2026-08-19. Re-run the commands in [Verifying this document](#verifying-this-document) before trusting it after upstream moves.
+Dated 2026-08-19; amended 2026-08-20 for the sandbox removal and the closed build-fix loop (audit F-540 / F-541). Re-run the commands in [Verifying this document](#verifying-this-document) before trusting it after upstream moves.
 
 ## Summary
 
@@ -85,9 +85,9 @@ Upstream's v3 was substantially _about_ moving to Gemini 3 Pro. We carried the c
 
 Narrower than a file-tree diff suggests. When this was written, upstream's `lib/context-selector.ts` and `lib/edit-examples.ts` were byte-identical copies in this tree and `selectFilesForEdit` fed `buildSystemPrompt()` output into the generate route. **Both files were deleted on 2026-08-20** by the dead-code sweep: nothing imported them any more (`selectFilesForEdit` now appears nowhere under `lib/` or `app/`), so the 9 worked edit examples, "DO NOT CREATE NEW FILES WITH SIMILAR NAMES" and the "surgeon making a precise incision" framing they carried are no longer in the repository. Edit discipline today is the per-stack rules below — `nextjs.ts`, `react.ts` and `static-html.ts` each carry an `Edits:` block — plus the selective file context in `lib/generation/`. If edit quality regresses on `/admin/quality`, re-add the missing instructions as a stack prompt rule rather than resurrecting the upstream files.
 
-What **was** missing: per-stack file-count discipline. `grep -l "Edits:" lib/stack-prompts/*.ts` returned exactly one file — `react.ts`. `nextjs.ts`, `astro.ts`, `vue.ts`, `svelte.ts`, and `static-html.ts` had no equivalent, and NEXTJS is our default.
+What **was** missing: per-stack file-count discipline. `grep -l "Edits:" lib/stack-prompts/*.ts` returned exactly one file — `react.ts`. `nextjs.ts` and `static-html.ts` had no equivalent, and NEXTJS is our default. (This paragraph named six stacks until 2026-08-20: `astro.ts`, `vue.ts` and `svelte.ts` have never existed here — `Stack` in `prisma/schema.prisma` has three members and `lib/stack-prompts/` holds three per-stack files.)
 
-**Fix:** each of the five now carries a "check the layout / existing routes first" and "1 file for style/text, 2 max for a new component, never regenerate" rule in its own vocabulary. Upstream's code-snippet display rule was added once to `COMPLETION_RULES` in `shared.ts`.
+**Fix:** all three now carry a "check the layout / existing routes first" and "1 file for style/text, 2 max for a new component, never regenerate" rule in its own vocabulary. Upstream's code-snippet display rule was added once to `COMPLETION_RULES` in `shared.ts`.
 
 Upstream's "don't hand-roll SVGs" rule (commit `defd90a`) needed no action — `lib/ui-ux-pro-max/build-design-brief.ts` already says "Use Lucide or Heroicons only. Never use emoji as icons," and preserves it in edit mode.
 
@@ -98,13 +98,13 @@ Editing a stack prompt rolls a new labeled `PromptVersion` via `currentPromptHas
 Recorded because a structural diff makes them look like losses:
 
 - **Anti-recreate context survives** — the `RECENTLY CREATED/EDITED FILES (DO NOT RECREATE THESE)` block is present in the generate route.
-- **Route shrinkages are extractions** — `install-packages`, `get-sandbox-files`, and `analyze-edit-intent` became thin auth wrappers over `lib/`. The logic moved; it wasn't deleted.
-- **Dropping Vercel Sandbox was intentional** — replaced by the e2b/modal/daytona router. It is the only file upstream has that we don't.
-- **We fixed a real upstream Morph bug** — upstream treats a _failed_ `cat` as an empty file; our `successfulCommandStdout()` checks `exitCode === 0`.
+- **Route shrinkages are extractions** — `analyze-edit-intent` became a thin auth wrapper over `lib/`. The logic moved; it wasn't deleted. (`install-packages` and `get-sandbox-files` were in this list until 2026-08-20; both routes went with the sandbox subsystem, so there is nothing left to shrink.)
+- **Dropping Vercel Sandbox was intentional** — and as of migration `20260819010000_drop_sandbox_columns` there is no execution VM at all on either side of the comparison: generated code is bundled in-process with esbuild and previewed in the browser (`lib/preview/`, `components/workspace/BrowserPreview.tsx`). The whole sandbox axis of this comparison is moot as of 2026-08-20.
+- **We fixed a real upstream Morph bug** — upstream treats a _failed_ `cat` as an empty file; our `successfulCommandStdout()` checks `exitCode === 0`. (Morph itself was removed on 2026-08-20 with `lib/morph-fast-apply.ts`; recorded as history.)
 
-## Known remaining gap
+## Known remaining gap — closed
 
-`lib/build-validator.ts` is **orphaned in both trees** — it has error classification and retry-backoff logic that nothing imports. Neither we nor upstream have a closed-loop "build error → re-prompt → re-apply" cycle; upstream's `check-vite-errors` route is a stub returning `{errors: []}`. This is the largest remaining codegen opportunity and is not addressed here.
+There is none left in this section. `lib/build-validator.ts` was orphaned in both trees when this was written; it has since been deleted and replaced by a real closed-loop "build error → re-prompt → re-apply" cycle in `lib/validation/` (`run-build-validation.ts`, `build-check.ts`, `autofix-policy.ts`, `fix-prompt.ts`, `import-check.ts`) plus the static scan in `lib/generation/validate-imports.ts`. See [docs/build-autofix.md](./build-autofix.md), which is the accurate account and supersedes this section.
 
 ## Verifying this document
 
@@ -121,7 +121,7 @@ grep -rn "maxTokens\|experimental_providerMetadata" app/ lib/ --include=*.ts
 Should return only `maxTokensPerJob` (a distinct `Plan` field). Any bare `maxTokens` in a `streamText` call is finding B regressing — though it now fails `tsc` first.
 
 ```bash
-grep -L "Edits:" lib/stack-prompts/{astro,nextjs,react,static-html,svelte,vue}.ts
+grep -L "Edits:" lib/stack-prompts/{nextjs,react,static-html}.ts
 ```
 
 Should return nothing. Any file listed has lost its edit-discipline rule (finding E).

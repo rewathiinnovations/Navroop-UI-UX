@@ -67,26 +67,30 @@ If the server is dead, stale, or needs a Prisma/client refresh: tell the coordin
 When another agent needs a new Prisma client after a migration:
 
 1. They MAY run `npx prisma migrate deploy` (does not lock the engine the same way) if that is safe
-2. They MUST then tell the coordinator / dedicated **dev server** agent: "need server restart — prisma generate then pnpm dev on :3000"
+2. They MUST then tell the coordinator / dedicated **dev server** agent: "need server restart — prisma generate then pnpm dev on this tree's port from the table above"
 3. They do NOT generate, do NOT copy tmp clients, do NOT restart
 
 ## Restart in place (owner only)
 
-Before starting: check if something already listens on 3000. If it is this app and healthy, leave it. If a zombie holds 3000, kill only that next/node process, then start once on 3000. Never start a second port.
+Everything below is **this tree's port from the table above** — `3001` in the primary checkout, `3000` in `.worktrees/main`. Never a port the table does not assign to this tree: `3000` belongs to the `main` worktree and to another agent.
+
+Before starting: check whether something already listens on this tree's port. If it is this app and healthy, leave it. If a zombie holds it, kill only that next/node process, then start once on that port. Never start a second port.
 
 ```text
 # BAD — any non-owner agent starts or kills the server
 pnpm dev
-pnpm dev --port 3001
-taskkill /PID <3000> /F
+taskkill /PID <listener on this tree's port> /F
+
+# BAD — any agent, owner or not, starting on a port the table gives another tree
+pnpm dev --port 3000   # in the primary checkout; that port is .worktrees/main's
 
 # GOOD — non-owner
 # Ask the coordinator / dedicated dev-server agent: "restart please"
 
-# GOOD — owner only
-# 1. Check listeners on 3000
+# GOOD — owner only, in the primary checkout (table says 3001)
+# 1. Check listeners on 3001
 # 2. Reuse if this app is already Ready
-# 3. Or kill that next/node only, then `pnpm dev` once on 3000
+# 3. Or kill that next/node only, then `pnpm dev --port 3001` once
 ```
 
 ```text
@@ -99,8 +103,8 @@ npx prisma generate --generator client --output prisma-tmp
 # GOOD — non-owner
 # MAY: npx prisma migrate deploy (if safe)
 # Then ask the coordinator / dedicated dev-server agent:
-# "need server restart — prisma generate then pnpm dev on :3000"
+# "need server restart — prisma generate then pnpm dev on this tree's port"
 
 # GOOD — owner only
-# Stop :3000 if needed, prisma generate, then pnpm dev once on 3000
+# Stop this tree's port if needed, prisma generate, then pnpm dev once on that port
 ```
