@@ -71,10 +71,11 @@ export async function persistImportedSite(input: {
     Object.fromEntries(parsed.map((file) => [file.path, file.content])),
   );
   if (rejected.length > 0) {
-    log.warn('import.rejected_paths', {
+    log.warn('import.rejected_files', {
       projectId: input.projectId,
       count: rejected.length,
-      paths: rejected.slice(0, 10),
+      paths: rejected.slice(0, 10).map((file) => file.path),
+      codes: rejected.slice(0, 10).map((file) => file.code),
     });
   }
 

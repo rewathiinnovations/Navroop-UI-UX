@@ -50,6 +50,9 @@ function projectFixture(id: string) {
     id,
     checkpoints: [{ snapshotKey: `snapshots/${id}/cp_1.zip`, snapshotBytes: 100 }],
     projectAssets: [{ storageKey: `projects/${id}/logo.png`, sizeBytes: 20 }],
+    // The build's pre-gzip byte sum (`markReady`, lib/preview/build.ts); the row
+    // itself is cascaded away by the delete, so the purge is its last reader.
+    previewBuilds: [{ totalBytes: 300 }],
   };
 }
 
@@ -88,7 +91,7 @@ describe('purgeDeletedProjects provenance', () => {
   it('names every resource id in the audit entry before the cascade destroys the rows', async () => {
     const result = await purgeDeletedProjects();
 
-    expect(result).toMatchObject({ purged: 1, blocked: 0, reclaimedBytes: 120 });
+    expect(result).toMatchObject({ purged: 1, blocked: 0, reclaimedBytes: 420 });
     expect(audit.writeAudit).toHaveBeenCalledWith(
       expect.objectContaining({
         action: 'project.hard_purge',
@@ -97,7 +100,7 @@ describe('purgeDeletedProjects provenance', () => {
         after: {
           deployments: TORN_DOWN.resources,
           keptCloudflareZones: TORN_DOWN.keptCloudflareZones,
-          reclaimedBytes: 120,
+          reclaimedBytes: 420,
         },
       }),
     );
@@ -159,6 +162,27 @@ describe('purgeDeletedProjects storage keys', () => {
       'snapshots/proj_ok/cp_1.zip',
       'projects/proj_ok/logo.png',
     ]);
+  });
+
+  it('reclaims static preview objects and their bytes — the cascade destroys the only pointer', async () => {
+    // `previews/{projectId}/{buildId}/…` is written by lib/preview/build.ts;
+    // `PreviewBuild.storagePrefix` is the only record those objects exist, and
+    // `prisma.project.delete` cascades the rows away. Before the purge listed
+    // this prefix the objects leaked forever and `storageBytes` only ever grew.
+    storage.listKeys.mockImplementation(async (prefix: string) =>
+      prefix === 'previews/proj_1/'
+        ? ['previews/proj_1/build_1/index.html', 'previews/proj_1/build_1/assets/app.js']
+        : [],
+    );
+
+    const result = await purgeDeletedProjects();
+
+    expect(result).toMatchObject({ purged: 1, blocked: 0, reclaimedBytes: 420 });
+    const deleted = storage.deleteObject.mock.calls.map((call) => call[0]);
+    expect(deleted).toContain('previews/proj_1/build_1/index.html');
+    expect(deleted).toContain('previews/proj_1/build_1/assets/app.js');
+    // 100 snapshot + 20 asset + 300 preview bytes leave the workspace ledger.
+    expect(usage.adjustStorageBytes).toHaveBeenCalledWith(-420);
   });
 
   it('holds the project back when the object listing fails, and keeps going', async () => {

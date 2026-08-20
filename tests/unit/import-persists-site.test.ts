@@ -79,6 +79,11 @@ vi.mock('@/lib/jobs/settle', () => ({ ensureJobSettled: vi.fn(async () => 'alrea
 const run = vi.hoisted(() => ({ runProjectUrlImport: vi.fn() }));
 vi.mock('@/lib/import/run', () => run);
 
+// Fulfilment is wiring under test, not behaviour: the real module reaches image
+// providers and storage at import time. Default passthrough in beforeEach.
+const fulfill = vi.hoisted(() => ({ fulfillNeedImages: vi.fn() }));
+vi.mock('@/lib/assets/fulfill', () => fulfill);
+
 // Dynamic, not static: every `vi.mock` above has to be registered before the
 // module graph under test is evaluated.
 const { persistImportedSite } = await import('@/lib/import/persist');
@@ -126,6 +131,9 @@ beforeEach(() => {
     initialPrompt: SOURCE_URL,
     importSource: null,
   });
+  fulfill.fulfillNeedImages.mockImplementation(async ({ files }) =>
+    Object.assign([...files], { unfulfilled: [] }),
+  );
 });
 
 describe('persistImportedSite', () => {
@@ -202,6 +210,66 @@ describe('persistImportedSite', () => {
     // The workspace applies an import with isEdit: false. Nothing is read from
     // the project row here, so no prior site can leak into the stored value.
     expect(written().data.lastCode).toBe('<file path="src/App.tsx">\nimported\n</file>');
+  });
+
+  it('sweeps a NEED_IMAGE token fulfilment could not replace out of the stored files', async () => {
+    // The import prompt shares BASE_RULES with the streamed path, so the model
+    // asks for images with the same token. Fulfilment returning the files
+    // untouched (no provider configured) must not let the literal string ship.
+    await persistImportedSite({
+      projectId: PROJECT,
+      userId: OWNER,
+      filesXml:
+        '<file path="src/sections/Hero.tsx"><img src="NEED_IMAGE: pizzeria hero shot | 16:9" /></file>',
+    });
+
+    const stored = storedFiles()['src/sections/Hero.tsx'];
+    expect(stored).not.toContain('NEED_IMAGE:');
+    expect(stored).toContain('data:image/svg+xml');
+  });
+
+  it('stores the fulfilled URL when a provider answers, attributed to the importing user', async () => {
+    fulfill.fulfillNeedImages.mockImplementation(
+      async ({ files }: { files: Array<{ path: string; content: string }> }) =>
+        Object.assign(
+          files.map((file) => ({
+            path: file.path,
+            content: file.content.replace(
+              'NEED_IMAGE: pizzeria hero shot | 16:9',
+              '/uploads/hero.webp',
+            ),
+          })),
+          { unfulfilled: [] },
+        ),
+    );
+
+    await persistImportedSite({
+      projectId: PROJECT,
+      userId: OWNER,
+      filesXml:
+        '<file path="src/sections/Hero.tsx"><img src="NEED_IMAGE: pizzeria hero shot | 16:9" /></file>',
+    });
+
+    expect(fulfill.fulfillNeedImages).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: PROJECT, userId: OWNER }),
+    );
+    const stored = storedFiles()['src/sections/Hero.tsx'];
+    expect(stored).toContain('/uploads/hero.webp');
+    expect(stored).not.toContain('NEED_IMAGE:');
+  });
+
+  it('still sweeps when fulfilment itself throws — a provider outage cannot ship the token', async () => {
+    fulfill.fulfillNeedImages.mockRejectedValue(new Error('image worker unreachable'));
+
+    await persistImportedSite({
+      projectId: PROJECT,
+      filesXml:
+        '<file path="src/sections/Hero.tsx"><img src="NEED_IMAGE: pizzeria hero shot | 16:9" /></file>',
+    });
+
+    const stored = storedFiles()['src/sections/Hero.tsx'];
+    expect(stored).not.toContain('NEED_IMAGE:');
+    expect(stored).toContain('data:image/svg+xml');
   });
 });
 
