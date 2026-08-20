@@ -6,6 +6,7 @@ import AdminPage from '@/components/admin/AdminPage';
 import StatTile from '@/components/admin/StatTile';
 import StatusBanner from '@/components/admin/StatusBanner';
 import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import StudioButton from '@/components/app/studio/StudioButton';
 import StudioField from '@/components/app/studio/StudioField';
 import {
@@ -14,6 +15,7 @@ import {
   type QualitySignalKind,
 } from '@/lib/signals/score';
 import { formatAdminDate } from '../format-admin-date';
+import { handleAdminForbidden } from '@/lib/admin/forbidden';
 import { toMessage } from '@/lib/notify';
 
 type KindMetric = {
@@ -62,15 +64,23 @@ function last30DayInputs(now = new Date()) {
 }
 
 /**
- * F-705: type_safety, a11y_score and build_success are fabricated — the code
- * audit runs its static checks with no sandbox, so the collectors record a
- * perfect 1.0 for projects that were never analysed. Hidden here until the
- * Wave 4 pipeline fix (see audit/FIXES.md F-705). The collectors keep writing
- * rows, so history survives the outage.
+ * Three scores were hidden in Wave 2 because the collectors recorded a perfect
+ * 1.0 for checks that never ran (F-705).
+ *
+ * `a11y_score` is back: axe really runs, in a headless browser against the
+ * preview, and the collector now records the run's own impacts instead of
+ * inventing "moderate" for each violation (F-816). A run axe could not start
+ * records nothing at all rather than 1.0.
+ *
+ * `type_safety` and `build_success` stay hidden, and it is not the collector's
+ * fault any more: nothing executes `tsc` or a production build. Both needed the
+ * sandbox that no longer exists, so the honest state is no samples — and the
+ * rows already in the table for them are the fabricated 1.0s, which is the
+ * second reason not to chart them. Un-hide either one when something actually
+ * runs it.
  */
 const BROKEN_SIGNAL_KINDS: Partial<Record<QualitySignalKind, true>> = {
   type_safety: true,
-  a11y_score: true,
   build_success: true,
 };
 const SHOWN_SIGNAL_KINDS = QUALITY_SIGNAL_KINDS.filter((kind) => !BROKEN_SIGNAL_KINDS[kind]);
@@ -88,6 +98,7 @@ function trendLabel(trend: number | null) {
 }
 
 export default function QualityDashboard() {
+  const router = useRouter();
   const defaults = useMemo(() => last30DayInputs(), []);
   const [from, setFrom] = useState(defaults.from);
   const [to, setTo] = useState(defaults.to);
@@ -106,7 +117,7 @@ export default function QualityDashboard() {
       try {
         const response = await fetch(`/api/admin/quality?${query}`);
         if (response.status === 403) {
-          window.location.replace('/dashboard');
+          handleAdminForbidden(router);
           return;
         }
         const payload = await response.json();
@@ -125,7 +136,7 @@ export default function QualityDashboard() {
     return () => {
       cancelled = true;
     };
-  }, [query]);
+  }, [query, router]);
 
   const applyRange = (event: FormEvent) => {
     event.preventDefault();
@@ -192,8 +203,10 @@ export default function QualityDashboard() {
         }
       >
         <p className="mb-12 text-[12px] text-[var(--studio-muted)]">
-          Type safety, accessibility and build-success scores are hidden: their measurement is
-          broken and records perfect scores. See audit/FIXES.md F-705.
+          Type safety and build success are hidden: nothing runs a type-check or a production build
+          for a project, so there is nothing honest to show. Accessibility is measured by axe
+          against the preview and is shown; a run axe could not complete records no score rather
+          than a perfect one.
         </p>
         <div className="grid grid-cols-1 gap-12 sm:grid-cols-2 lg:grid-cols-4">
           {SHOWN_SIGNAL_KINDS.map((kind) => {

@@ -6,9 +6,12 @@ import AdminPage from '@/components/admin/AdminPage';
 import { AdminTable, Td, Th, Tr } from '@/components/admin/AdminTable';
 import StatusBanner from '@/components/admin/StatusBanner';
 import { FormEvent, useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import StudioButton from '@/components/app/studio/StudioButton';
 import StudioField from '@/components/app/studio/StudioField';
+import { handleAdminForbidden } from '@/lib/admin/forbidden';
 import { notify } from '@/lib/notify';
+import { listAnnouncement } from '@/lib/a11y/list-announcement';
 import { formatAdminDateTime } from '../format-admin-date';
 
 type AuditRow = {
@@ -22,6 +25,7 @@ type AuditRow = {
 };
 
 export default function AuditAdmin() {
+  const router = useRouter();
   const [rows, setRows] = useState<AuditRow[]>([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -50,7 +54,7 @@ export default function AuditAdmin() {
     try {
       const response = await fetch(`/api/admin/audit?${query()}`);
       if (response.status === 403) {
-        window.location.replace('/dashboard');
+        handleAdminForbidden(router);
         return;
       }
       const payload = await response.json();
@@ -133,6 +137,14 @@ export default function AuditAdmin() {
             </StudioButton>
           </div>
         </form>
+
+        {/* Rendered unconditionally: a live region only announces changes to
+            text it already owns, so it has to exist before the filter settles.
+            Without it the only feedback for a filter run is the submit button
+            flipping to "Loading…" and back. */}
+        <p className="sr-only" aria-live="polite">
+          {listAnnouncement({ loading, error, count: rows.length, noun: 'audit event' })}
+        </p>
 
         <AdminTable
           isEmpty={!loading && rows.length === 0}

@@ -76,10 +76,13 @@ export function parseEslintJson(raw: string): CodeFinding[] {
   return findings;
 }
 
-export async function runLintCheck(stack: StackId, sandbox: SandboxRunner | null): Promise<CodeFinding[]> {
+export async function runLintCheck(
+  stack: StackId,
+  sandbox: SandboxRunner | null,
+): Promise<CodeFinding[]> {
   const config = eslintConfigForStack(stack);
   if (!config) return [];
-  if (!sandbox) return [toolFailedFinding('lint', new Error('No active sandbox'))];
+  if (!sandbox) return [toolFailedFinding('lint', new Error('no build runner on this instance'))];
   try {
     if (sandbox.writeFile) {
       await sandbox.writeFile('/tmp/navroop-eslint.config.mjs', config);

@@ -78,7 +78,8 @@ export function parseTsPruneOutput(output: string): CodeFinding[] {
 }
 
 export async function runDeadCodeCheck(sandbox: SandboxRunner | null): Promise<CodeFinding[]> {
-  if (!sandbox) return [toolFailedFinding('dead-code', new Error('No active sandbox'))];
+  if (!sandbox)
+    return [toolFailedFinding('dead-code', new Error('no build runner on this instance'))];
   try {
     const knip = await sandbox.runCommand('npx --yes knip --reporter json');
     const fromKnip = parseKnipJson(`${knip.stdout}\n${knip.stderr}`);
@@ -94,7 +95,9 @@ export async function runDeadCodeCheck(sandbox: SandboxRunner | null): Promise<C
       const pruned = await sandbox.runCommand('npx --yes ts-prune');
       return parseTsPruneOutput(`${pruned.stdout}\n${pruned.stderr}`);
     } catch (fallbackError) {
-      return [toolFailedFinding('dead-code', fallbackError instanceof Error ? fallbackError : error)];
+      return [
+        toolFailedFinding('dead-code', fallbackError instanceof Error ? fallbackError : error),
+      ];
     }
   }
 }

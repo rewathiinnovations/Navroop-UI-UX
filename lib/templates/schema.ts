@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { DESIGN_DIRECTION_IDS } from '@/lib/design/directions';
 import { STACK_IDS } from '@/lib/stacks';
 import { parseWithZod } from '@/lib/projects/schema';
+import { httpUrl } from '@/lib/schema/url';
 import { TEMPLATE_CATEGORIES } from './categories';
 
 export const templateSortSchema = z.enum(['popular', 'newest']).default('popular');
@@ -19,7 +20,9 @@ export const saveTemplateSchema = z.object({
   prompt: z.string().trim().min(20, 'Prompt is too short').max(12000),
   stack: z.enum(STACK_IDS).optional(),
   designDirection: z.enum(DESIGN_DIRECTION_IDS).optional(),
-  previewUrl: z.string().trim().url().max(500).optional().or(z.literal('')),
+  // `.url()` accepted `javascript:` and `file:` — this value is shown as the
+  // template's "Preview" link, which is the natural place for an href (F-742).
+  previewUrl: httpUrl(500).optional().or(z.literal('')),
 });
 
 export const adminTemplateSchema = saveTemplateSchema.extend({
@@ -34,7 +37,7 @@ export const adminTemplateSchema = saveTemplateSchema.extend({
   isBuiltIn: z.boolean().optional(),
   workspaceId: z.string().trim().min(1).nullable().optional(),
   sortOrder: z.number().int().min(0).max(10000).optional(),
-  previewUrl: z.string().trim().url().max(500).nullable().optional().or(z.literal('')),
+  previewUrl: httpUrl(500).nullable().optional().or(z.literal('')),
 });
 
 export const createFromTemplateSchema = z.object({

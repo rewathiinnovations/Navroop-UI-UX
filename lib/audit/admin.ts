@@ -1,4 +1,3 @@
-import { Prisma } from '@/generated/prisma';
 import { prisma } from '@/lib/db';
 import { formatAuditDiff } from './log';
 
@@ -84,9 +83,16 @@ export function auditRowsToCsv(rows: AuditListRow[]) {
     'diff',
     'requestId',
   ];
+  // Excel, LibreOffice and Sheets treat a cell whose first character is `=`, `+`,
+  // `-`, `@`, TAB or CR as a formula, so quoting alone is not enough: `actorEmail`
+  // comes from the invite flow and `diff` carries arbitrary changed values, and
+  // this is the file the workspace's most privileged person opens (F-741). A
+  // leading apostrophe is the portable "this is text" marker; it is stripped by
+  // the spreadsheet on import, so the displayed value is unchanged.
   const escape = (value: unknown) => {
-    const text = value == null ? '' : String(value);
-    if (/[",\n]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
+    let text = value == null ? '' : String(value);
+    if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+    if (/[",\n\r]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
     return text;
   };
   const lines = [header.join(',')];

@@ -1,7 +1,12 @@
 import type { StackId } from '@/lib/stacks';
 import type { FileSnapshotEntry } from '@/lib/checkpoints/snapshot';
 
-export type SeoSeverity = 'pass' | 'low' | 'medium' | 'high';
+/**
+ * `info` is "we could not evaluate this" — never the project's fault, so it
+ * carries no fix and is excluded from the SEO score (F-755). A real defect is
+ * low/medium/high; a real success is pass.
+ */
+export type SeoSeverity = 'pass' | 'info' | 'low' | 'medium' | 'high';
 
 export type SeoCategory =
   | 'page-basics'
@@ -22,7 +27,8 @@ export type SeoFinding = {
   detail: string;
   fixable: boolean;
   ignored: boolean;
-  fixed?: boolean;
+  /** F-820. See the note on `CodeFinding.fixRequestedAt`. */
+  fixRequestedAt?: string;
 };
 
 export type LiveDocument = {
@@ -30,11 +36,15 @@ export type LiveDocument = {
   status: number;
   html: string;
   headers: Record<string, string>;
+  /** The fetch never completed, so `status` is not a response the site sent. */
+  unreachable: boolean;
 };
 
 export type LiveText = {
   status: number;
   text: string;
+  /** The fetch never completed, so `status` is not a response the site sent. */
+  unreachable: boolean;
 };
 
 export type SeoScanInput = {

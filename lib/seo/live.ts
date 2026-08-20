@@ -2,9 +2,13 @@ import type { LiveDocument, LiveText } from './types';
 
 const TIMEOUT_MS = 8000;
 
-async function fetchText(
-  url: string,
-): Promise<{ status: number; text: string; url: string; headers: Record<string, string> }> {
+async function fetchText(url: string): Promise<{
+  status: number;
+  text: string;
+  url: string;
+  headers: Record<string, string>;
+  unreachable: boolean;
+}> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
@@ -15,12 +19,14 @@ async function fetchText(
     response.headers.forEach((value, key) => {
       headers[key.toLowerCase()] = value;
     });
-    return { status: response.status, text, url: response.url, headers };
+    return { status: response.status, text, url: response.url, headers, unreachable: false };
   } catch (error) {
-    // status 0 is the "unreachable" sentinel the audit checks read, but the reason
-    // is only useful if it is logged.
+    // The site said nothing at all — DNS, a timeout, a reset. That is not a
+    // status code and must not be read as one: `status: 0` used to be the
+    // sentinel, and every reader that compared it to an HTTP status turned our
+    // own outage into a defect in the user's site (F-755).
     console.warn('[seo] preview fetch failed', url, error);
-    return { status: 0, text: '', url, headers: {} };
+    return { status: 0, text: '', url, headers: {}, unreachable: true };
   } finally {
     clearTimeout(timer);
   }
@@ -33,6 +39,7 @@ export async function fetchPreviewDocument(previewUrl: string): Promise<LiveDocu
     status: result.status,
     html: result.text,
     headers: result.headers,
+    unreachable: result.unreachable,
   };
 }
 
@@ -55,5 +62,5 @@ export function previewPathUrl(previewUrl: string, path: string): string {
 
 export async function fetchPreviewText(previewUrl: string, path: string): Promise<LiveText> {
   const result = await fetchText(previewPathUrl(previewUrl, path));
-  return { status: result.status, text: result.text };
+  return { status: result.status, text: result.text, unreachable: result.unreachable };
 }

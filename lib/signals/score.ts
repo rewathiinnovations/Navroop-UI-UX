@@ -11,60 +11,70 @@ export const QUALITY_SIGNAL_KINDS = [
 
 export type QualitySignalKind = (typeof QUALITY_SIGNAL_KINDS)[number];
 
-/** Reviewable weights for getOverallQualityScore. Sum = 1. */
-export const QUALITY_SCORE_WEIGHTS = {
-  revert_rate: 0.3,
-  followups_to_settle: 0.25,
-  build_success: 0.15,
+/**
+ * Reviewable weights for getOverallQualityScore. Sum = 1.
+ *
+ * Typed `Record<QualitySignalKind, number>` rather than inferred from the
+ * object literal: a kind added to `QUALITY_SIGNAL_KINDS` without a weight is
+ * now a compile error. `type_safety` was collected, stored, charted with its
+ * own definition — and silently absent from this map, so `composeOverallScore`
+ * (which iterates the weights) never let a type-check failure move the number
+ * an operator uses to judge a prompt change (F-760). The seven original weights
+ * are rebalanced proportionally to make room rather than re-argued.
+ */
+export const QUALITY_SCORE_WEIGHTS: Record<QualitySignalKind, number> = {
+  revert_rate: 0.28,
+  followups_to_settle: 0.22,
+  build_success: 0.12,
+  type_safety: 0.1,
   seo_score: 0.1,
   a11y_score: 0.1,
-  thumbs: 0.05,
-  visual_edit_rate: 0.05,
-} as const;
+  thumbs: 0.04,
+  visual_edit_rate: 0.04,
+};
 
 export const MIN_KIND_SAMPLES = 10;
 export const MIN_OVERALL_SAMPLES = 30;
 
-export const SIGNAL_DEFINITIONS: Record<
-  QualitySignalKind,
-  { label: string; definition: string }
-> = {
-  revert_rate: {
-    label: 'Revert rate',
-    definition:
-      '1.0 if a generation settled without a checkpoint restore; 0 if the user restored away from that output. Implicit — users do not opt in.',
-  },
-  followups_to_settle: {
-    label: 'Follow-ups to settle',
-    definition:
-      'After 30 minutes with no new generation, count generations since the last settle. 1 → 1.0, 2 → 0.8, 3 → 0.6, 4 → 0.4, 5+ → 0.2.',
-  },
-  visual_edit_rate: {
-    label: 'Visual edit rate',
-    definition:
-      'Visual-edit-sourced messages per generation. 0 → 1.0, 1 → 0.8, 2 → 0.6, 3 → 0.4, 4+ → 0.2. Heavy correction means the generated design missed.',
-  },
-  thumbs: {
-    label: 'Thumbs',
-    definition: 'Explicit chat thumbs up = 1.0, thumbs down = 0.0.',
-  },
-  seo_score: {
-    label: 'SEO score',
-    definition: 'On each SEO audit: passing findings ÷ applicable (non-ignored) findings.',
-  },
-  a11y_score: {
-    label: 'Accessibility score',
-    definition: 'From Code Audit axe-core violations, weighted by impact (critical > serious > moderate > minor).',
-  },
-  build_success: {
-    label: 'Build success',
-    definition: '1.0 if the Code Audit production build succeeded, 0.0 if it failed.',
-  },
-  type_safety: {
-    label: 'Type safety',
-    definition: '1.0 when tsc reports zero errors; scales down as 1 / (1 + error count).',
-  },
-};
+export const SIGNAL_DEFINITIONS: Record<QualitySignalKind, { label: string; definition: string }> =
+  {
+    revert_rate: {
+      label: 'Revert rate',
+      definition:
+        '1.0 if a generation settled without a checkpoint restore; 0 if the user restored away from that output. Implicit — users do not opt in.',
+    },
+    followups_to_settle: {
+      label: 'Follow-ups to settle',
+      definition:
+        'After 30 minutes with no new generation, count generations since the last settle. 1 → 1.0, 2 → 0.8, 3 → 0.6, 4 → 0.4, 5+ → 0.2.',
+    },
+    visual_edit_rate: {
+      label: 'Visual edit rate',
+      definition:
+        'Visual-edit-sourced messages per generation. 0 → 1.0, 1 → 0.8, 2 → 0.6, 3 → 0.4, 4+ → 0.2. Heavy correction means the generated design missed.',
+    },
+    thumbs: {
+      label: 'Thumbs',
+      definition: 'Explicit chat thumbs up = 1.0, thumbs down = 0.0.',
+    },
+    seo_score: {
+      label: 'SEO score',
+      definition: 'On each SEO audit: passing findings ÷ applicable (non-ignored) findings.',
+    },
+    a11y_score: {
+      label: 'Accessibility score',
+      definition:
+        'From Code Audit axe-core violations, weighted by impact (critical > serious > moderate > minor).',
+    },
+    build_success: {
+      label: 'Build success',
+      definition: '1.0 if the Code Audit production build succeeded, 0.0 if it failed.',
+    },
+    type_safety: {
+      label: 'Type safety',
+      definition: '1.0 when tsc reports zero errors; scales down as 1 / (1 + error count).',
+    },
+  };
 
 export function clamp01(value: number) {
   if (Number.isNaN(value)) return 0;
@@ -88,7 +98,10 @@ export function visualEditRateScore(visualEditCount: number) {
 }
 
 export function seoScoreFromFindings(findings: Array<{ status?: string; ignored?: boolean }>) {
-  const applicable = findings.filter((row) => !row.ignored);
+  // `info` findings record that a check could not run (an unreachable preview,
+  // F-755). Counting them would let one of our outages lower the project's
+  // recorded quality; they are neither a pass nor a defect.
+  const applicable = findings.filter((row) => !row.ignored && row.status !== 'info');
   if (applicable.length === 0) return 1;
   const passing = applicable.filter((row) => row.status === 'pass').length;
   return clamp01(passing / applicable.length);
@@ -122,10 +135,25 @@ export function typeSafetyScore(tsErrors: number) {
   return clamp01(1 / (1 + tsErrors));
 }
 
+/**
+ * The sample floor, applied to a mean the caller already has. `/admin/quality`
+ * aggregates in SQL, so it never holds the individual values (F-732) — this is
+ * the one place the floor is decided either way.
+ */
+export function composeKindStat(
+  mean: number | null,
+  n: number,
+): { mean: number; n: number } | null {
+  if (mean == null || n < MIN_KIND_SAMPLES) return null;
+  return { mean, n };
+}
+
 export function composeKindMetric(values: number[]): { mean: number; n: number } | null {
-  if (values.length < MIN_KIND_SAMPLES) return null;
-  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
-  return { mean, n: values.length };
+  if (values.length === 0) return null;
+  return composeKindStat(
+    values.reduce((sum, value) => sum + value, 0) / values.length,
+    values.length,
+  );
 }
 
 export function composeOverallScore(

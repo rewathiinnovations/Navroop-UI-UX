@@ -18,7 +18,9 @@ export function parseDepcheckJson(raw: string): CodeFinding[] {
   try {
     const start = raw.indexOf('{');
     const end = raw.lastIndexOf('}');
-    parsed = JSON.parse(start >= 0 && end > start ? raw.slice(start, end + 1) : raw) as DepcheckJson;
+    parsed = JSON.parse(
+      start >= 0 && end > start ? raw.slice(start, end + 1) : raw,
+    ) as DepcheckJson;
   } catch {
     return [];
   }
@@ -69,7 +71,8 @@ export function parseNpmAuditJson(raw: string): CodeFinding[] {
 }
 
 export async function runDependencyChecks(sandbox: SandboxRunner | null): Promise<CodeFinding[]> {
-  if (!sandbox) return [toolFailedFinding('dependencies', new Error('No active sandbox'))];
+  if (!sandbox)
+    return [toolFailedFinding('dependencies', new Error('no build runner on this instance'))];
   const findings: CodeFinding[] = [];
   try {
     const unused = await sandbox.runCommand('npx --yes depcheck --json');

@@ -1,4 +1,4 @@
-import { chromium } from 'playwright';
+import { withHeadlessBrowser } from '@/lib/audit/headless-browser';
 import { capLighthouseSeverity, finding } from './findings';
 import type { SeoFinding, SeoSeverity } from './types';
 
@@ -49,21 +49,27 @@ export function findingsFromLighthouse(result: LighthouseResult | null | undefin
 /** Preview URL only. Never marks a finding high. */
 export async function runLighthouseSeo(previewUrl: string): Promise<SeoFinding[]> {
   if (!previewUrl.trim()) return [];
-  let browser: Awaited<ReturnType<typeof chromium.launch>> | null = null;
   try {
-    const port = 9222 + Math.floor(Math.random() * 800);
-    browser = await chromium.launch({
-      headless: true,
-      args: [`--remote-debugging-port=${port}`, '--no-sandbox'],
-    });
-    const lighthouse = (await import('lighthouse')).default;
-    const result = (await lighthouse(previewUrl, {
-      port,
-      output: 'json',
-      onlyCategories: ['seo'],
-      logLevel: 'error',
-    })) as LighthouseResult | undefined;
-    return findingsFromLighthouse(result);
+    // One browser at a time, on an OS-assigned debugging port. Two concurrent
+    // SEO audits used to pick the same random `--remote-debugging-port` with no
+    // collision check, so Lighthouse could attach to the other audit's browser
+    // and score the wrong page; the run also had no timeout (F-751).
+    return await withHeadlessBrowser(
+      async ({ debugPort }) => {
+        // Loaded here, not at module scope: `lighthouse` is a heavy ESM-only
+        // package and this is the only place it runs, so it stays out of the
+        // graph until an SEO audit actually needs it.
+        const lighthouse = (await import('lighthouse')).default;
+        const result = (await lighthouse(previewUrl, {
+          port: debugPort ?? undefined,
+          output: 'json',
+          onlyCategories: ['seo'],
+          logLevel: 'error',
+        })) as LighthouseResult | undefined;
+        return findingsFromLighthouse(result);
+      },
+      { debugPort: true },
+    );
   } catch (error) {
     console.warn('[seo] lighthouse run failed', error);
     return [
@@ -76,10 +82,5 @@ export async function runLighthouseSeo(previewUrl: string): Promise<SeoFinding[]
         fixable: false,
       }),
     ];
-  } finally {
-    // A Chromium we failed to close stays resident on the server — never silent.
-    await browser?.close().catch((error) => {
-      console.warn('[seo] lighthouse browser close failed', error);
-    });
   }
 }

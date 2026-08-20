@@ -48,20 +48,38 @@ export type VerifyRunResult = {
 export type RunCommand = (command: string) => Promise<{ ok: boolean; output?: string }>;
 
 const PASSED_TESTS = /(\d+)\s+passed/;
+const SKIPPED_TESTS = /(\d+)\s+skipped/;
 
 /**
- * Playwright's reporter prints `N passed` only when tests actually ran; a project
- * whose tests are all `.fixme()` or all `test.skip(cond)` prints only
- * `N skipped` and exits 0. Both Playwright steps are fatal, so their tick has to
- * mean at least one browser assertion ran.
+ * Playwright's reporter prints `N passed` only when tests actually ran, and
+ * `N skipped` for every `test.skip(cond)` / `.fixme()`. A fatal project that has
+ * passing tests *and* a conditional skip prints e.g. `12 passed  1 skipped` and
+ * exits 0 — a check that reads only the pass count leaves that skip invisible, so
+ * the one journey a skip guards can stop running without turning the gate red
+ * (F-611). This asserts both: at least one assertion ran, and no more skips than
+ * the step has declared. A new conditional skip inside a gated project therefore
+ * has to be declared here (bump `allowSkipped`) or it fails the step.
+ *
+ * `allowSkipped` is non-zero only for `playwright-all` in verify:full, which runs
+ * the `stacks` project whose single "needs a paid build" skip is honest and
+ * permanent; every per-project gate step allows zero.
  */
-export function requirePassingTests(output: string): string | null {
-  const match = PASSED_TESTS.exec(output);
-  const passed = match ? Number(match[1]) : 0;
-  if (passed > 0) {
+export function requireExecuted({
+  allowSkipped = 0,
+}: { allowSkipped?: number } = {}): StepAssertion {
+  return (output: string) => {
+    const passedMatch = PASSED_TESTS.exec(output);
+    const passed = passedMatch ? Number(passedMatch[1]) : 0;
+    if (passed <= 0) {
+      return 'exited 0 but reported no passing test — a step that runs nothing is not a pass';
+    }
+    const skippedMatch = SKIPPED_TESTS.exec(output);
+    const skipped = skippedMatch ? Number(skippedMatch[1]) : 0;
+    if (skipped > allowSkipped) {
+      return `exited 0 but ${skipped} test(s) skipped (declared ${allowSkipped}) — a skip inside a fatal step must be declared, not hidden behind the passing count`;
+    }
     return null;
-  }
-  return 'exited 0 but reported no passing test — a step that runs nothing is not a pass';
+  };
 }
 
 /**
@@ -125,7 +143,7 @@ export const VERIFY_STEPS: VerifyStep[] = [
     label: 'Playwright critical',
     command: 'node ./node_modules/@playwright/test/cli.js test --project=critical',
     fatal: true,
-    assertExecuted: requirePassingTests,
+    assertExecuted: requireExecuted(),
   },
   {
     // Runs `setup` first as a declared dependency, so this is the step that
@@ -137,13 +155,20 @@ export const VERIFY_STEPS: VerifyStep[] = [
     label: 'Playwright authenticated journeys',
     command: 'node ./node_modules/@playwright/test/cli.js test --project=authenticated',
     fatal: true,
-    assertExecuted: requirePassingTests,
+    assertExecuted: requireExecuted(),
   },
   {
+    // Fatal since 2026-08-21. It was `fatal: false` with no config, so it printed the
+    // same ten entries on every run and blocked nothing — the same shape as a test
+    // that cannot fail (F-645). `.depcheckrc.yml` now declares each of those ten,
+    // split into "used but not through an import depcheck can see" and "unused,
+    // pending removal", so depcheck exits 0 on a clean tree and a *new* unused
+    // dependency is a red gate. knip stays a report: its unused list is wider because
+    // it reads the components/shared/* marketing surface as unreachable (F-448).
     id: 'depcheck',
-    label: 'depcheck (report)',
+    label: 'depcheck',
     command: 'node ./node_modules/depcheck/bin/depcheck.js',
-    fatal: false,
+    fatal: true,
   },
   {
     // `--no-exit-code` was removed on 2026-08-19: with `fatal: false` on top of
@@ -172,7 +197,7 @@ export const VERIFY_FULL_EXTRA_STEPS: VerifyStep[] = [
     label: 'Playwright all projects',
     command: 'node ./node_modules/@playwright/test/cli.js test',
     fatal: true,
-    assertExecuted: requirePassingTests,
+    assertExecuted: requireExecuted({ allowSkipped: 1 }),
   },
 ];
 

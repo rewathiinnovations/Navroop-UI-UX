@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
-import { chromium } from 'playwright';
+import type { Browser } from 'playwright';
+import { withHeadlessBrowser } from './headless-browser';
 import type { SeoFinding } from '@/lib/seo/types';
 import { finding } from './findings';
 import { toolFailedFinding } from './static/tool-fail';
@@ -23,6 +24,9 @@ export function findingsFromAxe(violations: AxeViolation[], viewport: string): C
           id: `a11y:${violation.id}:${selector || viewport}`,
           category: 'a11y',
           status: mapAxeImpact(violation.impact),
+          // `status` is the four-value display severity; `impact` is what axe
+          // said, and it is what the quality score weights by (F-816).
+          impact: violation.impact ?? undefined,
           title: violation.help,
           detail: `${violation.help} (${viewport}${selector ? `, ${selector}` : ''}).`,
           selector: selector || undefined,
@@ -60,36 +64,47 @@ export function dedupeA11yAgainstSeo(a11y: CodeFinding[], seo: SeoFinding[]): Co
   });
 }
 
-async function runAxeOnPage(url: string, width: number, label: string): Promise<CodeFinding[]> {
-  let browser: Awaited<ReturnType<typeof chromium.launch>> | null = null;
+async function axeOnPage(
+  browser: Browser,
+  url: string,
+  width: number,
+  label: string,
+): Promise<CodeFinding[]> {
+  const page = await browser.newPage({ viewport: { width, height: width === 390 ? 844 : 800 } });
   try {
-    browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
-    const page = await browser.newPage({ viewport: { width, height: width === 390 ? 844 : 800 } });
     await page.goto(url, { waitUntil: 'networkidle', timeout: 15_000 });
     const axePath = require.resolve('axe-core');
     await page.addScriptTag({ path: axePath });
     const violations = (await page.evaluate(() => {
-      const axe = (globalThis as { axe?: { run: () => Promise<{ violations?: AxeViolation[] }> } }).axe;
-      if (!axe) return [];
-      return axe.run().then((result) => result.violations || []);
+      // axe-core registers itself on the page's globalThis through the injected
+      // script tag; the Node type for globalThis cannot express that runtime
+      // addition, so the shape is named once here rather than asserted inline.
+      const pageGlobal = globalThis as {
+        axe?: { run: () => Promise<{ violations?: AxeViolation[] }> };
+      };
+      const runner = pageGlobal.axe;
+      if (!runner) return [];
+      return runner.run().then((result) => result.violations || []);
     })) as AxeViolation[];
     return findingsFromAxe(violations, label);
   } finally {
-    // A Chromium we failed to close stays resident on the server — never silent.
-    await browser?.close().catch((error) => {
-      console.warn('[audit] a11y browser close failed', error);
-    });
+    await page.close().catch(() => undefined);
   }
 }
 
-export async function runA11yAudit(previewUrl: string | null, seo: SeoFinding[]): Promise<CodeFinding[]> {
+export async function runA11yAudit(
+  previewUrl: string | null,
+  seo: SeoFinding[],
+): Promise<CodeFinding[]> {
   if (!previewUrl?.trim()) {
     return [toolFailedFinding('a11y', new Error('No preview URL'))];
   }
   try {
-    const [desktop, mobile] = await Promise.all([
-      runAxeOnPage(previewUrl, 1280, 'desktop'),
-      runAxeOnPage(previewUrl, 390, '390px'),
+    // One browser, two pages, one at a time — the desktop and 390px passes used
+    // to launch a Chromium each, concurrently, inside the serving process (F-751).
+    const [desktop, mobile] = await withHeadlessBrowser(async ({ browser }) => [
+      await axeOnPage(browser, previewUrl, 1280, 'desktop'),
+      await axeOnPage(browser, previewUrl, 390, '390px'),
     ]);
     const merged = new Map<string, CodeFinding>();
     for (const row of [...desktop, ...mobile]) {

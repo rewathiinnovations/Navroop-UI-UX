@@ -1,5 +1,4 @@
 import { generateText } from 'ai';
-import { appConfig } from '@/config/app.config';
 import { getProviderForModel } from '@/lib/ai/provider-manager';
 import { buildCachedMessages } from '@/lib/generation/prompt-cache';
 import { estimateTokens } from '@/lib/generation/token-estimate';
@@ -103,10 +102,7 @@ export async function runAiReview(input: {
   const files = selectFilesForAiReview(input.files, input.staticFindings);
   if (files.length === 0) return [];
   try {
-    const { client, actualModel } = await getProviderForModel(
-      appConfig.ai.defaultModel,
-      input.userId,
-    );
+    const { client, actualModel } = await getProviderForModel(null, input.userId);
     const stablePrefix = buildStablePromptPrefix(input.stack, input.directionId);
     const listing = files.map((file) => `--- ${file.path} ---\n${file.content}`).join('\n\n');
     const volatile = [
@@ -115,12 +111,7 @@ export async function runAiReview(input: {
       'Do not repeat TypeScript, lint, dependency, or bundle issues.',
       listing,
     ].join('\n\n');
-    const enableAnthropicCache = appConfig.ai.defaultModel.startsWith('anthropic/');
-    const messages = buildCachedMessages({
-      stablePrefix,
-      volatileUser: volatile,
-      enableAnthropicCache,
-    });
+    const messages = buildCachedMessages({ stablePrefix, volatileUser: volatile });
     const result = await generateText({
       model: client(actualModel),
       messages,

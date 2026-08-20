@@ -3,7 +3,7 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { ChevronDown, Loader2, Search } from 'lucide-react';
 import { cn } from '@/utils/cn';
-import { relativeTime } from '@/lib/projects/prompt';
+import { formatRelativeTime } from '@/lib/format-relative-time';
 import { sortFindings } from '@/lib/seo/findings';
 import type { SeoFinding, SeoSeverity } from '@/lib/seo/types';
 import type { SendMessageOptions } from './types';
@@ -13,17 +13,17 @@ const SEVERITY_LABEL: Record<SeoSeverity, string> = {
   high: 'High',
   medium: 'Medium',
   low: 'Low',
+  // Not a verdict on the site: a check that could not run (F-755).
+  info: 'Not checked',
   pass: 'Pass',
 };
 
-function SeverityBadge({ status, fixed }: { status: SeoSeverity; fixed?: boolean }) {
-  if (fixed && status !== 'pass') {
-    return (
-      <span className="inline-flex items-center rounded-full bg-[var(--studio-accent-soft)] px-8 py-2 text-[11px] font-medium text-[var(--studio-accent)]">
-        Fixed
-      </span>
-    );
-  }
+/**
+ * F-820: this used to render "Fixed" from a flag the server stamped before any
+ * generation had started. The severity is what the last scan actually measured,
+ * so it always shows; a requested fix is a separate, honest note.
+ */
+function SeverityBadge({ status }: { status: SeoSeverity }) {
   return (
     <span
       className={cn(
@@ -32,9 +32,18 @@ function SeverityBadge({ status, fixed }: { status: SeoSeverity; fixed?: boolean
         status === 'medium' && 'bg-amber-100 text-amber-800',
         status === 'low' && 'bg-sky-100 text-sky-800',
         status === 'pass' && 'bg-emerald-100 text-emerald-800',
+        status === 'info' && 'bg-[var(--studio-surface-hover)] text-[var(--studio-muted)]',
       )}
     >
       {SEVERITY_LABEL[status]}
+    </span>
+  );
+}
+
+function FixRequestedPill() {
+  return (
+    <span className="inline-flex items-center rounded-full bg-[var(--studio-accent-soft)] px-8 py-2 text-[11px] font-medium text-[var(--studio-accent)]">
+      Fix requested — rescan to confirm
     </span>
   );
 }
@@ -55,17 +64,18 @@ function FindingRow({
       <div className="flex flex-wrap items-start justify-between gap-8">
         <div className="min-w-0 flex-1">
           <div className="mb-6 flex flex-wrap items-center gap-6">
-            <SeverityBadge status={item.status} fixed={item.fixed} />
+            <SeverityBadge status={item.status} />
+            {item.fixRequestedAt && item.status !== 'pass' ? <FixRequestedPill /> : null}
             <p className="text-[13px] font-medium text-[var(--studio-fg)]">{item.title}</p>
           </div>
           <p className="text-[12px] leading-5 text-[var(--studio-muted)]">{item.detail}</p>
         </div>
-        {item.status !== 'pass' && (
+        {item.status !== 'pass' && item.status !== 'info' && (
           <div className="flex shrink-0 items-center gap-6">
             {item.fixable !== false && !item.ignored && (
               <button
                 type="button"
-                disabled={busy || item.fixed}
+                disabled={busy}
                 onClick={() => onFix(item.id)}
                 className="inline-flex min-h-[32px] items-center rounded-full border border-[var(--studio-line-strong)] px-10 text-[12px] font-medium text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50"
               >
@@ -131,14 +141,22 @@ export default function SeoPanel({
   const grouped = useMemo(() => {
     const sorted = sortFindings(audit?.findings ?? []);
     return {
-      failures: sorted.filter((row) => !row.ignored && row.status !== 'pass'),
+      failures: sorted.filter(
+        (row) => !row.ignored && row.status !== 'pass' && row.status !== 'info',
+      ),
+      // Checks that could not run. Not fixable and not ignorable — the audit is
+      // simply incomplete, and saying so is not the same as reporting a defect.
+      notices: sorted.filter((row) => !row.ignored && row.status === 'info'),
       passing: sorted.filter((row) => !row.ignored && row.status === 'pass'),
       ignored: sorted.filter((row) => row.ignored),
     };
   }, [audit]);
 
-  const stale =
-    Boolean(audit && projectUpdatedAt && new Date(projectUpdatedAt).getTime() > new Date(audit.scannedAt).getTime());
+  const stale = Boolean(
+    audit &&
+    projectUpdatedAt &&
+    new Date(projectUpdatedAt).getTime() > new Date(audit.scannedAt).getTime(),
+  );
 
   const handleFix = async (id: string) => {
     setBusyId(id);
@@ -163,7 +181,7 @@ export default function SeoPanel({
             {scanning
               ? 'Scanning preview and files…'
               : audit
-                ? `Last scan ${relativeTime(audit.scannedAt)}${stale ? ' — site changed since last scan' : ''}`
+                ? `Last scan ${formatRelativeTime(audit.scannedAt)}${stale ? ' — site changed since last scan' : ''}`
                 : 'On-demand audit of the generated site'}
           </p>
         </div>
@@ -184,7 +202,11 @@ export default function SeoPanel({
             onClick={() => void scan()}
             className="inline-flex h-36 items-center gap-6 rounded-full bg-[var(--studio-fg)] px-14 text-[13px] font-medium text-[var(--studio-bg)] disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {scanning ? <Loader2 className="size-14 animate-spin" /> : <Search className="size-14" />}
+            {scanning ? (
+              <Loader2 className="size-14 animate-spin" />
+            ) : (
+              <Search className="size-14" />
+            )}
             {audit ? 'Scan again' : 'Scan'}
           </button>
         </div>
@@ -199,7 +221,8 @@ export default function SeoPanel({
         {!audit && !scanning && (
           <div className="flex flex-col items-center justify-center px-24 py-48 text-center">
             <p className="max-w-[320px] text-[14px] leading-6 text-[var(--studio-muted)]">
-              Scan this Navroop preview for titles, social tags, structured data, robots, and sitemap.
+              Scan this Navroop preview for titles, social tags, structured data, robots, and
+              sitemap.
             </p>
           </div>
         )}
@@ -218,6 +241,19 @@ export default function SeoPanel({
             </ul>
             {grouped.failures.length === 0 && (
               <p className="text-[13px] text-[var(--studio-muted)]">No open SEO issues.</p>
+            )}
+            {grouped.notices.length > 0 && (
+              <ul className="mt-8 space-y-8">
+                {grouped.notices.map((item) => (
+                  <FindingRow
+                    key={item.id}
+                    item={item}
+                    busy
+                    onFix={() => undefined}
+                    onIgnore={() => undefined}
+                  />
+                ))}
+              </ul>
             )}
             {grouped.passing.length > 0 && (
               <CollapsedGroup title="Passing" count={grouped.passing.length}>

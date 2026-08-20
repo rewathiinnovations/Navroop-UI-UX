@@ -17,7 +17,7 @@ export type CreateFromTemplateDeps = {
   checkLimit: (
     workspaceId: string,
     kind: 'projects',
-    upcoming?: number,
+    upcoming: number,
   ) => Promise<LimitCheckResult>;
   createProject: typeof createProject;
   incrementUsageCount: (templateId: string) => Promise<number>;

@@ -136,6 +136,22 @@ export async function insertTemplate(input: {
   return asRow(rows[0]);
 }
 
+/**
+ * Writes the columns in `patch` and nothing else.
+ *
+ * This was a read-modify-write: it read the row, merged the patch in JS, and `UPDATE`d
+ * all thirteen columns from the merged object. Anything committed between the read and
+ * the write was overwritten with the stale value, so two admins editing one template —
+ * or one admin's reorder racing their own content edit — silently reverted each other,
+ * and the reverted column is the prompt every project from that template is built from
+ * (F-748). `incrementUsageCount` next door is atomic for the same reason.
+ *
+ * `Template` has no `updatedAt`/version column, so there is no predicate that can refuse
+ * a stale write to the *same* column; last write wins there, as it does in the admin form.
+ * Restricting the `SET` list is what stops a write from clobbering columns it was never
+ * given. Placeholders are numbered by hand, the shape `buildProjectListQuery` and
+ * `lib/audit/admin.ts` use; every caller value is bound, never interpolated.
+ */
 export async function updateTemplateRow(
   id: string,
   patch: Partial<{
@@ -154,29 +170,40 @@ export async function updateTemplateRow(
     sortOrder: number;
   }>,
 ): Promise<TemplateRow | null> {
-  const current = await findTemplateById(id);
-  if (!current) return null;
-  const next = { ...current, ...patch };
-  const rows = await prisma.$queryRaw<Array<Record<string, unknown>>>`
-    UPDATE "Template" SET
-      slug = ${next.slug},
-      name = ${next.name},
-      description = ${next.description},
-      category = ${next.category},
-      stack = ${String(next.stack)}::"Stack",
-      prompt = ${next.prompt},
-      "designDirection" = ${next.designDirection},
-      "thumbnailKey" = ${next.thumbnailKey},
-      "previewUrl" = ${next.previewUrl},
-      "isActive" = ${next.isActive},
-      "isBuiltIn" = ${next.isBuiltIn},
-      "workspaceId" = ${next.workspaceId},
-      "sortOrder" = ${next.sortOrder}
-    WHERE id = ${id}
-    RETURNING id, slug, name, description, category, stack, prompt, "designDirection",
-      "thumbnailKey", "previewUrl", "isActive", "isBuiltIn", "workspaceId",
-      "createdById", "usageCount", "sortOrder", "createdAt"
-  `;
+  const values: unknown[] = [];
+  const bind = (value: unknown) => {
+    values.push(value);
+    return `$${values.length}`;
+  };
+
+  const sets: string[] = [];
+  if (patch.slug !== undefined) sets.push(`slug = ${bind(patch.slug)}`);
+  if (patch.name !== undefined) sets.push(`name = ${bind(patch.name)}`);
+  if (patch.description !== undefined) sets.push(`description = ${bind(patch.description)}`);
+  if (patch.category !== undefined) sets.push(`category = ${bind(patch.category)}`);
+  if (patch.stack !== undefined) sets.push(`stack = ${bind(String(patch.stack))}::"Stack"`);
+  if (patch.prompt !== undefined) sets.push(`prompt = ${bind(patch.prompt)}`);
+  if (patch.designDirection !== undefined) {
+    sets.push(`"designDirection" = ${bind(patch.designDirection)}`);
+  }
+  if (patch.thumbnailKey !== undefined) sets.push(`"thumbnailKey" = ${bind(patch.thumbnailKey)}`);
+  if (patch.previewUrl !== undefined) sets.push(`"previewUrl" = ${bind(patch.previewUrl)}`);
+  if (patch.isActive !== undefined) sets.push(`"isActive" = ${bind(patch.isActive)}`);
+  if (patch.isBuiltIn !== undefined) sets.push(`"isBuiltIn" = ${bind(patch.isBuiltIn)}`);
+  if (patch.workspaceId !== undefined) sets.push(`"workspaceId" = ${bind(patch.workspaceId)}`);
+  if (patch.sortOrder !== undefined) sets.push(`"sortOrder" = ${bind(patch.sortOrder)}`);
+
+  // Nothing to write. Answering with the stored row keeps "no such template" → null.
+  if (sets.length === 0) return findTemplateById(id);
+
+  const rows = await prisma.$queryRawUnsafe<Array<Record<string, unknown>>>(
+    `UPDATE "Template" SET ${sets.join(', ')}
+     WHERE id = ${bind(id)}
+     RETURNING id, slug, name, description, category, stack, prompt, "designDirection",
+       "thumbnailKey", "previewUrl", "isActive", "isBuiltIn", "workspaceId",
+       "createdById", "usageCount", "sortOrder", "createdAt"`,
+    ...values,
+  );
   return rows[0] ? asRow(rows[0]) : null;
 }
 

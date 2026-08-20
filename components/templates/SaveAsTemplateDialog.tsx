@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { TEMPLATE_CATEGORIES, TEMPLATE_CATEGORY_LABELS } from '@/lib/templates/categories';
 import { notify, toMessage } from '@/lib/notify';
+import StudioModal from '@/components/ui/StudioModal';
 
 export default function SaveAsTemplateDialog({
   projectId,
@@ -19,12 +20,10 @@ export default function SaveAsTemplateDialog({
   const [prompt, setPrompt] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState('');
 
   useEffect(() => {
     if (!open || !projectId) return;
     setError('');
-    setDone('');
     void fetch(`/api/templates/from-project?projectId=${encodeURIComponent(projectId)}`)
       .then(async (response) => {
         const payload = await response.json().catch(() => ({}));
@@ -38,8 +37,6 @@ export default function SaveAsTemplateDialog({
       })
       .catch(() => setError('Could not prepare this template'));
   }, [open, projectId]);
-
-  if (!open) return null;
 
   const onSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -57,9 +54,11 @@ export default function SaveAsTemplateDialog({
         return;
       }
       const message = payload.thumbnailWarning || 'Saved as a workspace template.';
-      setDone(message);
-      // Also toasted so the confirmation survives closing the dialog.
+      // The toast carries the confirmation past the dialog, so the dialog can
+      // close — left open with the fields still populated, the same template
+      // could be saved a second and third time (F-432).
       notify.success(message, { key: 'save-as-template' });
+      onClose();
     } catch (cause) {
       setError(toMessage(cause, 'Could not save as template'));
     } finally {
@@ -68,25 +67,19 @@ export default function SaveAsTemplateDialog({
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 px-16"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="save-template-title"
+    <StudioModal
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) onClose();
+      }}
+      dismissible={!busy}
+      title="Save as template"
+      titleClassName="text-[20px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]"
+      description="Private to this workspace. Edit the prompt before you save."
+      descriptionClassName="mt-6 text-[13px] text-[var(--studio-muted)]"
+      className="studio-pop-in w-full max-w-[560px] rounded-16 border border-[var(--studio-line)] bg-[var(--studio-bg)] p-20 shadow-[var(--studio-shadow-pop)]"
     >
-      <form
-        onSubmit={(event) => void onSubmit(event)}
-        className="w-full max-w-[560px] rounded-16 border border-[var(--studio-line)] bg-[var(--studio-bg)] p-20 shadow-sm"
-      >
-        <h2
-          id="save-template-title"
-          className="text-[20px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]"
-        >
-          Save as template
-        </h2>
-        <p className="mt-6 text-[13px] text-[var(--studio-muted)]">
-          Private to this workspace. Edit the prompt before you save.
-        </p>
+      <form onSubmit={(event) => void onSubmit(event)}>
         <div className="mt-16 space-y-12">
           <label className="block text-[12px] font-medium text-[var(--studio-fg)]">
             Name
@@ -136,11 +129,6 @@ export default function SaveAsTemplateDialog({
             {error}
           </p>
         ) : null}
-        {done ? (
-          <p className="mt-12 text-[13px] text-[var(--studio-muted)]" role="status">
-            {done}
-          </p>
-        ) : null}
         <div className="mt-16 flex justify-end gap-8">
           <button
             type="button"
@@ -158,6 +146,6 @@ export default function SaveAsTemplateDialog({
           </button>
         </div>
       </form>
-    </div>
+    </StudioModal>
   );
 }

@@ -1,7 +1,9 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   formatSummary,
-  requirePassingTests,
+  requireExecuted,
   runVerify,
   stepsForMode,
   VERIFY_STEPS,
@@ -95,17 +97,32 @@ describe('verify orchestrator', () => {
     expect(result.reproduce).toBe('node ./node_modules/vitest/vitest.mjs run --coverage');
   });
 
-  it('continues after depcheck/knip report failures', async () => {
-    const result = await runVerify({
+  it('continues after a knip report failure but stops on depcheck', async () => {
+    const reportOnly = await runVerify({
       mode: 'verify',
       async runCommand(command) {
-        if (command.includes('depcheck') || command.includes('knip')) return { ok: false };
+        if (command.includes('knip')) return { ok: false };
         return stubOk(command);
       },
     });
-    expect(result.ok).toBe(true);
-    expect(result.results.find((row) => row.id === 'depcheck')?.ok).toBe(false);
-    expect(result.results.find((row) => row.id === 'knip')?.ok).toBe(false);
+    expect(reportOnly.ok).toBe(true);
+    expect(reportOnly.results.find((row) => row.id === 'knip')?.ok).toBe(false);
+
+    // depcheck became fatal on 2026-08-21 once `.depcheckrc.yml` declared the ten
+    // entries it had been printing on every run (F-645). A newly unused dependency
+    // now stops the push instead of scrolling past.
+    const unusedDependency = await runVerify({
+      mode: 'verify',
+      async runCommand(command) {
+        if (command.includes('depcheck'))
+          return { ok: false, output: 'Unused dependencies\n* left-pad' };
+        return stubOk(command);
+      },
+    });
+    expect(unusedDependency.ok).toBe(false);
+    expect(unusedDependency.failedStep?.id).toBe('depcheck');
+    // And it stops there: knip and the audit never run.
+    expect(unusedDependency.results.map((row) => row.id)).not.toContain('audit');
   });
 
   it('never reaches for pnpm except for the audit, which has no vendored binary', () => {
@@ -148,12 +165,20 @@ describe('verify orchestrator', () => {
     expect(noOutput.failedStep?.id).toBe('playwright-critical');
   });
 
-  it('counts passing tests out of the reporter output', () => {
-    expect(requirePassingTests('  2 passed (4.1s)')).toBeNull();
-    expect(requirePassingTests('  1 passed\n  37 skipped')).toBeNull();
-    expect(requirePassingTests('  37 skipped')).toContain('no passing test');
-    expect(requirePassingTests('')).toContain('no passing test');
-    expect(requirePassingTests('  0 passed')).toContain('no passing test');
+  it('requires a passing test and rejects undeclared skips', () => {
+    const gate = requireExecuted();
+    expect(gate('  2 passed (4.1s)')).toBeNull();
+    // The F-611 regression: a passing count no longer excuses a skip in a gated step.
+    expect(gate('  1 passed\n  37 skipped')).toContain('skipped');
+    expect(gate('  1 passed\n  1 skipped')).toContain('skipped');
+    expect(gate('  37 skipped')).toContain('no passing test');
+    expect(gate('')).toContain('no passing test');
+    expect(gate('  0 passed')).toContain('no passing test');
+
+    // playwright-all runs the honestly-skipped `stacks` project, so it declares one.
+    const withDeclaredSkip = requireExecuted({ allowSkipped: 1 });
+    expect(withDeclaredSkip('  4 passed\n  1 skipped')).toBeNull();
+    expect(withDeclaredSkip('  4 passed\n  2 skipped')).toContain('skipped');
   });
 
   it('runs both Playwright projects in verify and replaces them with every project in verify:full', () => {
@@ -248,5 +273,54 @@ describe('verify orchestrator', () => {
     expect(full.mode).toBe('verify:full');
     expect(full.results.map((row) => row.id)).toContain('playwright-all');
     expect(full.results.map((row) => row.id)).not.toContain('playwright-critical');
+  });
+
+  /**
+   * F-615: a project added to `playwright.config.ts` is gated by nothing until
+   * someone remembers to add a step for it. `tests/unit/test-suites-reachable.test.ts`
+   * proves a spec is *collectable* by some project; it says nothing about whether that
+   * project runs in `verify`. Before 2026-08-19 `authenticated` was in no workflow and
+   * no verify step, which is how a broken sign-in could have shipped green.
+   *
+   * Every project therefore has to be in exactly one of three buckets, and a new name
+   * lands in none of them until it is declared here.
+   */
+  describe('every Playwright project is accounted for by the gate', () => {
+    /** Runs only in `verify:full` (nightly). Declared, not accidental. */
+    const NIGHTLY_ONLY = ['stacks', 'full'];
+    /** Never run standalone: `dependencies: ['setup']` pulls it into `authenticated`. */
+    const DEPENDENCY_ONLY = ['setup'];
+
+    const config = readFileSync(
+      fileURLToPath(new URL('../../playwright.config.ts', import.meta.url)),
+      'utf8',
+    );
+    const projectNames = [...config.matchAll(/^\s{6}name: '([a-z-]+)',$/gm)].map(
+      (match) => match[1],
+    );
+    const gatedInVerify = VERIFY_STEPS.flatMap((step) => {
+      const match = /--project=([a-z-]+)/.exec(step.command);
+      return match?.[1] ? [match[1]] : [];
+    });
+
+    it('finds the project list and the gated subset', () => {
+      // Anti-vacuity: an empty parse would satisfy every set comparison below.
+      expect(projectNames.length).toBeGreaterThan(3);
+      expect(gatedInVerify.length).toBeGreaterThan(1);
+    });
+
+    it('leaves no project ungated and no declaration stale', () => {
+      expect([...projectNames].sort()).toEqual(
+        [...gatedInVerify, ...NIGHTLY_ONLY, ...DEPENDENCY_ONLY].sort(),
+      );
+    });
+
+    it('runs the nightly-only projects somewhere', () => {
+      // `playwright-all` carries no --project flag, so it covers the whole config.
+      const full = stepsForMode('verify:full').filter((step) => step.id.startsWith('playwright'));
+      expect(full.map((step) => step.id)).toEqual(['playwright-all']);
+      expect(full[0]?.command).not.toContain('--project=');
+      expect(full[0]?.fatal).toBe(true);
+    });
   });
 });

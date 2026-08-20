@@ -1,7 +1,6 @@
 import type { StackId } from '@/lib/stacks';
 import { getStack } from '@/lib/stacks';
 import { finding } from './findings';
-import { toolFailedFinding } from './static/tool-fail';
 import type { BundleAsset, BundleMeasure, CodeFinding, SandboxRunner } from './types';
 
 const SANDBOX_LABEL = 'sandbox-environment estimate';
@@ -141,14 +140,18 @@ export async function runBundleMeasure(
   stack: StackId,
   sandbox: SandboxRunner | null,
   routeCount: number,
-): Promise<{ findings: CodeFinding[]; bundleKb: number | null }> {
-  if (measureShouldSkip(stack)) return { findings: [], bundleKb: null };
+): Promise<{ findings: CodeFinding[]; bundleKb: number | null; ran: boolean }> {
+  // `ran: false` is "no build was attempted", which is not the same as a build
+  // that succeeded. The quality collector used to read the absence of a
+  // `bundle:build-failed` finding as success and record `build_success = 1.0`
+  // for projects nothing was ever built for (F-705).
+  if (measureShouldSkip(stack)) return { findings: [], bundleKb: null, ran: false };
   // Bundle size needs somewhere to run the stack's build. Nothing runs
   // server-side any more, so this is a clean skip rather than a finding —
   // reporting "tool failed" on every audit would be noise, not a defect.
-  if (!sandbox) return { findings: [], bundleKb: null };
+  if (!sandbox) return { findings: [], bundleKb: null, ran: false };
   const command = getStack(stack).buildCommand;
-  if (!command) return { findings: [], bundleKb: null };
+  if (!command) return { findings: [], bundleKb: null, ran: false };
   try {
     const built = await sandbox.runCommand(command);
     const output = `${built.stdout}\n${built.stderr}`;
@@ -166,7 +169,7 @@ export async function runBundleMeasure(
         assets: [],
         routeCount,
       };
-      return { findings: findingsFromBundle(measure), bundleKb: null };
+      return { findings: findingsFromBundle(measure), bundleKb: null, ran: true };
     }
     if (sandbox.writeFile) {
       await sandbox.writeFile('/tmp/navroop-measure-assets.cjs', MEASURE_SCRIPT);
@@ -174,12 +177,13 @@ export async function runBundleMeasure(
     const measured = await sandbox.runCommand('node /tmp/navroop-measure-assets.cjs');
     const assets = parseAssets(`${measured.stdout}\n${measured.stderr}`);
     const measure: BundleMeasure = { stack, ok: true, error: null, assets, routeCount };
-    return { findings: findingsFromBundle(measure), bundleKb: totalBundleKb(assets) };
+    return { findings: findingsFromBundle(measure), bundleKb: totalBundleKb(assets), ran: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return {
       findings: findingsFromBundle({ stack, ok: false, error: message, assets: [], routeCount }),
       bundleKb: null,
+      ran: true,
     };
   }
 }

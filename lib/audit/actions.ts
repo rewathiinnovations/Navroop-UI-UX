@@ -2,15 +2,16 @@
 
 import { prisma } from '@/lib/db';
 import { getSessionUser, type SessionUser } from '@/lib/auth';
-import { peekActor, startFollowUpGeneration } from '@/lib/projects/plan';
+import { peekActor } from '@/lib/projects/plan';
 import { captureFileSnapshot } from '@/lib/checkpoints/snapshot';
 import { getStack } from '@/lib/stacks';
 import { asFindings } from '@/lib/seo/findings';
+import { auditPreviewUrl } from '@/lib/preview/url';
 import { asCodeFindings, asMetrics, mergeIgnoredFindings } from './findings';
 import { buildFixAllInstruction, buildFixInstruction } from './fix-instruction';
 import { groupRecurringIssues, type RecurringIssue } from './recurring';
 import { runCodeScan } from './scan';
-import type { PublicCodeAudit } from './types';
+import type { CodeFinding, PublicCodeAudit } from './types';
 import { recordCodeAuditSignals } from '@/lib/signals/collect';
 import { asCreditActionErr } from '@/lib/plans/http';
 import { checkCredits } from '@/lib/plans/limits';
@@ -73,16 +74,40 @@ async function latestRow(projectId: string) {
   });
 }
 
-export async function isCodeScanInFlight(projectId: string) {
-  return await Promise.resolve(inflight.has(projectId));
-}
+/**
+ * N-005: this is a `'use server'` export, so it is reachable as an endpoint by
+ * anyone who can post to the app — and it used to answer, for any project id,
+ * whether a scan was running. That is an activity and existence oracle for
+ * projects the caller cannot see. It is a read, but it is a read *about one
+ * project*, so it owes the same session + ownership answer the mutations do.
+ */
+export async function isCodeScanInFlight(
+  projectId: string,
+): Promise<ActionResult<{ inFlight: boolean }>> {
+  const { user, err } = await requireActor();
+  if (!user) return err;
 
-async function performCodeAudit(projectId: string) {
   const project = await prisma.project.findFirst({
     where: { id: projectId, deletedAt: null },
-    select: { id: true, stack: true, previewUrl: true, designDirection: true, ownerId: true },
+    select: { id: true, ownerId: true },
   });
-  if (!project) return false;
+  if (!project) return notFound();
+  if (!canMutate(user, project.ownerId)) return forbidden();
+
+  return { ok: true, data: { inFlight: inflight.has(projectId) } };
+}
+
+/**
+ * `'project_deleted'` rather than `false`: the caller turns the outcome into a job
+ * failure, and a row that no longer exists is not an AI-provider miss. Filing it as
+ * `provider_error` pointed /admin/jobs at DeepSeek for a deleted project (F-821).
+ */
+async function performCodeAudit(projectId: string): Promise<'ran' | 'project_deleted'> {
+  const project = await prisma.project.findFirst({
+    where: { id: projectId, deletedAt: null },
+    select: { id: true, stack: true, designDirection: true, ownerId: true },
+  });
+  if (!project) return 'project_deleted';
 
   const [previous, latestSeo] = await Promise.all([
     latestRow(projectId),
@@ -97,18 +122,12 @@ async function performCodeAudit(projectId: string) {
   // Nothing executes server-side any more: the live preview is compiled and
   // run in the user's browser. Only a published static build has a URL an
   // auditor can visit, and there is no runner for build-time checks.
-  let previewUrl = project.previewUrl?.trim() || null;
+  let previewUrl: string | null = null;
   const sandbox = null;
   try {
-    const { getProjectPreviewFields } = await import('@/lib/preview/db');
-    const { signedPreviewUrl } = await import('@/lib/preview/url');
-    const preview = await getProjectPreviewFields(projectId);
-    previewUrl = preview?.activePreviewBuildId
-      ? await signedPreviewUrl({ projectId, userId: 'code-audit' })
-      : null;
+    previewUrl = await auditPreviewUrl(projectId, 'code-audit');
   } catch (error) {
     console.warn('[audit] preview URL unavailable, scanning files only', error);
-    previewUrl = null;
   }
   const scanned = await runCodeScan({
     stack,
@@ -133,10 +152,12 @@ async function performCodeAudit(projectId: string) {
   void recordCodeAuditSignals({
     projectId,
     codeAuditId: created.id,
-    metrics: scanned.metrics,
-    buildOk: !findings.some((item) => item.id === 'bundle:build-failed'),
+    // What the scan actually measured, not what its finding counts imply. A
+    // check that could not run reports `null` here and is recorded as nothing
+    // rather than as a perfect score (F-705, F-816).
+    ...scanned.signals,
   });
-  return true;
+  return 'ran';
 }
 
 /** Owner/ADMIN. Starts the scan and returns immediately (SEO audit-style). */
@@ -200,21 +221,22 @@ export async function runCodeAudit(projectId: string): Promise<ActionResult<{ sc
     });
     const jobBeat = beginJobHeartbeat(auditJob.id);
     const job = performCodeAudit(projectId)
-      .then(async (didRun) => {
-        if (didRun) {
+      .then(async (outcome) => {
+        if (outcome === 'ran') {
           await succeedJob(auditJob.id);
           return;
         }
         // F-819: the failure must survive somewhere the poll can read it —
         // the job row (failJob writes errorMessage) and its step list.
+        const deletedMessage = 'The project was deleted before the audit ran';
         await recordJobStepFailure(auditJob.id, {
           key: CODE_AUDIT_STEP,
           label: stepLabel,
-          error: 'Audit did not run',
+          error: deletedMessage,
         });
         await failJob(auditJob.id, {
-          errorCode: 'provider_error',
-          errorMessage: 'Audit did not run',
+          errorCode: 'project_deleted',
+          errorMessage: deletedMessage,
         });
       })
       .catch(async (error) => {
@@ -318,16 +340,24 @@ export async function toggleIgnoreCodeFinding(
   return { ok: true, data: toPublic(updated) };
 }
 
-async function markFixed(projectId: string, ids: string[]) {
-  const row = await latestRow(projectId);
-  if (!row) return;
+/**
+ * F-820: this used to stamp `fixed: true` and re-read `latestRow`, which may be
+ * a *newer* audit than the one the caller collected findings from — so the flags
+ * could land on a different row. It now records the request, on the row the
+ * caller actually read, and claims nothing about the outcome: the build runs
+ * client-side after this returns and may fail, be cancelled, or hit the credit
+ * limit. Whether the code changed is the next scan's answer.
+ */
+async function markFixRequested(rowId: string, findings: CodeFinding[], ids: string[]) {
   const wanted = new Set(ids);
-  const findings = asCodeFindings(row.findings).map((item) =>
-    wanted.has(item.id) ? { ...item, fixed: true } : item,
-  );
+  const requestedAt = new Date().toISOString();
   await prisma.codeAudit.update({
-    where: { id: row.id },
-    data: { findings },
+    where: { id: rowId },
+    data: {
+      findings: findings.map((item) =>
+        wanted.has(item.id) ? { ...item, fixRequestedAt: requestedAt } : item,
+      ),
+    },
   });
 }
 
@@ -348,14 +378,19 @@ export async function fixCodeFinding(
 
   const row = await latestRow(projectId);
   if (!row) return notFound();
-  const target = asCodeFindings(row.findings).find((item) => item.id === findingId);
+  const findings = asCodeFindings(row.findings);
+  const target = findings.find((item) => item.id === findingId);
   if (!target) return { ok: false, error: 'Finding not found', status: 404 };
   if (target.ignored) return { ok: false, error: 'Finding is ignored', status: 409 };
   if (target.status === 'pass') return { ok: false, error: 'Finding already passes', status: 409 };
 
   const promptContext = buildFixInstruction(target);
-  await startFollowUpGeneration({ projectId, userId: user.id, promptContext });
-  await markFixed(projectId, [findingId]);
+  // F-820: `startFollowUpGeneration` used to be called here. It starts nothing —
+  // it writes a `GenerationEvent` — and the build the client goes on to start
+  // logs its own (app/api/generate-ai-code-stream/route.ts). Two rows for one
+  // generation inflated `followups_to_settle` and the usage-cost roll-up for a
+  // build that had not happened and might never happen.
+  await markFixRequested(row.id, findings, [findingId]);
   return { ok: true, data: { promptContext, findingId } };
 }
 
@@ -375,18 +410,16 @@ export async function fixAllCodeFindings(
 
   const row = await latestRow(projectId);
   if (!row) return notFound();
-  const open = asCodeFindings(row.findings).filter(
+  const findings = asCodeFindings(row.findings);
+  const open = findings.filter(
     (item) => !item.ignored && item.status !== 'pass' && item.fixable !== false,
   );
   if (open.length === 0) return { ok: false, error: 'No open findings to fix', status: 409 };
 
   const promptContext = buildFixAllInstruction(open);
-  await startFollowUpGeneration({ projectId, userId: user.id, promptContext });
-  await markFixed(
-    projectId,
-    open.map((item) => item.id),
-  );
-  return { ok: true, data: { promptContext, findingIds: open.map((item) => item.id) } };
+  const findingIds = open.map((item) => item.id);
+  await markFixRequested(row.id, findings, findingIds);
+  return { ok: true, data: { promptContext, findingIds } };
 }
 
 /** ADMIN. Frequent finding categories across recent CodeAudits — input for base-rules. */

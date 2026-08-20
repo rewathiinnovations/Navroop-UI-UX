@@ -29,7 +29,8 @@ export function parseTscOutput(output: string): CodeFinding[] {
 }
 
 export async function runTypescriptCheck(sandbox: SandboxRunner | null): Promise<CodeFinding[]> {
-  if (!sandbox) return [toolFailedFinding('typescript', new Error('No active sandbox'))];
+  if (!sandbox)
+    return [toolFailedFinding('typescript', new Error('no build runner on this instance'))];
   try {
     const result = await sandbox.runCommand('npx --yes tsc --noEmit --pretty false');
     const output = `${result.stdout}\n${result.stderr}`;

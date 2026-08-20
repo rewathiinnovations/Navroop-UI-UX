@@ -10,8 +10,15 @@ import TemplateSheet from './TemplateSheet';
 
 export default function TemplateGallery({
   initialTemplates,
+  initialError = '',
 }: {
   initialTemplates: PublicTemplate[];
+  /**
+   * F-429: why the server load failed, when it did. Folding that into an empty
+   * array made a broken list indistinguishable from a filter that matched
+   * nothing, and the gallery said "No templates match these filters."
+   */
+  initialError?: string;
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -20,7 +27,7 @@ export default function TemplateGallery({
   const sort = (searchParams.get('sort') === 'newest' ? 'newest' : 'popular') as TemplateSort;
   const [templates, setTemplates] = useState(initialTemplates);
   const [open, setOpen] = useState<PublicTemplate | null>(null);
-  const [error, setError] = useState('');
+  const [error, setError] = useState(initialError);
 
   const setParam = (key: string, value: string) => {
     const next = new URLSearchParams(searchParams.toString());
@@ -104,11 +111,13 @@ export default function TemplateGallery({
         </label>
       </div>
       {error ? (
-        <p className="mb-16 text-[14px] text-[var(--studio-danger)]" role="alert">
-          {error}
+        <p
+          role="alert"
+          className="rounded-12 border border-[var(--studio-danger)] px-20 py-40 text-center text-[14px] text-[var(--studio-danger)]"
+        >
+          {error} Reload the page to try again.
         </p>
-      ) : null}
-      {templates.length === 0 ? (
+      ) : templates.length === 0 ? (
         <p className="rounded-12 border border-[var(--studio-line)] px-20 py-40 text-center text-[14px] text-[var(--studio-muted)]">
           No templates match these filters.
         </p>
@@ -119,7 +128,17 @@ export default function TemplateGallery({
           ))}
         </div>
       )}
-      <TemplateSheet template={selected} onClose={() => setOpen(null)} />
+      <TemplateSheet
+        template={selected}
+        onClose={() => {
+          setOpen(null);
+          // The sheet also resolves from `?open=<slug>`, the shareable link the
+          // gallery supports. Clearing only the click-driven half left the URL to
+          // re-derive `selected` on the next render, so Close reopened the sheet
+          // and there was no way out but editing the address bar.
+          if (openId) setParam('open', '');
+        }}
+      />
     </div>
   );
 }

@@ -3,7 +3,7 @@ import {
   isDesignDirectionId,
   type DesignDirectionId,
 } from '@/lib/design/directions';
-import { DEFAULT_IMPORT_MODE, parseDraftImportMode, resolveImportMode, type ImportMode } from '@/lib/import/mode';
+import { parseDraftImportMode, resolveImportMode, type ImportMode } from '@/lib/import/mode';
 import { isStackId, type StackId } from '@/lib/stacks';
 
 export const DRAFT_DEFAULT_STACK: StackId = 'NEXTJS';
@@ -35,7 +35,8 @@ export function parseDraftRecord(value: unknown): TemplateDraftRecord | null {
     savedAt: typeof parsed.savedAt === 'number' ? parsed.savedAt : Date.now(),
     designDirection: resolveDraftDirection(parsed.designDirection),
     importMode: parseDraftImportMode(parsed),
-    templateId: typeof parsed.templateId === 'string' && parsed.templateId ? parsed.templateId : null,
+    templateId:
+      typeof parsed.templateId === 'string' && parsed.templateId ? parsed.templateId : null,
   };
 }
 

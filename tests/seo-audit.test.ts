@@ -118,7 +118,13 @@ for (const stack of ['REACT'] as const) {
       rules.includes('social crawlers'),
     `${stack} SPA honesty`,
   );
-  assert(rules.includes('Next') || rules.includes('Astro'), `${stack} recommends Next/Astro`);
+  // F-099 deleted the "Recommend Next.js or Astro for public marketing sites" line this
+  // assertion used to pin. Astro is not one of the three members of `Stack`
+  // (prisma/schema.prisma), so the advice named a migration target the user cannot pick,
+  // and the model was told to write it into the generated site as an HTML comment — so it
+  // shipped that confusion to the visitor's page source. The SPA-honesty assertion above
+  // is what carries the tradeoff now; this one keeps the shopping list from coming back.
+  assert(!rules.includes('Astro'), `${stack} does not name Astro, which is not a stack here`);
   assert(rules.includes('comment'), `${stack} asks for a comment in the head/meta file`);
 }
 
@@ -386,8 +392,11 @@ assert(
   'fix-all combines open findings',
 );
 assert(!all.includes('Ignored') && !all.includes('Pass'), 'fix-all skips ignored and passing');
+// The literal `|| true` used to sit in this disjunction and collapsed the whole
+// first clause, leaving only `all.length > 40` — a concatenation of the two
+// findings with no combining preamble passed (F-610).
 assert(
-  (all.match(/Fix these SEO/i) || all.match(/together/i) || true) && all.length > 40,
+  Boolean(all.match(/Fix these SEO/i) || all.match(/together/i)) && all.length > 40,
   'fix-all is one combined instruction',
 );
 

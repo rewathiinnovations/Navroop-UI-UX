@@ -19,6 +19,7 @@ export function finding(input: {
   detail: string;
   fixable?: boolean;
   ignored?: boolean;
+  impact?: string;
   filePath?: string;
   line?: number;
   selector?: string;
@@ -31,6 +32,7 @@ export function finding(input: {
     detail: input.detail,
     fixable: input.fixable ?? input.status !== 'pass',
     ignored: input.ignored ?? false,
+    ...(input.impact ? { impact: input.impact } : {}),
     ...(input.filePath ? { filePath: input.filePath } : {}),
     ...(typeof input.line === 'number' ? { line: input.line } : {}),
     ...(input.selector ? { selector: input.selector } : {}),
@@ -39,7 +41,9 @@ export function finding(input: {
 
 export function mergeIgnoredFindings(next: CodeFinding[], previous: CodeFinding[]): CodeFinding[] {
   const ignored = new Set(previous.filter((row) => row.ignored).map((row) => row.id));
-  return next.map((row) => (ignored.has(row.id) ? { ...row, ignored: true, fixed: false } : { ...row, ignored: false }));
+  // A fresh scan carries no fix request: `next` rows come straight from the
+  // scanner, so re-ignoring a row cannot resurrect a stale request either.
+  return next.map((row) => ({ ...row, ignored: ignored.has(row.id) }));
 }
 
 const STATUS_ORDER: Record<CodeSeverity, number> = {
@@ -71,7 +75,8 @@ export function asMetrics(value: unknown): CodeMetrics {
   if (!value || typeof value !== 'object') return emptyMetrics();
   const row = value as Partial<CodeMetrics>;
   return {
-    bundleKb: typeof row.bundleKb === 'number' && Number.isFinite(row.bundleKb) ? row.bundleKb : null,
+    bundleKb:
+      typeof row.bundleKb === 'number' && Number.isFinite(row.bundleKb) ? row.bundleKb : null,
     tsErrors: Number.isFinite(row.tsErrors) ? Number(row.tsErrors) : 0,
     lintErrors: Number.isFinite(row.lintErrors) ? Number(row.lintErrors) : 0,
     a11yViolations: Number.isFinite(row.a11yViolations) ? Number(row.a11yViolations) : 0,
@@ -86,8 +91,20 @@ export function metricsFromFindings(findings: CodeFinding[], bundleKb: number | 
     tsErrors: open.filter((row) => row.category === 'typescript').length,
     lintErrors: open.filter((row) => row.category === 'lint').length,
     a11yViolations: open.filter((row) => row.category === 'a11y').length,
-    unusedDeps: open.filter((row) => row.category === 'dependencies' && /unused/i.test(row.title)).length,
+    unusedDeps: open.filter((row) => row.category === 'dependencies' && /unused/i.test(row.title))
+      .length,
   };
+}
+
+/**
+ * The impact-weighted input to `a11y_score`, taken from the findings axe
+ * actually produced. `metricsFromFindings` counts the same rows; the count on
+ * its own let the collector fabricate an impact per violation (F-816).
+ */
+export function axeImpactsFromFindings(findings: CodeFinding[]): Array<{ impact: string | null }> {
+  return findings
+    .filter((row) => row.category === 'a11y' && !row.ignored && row.status !== 'pass')
+    .map((row) => ({ impact: row.impact ?? null }));
 }
 
 export function asCodeFindings(value: unknown): CodeFinding[] {
@@ -97,7 +114,8 @@ export function asCodeFindings(value: unknown): CodeFinding[] {
     const row = item as Partial<CodeFinding>;
     if (typeof row.id !== 'string' || typeof row.title !== 'string') return [];
     const status = row.status;
-    if (status !== 'pass' && status !== 'low' && status !== 'medium' && status !== 'high') return [];
+    if (status !== 'pass' && status !== 'low' && status !== 'medium' && status !== 'high')
+      return [];
     const category = row.category;
     if (!category || !CATEGORIES.includes(category)) return [];
     return [
@@ -109,7 +127,8 @@ export function asCodeFindings(value: unknown): CodeFinding[] {
         detail: typeof row.detail === 'string' ? row.detail : '',
         fixable: row.fixable !== false,
         ignored: row.ignored === true,
-        fixed: row.fixed === true,
+        ...(typeof row.impact === 'string' ? { impact: row.impact } : {}),
+        ...(typeof row.fixRequestedAt === 'string' ? { fixRequestedAt: row.fixRequestedAt } : {}),
         ...(typeof row.filePath === 'string' ? { filePath: row.filePath } : {}),
         ...(typeof row.line === 'number' ? { line: row.line } : {}),
         ...(typeof row.selector === 'string' ? { selector: row.selector } : {}),

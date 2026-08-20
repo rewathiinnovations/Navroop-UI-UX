@@ -47,14 +47,18 @@ assert(
     { status: 'pass', ignored: false },
     { status: 'high', ignored: false },
     { status: 'medium', ignored: true },
-  ]) === 2 / 3,
+  ]) ===
+    2 / 3,
   'seo_score = passing / applicable (ignored excluded)',
 );
 assert(seoScoreFromFindings([]) === 1, 'no applicable SEO findings → 1.0');
 
 assert(a11yScoreFromAxe([]) === 1, 'no axe violations → 1.0');
 assert(a11yScoreFromAxe([{ impact: 'critical' }]) < 1, 'axe violations lower a11y_score');
-assert(a11yScoreFromAxe([{ impact: 'minor' }]) > a11yScoreFromAxe([{ impact: 'critical' }]), 'critical weighs more than minor');
+assert(
+  a11yScoreFromAxe([{ impact: 'minor' }]) > a11yScoreFromAxe([{ impact: 'critical' }]),
+  'critical weighs more than minor',
+);
 
 assert(buildSuccessScore(true) === 1, 'build ok → 1.0');
 assert(buildSuccessScore(false) === 0, 'build failed → 0.0');
@@ -67,7 +71,10 @@ const thin = composeKindMetric([0.5, 0.6, 0.7, 0.8, 0.9]);
 assert(thin === null, 'kind metric is null when n < 10');
 
 const enough = composeKindMetric(Array.from({ length: 10 }, () => 0.5));
-assert(enough !== null && enough.mean === 0.5 && enough.n === 10, 'kind metric returns mean when n >= 10');
+assert(
+  enough !== null && enough.mean === 0.5 && enough.n === 10,
+  'kind metric returns mean when n >= 10',
+);
 
 const overallThin = composeOverallScore({
   revert_rate: { mean: 1, n: 10 },
@@ -76,26 +83,50 @@ const overallThin = composeOverallScore({
 });
 assert(overallThin === null, 'overall score is null when total samples < 30');
 
-const overall = composeOverallScore({
+const sampled = {
   revert_rate: { mean: 1, n: 10 },
   followups_to_settle: { mean: 0.8, n: 10 },
   build_success: { mean: 1, n: 10 },
+  type_safety: { mean: 0.25, n: 10 },
   seo_score: { mean: 0.5, n: 10 },
   a11y_score: { mean: 1, n: 10 },
   thumbs: { mean: 1, n: 10 },
   visual_edit_rate: { mean: 1, n: 10 },
-});
-const expected =
-  1 * 0.3 + 0.8 * 0.25 + 1 * 0.15 + 0.5 * 0.1 + 1 * 0.1 + 1 * 0.05 + 1 * 0.05;
-assert(overall !== null && Math.abs(overall - expected) < 1e-9, 'overall score uses exported weights');
+};
+const overall = composeOverallScore(sampled);
+// Derived from the exported weights, not restated: the literals here used to be
+// a second copy of the table, and they said nothing about the kind that was
+// missing from it (F-760).
+const expected = Object.entries(sampled).reduce(
+  (sum, [kind, row]) =>
+    sum + row.mean * QUALITY_SCORE_WEIGHTS[kind as keyof typeof QUALITY_SCORE_WEIGHTS],
+  0,
+);
+assert(
+  overall !== null && Math.abs(overall - expected) < 1e-9,
+  'overall score uses exported weights',
+);
 
-assert(QUALITY_SCORE_WEIGHTS.revert_rate === 0.3, 'revert weight 30%');
-assert(QUALITY_SCORE_WEIGHTS.followups_to_settle === 0.25, 'followups weight 25%');
-assert(QUALITY_SCORE_WEIGHTS.build_success === 0.15, 'build weight 15%');
-assert(QUALITY_SCORE_WEIGHTS.seo_score === 0.1, 'seo weight 10%');
-assert(QUALITY_SCORE_WEIGHTS.a11y_score === 0.1, 'a11y weight 10%');
-assert(QUALITY_SCORE_WEIGHTS.thumbs === 0.05, 'thumbs weight 5%');
-assert(QUALITY_SCORE_WEIGHTS.visual_edit_rate === 0.05, 'visual_edit weight 5%');
+assert(
+  QUALITY_SIGNAL_KINDS.every((kind) => typeof QUALITY_SCORE_WEIGHTS[kind] === 'number'),
+  'every collected signal kind carries a weight',
+);
+assert(
+  Object.keys(QUALITY_SCORE_WEIGHTS).length === QUALITY_SIGNAL_KINDS.length,
+  'no weight for a kind that is not collected',
+);
+assert(
+  Math.abs(Object.values(QUALITY_SCORE_WEIGHTS).reduce((sum, weight) => sum + weight, 0) - 1) <
+    1e-9,
+  'weights sum to 1',
+);
+assert(
+  composeOverallScore({
+    ...sampled,
+    type_safety: { mean: typeSafetyScore(7), n: 10 },
+  })! < 1,
+  'a failing type-check keeps the composite under 1.0',
+);
 
 assert(!QUALITY_SIGNAL_KINDS.includes('ai_grade' as never), 'no self-grading AI quality kind');
 assert(

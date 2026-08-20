@@ -15,21 +15,27 @@ export function finding(input: {
     status: input.status,
     title: input.title,
     detail: input.detail,
-    fixable: input.fixable ?? input.status !== 'pass',
+    // `info` means the check could not run, so there is nothing to fix.
+    fixable: input.fixable ?? (input.status !== 'pass' && input.status !== 'info'),
     ignored: input.ignored ?? false,
   };
 }
 
 export function mergeIgnoredFindings(next: SeoFinding[], previous: SeoFinding[]): SeoFinding[] {
   const ignored = new Set(previous.filter((row) => row.ignored).map((row) => row.id));
-  return next.map((row) => (ignored.has(row.id) ? { ...row, ignored: true, fixed: false } : { ...row, ignored: false }));
+  // A fresh scan carries no fix request: `next` rows come straight from the
+  // checks, so re-ignoring a row cannot resurrect a stale request either.
+  return next.map((row) => ({ ...row, ignored: ignored.has(row.id) }));
 }
 
 const STATUS_ORDER: Record<SeoSeverity, number> = {
   high: 0,
   medium: 1,
   low: 2,
-  pass: 3,
+  // Below every real defect, above the passes: it is not an action, but it does
+  // say the audit is incomplete.
+  info: 3,
+  pass: 4,
 };
 
 export function sortFindings(findings: SeoFinding[]): SeoFinding[] {
@@ -52,7 +58,15 @@ export function asFindings(value: unknown): SeoFinding[] {
     const row = item as Partial<SeoFinding>;
     if (typeof row.id !== 'string' || typeof row.title !== 'string') return [];
     const status = row.status;
-    if (status !== 'pass' && status !== 'low' && status !== 'medium' && status !== 'high') return [];
+    if (
+      status !== 'pass' &&
+      status !== 'info' &&
+      status !== 'low' &&
+      status !== 'medium' &&
+      status !== 'high'
+    ) {
+      return [];
+    }
     const category = row.category;
     if (
       category !== 'page-basics' &&
@@ -76,7 +90,7 @@ export function asFindings(value: unknown): SeoFinding[] {
         detail: typeof row.detail === 'string' ? row.detail : '',
         fixable: row.fixable !== false,
         ignored: row.ignored === true,
-        fixed: row.fixed === true,
+        ...(typeof row.fixRequestedAt === 'string' ? { fixRequestedAt: row.fixRequestedAt } : {}),
       },
     ];
   });

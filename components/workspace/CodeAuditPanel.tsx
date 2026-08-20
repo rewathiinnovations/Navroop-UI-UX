@@ -3,7 +3,7 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { ChevronDown, Loader2, Search } from 'lucide-react';
 import { cn } from '@/utils/cn';
-import { relativeTime } from '@/lib/projects/prompt';
+import { formatRelativeTime } from '@/lib/format-relative-time';
 import { sortFindings } from '@/lib/audit/findings';
 import { isMobilePreviewFinding, requestPreviewDevice } from '@/lib/preview/devices';
 import type { CodeFinding, CodeSeverity } from '@/lib/audit/types';
@@ -17,14 +17,12 @@ const SEVERITY_LABEL: Record<CodeSeverity, string> = {
   pass: 'Pass',
 };
 
-function SeverityBadge({ status, fixed }: { status: CodeSeverity; fixed?: boolean }) {
-  if (fixed && status !== 'pass') {
-    return (
-      <span className="inline-flex items-center rounded-full bg-[var(--studio-accent-soft)] px-8 py-2 text-[11px] font-medium text-[var(--studio-accent)]">
-        Fixed
-      </span>
-    );
-  }
+/**
+ * F-820: this used to render "Fixed" from a flag the server stamped before any
+ * generation had started. The severity is what the last scan actually measured,
+ * so it always shows; a requested fix is a separate, honest note.
+ */
+function SeverityBadge({ status }: { status: CodeSeverity }) {
   return (
     <span
       className={cn(
@@ -40,6 +38,14 @@ function SeverityBadge({ status, fixed }: { status: CodeSeverity; fixed?: boolea
   );
 }
 
+function FixRequestedPill() {
+  return (
+    <span className="inline-flex items-center rounded-full bg-[var(--studio-accent-soft)] px-8 py-2 text-[11px] font-medium text-[var(--studio-accent)]">
+      Fix requested — rescan to confirm
+    </span>
+  );
+}
+
 function FindingRow({
   item,
   busy,
@@ -51,7 +57,11 @@ function FindingRow({
   onFix: (id: string) => void;
   onIgnore: (id: string) => void;
 }) {
-  const where = [item.filePath, item.line != null ? `:${item.line}` : '', item.selector ? ` · ${item.selector}` : '']
+  const where = [
+    item.filePath,
+    item.line != null ? `:${item.line}` : '',
+    item.selector ? ` · ${item.selector}` : '',
+  ]
     .filter(Boolean)
     .join('');
   return (
@@ -59,7 +69,8 @@ function FindingRow({
       <div className="flex flex-wrap items-start justify-between gap-8">
         <div className="min-w-0 flex-1">
           <div className="mb-6 flex flex-wrap items-center gap-6">
-            <SeverityBadge status={item.status} fixed={item.fixed} />
+            <SeverityBadge status={item.status} />
+            {item.fixRequestedAt && item.status !== 'pass' ? <FixRequestedPill /> : null}
             {isMobilePreviewFinding(item) ? (
               <button
                 type="button"
@@ -80,7 +91,7 @@ function FindingRow({
             {item.fixable !== false && !item.ignored && (
               <button
                 type="button"
-                disabled={busy || item.fixed}
+                disabled={busy}
                 onClick={() => onFix(item.id)}
                 className="inline-flex min-h-[32px] items-center rounded-full border border-[var(--studio-line-strong)] px-10 text-[12px] font-medium text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50"
               >
@@ -162,8 +173,11 @@ export default function CodeAuditPanel({
     };
   }, [audit]);
 
-  const stale =
-    Boolean(audit && projectUpdatedAt && new Date(projectUpdatedAt).getTime() > new Date(audit.scannedAt).getTime());
+  const stale = Boolean(
+    audit &&
+    projectUpdatedAt &&
+    new Date(projectUpdatedAt).getTime() > new Date(audit.scannedAt).getTime(),
+  );
 
   const handleFix = async (id: string) => {
     setBusyId(id);
@@ -188,10 +202,10 @@ export default function CodeAuditPanel({
           <h2 className="text-[14px] font-semibold text-[var(--studio-fg)]">Code & performance</h2>
           <p className="text-[12px] text-[var(--studio-faint)]">
             {scanning
-              ? 'Scanning sandbox and preview…'
+              ? 'Scanning project files…'
               : audit
-                ? `Last scan ${relativeTime(audit.scannedAt)}${stale ? ' — site changed since last scan' : ''}`
-                : 'On-demand TypeScript, lint, bundle, and a11y audit'}
+                ? `Last scan ${formatRelativeTime(audit.scannedAt)}${stale ? ' — site changed since last scan' : ''}`
+                : 'On-demand accessibility, SEO and AI code review'}
           </p>
         </div>
         <div className="flex items-center gap-8">
@@ -211,7 +225,11 @@ export default function CodeAuditPanel({
             onClick={() => void scan()}
             className="inline-flex h-36 items-center gap-6 rounded-full bg-[var(--studio-fg)] px-14 text-[13px] font-medium text-[var(--studio-bg)] disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {scanning ? <Loader2 className="size-14 animate-spin" /> : <Search className="size-14" />}
+            {scanning ? (
+              <Loader2 className="size-14 animate-spin" />
+            ) : (
+              <Search className="size-14" />
+            )}
             {audit ? 'Scan again' : 'Scan'}
           </button>
         </div>
@@ -226,8 +244,9 @@ export default function CodeAuditPanel({
         {!audit && !scanning && (
           <div className="flex flex-col items-center justify-center px-24 py-48 text-center">
             <p className="max-w-[320px] text-[14px] leading-6 text-[var(--studio-muted)]">
-              Scan this project for TypeScript errors, lint, unused dependencies, bundle size, and accessibility.
-              Bundle and performance numbers are sandbox-environment estimates.
+              Scan this project for accessibility, SEO and an AI review of the generated files.
+              TypeScript, lint, dependency and bundle checks need a build runner, which this
+              instance does not have, so they report as “could not run”.
             </p>
           </div>
         )}
@@ -236,7 +255,7 @@ export default function CodeAuditPanel({
             <Metric
               label="Bundle"
               value={metrics.bundleKb == null ? '—' : `${Math.round(metrics.bundleKb)}KB`}
-              hint="Sandbox estimate"
+              hint="Needs a build runner"
             />
             <Metric label="TS errors" value={String(metrics.tsErrors)} />
             <Metric label="Lint" value={String(metrics.lintErrors)} />

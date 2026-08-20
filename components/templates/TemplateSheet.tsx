@@ -14,6 +14,7 @@ import { isStackId } from '@/lib/stacks';
 import { TEMPLATE_CATEGORY_LABELS, isTemplateCategory } from '@/lib/templates/categories';
 import type { PublicTemplate } from '@/lib/templates/types';
 import { notify, toMessage } from '@/lib/notify';
+import StudioModal, { StudioModalTitle } from '@/components/ui/StudioModal';
 
 export default function TemplateSheet({
   template,
@@ -97,84 +98,74 @@ export default function TemplateSheet({
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex justify-end bg-black/20"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="template-sheet-title"
+    <StudioModal
+      open
+      onOpenChange={(next) => {
+        if (!next) onClose();
+      }}
+      dismissible={!busy}
+      placement="right"
+      className="flex h-full w-full max-w-[480px] flex-col border-l border-[var(--studio-line)] bg-[var(--studio-bg)] shadow-[var(--studio-shadow-pop)]"
     >
-      <button
-        type="button"
-        className="h-full flex-1 cursor-default"
-        aria-label="Close"
-        onClick={onClose}
-      />
-      <aside className="flex h-full w-full max-w-[480px] flex-col border-l border-[var(--studio-line)] bg-[var(--studio-bg)] shadow-sm">
-        <div className="flex items-start justify-between gap-12 border-b border-[var(--studio-line)] px-20 py-16">
-          <div>
-            <p className="text-[11px] font-medium uppercase tracking-[0.06em] text-[var(--studio-faint)]">
-              {category}
-            </p>
-            <h2
-              id="template-sheet-title"
-              className="mt-4 text-[22px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]"
-            >
-              {template.name}
-            </h2>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex min-h-[36px] items-center rounded-10 px-10 text-[13px] text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)]"
+      <div className="flex items-start justify-between gap-12 border-b border-[var(--studio-line)] px-20 py-16">
+        <div>
+          <p className="text-[11px] font-medium uppercase tracking-[0.06em] text-[var(--studio-faint)]">
+            {category}
+          </p>
+          <StudioModalTitle className="mt-4 text-[22px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">
+            {template.name}
+          </StudioModalTitle>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="inline-flex min-h-[36px] items-center rounded-10 px-10 text-[13px] text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)]"
+        >
+          Close
+        </button>
+      </div>
+      <div className="min-h-0 flex-1 space-y-16 overflow-y-auto px-20 py-16">
+        <div className="overflow-hidden rounded-12 bg-[var(--studio-skeleton)]">
+          {template.thumbnailUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={template.thumbnailUrl} alt="" className="h-200 w-full object-cover" />
+          ) : (
+            <div className="flex h-160 items-center justify-center text-[13px] text-[var(--studio-faint)]">
+              No thumbnail yet
+            </div>
+          )}
+        </div>
+        <p className="text-[14px] leading-6 text-[var(--studio-muted)]">{template.description}</p>
+        {template.previewUrl ? (
+          <a
+            href={template.previewUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex text-[13px] font-medium text-[var(--studio-accent)] hover:underline"
           >
-            Close
-          </button>
-        </div>
-        <div className="min-h-0 flex-1 space-y-16 overflow-y-auto px-20 py-16">
-          <div className="overflow-hidden rounded-12 bg-[var(--studio-skeleton)]">
-            {template.thumbnailUrl ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={template.thumbnailUrl} alt="" className="h-200 w-full object-cover" />
-            ) : (
-              <div className="flex h-160 items-center justify-center text-[13px] text-[var(--studio-faint)]">
-                No thumbnail yet
-              </div>
-            )}
-          </div>
-          <p className="text-[14px] leading-6 text-[var(--studio-muted)]">{template.description}</p>
-          {template.previewUrl ? (
-            <a
-              href={template.previewUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex text-[13px] font-medium text-[var(--studio-accent)] hover:underline"
-            >
-              View demo
-            </a>
-          ) : null}
-          <label className="block">
-            <span className="mb-6 block text-[12px] font-medium text-[var(--studio-fg)]">
-              Prompt
-            </span>
-            <textarea
-              value={prompt}
-              onChange={(event) => setPrompt(event.target.value)}
-              rows={14}
-              className="w-full rounded-12 border border-[var(--studio-line-strong)] bg-[var(--studio-surface)] px-12 py-10 text-[13px] leading-5 text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
-            />
-          </label>
-        </div>
-        <div className="border-t border-[var(--studio-line)] px-20 py-14">
-          <button
-            type="button"
-            disabled={busy || !prompt.trim()}
-            onClick={() => void create()}
-            className="inline-flex h-40 w-full items-center justify-center rounded-10 bg-[var(--studio-fg)] text-[13px] font-medium text-[var(--studio-bg)] disabled:opacity-50"
-          >
-            {busy ? 'Creating…' : 'Create from this template'}
-          </button>
-        </div>
-      </aside>
-    </div>
+            View demo
+          </a>
+        ) : null}
+        <label className="block">
+          <span className="mb-6 block text-[12px] font-medium text-[var(--studio-fg)]">Prompt</span>
+          <textarea
+            value={prompt}
+            onChange={(event) => setPrompt(event.target.value)}
+            rows={14}
+            className="w-full rounded-12 border border-[var(--studio-line-strong)] bg-[var(--studio-surface)] px-12 py-10 text-[13px] leading-5 text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
+          />
+        </label>
+      </div>
+      <div className="border-t border-[var(--studio-line)] px-20 py-14">
+        <button
+          type="button"
+          disabled={busy || !prompt.trim()}
+          onClick={() => void create()}
+          className="inline-flex h-40 w-full items-center justify-center rounded-10 bg-[var(--studio-fg)] text-[13px] font-medium text-[var(--studio-bg)] disabled:opacity-50"
+        >
+          {busy ? 'Creating…' : 'Create from this template'}
+        </button>
+      </div>
+    </StudioModal>
   );
 }
