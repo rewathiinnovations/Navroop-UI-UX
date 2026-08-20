@@ -1,7 +1,8 @@
 import { updateJobFields } from '@/lib/jobs/store';
 import { log } from '@/lib/logger';
 import { accrueSpend } from '@/lib/plans/spend';
-import { estimateTokenCostUsd } from './cost';
+import { estimateTokenCost } from './cost';
+import { loadOperatorTokenRate, reportRateSource } from './rates';
 
 export async function recordJobUsage(input: {
   jobId: string;
@@ -11,9 +12,18 @@ export async function recordJobUsage(input: {
   provider?: string | null;
   model?: string | null;
 }) {
-  const estimatedCostUsd = estimateTokenCostUsd({
+  // The same rate `logGenerationEvent` prices its GenerationEvent at, so the job
+  // row and /admin/usage cannot disagree about what one generation cost.
+  const rate = await loadOperatorTokenRate();
+  const { usd: estimatedCostUsd, source } = estimateTokenCost({
     tokensIn: input.tokensIn,
     tokensOut: input.tokensOut,
+    provider: input.provider,
+    model: input.model,
+    rate,
+  });
+  reportRateSource(source, {
+    jobId: input.jobId,
     provider: input.provider,
     model: input.model,
   });

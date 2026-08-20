@@ -108,25 +108,28 @@ assert(looped instanceof JobCapError, 'fourth write of the same path aborts');
 assert(looped?.errorCode === 'loop_detected', 'loop errorCode is loop_detected');
 assert(looped?.message === LOOP_DETECTED_MESSAGE, 'loop English message names the cause');
 
+// The only provider the product has, and the only one the rate table prices
+// (F-029). These used to name openai/groq models, which the table no longer
+// mentions at all.
 const tokenCost = estimateTokenCostUsd({
   tokensIn: 1000,
   tokensOut: 4000,
-  provider: 'openai',
-  model: 'gpt-4o-mini',
+  provider: 'deepseek',
+  model: 'deepseek-v4-flash',
 });
 const cheap = estimateTokenCostUsd({
   tokensIn: 10,
   tokensOut: 10,
-  provider: 'openai',
-  model: 'gpt-4o-mini',
+  provider: 'deepseek',
+  model: 'deepseek-v4-flash',
 });
 assert(tokenCost > cheap, 'token-based cost scales with tokens, not a flat event constant');
 assert(tokenCost > 0, 'token cost is positive');
 const withTokens = calculateEventCost('initial', false, {
   tokensIn: 2000,
   tokensOut: 8000,
-  provider: 'groq',
-  model: 'kimi',
+  provider: 'deepseek',
+  model: 'deepseek-v4-pro',
 });
 const flat = calculateEventCost('initial', false);
 assert(withTokens !== flat, 'usage tracking uses token cost when tokens are present');

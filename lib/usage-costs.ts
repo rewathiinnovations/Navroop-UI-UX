@@ -3,6 +3,7 @@ import { prisma } from '@/lib/db';
 import { stampActivePromptHash } from '@/lib/prompts/version';
 import { maybeSettleFollowups } from '@/lib/signals/collect';
 import { calculateEventCost } from './consumption/cost';
+import { loadOperatorTokenRate } from './consumption/rates';
 import type { GenerationEventKind } from './usage-estimates';
 
 export {
@@ -45,6 +46,10 @@ export async function logGenerationEvent(input: LogGenerationEventInput) {
   try {
     await maybeSettleFollowups(input.projectId);
     const promptVersion = await stampActivePromptHash();
+    // Priced at the same rate `recordJobUsage` used for the job row: two
+    // different numbers for one generation is how /admin/usage and /admin/jobs
+    // came to disagree.
+    const rate = await loadOperatorTokenRate();
     await prisma.generationEvent.create({
       data: {
         projectId: input.projectId,
@@ -55,6 +60,7 @@ export async function logGenerationEvent(input: LogGenerationEventInput) {
           tokensOut: input.outputTokens,
           provider: input.provider,
           model: input.model,
+          rate,
         }),
         promptVersion,
         ...(input.inputTokens != null ? { inputTokens: input.inputTokens } : {}),

@@ -15,7 +15,9 @@ import { providerConcurrency } from '@/lib/ai/providers';
  * So every registry entry must end in one of two states, and this test is what
  * keeps a new one from quietly becoming a third: either some module under lib/
  * or app/ resolves it through `getSetting`, or its help text says plainly that
- * it is not in use — the wording already used on the Morph entry.
+ * it is not in use — the wording the two Unsplash reference fields carry. The
+ * Morph entry used to be the example here; the feature it configured was
+ * removed outright, which is the better ending for a field nothing reads.
  *
  * The scan is textual on purpose. It matches how a reader finds a consumer, it
  * needs no build step, and it fails on the exact mistake it is guarding: adding

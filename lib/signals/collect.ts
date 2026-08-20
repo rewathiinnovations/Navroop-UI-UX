@@ -30,6 +30,17 @@ async function latestBuildEvent(projectId: string) {
   });
 }
 
+/**
+ * `promptVersion` is the version of the generation the signal is about.
+ *
+ * The `stampActivePromptHash` fallback is a last resort for a signal with no
+ * generation behind it at all — never a substitute for a version the caller
+ * could have looked up. `recordThumbs` and `recordRevertRate` used to hit it on
+ * every call because they kept only the event's `id`, so a thumbs-down on v2's
+ * output was filed against whatever was active when the user clicked, and
+ * /admin/quality's per-version comparison attributed old failures to the new
+ * prompt (F-815).
+ */
 async function writeSignal(data: {
   projectId: string;
   generationEventId?: string | null;
@@ -49,6 +60,21 @@ async function writeSignal(data: {
       promptVersion,
     },
   });
+}
+
+/**
+ * The generation a signal is about: the one named, or the project's latest
+ * build. Returns its `promptVersion` as well as its id — the whole point of
+ * looking it up rather than trusting the caller's bare id.
+ */
+async function signalSubject(projectId: string, generationEventId?: string | null) {
+  if (generationEventId) {
+    return prisma.generationEvent.findUnique({
+      where: { id: generationEventId },
+      select: { id: true, promptVersion: true },
+    });
+  }
+  return latestBuildEvent(projectId);
 }
 
 function rawRecord(value: unknown): Record<string, unknown> {
@@ -82,22 +108,33 @@ async function hasSignal(where: {
 /** Implicit: restore rejected the latest generation. */
 export async function recordRevertRate(projectId: string, generationEventId?: string | null) {
   return withSignalGuard('revert_rate', async () => {
-    const eventId = generationEventId ?? (await latestBuildEvent(projectId))?.id ?? null;
-    if (eventId) {
-      const existing = await hasSignal({ projectId, kind: 'revert_rate', generationEventId: eventId });
+    const event = await signalSubject(projectId, generationEventId);
+    if (event) {
+      const existing = await hasSignal({
+        projectId,
+        kind: 'revert_rate',
+        generationEventId: event.id,
+      });
       if (existing) {
         return prisma.qualitySignal.update({
           where: { id: existing.id },
-          data: { value: 0, rawValue: { reverted: true } },
+          data: {
+            value: 0,
+            rawValue: { reverted: true },
+            // Repairs a row `maybeSettleFollowups` — or the old code — stamped
+            // with a different version than the generation it belongs to.
+            ...(event.promptVersion ? { promptVersion: event.promptVersion } : {}),
+          },
         });
       }
     }
     return writeSignal({
       projectId,
-      generationEventId: eventId,
+      generationEventId: event?.id ?? null,
       kind: 'revert_rate',
       value: 0,
       rawValue: { reverted: true },
+      promptVersion: event?.promptVersion,
     });
   });
 }
@@ -173,9 +210,10 @@ export async function recordVisualEditRate(
   generationEventId?: string | null,
 ) {
   return withSignalGuard('visual_edit_rate', async () => {
-    const event = generationEventId
-      ? { id: generationEventId, promptVersion: null as string | null }
-      : await latestBuildEvent(projectId);
+    // Looked up, never fabricated: this branch used to invent
+    // `{ id, promptVersion: null }` from the caller's id, and the null then sent
+    // `writeSignal` to the active-version fallback.
+    const event = await signalSubject(projectId, generationEventId);
     if (event?.id) {
       const existing = await hasSignal({
         projectId,
@@ -190,7 +228,7 @@ export async function recordVisualEditRate(
       kind: 'visual_edit_rate',
       value: visualEditRateScore(visualEditCount),
       rawValue: { visualEditCount },
-      promptVersion: event && 'promptVersion' in event ? event.promptVersion : null,
+      promptVersion: event?.promptVersion,
     });
   });
 }
@@ -206,23 +244,34 @@ export async function recordThumbs(
   generationEventId?: string | null,
 ) {
   return withSignalGuard('thumbs', async () => {
-    const eventId = generationEventId ?? (await latestBuildEvent(projectId))?.id ?? null;
+    const event = await signalSubject(projectId, generationEventId);
     const value = rating === 'up' ? 1 : 0;
-    if (eventId) {
-      const existing = await hasSignal({ projectId, kind: 'thumbs', generationEventId: eventId });
+    if (event) {
+      const existing = await hasSignal({
+        projectId,
+        kind: 'thumbs',
+        generationEventId: event.id,
+      });
       if (existing) {
         return prisma.qualitySignal.update({
           where: { id: existing.id },
-          data: { value, rawValue: { rating } },
+          data: {
+            value,
+            rawValue: { rating },
+            // A rating changed later is still about the same generation, so the
+            // stamp is corrected rather than left on whatever was active before.
+            ...(event.promptVersion ? { promptVersion: event.promptVersion } : {}),
+          },
         });
       }
     }
     return writeSignal({
       projectId,
-      generationEventId: eventId,
+      generationEventId: event?.id ?? null,
       kind: 'thumbs',
       value,
       rawValue: { rating },
+      promptVersion: event?.promptVersion,
     });
   });
 }
@@ -248,7 +297,10 @@ export async function recordSeoScore(
       generationEventId: event?.id ?? null,
       kind: 'seo_score',
       value: seoScoreFromFindings(findings),
-      rawValue: { seoAuditId: seoAuditId ?? null, applicable: findings.filter((row) => !row.ignored).length },
+      rawValue: {
+        seoAuditId: seoAuditId ?? null,
+        applicable: findings.filter((row) => !row.ignored).length,
+      },
       promptVersion: event?.promptVersion,
     });
   });
@@ -278,7 +330,9 @@ export async function recordCodeAuditSignals(input: {
       ) {
         const violations =
           input.axeViolations ??
-          Array.from({ length: input.metrics?.a11yViolations ?? 0 }, () => ({ impact: 'moderate' }));
+          Array.from({ length: input.metrics?.a11yViolations ?? 0 }, () => ({
+            impact: 'moderate',
+          }));
         await writeSignal({
           projectId: input.projectId,
           generationEventId: event?.id ?? null,
