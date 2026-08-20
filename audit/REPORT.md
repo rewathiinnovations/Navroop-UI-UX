@@ -82,18 +82,27 @@ resource leak (F-001), because each one is cheap to fix and expensive to hit.
 
 ## 2. Findings by severity
 
-Counts are the per-phase totals as filed. Phase 6 grouped some multi-instance findings under one
-id, so the severity sum (504) slightly exceeds the distinct-id count (495).
+Counts are now the **mechanical count of the `### F-NNN [SEV]` headings** in `01-*.md` … `08-*.md`.
+The figure this section previously gave — 495 distinct findings, severity sum 504 — was the sum of
+the phase agents' self-reported totals, and Phase 5b under-counted itself by 13. The correct
+distinct-id count is **508**; every heading parses cleanly and there are no duplicate ids. That
+correction is recorded as **N-001** in `audit/NEW-FINDINGS.md`.
 
-| Severity              | Count   |
-| --------------------- | ------- |
-| CRITICAL              | 8       |
-| HIGH                  | 77      |
-| MEDIUM                | 238     |
-| LOW                   | 96      |
-| GAP                   | 42      |
-| IMPROVEMENT           | 43      |
-| **Distinct findings** | **495** |
+| Severity              | as filed | as counted |
+| --------------------- | -------- | ---------- |
+| CRITICAL              | 8        | 8          |
+| HIGH                  | 77       | 81         |
+| MEDIUM                | 238      | 237        |
+| LOW                   | 96       | 96         |
+| GAP                   | 42       | 43         |
+| IMPROVEMENT           | 43       | 43         |
+| **Distinct findings** | **495**  | **508**    |
+
+`audit/FIXES.md` carries 83 rows at `HIGH` and 235 at `MEDIUM` rather than 81 and 237: remediation
+escalated **F-600** (the unit suite constructs a live `PrismaClient` against the application
+database) and **F-837** (all five `verify-*` scripts write to and delete from the real
+`DATABASE_URL`) from `MEDIUM` to `HIGH`, because both destroy real data rather than merely
+weakening the gate.
 
 ### CRITICAL (8)
 
