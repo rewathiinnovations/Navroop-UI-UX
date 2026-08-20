@@ -3,12 +3,15 @@
 Product UI for auth and dashboard. Generated websites use a per-request UI/UX Pro Max brief at creation time.
 
 ## Product chrome
-- Keep the existing Firecrawl heat/orange brand (`#FA4500`)
-- Surfaces: white cards on `background-base`
+- Keep the existing Navroop heat/orange brand (`#FA4500`). Studio tokens `--studio-accent`, `--studio-ring`, and `--studio-cta-gradient` must stay on heat — never rose `#c92a4e` or a rainbow CTA.
+- Surfaces: `--studio-surface` cards on `--studio-bg` (mapped in `components/app/studio/studio.css`). Do not hardcode `bg-white` / `text-gray-*` in product chrome.
 - Type: Inter / existing Geist stack
 - Motion: 150-200ms color/opacity/transform only
-- Icons: Lucide / existing SVGs, never emoji
-- Controls: 44px minimum, visible focus rings, labeled inputs
+- Icons: Lucide / existing SVGs, never emoji. Do not switch the product chrome to Phosphor.
+- Controls: 44px minimum hit area (`studio-icon-hit` or `min-h/min-w-[44px]`); the glyph can stay 16–20px. Visible `focus-visible` rings on every interactive control. Labeled inputs.
+- Default theme is light (`enableSystem={false}`). Dark is an opt-in toggle, not the default.
+- Below `md`, the app sidebar is an overlay drawer. Below `lg`, the workspace shows one pane (chat or preview) via the existing chat-collapse toggle.
+- Shared primitives — do not invent a fourth: `EmptyState`, `ConfirmAction`, `StatusPill`, `StatusBanner`, `StudioButton`, `StudioField`.
 
 ## Generated websites
 `lib/ui-ux-pro-max/build-design-brief.ts` selects style, color, type, and landing pattern from the user prompt + selected style, then injects it into the generation system prompt.

@@ -8,14 +8,13 @@
   --studio-surface: #ffffff;
   --studio-surface-hover: #f4f4f5;
   --studio-header-bg: rgb(247 247 248 / 0.86);
-  --studio-accent: #c92a4e;
-  --studio-accent-hover: #c42a4e;
-  --studio-accent-soft: rgba(201, 42, 78, 0.12);
-  /* The brand gradient (same as the admin badge and logo mark). Every primary
-     action button paints with this; hover/press use brightness so no second
-     gradient needs maintaining. Solid accent stays for states, bars, pills. */
-  --studio-cta-gradient: linear-gradient(135deg, #ff8a3d 0%, #ff5c7a 55%, #c084fc 100%);
-  --studio-ring: #c92a4e;
+  --studio-accent: #fa4500;
+  --studio-accent-hover: #e03e00;
+  --studio-accent-soft: rgba(250, 69, 0, 0.12);
+  /* Heat orange only — matches brand-theme.mdc / design-system MASTER. Hover
+     and press use brightness so no second gradient needs maintaining. */
+  --studio-cta-gradient: linear-gradient(135deg, #ff8a3d 0%, #fa4500 55%, #d63b00 100%);
+  --studio-ring: #fa4500;
   --studio-cta-fg: #ffffff;
   --studio-danger: #be123c;
   --studio-skeleton: rgba(24, 24, 27, 0.06);
@@ -34,10 +33,10 @@
   --studio-surface: rgba(255, 255, 255, 0.045);
   --studio-surface-hover: rgba(255, 255, 255, 0.075);
   --studio-header-bg: rgb(12 12 14 / 0.82);
-  --studio-accent: #e0315a;
-  --studio-accent-hover: #f0436a;
-  --studio-accent-soft: rgba(224, 49, 90, 0.16);
-  --studio-ring: #ff6b8a;
+  --studio-accent: #ff6a33;
+  --studio-accent-hover: #ff814d;
+  --studio-accent-soft: rgba(255, 106, 51, 0.16);
+  --studio-ring: #ff8a4d;
   --studio-cta-fg: #ffffff;
   --studio-danger: #fda4af;
   --studio-skeleton: rgba(255, 255, 255, 0.05);
@@ -70,7 +69,7 @@
   height: 38vh;
   left: -8%;
   bottom: -12%;
-  background: radial-gradient(circle, rgba(255, 92, 122, 0.55), transparent 68%);
+  background: radial-gradient(circle, rgba(250, 69, 0, 0.42), transparent 68%);
 }
 
 .studio-glow::after {
@@ -78,7 +77,7 @@
   height: 34vh;
   right: -6%;
   bottom: -18%;
-  background: radial-gradient(circle, rgba(99, 102, 241, 0.42), transparent 70%);
+  background: radial-gradient(circle, rgba(255, 138, 61, 0.28), transparent 70%);
 }
 
 /* Dialog entrance: opacity + transform only, so it stays on the compositor.
@@ -228,4 +227,18 @@
 
 .dark .studio-shell .studio-scroll::-webkit-scrollbar-thumb {
   background-color: rgba(255, 255, 255, 0.22);
+}
+
+/* 44px hit area; keep the glyph 16–20px. Use on icon-only chrome controls. */
+.studio-icon-hit {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+.studio-focus-ring {
+  outline: none;
+}
+
+.studio-focus-ring:focus-visible {
+  box-shadow: 0 0 0 2px var(--studio-ring);
 }
