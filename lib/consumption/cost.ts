@@ -1,6 +1,5 @@
 import {
   AI_GENERATION_ESTIMATE,
-  E2B_SANDBOX_ESTIMATE,
   FIRECRAWL_SCRAPE_ESTIMATE,
   IMAGE_GENERATION_ESTIMATE,
   PLAN_GENERATION_ESTIMATE,
@@ -56,7 +55,6 @@ export function calculateEventCost(
   }
   if (kind === 'plan') return PLAN_GENERATION_ESTIMATE;
   if (kind === 'image') return IMAGE_GENERATION_ESTIMATE;
-  const raw =
-    AI_GENERATION_ESTIMATE + E2B_SANDBOX_ESTIMATE + (isUrlClone ? FIRECRAWL_SCRAPE_ESTIMATE : 0);
+  const raw = AI_GENERATION_ESTIMATE + (isUrlClone ? FIRECRAWL_SCRAPE_ESTIMATE : 0);
   return Math.round(raw * 10000) / 10000;
 }

@@ -1,14 +1,14 @@
 # Navroop — Claude Code project memory
 
 This project was developed in Cursor before moving to Claude Code. The Cursor configuration is
-still the source of truth for the *content* of the rules and skills; this file is the entry
+still the source of truth for the _content_ of the rules and skills; this file is the entry
 point that makes Claude Code load them. Keep the two in step — see `keep-cursor-current` below.
 
 ## Read this before non-trivial work
 
-**`AGENTS.md`** is the product map: routes, Prisma models, the job lifecycle, the sandbox
-provider rules, the verify gate, and the invariants that are easy to break by accident. It is
-~42 KB, so it is deliberately *not* auto-imported into every session — read it with the Read
+**`AGENTS.md`** is the product map: routes, Prisma models, the job lifecycle, the preview and
+publish pipeline, the verify gate, and the invariants that are easy to break by accident. It is
+~42 KB, so it is deliberately _not_ auto-imported into every session — read it with the Read
 tool before changing product behaviour, schema, API routes, or layout. Do not guess at any of
 what it documents.
 
@@ -33,12 +33,12 @@ session exactly as they did in Cursor.
 These carry `globs:` in their frontmatter rather than `alwaysApply`. Claude Code has no glob
 trigger for memory files, so read the matching rule yourself when you touch these paths.
 
-| Read this rule | When touching |
-| --- | --- |
-| `.cursor/rules/stack.mdc` | `{app,components,lib,prisma}/**/*.{ts,tsx,js,jsx,prisma}` |
-| `.cursor/rules/brand-theme.mdc` | `{app,components,styles}/**/*.{tsx,css}` |
-| `.cursor/rules/studio-generation.mdc` | `{app,components,lib}/**/{studio,generation,admin,providers}/**` |
-| `.cursor/rules/admin-ownership.mdc` | `{app/admin,app/api/admin,components/app/studio}/**/*.{ts,tsx}` |
+| Read this rule                        | When touching                                                         |
+| ------------------------------------- | --------------------------------------------------------------------- |
+| `.cursor/rules/stack.mdc`             | `{app,components,lib,prisma}/**/*.{ts,tsx,js,jsx,prisma}`             |
+| `.cursor/rules/brand-theme.mdc`       | `{app,components,styles}/**/*.{tsx,css}`                              |
+| `.cursor/rules/studio-generation.mdc` | `{app,components,lib}/**/{studio,generation,admin,providers}/**`      |
+| `.cursor/rules/admin-ownership.mdc`   | `{app/(app)/admin,app/api/admin,components/app/studio}/**/*.{ts,tsx}` |
 
 ## Skills
 
@@ -63,8 +63,9 @@ pnpm run verify
 ```
 
 The pre-push gate: tsc, eslint `--max-warnings 0`, the public-route allowlist, prisma validate
-+ migrate diff, the destructive-migration detector, vitest with coverage, `next build`, and the
-Playwright `critical` project. `pnpm run verify:full` runs every Playwright project.
+
+- migrate diff, the destructive-migration detector, vitest with coverage, `next build`, and the
+  Playwright `critical` project. `pnpm run verify:full` runs every Playwright project.
 
 Read the **Verify / release** section of `AGENTS.md` before running it. In particular it
 explains why you must not run `pnpm exec <tool>` in an agent shell (pnpm's dependency-status

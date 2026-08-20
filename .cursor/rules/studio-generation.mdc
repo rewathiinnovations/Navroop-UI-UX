@@ -8,7 +8,7 @@ alwaysApply: false
 
 Do not revert or replace studio/admin chrome (`StudioShell`, `AppHeader`, `PageTabs`, `StudioButton`, `StudioField`, `StudioLogo`). New authenticated screens should compose these, not invent a parallel layout.
 
-Generation is **backgrounded**. The stream is owned by `GenerationProvider` (`app/providers.tsx` → `lib/generation/generation-runtime`). Leaving `/generation` must not abort the job.
+Generation is **backgrounded**. The stream is owned by `GenerationProvider` (`app/providers.tsx` → `lib/generation/generation-runtime`). `/generation` is not a route — the workspace is `app/project/[id]/page.tsx` → `components/workspace/GenerationWorkspace.tsx`, and navigating away from it must not abort the job.
 
 - Use `useGeneration()` from `components/app/generation/GenerationProvider`. Do not start a local fetch/stream that dies on unmount.
 - Persist progress through the generation runtime (`startGeneration`, `startApply`, `attachToProject`).

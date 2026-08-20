@@ -6,14 +6,19 @@ const FOLLOW_UP_NO_FILES =
 export function describeNoChanges(input: {
   isEdit: boolean;
   hasProjectFiles: boolean;
+  /**
+   * Legacy flag from the deleted edit-search manifest; nothing produces a
+   * manifest any more, so it no longer selects a message. Kept so the
+   * generate route's call site stays source-compatible.
+   */
   hasManifest: boolean;
   providersTried?: readonly string[];
 }): string {
   if (input.isEdit && !input.hasProjectFiles) {
-    return "No changes were made. I could not load this project's current files, so there was nothing to edit. Open the project preview so its workspace starts and its files load, then send this request again.";
-  }
-  if (input.isEdit && !input.hasManifest) {
-    return "No changes were made. I could read this project's files but not work out how they fit together, so I could not tell which file to edit. Please send the request again and name the page or section you want changed.";
+    // There is no workspace VM to "start" any more — the preview compiles in
+    // the browser. The only recovery that exists is asking again, so that is
+    // what the copy offers.
+    return 'No changes were made: the AI did not send back any updated files for this request. Use Try again, and describe the change in a little more detail — for example, name the page, section or component you want changed.';
   }
   if (input.isEdit) return FOLLOW_UP_NO_FILES;
 

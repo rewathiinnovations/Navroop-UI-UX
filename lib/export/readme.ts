@@ -21,6 +21,6 @@ ${stack.label} (\`${stack.id as StackId}\`)
 3. Start the dev server: \`${stack.devCommand}\`
 4. Production build: \`${build}\`${start}
 
-The zip is built from a saved checkpoint, not from a live sandbox. Secrets (\`.env\`), \`node_modules\`, and \`.git\` are omitted.
+The zip is built from a saved checkpoint of the project. Secrets (\`.env\`), \`node_modules\`, and \`.git\` are omitted.
 `;
 }

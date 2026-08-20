@@ -94,15 +94,19 @@ const CAUSE_LINES: Record<JobErrorCode, string> = {
   // retry that the panel will not offer (blocked / SSRF / unresolved).
   import_failed:
     'The import could not finish — the source page was blocked, rejected, or produced no files.',
+  // In `RECORDED_CAUSE_CODES`: the recorded sentence names the exact repository and how
+  // to proceed (replace via the typed confirmation, or rename the project).
+  repo_conflict:
+    'A repository with this name already exists and was not created by this project, so publish refused to overwrite it.',
 };
 
 /**
  * Codes whose recorded `errorMessage` says the same thing as the curated line, only more
- * precisely — `providerFailureMessage` names the vendor and what it did ("Gemini rejected
- * the API key", "out of quota (generate_content_free_tier)").
+ * precisely — `providerFailureMessage` names the vendor and what it did ("DeepSeek rejected
+ * the API key", "out of quota").
  *
- * The generic line for `provider_not_configured` tells the reader to set one of four API
- * keys, which is actively wrong when a key *is* set and the vendor rejected it. Every other
+ * The generic line for `provider_not_configured` says no key is configured, which is
+ * actively wrong when a key *is* set and the vendor rejected it. Every other
  * code keeps its curated line: `sandbox_unavailable` covers three different pre-flight
  * messages on purpose, and `provider_error` records a raw provider string that is usually
  * worse copy than the sentence written for it.
@@ -115,6 +119,9 @@ const RECORDED_CAUSE_CODES = new Set<string>([
   // through as `credits_exhausted`, which replaced that sentence with "This month's credits
   // are used up" and told a workspace with credits to spare to buy more.
   'member_cap_reached',
+  // The refusal sentence built by `repoConflictMessage` names the colliding repository
+  // and both remedies; the generic line above cannot.
+  'repo_conflict',
 ]);
 
 /** True when the job recorded a sentence more specific than the curated cause line. */
@@ -182,6 +189,9 @@ const NO_RETRY_CODES = new Set<string>([
   'credits_exhausted',
   'provider_not_configured',
   'request_rejected',
+  // Retrying re-runs the same guard against the same repository and refuses identically;
+  // the remedies are the typed "Replace existing repository" confirmation or a rename.
+  'repo_conflict',
 ]);
 
 export function offersRecoveryRetry(input: {
@@ -213,7 +223,7 @@ export function recoveryNextStepLine(input: {
   }
   if (input.errorCode === 'provider_not_configured') {
     // The cause line above already shows the recorded vendor sentence when there is one, and
-    // repeating the generic "set one of these four keys" underneath it contradicts it.
+    // repeating the generic "add an API key" line underneath it contradicts it.
     return recordedCause(input.errorCode, input.errorMessage) ? '' : NO_PROVIDER_CONFIGURED_MESSAGE;
   }
   if (input.errorCode === 'request_rejected') {

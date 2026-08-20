@@ -89,6 +89,19 @@ describe('cron monitor coverage', () => {
     }
   });
 
+  it('README and .env.example schedule only cron routes that exist', () => {
+    // README.md's curl blocks and .env.example's schedule list are the two places an
+    // operator copies schedules from. Both carried `reap-sandboxes` /
+    // `check-sandbox-providers` long after those routes were deleted (F-521 / F-717) —
+    // two permanently-404 tasks that train the operator to ignore cron alerts.
+    for (const file of ['README.md', '.env.example']) {
+      const text = readFileSync(join(process.cwd(), file), 'utf8');
+      const named = [...text.matchAll(/\/api\/cron\/([a-z-]+)/g)].map((row) => row[1]);
+      const missing = [...new Set(named)].filter((name) => !routeNames.includes(name));
+      expect(missing, `${file} schedules cron routes that do not exist`).toEqual([]);
+    }
+  });
+
   it('tells the operator how to monitor the digest, since it cannot monitor itself', () => {
     const docs = readFileSync(join(process.cwd(), 'docs', 'coolify.md'), 'utf8');
     expect(docs).toMatch(/dead-man's-switch/);

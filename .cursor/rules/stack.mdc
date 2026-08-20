@@ -1,5 +1,5 @@
 ---
-description: Navroop stack — Next.js App Router, React 19, Tailwind, Prisma/Postgres, E2B, Firecrawl
+description: Navroop stack — Next.js App Router, React 19, Tailwind, Prisma/Postgres, Firecrawl
 globs: "{app,components,lib,prisma}/**/*.{ts,tsx,js,jsx,prisma}"
 alwaysApply: false
 ---
@@ -9,8 +9,8 @@ alwaysApply: false
 - **Next.js App Router** (`app/`). Do not introduce Pages Router. Do not bump the Next.js version unless the user explicitly asks.
 - **React 19** with client components only where needed (`"use client"`). Prefer Server Components for data that does not need browser APIs.
 - **Tailwind** plus existing studio CSS (`components/app/studio/studio.css`) and design tokens. Do not add a second CSS framework.
-- **Prisma + PostgreSQL** (`prisma/schema.prisma`, client in `generated/prisma`). Use migrations (`npm run db:migrate`); do not hand-edit generated Prisma client.
-- **E2B / Vercel sandbox** for code execution. Sandbox provider is env-driven (`SANDBOX_PROVIDER`).
+- **Prisma + PostgreSQL** (`prisma/schema.prisma`, client in `generated/prisma`). Use migrations (`pnpm db:migrate`); do not hand-edit generated Prisma client.
+- **No execution VM.** Generated code is bundled in-process with esbuild and previewed in the browser (`esbuild-wasm` + esm.sh — `lib/preview/`, `components/workspace/BrowserPreview.tsx`). Do not reintroduce a sandbox provider or a `SANDBOX_PROVIDER` env var.
 - **Firecrawl** for scrape/import. Keep Firecrawl calls in existing lib/API routes.
 
 ```ts

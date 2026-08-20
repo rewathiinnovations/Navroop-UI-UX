@@ -6,7 +6,7 @@ export function nextjsScaffold(devCommand: string): ScaffoldFile[] {
       path: 'package.json',
       content: JSON.stringify(
         {
-          name: 'sandbox-app',
+          name: 'navroop-app',
           version: '1.0.0',
           private: true,
           scripts: {
@@ -14,15 +14,20 @@ export function nextjsScaffold(devCommand: string): ScaffoldFile[] {
             build: 'next build',
             start: 'next start',
           },
+          // Same majors the generation prompts target (lib/stack-prompts/nextjs.ts
+          // says "Next.js 16") and the in-browser preview runs (React 19 via
+          // lib/preview/deps.ts). A Next 14 / React 18 pin here meant generated
+          // React-19 code passed the in-process esbuild check and then failed
+          // `next build` in the user's own repo.
           dependencies: {
-            next: '14.2.18',
-            react: '^18.2.0',
-            'react-dom': '^18.2.0',
+            next: '^16.0.0',
+            react: '^19.0.0',
+            'react-dom': '^19.0.0',
           },
           devDependencies: {
             '@types/node': '^20.0.0',
-            '@types/react': '^18.2.0',
-            '@types/react-dom': '^18.2.0',
+            '@types/react': '^19.0.0',
+            '@types/react-dom': '^19.0.0',
             autoprefixer: '^10.4.16',
             postcss: '^8.4.31',
             tailwindcss: '^3.3.0',
@@ -36,9 +41,7 @@ export function nextjsScaffold(devCommand: string): ScaffoldFile[] {
     {
       path: 'next.config.mjs',
       content: `/** @type {import('next').NextConfig} */
-const nextConfig = {
-  allowedDevOrigins: ['.e2b.app', '.e2b.dev', '.vercel.run', 'localhost'],
-};
+const nextConfig = {};
 
 export default nextConfig;
 `,
@@ -133,7 +136,7 @@ export default function RootLayout({
   return (
     <main className="min-h-screen bg-gray-900 text-white flex items-center justify-center p-4">
       <p className="text-lg text-gray-400">
-        Sandbox ready. Next.js App Router — edit app/page.tsx.
+        Your new Next.js App Router site — edit app/page.tsx.
       </p>
     </main>
   );

@@ -1,13 +1,9 @@
 /**
- * Output-stack registry. All sandbox/dev/install/extension lookups go through
+ * Output-stack registry. All dev/install/extension lookups go through
  * getStack() — do not scatter stack conditionals.
  *
- * REACT values are copied from the current E2B Vite React setup
+ * REACT values are copied from the upstream Open Lovable Vite React setup
  * (package.json scripts.dev = "vite --host", npm install, .jsx files).
- *
- * Sandbox images: official per-stack E2B templates are not used. @e2b/code-interpreter
- * ships `code-interpreter-v1` (generic Node). Every stack records that template
- * so create-sandbox is not hardcoded.
  */
 
 export const STACK_IDS = ['NEXTJS', 'REACT', 'STATIC_HTML'] as const;
@@ -15,8 +11,8 @@ export const STACK_IDS = ['NEXTJS', 'REACT', 'STATIC_HTML'] as const;
 export type StackId = (typeof STACK_IDS)[number];
 
 /**
- * Official, already-used sandbox images. Do not invent unpaid E2B templates.
- * Several stacks share the same Node image on purpose — swapping images is fragile.
+ * Legacy sandbox-image ids kept on the stack rows. The sandbox VM subsystem is
+ * gone (migration 20260819010000_drop_sandbox_columns); nothing boots these.
  */
 export type SandboxTemplate = {
   /** E2B template id. Default of @e2b/code-interpreter (generic Node). */
@@ -77,8 +73,9 @@ const STACKS: Record<StackId, StackDefinition> = {
     id: 'NEXTJS',
     label: 'Next.js (App Router)',
     hasNodeDependencies: true,
-    // Bind the sandbox preview port (E2B/Vercel map 5173).
-    devCommand: 'next dev -p 5173 -H 0.0.0.0',
+    // Plain `next dev` — the exported README prints this as the user's local
+    // dev step; there is no sandbox preview port to bind any more.
+    devCommand: 'next dev',
     installCommand: 'npm install',
     fileExtension: '.tsx',
     sandboxTemplate: GENERIC_NODE_SANDBOX,
@@ -112,7 +109,7 @@ const STACKS: Record<StackId, StackDefinition> = {
     id: 'REACT',
     label: 'React (Vite)',
     hasNodeDependencies: true,
-    // Exact current Open Lovable Vite/React values (E2B + Vercel providers).
+    // Exact upstream Open Lovable Vite/React dev script.
     devCommand: 'vite --host',
     installCommand: 'npm install',
     fileExtension: '.jsx',
@@ -144,8 +141,8 @@ const STACKS: Record<StackId, StackDefinition> = {
     id: 'STATIC_HTML',
     label: 'Static HTML',
     hasNodeDependencies: false,
-    // Listen on the sandbox preview port. No npm install.
-    devCommand: 'npx serve . -l 5173',
+    // No npm install; `serve` picks its own default port locally.
+    devCommand: 'npx serve .',
     installCommand: null,
     fileExtension: '.html',
     sandboxTemplate: GENERIC_NODE_SANDBOX,

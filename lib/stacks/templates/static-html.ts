@@ -7,10 +7,10 @@ export function staticHtmlIndex(): string {
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <script src="https://cdn.tailwindcss.com"></script>
-    <title>Sandbox App</title>
+    <title>New site</title>
   </head>
   <body class="min-h-screen bg-gray-900 text-white flex items-center justify-center p-4">
-    <p class="text-lg text-gray-400">Sandbox ready. Static HTML — no install, served with npx serve.</p>
+    <p class="text-lg text-gray-400">Your new static site — edit index.html to get started.</p>
   </body>
 </html>`;
 }

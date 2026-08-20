@@ -7,6 +7,7 @@ Chat with AI to build React apps instantly. An example app made by the [Firecraw
 ## Setup
 
 1. **Clone & Install**
+
 ```bash
 git clone https://github.com/firecrawl/open-lovable.git
 cd open-lovable
@@ -34,16 +35,10 @@ GROQ_API_KEY=your_groq_api_key            # https://console.groq.com
 # =================================================================
 MORPH_API_KEY=your_morphllm_api_key    # https://morphllm.com/dashboard
 
-# =================================================================
-# SANDBOX PROVIDERS — e2b | modal | daytona (configure in /admin/sandbox-providers)
-# =================================================================
-# First boot only: if no SandboxProviderConfig rows exist, E2B_API_KEY creates
-# "E2B (migrated)" (one_time, total blank). After that the env var is ignored.
-# Provider dashboards are authoritative — reconcile every few months and when terms change.
-# E2B_API_KEY=your_e2b_api_key      # https://e2b.dev — migrate only
 ```
 
 3. **Run**
+
 ```bash
 pnpm dev
 ```
@@ -78,13 +73,6 @@ A container filesystem is replaced on every deploy. A mounted volume survives bu
 ### Scheduled tasks
 
 Set `CRON_SECRET` on the app service. In Coolify, add scheduled tasks (HTTP POST, `Authorization: Bearer $CRON_SECRET`). Replace `https://YOUR_HOST` with the public origin.
-
-**Reap idle sandboxes — every 10 minutes**
-
-```bash
-curl -X POST https://YOUR_HOST/api/cron/reap-sandboxes \
-  -H "Authorization: Bearer $CRON_SECRET"
-```
 
 **Check custom domains — every 2 minutes**
 
@@ -121,10 +109,10 @@ curl -X POST https://YOUR_HOST/api/cron/check-integrations \
   -H "Authorization: Bearer $CRON_SECRET"
 ```
 
-**Sandbox provider health — every 5 minutes**
+**Sweep orphaned publish resources — daily**
 
 ```bash
-curl -X POST https://YOUR_HOST/api/cron/check-sandbox-providers \
+curl -X POST https://YOUR_HOST/api/cron/cleanup-orphans \
   -H "Authorization: Bearer $CRON_SECRET"
 ```
 
@@ -149,12 +137,23 @@ curl -X POST https://YOUR_HOST/api/cron/observability-heartbeat \
   -H "Authorization: Bearer $CRON_SECRET"
 ```
 
-**Sentry quota + system-check digest — daily**
+**Sentry quota — daily**
 
 ```bash
 curl -X POST https://YOUR_HOST/api/cron/observability-quota \
   -H "Authorization: Bearer $CRON_SECRET"
 ```
+
+**System-check digest — daily**
+
+```bash
+curl -X POST https://YOUR_HOST/api/cron/system-checks-digest \
+  -H "Authorization: Bearer $CRON_SECRET"
+```
+
+The digest is the sender of the system-check email and cannot report its own silence — point an
+external dead-man's-switch (an uptime monitor expecting a scheduled ping) at this task. Full
+schedule table and monitoring notes: [docs/coolify.md](docs/coolify.md).
 
 **Site uptime — every 10 minutes**
 
@@ -177,7 +176,7 @@ curl -X POST https://YOUR_HOST/api/cron/sweep-tmp \
   -H "Authorization: Bearer $CRON_SECRET"
 ```
 
-`CHECKPOINT_RETENTION_DAYS` defaults to 7. `PURGE_DELETED_DAYS` defaults to 30. `SANDBOX_IDLE_MINUTES` defaults to 5. Static previews are served at `/preview-static/{projectId}` (signed token). In production add a DNS record for `preview-static.{your-cloudflare-zone}` pointing at the app.
+`CHECKPOINT_RETENTION_DAYS` defaults to 7. `PURGE_DELETED_DAYS` defaults to 30. Static previews are served at `/preview-static/{projectId}` (signed token). In production add a DNS record for `preview-static.{your-cloudflare-zone}` pointing at the app.
 
 ### Rollback the app
 

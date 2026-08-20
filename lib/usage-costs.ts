@@ -7,7 +7,6 @@ import type { GenerationEventKind } from './usage-estimates';
 
 export {
   AI_GENERATION_ESTIMATE,
-  E2B_SANDBOX_ESTIMATE,
   FIRECRAWL_SCRAPE_ESTIMATE,
   IMAGE_GENERATION_ESTIMATE,
   PLAN_GENERATION_ESTIMATE,

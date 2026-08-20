@@ -1,27 +1,11 @@
 // Application Configuration
-// This file contains all configurable settings for the application
+//
+// Only settings with a live reader belong here. The sandbox-era blocks (e2b,
+// packages, files, api, dev) and the unused UI/code-application knobs were
+// removed once nothing read them — a config file that is mostly inert reads
+// as the application's policy surface while controlling nothing.
 
 export const appConfig = {
-  // E2B Sandbox Configuration
-  e2b: {
-    // Sandbox timeout in minutes
-    timeoutMinutes: 30,
-
-    // Convert to milliseconds for E2B API
-    get timeoutMs() {
-      return this.timeoutMinutes * 60 * 1000;
-    },
-
-    // Development server port (E2B uses 5173 for Vite)
-    vitePort: 5173,
-
-    // Time to wait for Vite dev server to be ready (in milliseconds)
-    viteStartupDelay: 10000,
-
-    // Working directory in sandbox
-    workingDirectory: '/home/user/app',
-  },
-
   // AI Model Configuration
   ai: {
     // Default AI model. Restored to upstream's frontier default — the fork had
@@ -50,14 +34,6 @@ export const appConfig = {
       'moonshotai/kimi-k2-instruct-0905': 'Kimi K2 (Groq)',
     } as Record<string, string>,
 
-    // Model API configuration
-    modelApiConfig: {
-      'moonshotai/kimi-k2-instruct-0905': {
-        provider: 'groq',
-        model: 'moonshotai/kimi-k2-instruct-0905',
-      },
-    },
-
     // Temperature settings for non-reasoning models
     defaultTemperature: 0.7,
 
@@ -81,120 +57,13 @@ export const appConfig = {
 
   // Code Application Configuration
   codeApplication: {
-    // Delay after applying code before refreshing iframe (milliseconds)
-    defaultRefreshDelay: 2000,
-
-    // Delay when packages are installed (milliseconds)
-    packageInstallRefreshDelay: 5000,
-
     // Enable/disable automatic truncation recovery
     enableTruncationRecovery: false, // Disabled - too many false positives
-
-    // Maximum number of truncation recovery attempts per file
-    maxTruncationRecoveryAttempts: 1,
   },
 
   // UI Configuration
   ui: {
-    // Show/hide certain UI elements
-    showModelSelector: true,
-    showStatusIndicator: true,
-
-    // Animation durations (milliseconds)
-    animationDuration: 200,
-
     // Toast notification duration (milliseconds)
     toastDuration: 3000,
-
-    // Maximum chat messages to keep in memory
-    maxChatMessages: 100,
-
-    // Maximum recent messages to send as context
-    maxRecentMessagesContext: 20,
-  },
-
-  // Development Configuration
-  dev: {
-    // Enable debug logging
-    enableDebugLogging: true,
-
-    // Enable performance monitoring
-    enablePerformanceMonitoring: false,
-
-    // Log API responses
-    logApiResponses: true,
-  },
-
-  // Package Installation Configuration
-  packages: {
-    // Use --legacy-peer-deps flag for npm install
-    useLegacyPeerDeps: true,
-
-    // Package installation timeout (milliseconds)
-    installTimeout: 60000,
-
-    // Auto-restart Vite after package installation
-    autoRestartVite: true,
-  },
-
-  // File Management Configuration
-  files: {
-    // Excluded file patterns (files to ignore)
-    excludePatterns: [
-      'node_modules/**',
-      '.git/**',
-      '.next/**',
-      'dist/**',
-      'build/**',
-      '*.log',
-      '.DS_Store',
-    ],
-
-    // Maximum file size to read (bytes)
-    maxFileSize: 1024 * 1024, // 1MB
-
-    // File extensions to treat as text
-    textFileExtensions: [
-      '.js',
-      '.jsx',
-      '.ts',
-      '.tsx',
-      '.css',
-      '.scss',
-      '.sass',
-      '.html',
-      '.xml',
-      '.svg',
-      '.json',
-      '.yml',
-      '.yaml',
-      '.md',
-      '.txt',
-      '.env',
-      '.gitignore',
-      '.dockerignore',
-    ],
-  },
-
-  // API Endpoints Configuration (for external services)
-  api: {
-    // Retry configuration
-    maxRetries: 3,
-    retryDelay: 1000, // milliseconds
-
-    // Request timeout (milliseconds)
-    requestTimeout: 30000,
   },
 };
-
-// Type-safe config getter
-export function getConfig<K extends keyof typeof appConfig>(key: K): (typeof appConfig)[K] {
-  return appConfig[key];
-}
-
-// Helper to get nested config values
-export function getConfigValue(path: string): any {
-  return path.split('.').reduce((obj, key) => obj?.[key], appConfig as any);
-}
-
-export default appConfig;

@@ -28,6 +28,10 @@ export function reactScaffold(devCommand: string): ScaffoldFile[] {
             'react-dom': '^19.0.0',
           },
           devDependencies: {
+            // tsconfig sets strict: true, so the React type packages are not
+            // optional — without them the exported project cannot typecheck.
+            '@types/react': '^19.0.0',
+            '@types/react-dom': '^19.0.0',
             '@vitejs/plugin-react': '^4.3.4',
             autoprefixer: '^10.4.16',
             postcss: '^8.4.31',

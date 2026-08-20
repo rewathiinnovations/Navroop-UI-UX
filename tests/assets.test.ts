@@ -25,7 +25,8 @@ function assert(cond: unknown, name: string) {
 const { parseNeedImageDirectives, replaceNeedImageTokens } =
   await import('../lib/assets/need-image.ts');
 const { assetStorageKey, fallbackAltText } = await import('../lib/assets/keys.ts');
-const { calculateEventCost, IMAGE_GENERATION_ESTIMATE } = await import('../lib/usage-estimates.ts');
+const { IMAGE_GENERATION_ESTIMATE } = await import('../lib/usage-estimates.ts');
+const { calculateEventCost } = await import('../lib/consumption/cost.ts');
 const { formatAssetManifest } = await import('../lib/assets/manifest.ts');
 
 const parsed = parseNeedImageDirectives(`

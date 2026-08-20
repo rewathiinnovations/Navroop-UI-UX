@@ -1,5 +1,12 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { buildRepoFiles, slugify } from '@/lib/deploy/repo-files';
+
+function major(range: string): string {
+  const match = range.match(/\d+/);
+  if (!match) throw new Error(`No major version in "${range}"`);
+  return match[0];
+}
 
 /**
  * A push or download has to produce a repository that builds — a folder of
@@ -54,5 +61,48 @@ describe('buildRepoFiles', () => {
     expect(slugify('Ember & Oak')).toBe('ember-oak');
     expect(slugify('   ')).toBe('app');
     expect(slugify('---')).toBe('app');
+  });
+});
+
+/**
+ * The scaffolds shipped Next 14 / React 18 while the prompts target Next 16 and
+ * the in-browser preview runs React 19 (lib/preview/deps.ts) — so generated
+ * code passed the esbuild check and then failed `next build` in the user's own
+ * repo (F-719). Pin the scaffold majors to the product's.
+ */
+describe('scaffold version pins', () => {
+  const product = JSON.parse(readFileSync('package.json', 'utf8')) as {
+    dependencies: Record<string, string>;
+  };
+
+  it('NEXTJS scaffold tracks the product Next and React majors', () => {
+    const pkg = JSON.parse(buildRepoFiles('NEXTJS', {})['package.json']) as {
+      dependencies: Record<string, string>;
+      devDependencies: Record<string, string>;
+    };
+    expect(major(pkg.dependencies.next)).toBe(major(product.dependencies.next));
+    expect(major(pkg.dependencies.react)).toBe(major(product.dependencies.react));
+    expect(major(pkg.dependencies['react-dom'])).toBe(major(product.dependencies['react-dom']));
+    expect(major(pkg.devDependencies['@types/react'])).toBe(major(product.dependencies.react));
+  });
+
+  it('REACT scaffold uses React 19 and ships the type packages strict mode needs', () => {
+    const pkg = JSON.parse(buildRepoFiles('REACT', {})['package.json']) as {
+      dependencies: Record<string, string>;
+      devDependencies: Record<string, string>;
+    };
+    expect(major(pkg.dependencies.react)).toBe(major(product.dependencies.react));
+    expect(pkg.devDependencies['@types/react']).toBeDefined();
+    expect(pkg.devDependencies['@types/react-dom']).toBeDefined();
+  });
+
+  it('carries no sandbox host or port settings', () => {
+    for (const stack of ['NEXTJS', 'REACT', 'STATIC_HTML'] as const) {
+      const files = buildRepoFiles(stack, {});
+      for (const [path, content] of Object.entries(files)) {
+        expect(content, `${stack} ${path}`).not.toMatch(/e2b\.|vercel\.run|allowedDevOrigins|5173/);
+        expect(content.toLowerCase(), `${stack} ${path}`).not.toContain('sandbox');
+      }
+    }
   });
 });
