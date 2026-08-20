@@ -17,6 +17,8 @@ import { checkCredits } from '@/lib/plans/limits';
 import { WORKSPACE_ROW_ID } from '@/lib/storage/usage';
 import { holdProjectLock } from '@/lib/projects/lock';
 import { lockConflictAction } from '@/lib/projects/lock-http';
+import { recordJobStepFailure } from '@/lib/jobs/step-failure';
+import { SEO_AUDIT_STEP, auditRunFailureMessage } from '@/lib/audit/poll-state';
 
 type ActionErr = { ok: false; error: string; status: number; details?: unknown };
 type ActionOk<T> = { ok: true; data: T };
@@ -177,12 +179,13 @@ export async function runSeoAudit(projectId: string): Promise<ActionResult<{ sca
       await markJobRunning(auditJob.id, { chargeCredits: true, acquireProjectLock: false });
     }
     const { updateJobFields } = await import('@/lib/jobs/store');
+    const stepLabel = 'Scanning the project';
     await updateJobFields(auditJob.id, {
-      currentStep: 'audit',
+      currentStep: SEO_AUDIT_STEP,
       steps: [
         {
-          key: 'audit',
-          label: 'Scanning the project',
+          key: SEO_AUDIT_STEP,
+          label: stepLabel,
           status: 'running',
           startedAt: new Date().toISOString(),
         },
@@ -191,18 +194,33 @@ export async function runSeoAudit(projectId: string): Promise<ActionResult<{ sca
     const jobBeat = beginJobHeartbeat(auditJob.id);
     const job = performSeoAudit(projectId)
       .then(async (didRun) => {
-        if (didRun) await succeedJob(auditJob.id);
-        else
-          await failJob(auditJob.id, {
-            errorCode: 'provider_error',
-            errorMessage: 'Audit did not run',
-          });
+        if (didRun) {
+          await succeedJob(auditJob.id);
+          return;
+        }
+        // F-819: the failure must survive somewhere the poll can read it —
+        // the job row (failJob writes errorMessage) and its step list.
+        await recordJobStepFailure(auditJob.id, {
+          key: SEO_AUDIT_STEP,
+          label: stepLabel,
+          error: 'Audit did not run',
+        });
+        await failJob(auditJob.id, {
+          errorCode: 'provider_error',
+          errorMessage: 'Audit did not run',
+        });
       })
       .catch(async (error) => {
         console.warn('[seo] audit failed', error);
+        const errorMessage = error instanceof Error ? error.message : 'Audit failed';
+        await recordJobStepFailure(auditJob.id, {
+          key: SEO_AUDIT_STEP,
+          label: stepLabel,
+          error: errorMessage,
+        });
         await failJob(auditJob.id, {
           errorCode: 'provider_error',
-          errorMessage: error instanceof Error ? error.message : 'Audit failed',
+          errorMessage,
         }).catch((failError) => {
           console.warn('[seo] failJob after audit failure failed', failError);
         });
@@ -226,6 +244,7 @@ export async function getLatestSeoAudit(projectId: string): Promise<
   ActionResult<{
     audit: PublicSeoAudit | null;
     scanning: boolean;
+    lastError: string | null;
   }>
 > {
   const { user, err } = await requireActor();
@@ -238,11 +257,30 @@ export async function getLatestSeoAudit(projectId: string): Promise<
   if (!project) return notFound();
 
   const row = await latestRow(projectId);
+  const scanning = inflight.has(projectId);
+  // F-819: a detached scan that failed (or died in a restart and was reaped)
+  // only left a trace on its AUDIT job row. Surface it to the panel unless a
+  // newer scan row superseded it.
+  let lastError: string | null = null;
+  if (!scanning) {
+    const failedJob = await prisma.job.findFirst({
+      where: {
+        projectId,
+        kind: 'AUDIT',
+        currentStep: SEO_AUDIT_STEP,
+        status: { in: ['FAILED', 'ABANDONED'] },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { errorMessage: true, finishedAt: true, createdAt: true },
+    });
+    lastError = auditRunFailureMessage(row?.scannedAt ?? null, failedJob);
+  }
   return {
     ok: true,
     data: {
       audit: row ? toPublic(row) : null,
-      scanning: inflight.has(projectId),
+      scanning,
+      lastError,
     },
   };
 }

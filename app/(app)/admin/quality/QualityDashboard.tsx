@@ -14,6 +14,7 @@ import {
   type QualitySignalKind,
 } from '@/lib/signals/score';
 import { formatAdminDate } from '../format-admin-date';
+import { toMessage } from '@/lib/notify';
 
 type KindMetric = {
   kind: QualitySignalKind;
@@ -60,6 +61,20 @@ function last30DayInputs(now = new Date()) {
   return { from: fmt(from), to: fmt(to) };
 }
 
+/**
+ * F-705: type_safety, a11y_score and build_success are fabricated — the code
+ * audit runs its static checks with no sandbox, so the collectors record a
+ * perfect 1.0 for projects that were never analysed. Hidden here until the
+ * Wave 4 pipeline fix (see audit/FIXES.md F-705). The collectors keep writing
+ * rows, so history survives the outage.
+ */
+const BROKEN_SIGNAL_KINDS: Partial<Record<QualitySignalKind, true>> = {
+  type_safety: true,
+  a11y_score: true,
+  build_success: true,
+};
+const SHOWN_SIGNAL_KINDS = QUALITY_SIGNAL_KINDS.filter((kind) => !BROKEN_SIGNAL_KINDS[kind]);
+
 function formatPct(value: number) {
   return `${Math.round(value * 1000) / 10}%`;
 }
@@ -100,6 +115,8 @@ export default function QualityDashboard() {
           return;
         }
         if (!cancelled) setData(payload);
+      } catch (cause) {
+        if (!cancelled) setError(toMessage(cause, 'Could not load quality'));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -174,8 +191,12 @@ export default function QualityDashboard() {
             : undefined
         }
       >
+        <p className="mb-12 text-[12px] text-[var(--studio-muted)]">
+          Type safety, accessibility and build-success scores are hidden: their measurement is
+          broken and records perfect scores. See audit/FIXES.md F-705.
+        </p>
         <div className="grid grid-cols-1 gap-12 sm:grid-cols-2 lg:grid-cols-4">
-          {QUALITY_SIGNAL_KINDS.map((kind) => {
+          {SHOWN_SIGNAL_KINDS.map((kind) => {
             const metric = data?.metrics[kind];
             const n = metric?.n ?? 0;
             const ready = metric?.mean != null;
@@ -189,9 +210,11 @@ export default function QualityDashboard() {
                   {metric?.label || kind}
                 </p>
                 <p className="mt-8 text-[22px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">
-                  {ready
-                    ? formatPct(metric.mean!)
-                    : `Not enough data yet (${n}/${MIN_KIND_SAMPLES})`}
+                  {!data
+                    ? '—'
+                    : ready
+                      ? formatPct(metric.mean!)
+                      : `Not enough data yet (${n}/${MIN_KIND_SAMPLES})`}
                 </p>
                 <p className="mt-6 text-[12px] text-[var(--studio-muted)]">
                   based on {n} generations · {trendLabel(metric?.trend ?? null)}
@@ -209,7 +232,7 @@ export default function QualityDashboard() {
         icon={<GitCommitHorizontal className="size-14" aria-hidden />}
         title="Prompt version history"
       >
-        {!loading && (data?.versions || []).length === 0 ? (
+        {!loading && data && data.versions.length === 0 ? (
           <p className="text-[13px] text-[var(--studio-muted)]">No prompt versions recorded yet.</p>
         ) : (
           <div className="grid grid-cols-1 gap-12 lg:grid-cols-2">
@@ -232,7 +255,7 @@ export default function QualityDashboard() {
                 </p>
                 {version.overall != null && (
                   <ul className="mt-12 space-y-4 text-[12px] text-[var(--studio-muted)]">
-                    {QUALITY_SIGNAL_KINDS.map((kind) => {
+                    {SHOWN_SIGNAL_KINDS.map((kind) => {
                       const row = version.metrics[kind];
                       return (
                         <li key={kind}>
@@ -252,7 +275,11 @@ export default function QualityDashboard() {
       </AdminCard>
 
       <AdminCard icon={<AlertCircle className="size-14" aria-hidden />} title="Recurring issues">
-        {(data?.recurringIssues || []).length === 0 ? (
+        {!data ? (
+          <p className="text-[13px] text-[var(--studio-muted)]">
+            {loading ? 'Loading…' : 'Not loaded.'}
+          </p>
+        ) : data.recurringIssues.length === 0 ? (
           <p className="text-[13px] text-[var(--studio-muted)]">
             No recurring code-audit issues yet.
           </p>

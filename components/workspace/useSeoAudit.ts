@@ -24,7 +24,10 @@ export function useSeoAudit(projectId: string | null) {
       setError(result.error);
       return;
     }
-    setError(null);
+    // F-819: a detached scan that failed reports through `lastError`; the old
+    // unconditional `setError(null)` erased it and left "paid, nothing
+    // happened, told nothing".
+    setError(result.data.lastError);
     setAudit(result.data.audit);
     setScanning(result.data.scanning);
   }, [projectId]);

@@ -7,6 +7,7 @@ import StatTile from '@/components/admin/StatTile';
 import StatusBanner from '@/components/admin/StatusBanner';
 import { ADMIN_NAV } from '@/components/admin/admin-nav';
 import { prisma } from '@/lib/db';
+import { log } from '@/lib/logger';
 import { listActiveJobs } from '@/lib/jobs/store';
 import { listIntegrations } from '@/lib/integrations/store';
 import { INTEGRATION_KINDS, KIND_LABELS, type IntegrationKind } from '@/lib/integrations/types';
@@ -63,22 +64,64 @@ async function collectAttention(
   return items;
 }
 
-export default async function AdminHomePage() {
-  const [{ settings }, integrations, memberCount, activeJobs, workspace] = await Promise.all([
-    describeSettings(),
-    listIntegrations().catch(() => []),
-    prisma.user.count({ where: { isActive: true } }).catch(() => null),
-    listActiveJobs().catch(() => []),
-    prisma.workspace
-      .findUnique({
-        where: { id: WORKSPACE_ROW_ID },
-        select: { storageBytes: true, storageLimitBytes: true },
-      })
-      .catch(() => null),
-  ]);
+type Loaded<T> = { ok: true; value: T } | { ok: false };
 
-  const attention = await collectAttention(settings, integrations).catch(() => []);
-  const connectedCount = integrations.filter((row) => row.status === 'CONNECTED').length;
+/**
+ * Every source loads independently so one database hiccup does not blank the
+ * whole page — but a failure must stay a failure. The old `.catch(() => [])`
+ * fallbacks made a dead database indistinguishable from a healthy empty
+ * install, and the page printed "Nothing needs attention" on top of it.
+ */
+async function settle<T>(source: string, promise: Promise<T>): Promise<Loaded<T>> {
+  try {
+    return { ok: true, value: await promise };
+  } catch (cause) {
+    log.warn('admin.home_source_failed', {
+      source,
+      error: cause instanceof Error ? cause.message : String(cause),
+    });
+    return { ok: false };
+  }
+}
+
+export default async function AdminHomePage() {
+  const [settingsRes, integrationsRes, memberCountRes, activeJobsRes, workspaceRes] =
+    await Promise.all([
+      settle('settings', describeSettings()),
+      settle('integrations', listIntegrations()),
+      settle('member count', prisma.user.count({ where: { isActive: true } })),
+      settle('active jobs', listActiveJobs()),
+      settle(
+        'workspace storage',
+        prisma.workspace.findUnique({
+          where: { id: WORKSPACE_ROW_ID },
+          select: { storageBytes: true, storageLimitBytes: true },
+        }),
+      ),
+    ]);
+
+  const attentionRes: Loaded<Attention[]> =
+    settingsRes.ok && integrationsRes.ok
+      ? await settle(
+          'attention checks',
+          collectAttention(settingsRes.value.settings, integrationsRes.value),
+        )
+      : { ok: false };
+
+  const failedSources = [
+    !settingsRes.ok && 'settings',
+    !integrationsRes.ok && 'integrations',
+    !memberCountRes.ok && 'member count',
+    !activeJobsRes.ok && 'active jobs',
+    !workspaceRes.ok && 'workspace storage',
+    settingsRes.ok && integrationsRes.ok && !attentionRes.ok && 'attention checks',
+  ].filter((source): source is string => typeof source === 'string');
+
+  const attention = attentionRes.ok ? attentionRes.value : [];
+  const connectedCount = integrationsRes.ok
+    ? integrationsRes.value.filter((row) => row.status === 'CONNECTED').length
+    : null;
+  const workspace = workspaceRes.ok ? workspaceRes.value : null;
   const storageRatio =
     workspace?.storageLimitBytes && workspace.storageLimitBytes > 0
       ? Math.min(workspace.storageBytes / workspace.storageLimitBytes, 1)
@@ -94,19 +137,19 @@ export default async function AdminHomePage() {
       <div className="grid gap-12 sm:grid-cols-2 xl:grid-cols-4">
         <StatTile
           icon={<AdminIcon name="team" className="size-16" />}
-          value={memberCount ?? '—'}
+          value={memberCountRes.ok ? memberCountRes.value : '—'}
           label="Active members"
           href="/admin/team"
         />
         <StatTile
           icon={<AdminIcon name="jobs" className="size-16" />}
-          value={activeJobs.length}
+          value={activeJobsRes.ok ? activeJobsRes.value.length : '—'}
           label="Jobs running now"
           href="/admin/jobs"
         />
         <StatTile
           icon={<AdminIcon name="integrations" className="size-16" />}
-          value={`${connectedCount}/${INTEGRATION_KINDS.length}`}
+          value={connectedCount === null ? '—' : `${connectedCount}/${INTEGRATION_KINDS.length}`}
           label="Integrations connected"
           href="/admin/integrations"
           tone={connectedCount === 0 ? 'warning' : 'default'}
@@ -121,12 +164,21 @@ export default async function AdminHomePage() {
         />
       </div>
 
-      {attention.length === 0 ? (
+      {failedSources.length > 0 && (
+        <StatusBanner tone="warning">
+          {`Could not check the workspace status: failed to load ${failedSources.join(', ')}. `}
+          Anything below only covers the sources that loaded.
+        </StatusBanner>
+      )}
+
+      {failedSources.length === 0 && attention.length === 0 && (
         <StatusBanner tone="success">
           Nothing needs attention. Providers are configured and no integration is reporting an
           error.
         </StatusBanner>
-      ) : (
+      )}
+
+      {attention.length > 0 && (
         <div className="space-y-8">
           {attention.map((item) => (
             <StatusBanner

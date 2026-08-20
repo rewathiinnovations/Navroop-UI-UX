@@ -15,7 +15,7 @@ import AdminPage from '@/components/admin/AdminPage';
 import { AdminTable, Td, Th, Tr } from '@/components/admin/AdminTable';
 import StatTile from '@/components/admin/StatTile';
 import StatusBanner from '@/components/admin/StatusBanner';
-import { fetchJson, notify } from '@/lib/notify';
+import { fetchJson, notify, toMessage } from '@/lib/notify';
 import { SkeletonTable } from '@/components/admin/AdminSkeleton';
 import { Fragment, FormEvent, useEffect, useMemo, useState } from 'react';
 import StudioButton from '@/components/app/studio/StudioButton';
@@ -138,6 +138,8 @@ export default function UsageDashboard() {
           const extraction = await getMemoryExtractionSetting();
           if (extraction.ok) setMemoryExtractionEnabled(extraction.data.enabled);
         }
+      } catch (cause) {
+        if (!cancelled) setError(toMessage(cause, 'Could not load usage'));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -296,7 +298,7 @@ export default function UsageDashboard() {
           <SkeletonTable rows={4} cols={5} />
         ) : (
           <AdminTable
-            isEmpty={!loading && members.length === 0}
+            isEmpty={!loading && !error && members.length === 0}
             empty="No usage in this range."
             head={
               <>
@@ -377,7 +379,7 @@ export default function UsageDashboard() {
           <SkeletonTable rows={3} cols={4} />
         ) : (
           <AdminTable
-            isEmpty={!loading && skills.length === 0}
+            isEmpty={!loading && !error && skills.length === 0}
             empty="No workspace skills yet."
             head={
               <>

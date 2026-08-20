@@ -141,6 +141,8 @@ export default function HealthDashboard() {
           return;
         }
         if (!cancelled) setData(payload);
+      } catch (cause) {
+        if (!cancelled) setError(toMessage(cause, 'Could not load health'));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -505,7 +507,7 @@ export default function HealthDashboard() {
                 ) : null}
               </li>
             ))}
-            {!loading && (data?.integrations || []).length === 0 && (
+            {!loading && data && (data.integrations || []).length === 0 && (
               <li className="text-[13px] text-[var(--studio-muted)]">No integration rows found.</li>
             )}
           </ul>
@@ -532,7 +534,7 @@ export default function HealthDashboard() {
                 </span>
               </li>
             ))}
-            {!loading && (data?.providers || []).length === 0 && (
+            {!loading && data && (data.providers || []).length === 0 && (
               <li className="text-[13px] text-[var(--studio-muted)]">No providers configured.</li>
             )}
           </ul>
@@ -564,7 +566,7 @@ export default function HealthDashboard() {
                 {row.detail ? ` — ${row.detail}` : ''}
               </li>
             ))}
-            {!loading && (data?.systemChecks || []).length === 0 && (
+            {!loading && data && (data.systemChecks || []).length === 0 && (
               <li className="text-[13px] text-[var(--studio-muted)]">
                 No system checks recorded yet.
               </li>
@@ -579,7 +581,11 @@ export default function HealthDashboard() {
       icon: <AlertTriangle className="size-13" aria-hidden />,
       panel: (
         <AdminCard>
-          {(data?.topErrorCodes || []).length === 0 ? (
+          {!data ? (
+            <p className="text-[13px] text-[var(--studio-muted)]">
+              {loading ? 'Loading…' : 'Not loaded.'}
+            </p>
+          ) : (data.topErrorCodes || []).length === 0 ? (
             <p className="text-[13px] text-[var(--studio-muted)]">
               No recurring errors in the last 7 days.
             </p>

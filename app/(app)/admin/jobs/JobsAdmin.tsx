@@ -9,7 +9,7 @@ import StatusBanner from '@/components/admin/StatusBanner';
 import { SkeletonTable } from '@/components/admin/AdminSkeleton';
 import { useEffect, useState } from 'react';
 import { jobAdminFailureLine } from '@/lib/jobs/admin-display';
-import { notify } from '@/lib/notify';
+import { notify, toMessage } from '@/lib/notify';
 import { sandboxChoiceLines } from '@/lib/jobs/sandbox-choice';
 import type { JobResourceIds } from '@/lib/jobs/types';
 
@@ -61,6 +61,8 @@ export default function JobsAdmin() {
         return;
       }
       setData(payload);
+    } catch (cause) {
+      setError(toMessage(cause, 'Could not load jobs'));
     } finally {
       setLoading(false);
     }
