@@ -99,7 +99,6 @@ export function imageWorkerPrompt(description: string, aspect: GenerateAspect): 
     .filter((part): part is string => Boolean(part))
     .join(' ');
 }
-
 /** The configured endpoint, or null when the operator has not set one up. */
 export async function imageWorkerConfig(): Promise<WorkerImageConfig | null> {
   const values = await getSettings([
@@ -107,11 +106,15 @@ export async function imageWorkerConfig(): Promise<WorkerImageConfig | null> {
     'tooling.images.token',
     'tooling.images.model',
   ] as const);
+
   const url = values['tooling.images.workerUrl']?.trim();
   const token = values['tooling.images.token']?.trim();
   if (!url || !token) return null;
   return { url, token, model: values['tooling.images.model']?.trim() || undefined };
 }
+
+/** Hard ceiling for image worker response — 10 MB is generous for any single image. */
+const MAX_IMAGE_WORKER_RESPONSE_BYTES = 10 * 1024 * 1024;
 
 export async function generateWithImageWorker(input: {
   config: WorkerImageConfig;
@@ -142,7 +145,20 @@ export async function generateWithImageWorker(input: {
         `Image worker refused the request (${response.status})${await reason(response)}`,
       );
     }
+    // Enforce a hard byte ceiling to prevent memory exhaustion from a runaway response.
+    const headers = response.headers as Record<string, string> | undefined;
+    const contentLength = headers?.['content-length'];
+    if (contentLength && Number(contentLength) > MAX_IMAGE_WORKER_RESPONSE_BYTES) {
+      throw new Error(
+        `Image worker response too large: ${contentLength} bytes (max ${MAX_IMAGE_WORKER_RESPONSE_BYTES})`,
+      );
+    }
     const body = Buffer.from(await response.arrayBuffer());
+    if (body.length > MAX_IMAGE_WORKER_RESPONSE_BYTES) {
+      throw new Error(
+        `Image worker response too large: ${body.length} bytes (max ${MAX_IMAGE_WORKER_RESPONSE_BYTES})`,
+      );
+    }
     const image = imageBytesFrom(body);
     // The worker labels every answer `image/jpeg`, including its own JSON errors,
     // so the bytes are what decide. Storing a non-image would render as a broken

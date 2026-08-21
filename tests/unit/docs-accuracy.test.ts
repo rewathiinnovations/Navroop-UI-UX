@@ -62,6 +62,7 @@ const DOC_FILES = [
   'CLAUDE.md',
   'README.md',
   '.cursor/README.md',
+  '.cursor/lessons-learned.md',
   ...readdirSync(join(ROOT, '.cursor', 'rules')).map((file) => `.cursor/rules/${file}`),
   ...readdirSync(join(ROOT, 'docs'))
     .filter((file) => file.endsWith('.md'))

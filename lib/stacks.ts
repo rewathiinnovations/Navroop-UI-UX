@@ -10,22 +10,6 @@ export const STACK_IDS = ['NEXTJS', 'REACT', 'STATIC_HTML'] as const;
 
 export type StackId = (typeof STACK_IDS)[number];
 
-/**
- * Legacy sandbox-image ids kept on the stack rows. The sandbox VM subsystem is
- * gone (migration 20260819010000_drop_sandbox_columns); nothing boots these.
- */
-export type SandboxTemplate = {
-  /** E2B template id. Default of @e2b/code-interpreter (generic Node). */
-  e2b: string;
-  /** Legacy node runtime id kept on the stack row. */
-  vercelRuntime: string;
-};
-
-export const GENERIC_NODE_SANDBOX: SandboxTemplate = {
-  e2b: 'code-interpreter-v1',
-  vercelRuntime: 'node22',
-};
-
 const NODE_LOCK_FILES = ['package.json', 'package-lock.json', 'tsconfig.json'] as const;
 
 export type StackDefinition = {
@@ -37,7 +21,6 @@ export type StackDefinition = {
   /** Project-level install. Null when the stack has no node_modules. */
   installCommand: string | null;
   fileExtension: string;
-  sandboxTemplate: SandboxTemplate;
   /** Filenames the apply pipeline must not overwrite. */
   configFiles: string[];
   /** Extensions get-sandbox-files should list. */
@@ -84,7 +67,6 @@ const STACKS: Record<StackId, StackDefinition> = {
     devCommand: 'next dev',
     installCommand: 'npm install',
     fileExtension: '.tsx',
-    sandboxTemplate: GENERIC_NODE_SANDBOX,
     configFiles: [
       ...NODE_LOCK_FILES,
       'next.config.js',
@@ -122,7 +104,6 @@ const STACKS: Record<StackId, StackDefinition> = {
     // The scaffold this stack actually ships is TypeScript: `src/main.tsx` with a non-null
     // assertion, plus a tsconfig.json. This said `.jsx` and `src/main.jsx` (F-098).
     fileExtension: '.tsx',
-    sandboxTemplate: GENERIC_NODE_SANDBOX,
     configFiles: [
       'tailwind.config.js',
       'vite.config.js',
@@ -155,7 +136,6 @@ const STACKS: Record<StackId, StackDefinition> = {
     devCommand: 'npx serve .',
     installCommand: null,
     fileExtension: '.html',
-    sandboxTemplate: GENERIC_NODE_SANDBOX,
     configFiles: ['package.json', 'package-lock.json'],
     listExtensions: ['.html', '.css', '.js'],
     entryPoint: 'index.html',
@@ -213,10 +193,6 @@ export function shouldInstallPackages(stack: string): boolean {
 
 export function splitCommand(command: string): string[] {
   return command.trim().split(/\s+/).filter(Boolean);
-}
-
-export function getSandboxTemplate(stack: string): SandboxTemplate {
-  return getStack(stack).sandboxTemplate;
 }
 
 export function getStackConfigFiles(stack: string): string[] {

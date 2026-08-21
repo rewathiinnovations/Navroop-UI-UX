@@ -127,9 +127,6 @@ export const dynamic = 'force-dynamic';
  */
 export const maxDuration = 1200;
 
-// Check if we're using Vercel AI Gateway
-const isUsingAIGateway = !!process.env.AI_GATEWAY_API_KEY;
-
 /**
  * How much of a fileless reply is echoed back to the model on the corrective ask.
  *
@@ -137,12 +134,6 @@ const isUsingAIGateway = !!process.env.AI_GATEWAY_API_KEY;
  * thousands of output tokens is not bought a second time as input.
  */
 const CORRECTIVE_ECHO_CHARS = 2000;
-
-log.info('generation.provider_config', {
-  isUsingAIGateway,
-  hasGroqKey: !!process.env.GROQ_API_KEY,
-  hasAIGatewayKey: !!process.env.AI_GATEWAY_API_KEY,
-});
 
 // Helper function to analyze user preferences from conversation history
 function analyzeUserPreferences(messages: ConversationMessage[]): {

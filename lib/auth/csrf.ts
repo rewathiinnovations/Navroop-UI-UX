@@ -122,6 +122,18 @@ export function validateOriginCheckExemptions(
 
 export type OriginVerdict = { ok: true } | { ok: false; reason: string };
 
+/**
+ * Normalize loopback hostnames to a canonical form so 127.0.0.1 and localhost
+ * are treated as the same origin for CSRF purposes.
+ */
+function normalizeLoopbackHost(host: string): string {
+  const lower = host.toLowerCase();
+  if (lower === '127.0.0.1' || lower === 'localhost' || lower === '[::1]' || lower === '::1') {
+    return 'localhost';
+  }
+  return lower;
+}
+
 /** The subset of `Headers` this check reads. */
 export type HeaderReader = { get(name: string): string | null };
 
@@ -143,10 +155,10 @@ export type HeaderReader = { get(name: string): string | null };
 function expectedHosts(headers: HeaderReader): Set<string> {
   const hosts = new Set<string>();
   for (const raw of (headers.get('x-forwarded-host') || '').split(',')) {
-    const host = raw.trim().toLowerCase();
+    const host = normalizeLoopbackHost(raw.trim());
     if (host) hosts.add(host);
   }
-  const host = (headers.get('host') || '').trim().toLowerCase();
+  const host = normalizeLoopbackHost((headers.get('host') || '').trim());
   if (host) hosts.add(host);
   return hosts;
 }
@@ -176,7 +188,7 @@ export function checkRequestOrigin(headers: HeaderReader): OriginVerdict {
     }
     let originHost: string;
     try {
-      originHost = new URL(origin).host.toLowerCase();
+      originHost = normalizeLoopbackHost(new URL(origin).host);
     } catch {
       return { ok: false, reason: `Origin is not a URL: ${origin}` };
     }
