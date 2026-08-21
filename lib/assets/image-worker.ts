@@ -146,8 +146,7 @@ export async function generateWithImageWorker(input: {
       );
     }
     // Enforce a hard byte ceiling to prevent memory exhaustion from a runaway response.
-    const headers = response.headers as Record<string, string> | undefined;
-    const contentLength = headers?.['content-length'];
+    const contentLength = response.headers.get('content-length');
     if (contentLength && Number(contentLength) > MAX_IMAGE_WORKER_RESPONSE_BYTES) {
       throw new Error(
         `Image worker response too large: ${contentLength} bytes (max ${MAX_IMAGE_WORKER_RESPONSE_BYTES})`,
