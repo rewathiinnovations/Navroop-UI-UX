@@ -85,13 +85,68 @@ const CREDENTIAL_DOCS = [
   'docs/deployment.md',
 ];
 
-/** `{ where, text }` for every line matching `pattern`, across `files`. `pattern` must not be global. */
+/**
+ * A lessons-learned entry is the record of an incident, and its first two bullets recount what
+ * actually ran and why it broke — naming the banned form verbatim is the entire point of the
+ * entry. Only `**Rule going forward:**` prescribes, so only that bullet is held to the
+ * invocation bans below. Without this the eight entries that exist *because* `npm install` and
+ * `pnpm exec` misfired are reported as the documents recommending them, which is backwards: the
+ * ban is downstream of the incident, so the incident cannot be evidence against it.
+ *
+ * Deliberately narrower than the negation hatch. It exempts the two narration bullets and
+ * nothing else — a stale instruction in `**Rule going forward:**` still fails, which is how
+ * the `pnpm.overrides` correction below was caught.
+ */
+const NARRATION = /^\s*-\s*\*\*(?:What happened|Root cause):\*\*/;
+
+const LESSONS = '.cursor/lessons-learned.md';
+
+/**
+ * The lessons log never deletes an entry: one whose subject is gone gets a dated
+ * `**Superseded**` / `**Obsolete**` marker instead, and the always-on convention states that an
+ * entry with no marker is a live instruction. The converse is what this file needs — a *marked*
+ * entry has been declared not-live, so the commands inside it are a record of what used to be
+ * advised, not a document advising them now. `tests/unit/lessons-learned-lifecycle.test.ts` owns
+ * the marker format and pins it to one per entry, last, naming its replacement.
+ *
+ * Without this the two tests contradict each other: the lifecycle test forbids rewriting a
+ * superseded bullet, and this one demands the superseded bullet stop saying what it said.
+ */
+const HISTORICAL_LINES = (() => {
+  const lines = readText(LESSONS).split('\n');
+  const marked = new Set<number>();
+  let start = 0;
+  const flush = (end: number) => {
+    if (lines.slice(start, end).some((line) => /^- \*\*(?:Superseded|Obsolete) \[/.test(line))) {
+      for (let index = start; index < end; index += 1) marked.add(index);
+    }
+  };
+  lines.forEach((line, index) => {
+    if (line.startsWith('### [')) {
+      flush(index);
+      start = index;
+    }
+  });
+  flush(lines.length);
+  return marked;
+})();
+
+/** True for a line inside a lessons entry that a marker has already retired. */
+function historical(rel: string, index: number) {
+  return rel === LESSONS && HISTORICAL_LINES.has(index);
+}
+
+/**
+ * `{ where, text }` for every line matching `pattern`, across `files`. `pattern` must not be
+ * global. Incident narration is skipped — see `NARRATION`.
+ */
 function linesMatching(files: string[], pattern: RegExp) {
   const hits: { where: string; text: string }[] = [];
   for (const rel of files) {
     readText(rel)
       .split('\n')
       .forEach((line, index) => {
+        if (NARRATION.test(line) || historical(rel, index)) return;
         if (pattern.test(line)) hits.push({ where: `${rel}:${index + 1}`, text: line });
       });
   }
@@ -115,13 +170,17 @@ function report(hits: { where: string; text: string }[]) {
 const NEGATION =
   /\b(?:not|never|no|nothing|don't|do not|instead of|rather than|forbid\w*|banned|only|avoid)\b[^.!?\n]{0,72}$/i;
 
-/** Every occurrence of `pattern` (global) that no negation in its own clause disowns. */
+/**
+ * Every occurrence of `pattern` (global) that no negation in its own clause disowns, skipping
+ * incident narration — see `NARRATION`.
+ */
 function unnegatedMentions(files: string[], pattern: RegExp) {
   const offenders: string[] = [];
   for (const rel of files) {
     readText(rel)
       .split('\n')
       .forEach((line, index) => {
+        if (NARRATION.test(line) || historical(rel, index)) return;
         for (const hit of line.matchAll(pattern)) {
           if (NEGATION.test(line.slice(0, hit.index))) continue;
           offenders.push(`${rel}:${index + 1} "${hit[0]}" in: ${line.trim().slice(0, 100)}`);

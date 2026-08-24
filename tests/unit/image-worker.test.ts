@@ -36,15 +36,26 @@ type WorkerRequestInit = { method: string; headers: Record<string, string>; body
 type WorkerReply = {
   ok: boolean;
   status: number;
+  headers: Headers;
   arrayBuffer: () => Promise<ArrayBuffer>;
   json: () => Promise<unknown>;
 };
 
-function reply(body: Buffer | string, status = 200): WorkerReply {
+/**
+ * `headers` is not optional here on purpose: a real `fetch` response always has
+ * one, and the module reads `content-length` off it to cap the response before
+ * the body is buffered. A stub without it throws where production would not.
+ */
+function reply(
+  body: Buffer | string,
+  status = 200,
+  headers: Record<string, string> = {},
+): WorkerReply {
   const payload = typeof body === 'string' ? Buffer.from(body) : body;
   return {
     ok: status < 400,
     status,
+    headers: new Headers({ 'content-length': String(payload.byteLength), ...headers }),
     arrayBuffer: async () =>
       payload.buffer.slice(payload.byteOffset, payload.byteOffset + payload.byteLength),
     json: async () => JSON.parse(payload.toString()) as unknown,
@@ -189,6 +200,23 @@ describe('generateWithImageWorker', () => {
     await expect(
       generateWithImageWorker({ config: CONFIG, description: 'x', aspect: '16:9' }),
     ).rejects.toThrow(/not an image/);
+  });
+
+  it('refuses an oversize response on the declared length, before buffering it', async () => {
+    // The point of reading content-length is to bail out *without* allocating the
+    // body, so the stub fails the test if arrayBuffer is reached at all.
+    const oversize = String(11 * 1024 * 1024);
+    const fetchMock = stubFetch(() => ({
+      ...reply(PNG, 200, { 'content-length': oversize }),
+      arrayBuffer: async () => {
+        throw new Error('body was buffered despite an oversize content-length');
+      },
+    }));
+
+    await expect(
+      generateWithImageWorker({ config: CONFIG, description: 'x', aspect: '16:9' }),
+    ).rejects.toThrow(/response too large: 11534336 bytes/);
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it("repeats the worker's own words when it refuses", async () => {
