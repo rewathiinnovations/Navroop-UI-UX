@@ -215,8 +215,43 @@ describe('lib raw SQL parses on Postgres', () => {
 
   it('credit consumption and the 80% claim', async () => {
     const { consumeCredits } = await import('@/lib/plans/limits');
-    await parses(() => consumeCredits(BOGUS, BOGUS, 'generation'));
-    await parses(() => consumeCredits(WS, BOGUS, 'generation'));
+    // A default plan, for the same reason the test above seeds a workspace: without one
+    // the statements are never reached.
+    //
+    // `consumeCredits` resolves the effective plan before it issues any SQL, and
+    // `getEffectivePlan` throws a plain `Error('No default plan is configured')` when no
+    // row is marked default. That is not a `PrismaClient*` error, so `parses` reports
+    // "the statement was never sent" — correctly, and the assertion then says nothing
+    // about the SQL it exists to check. A developer database that happens to hold a
+    // seeded plan hides this; CI's fresh one does not, which is where it surfaced.
+    //
+    // Removed again in `finally`: `isDefault` is global, so a plan left behind would
+    // change what every other suite sharing this database reads back from
+    // `getEffectivePlan`.
+    const planId = `plan_${BOGUS}`;
+    // Deleted first, so a run that crashed before its finally cannot collide on the key.
+    await prisma.plan.deleteMany({ where: { id: planId } });
+    await prisma.plan.create({
+      data: {
+        id: planId,
+        key: `key_${BOGUS}`,
+        name: 'Raw SQL parse probe',
+        isDefault: true,
+        monthlyCredits: 1,
+        maxProjects: 1,
+        maxLiveSites: 1,
+        maxPreviewSites: 1,
+        maxMembers: 1,
+        checkpointRetentionDays: 1,
+        storageBytesLimit: BigInt(1),
+      },
+    });
+    try {
+      await parses(() => consumeCredits(BOGUS, BOGUS, 'generation'));
+      await parses(() => consumeCredits(WS, BOGUS, 'generation'));
+    } finally {
+      await prisma.plan.deleteMany({ where: { id: planId } });
+    }
   });
 
   it('credit period roll', async () => {
