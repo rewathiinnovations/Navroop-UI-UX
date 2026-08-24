@@ -80,6 +80,13 @@ Code ships its own `/loop` and a project skill of that name would shadow it.)
 
 Use **pnpm**, never npm — keep `pnpm-lock.yaml`, never create `package-lock.json`.
 
+A fresh agent worktree has no `.env`, no `node_modules` and no generated Prisma client. Run
+`node scripts/setup-worktree.mjs` (or `pnpm run setup`) once inside it: it copies the env files,
+installs, generates the Prisma client and copies the preview vendor bundle. Skipping the Prisma
+step is the expensive mistake — every test file then fails at import and `tsc` emits ~180
+cascading errors that look like real breakage. It does not start a dev server; see
+`.cursor/rules/single-dev-server.mdc` for who owns that.
+
 ```bash
 pnpm run verify
 ```

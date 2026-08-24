@@ -25,6 +25,12 @@ App Manifest callback are built from it; a shared row aims one of them at the ot
 
 ## Setting up a second tree
 
+From inside the new tree, `node scripts/setup-worktree.mjs` performs every step below except
+the `git worktree add` itself, and is idempotent, so it is also the repair for a half-finished
+setup. It stops short of starting a server on purpose — that is the owning agent’s call, per
+**Ownership** below. The steps stay written out here because the script is a transcription of
+them, not a replacement: if one changes, change both.
+
 ```sh
 git worktree add .worktrees/<branch> <branch>
 cp .env .env.local .worktrees/<branch>/          # gitignored; the worktree has none

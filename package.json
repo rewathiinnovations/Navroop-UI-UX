@@ -6,6 +6,7 @@
   "packageManager": "pnpm@11.21.0",
   "scripts": {
     "dev": "node scripts/copy-preview-vendor.mjs && next dev",
+    "setup": "node scripts/setup-worktree.mjs",
     "build": "node scripts/copy-preview-vendor.mjs && next build",
     "start": "next start",
     "lint": "eslint . --max-warnings 0",

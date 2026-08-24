@@ -14,7 +14,8 @@
     "scripts/restore-db.ts",
     "scripts/secret-scan.ts",
     "scripts/seed-e2e-account.ts",
-    "scripts/verify-storage.ts"
+    "scripts/verify-storage.ts",
+    "scripts/setup-worktree.mjs"
   ],
   "ignoreDependencies": ["@axe-core/playwright", "fast-check", "husky", "lint-staged", "prettier"]
 }
