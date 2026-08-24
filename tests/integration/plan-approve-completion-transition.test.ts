@@ -46,14 +46,21 @@ vi.mock('@/lib/auth', () => ({
   getSessionUser: async () => session.user,
 }));
 
-import { approvePlan, generatePlan, runWithPlanCompleter } from '@/lib/projects/plan';
+import {
+  approvePlan,
+  generatePlan,
+  runWithPlanCompleter,
+  type PlanContent,
+} from '@/lib/projects/plan';
 import { settleStreamedGeneration } from '@/lib/jobs/settle-generation';
 
-const PLAN_CONTENT = {
+// Typed, so a schema change fails `tsc` at the fixture instead of surfacing as a
+// ZodError inside approvePlan three tests later. It had drifted twice over:
+// pages[].purpose for pages[].description, and features for keyFeatures.
+const PLAN_CONTENT: PlanContent = {
   summary: 'A one page bakery site',
-  pages: [{ name: 'Home', purpose: 'Sell bread' }],
-  features: ['Hero', 'Menu'],
-  stack: 'NEXTJS',
+  pages: [{ name: 'Home', description: 'Sell bread' }],
+  keyFeatures: ['Hero', 'Menu'],
 };
 
 function withPlan<T>(fn: () => Promise<T>) {

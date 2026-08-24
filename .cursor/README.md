@@ -110,7 +110,7 @@ Nested Firecrawl/home rules under `components/` and `styles/` are unchanged. Mer
 
 Skills are copies of the Superpowers plugin so agents do not depend only on the user plugin cache.
 They exist twice: `.cursor/skills/superpowers/` for Cursor and `.claude/skills/` for Claude Code,
-byte-identical and kept that way by `tests/unit/skill-trees-in-sync.test.ts`. Either copy reads the
+identical -- line endings aside, which a Windows checkout can vary -- and kept that way by `tests/unit/skill-trees-in-sync.test.ts`. Either copy reads the
 same, but only `.claude/skills/` is what the Claude Code Skill tool loads, so read the tree your own
 host loads and mirror every edit into the other.
 

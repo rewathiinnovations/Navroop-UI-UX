@@ -727,8 +727,12 @@ export async function approvePlan(
     await startFollowUpGeneration({ projectId, userId: user.id, promptContext });
   }
 
-  // TODO: set phase COMPLETE when generation reports a clean completion
-  // signal. persistProjectGeneration maps generationStatus "ready" → COMPLETE.
+  // Phase is deliberately not advanced here. approvePlan returns before a single
+  // token has been generated, so there is no lastCode and no checkpoint yet:
+  // writing COMPLETE would mark an empty site finished, which is the exact
+  // failure settle-generation.ts exists to prevent. BUILDING is the honest
+  // state. The COMPLETE transition belongs to settleStreamedGeneration and only
+  // happens when the BUILD job created above settles with files.
 
   return { ok: true, data: { plan: approved, phase: 'BUILDING' } };
 }

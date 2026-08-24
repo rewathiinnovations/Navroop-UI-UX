@@ -5,7 +5,7 @@ Navroop is an invite-only admin shell around Open Lovable (Next.js App Router, R
 ## Agent configuration layout
 
 Half of this is Cursor's and half is Claude Code's; both are committed and both are live. The
-skill trees are byte-identical copies of each other (`tests/unit/skill-trees-in-sync.test.ts`) —
+skill trees are identical copies of each other, line endings aside (`tests/unit/skill-trees-in-sync.test.ts`) —
 read whichever your host loads, and mirror any edit into the other.
 
 | Path                           | Purpose                                                                                                                                                                                          |
@@ -107,7 +107,7 @@ a junctioned `node_modules` breaks Turbopack are in `single-dev-server.mdc`.
 ## How to use Superpowers here
 
 1. Open `using-superpowers/SKILL.md` in the tree your host loads: `.claude/skills/` under Claude
-   Code, `.cursor/skills/superpowers/` under Cursor. The two are byte-identical copies, so either
+   Code, `.cursor/skills/superpowers/` under Cursor. The two are identical copies, so either
    file reads the same — but the Skill tool only invokes what is in `.claude/skills/`, so a
    Claude Code session that reads the Cursor copy is reading a file its own harness is not using.
 2. If a skill might apply, read it before any other action.

@@ -143,14 +143,30 @@ describe('skill trees stay in sync', () => {
     expect(orphans).toEqual([]);
   });
 
-  it('keeps every paired file byte-identical', () => {
+  /**
+   * Newline-normalised rather than raw bytes, and `latin1` because it maps every byte to exactly
+   * one character — so this collapses CRLF and nothing else.
+   *
+   * `.gitattributes` pins `*.sh` to `eol=lf`, so the committed blobs cannot differ by line ending;
+   * `git show` proves the pairs identical. But git's clean filter converts CRLF back to LF when it
+   * compares the working tree to the index, so a file written with CRLF by something other than
+   * checkout reads back as unmodified — `git status` stays clean and `git reset --hard` will not
+   * rewrite it, because as far as git is concerned there is nothing to rewrite. Three copies under
+   * `.claude/skills` sat that way against LF originals under `.cursor/skills`: identical in the
+   * repo, unequal on disk, failing a gate that no commit could fix (the only cure is deleting the
+   * file and checking it out again). Normalising removes the whole class without weakening the
+   * check — any real edit still changes the text.
+   */
+  const normalised = (file: string) => readFileSync(file, 'latin1').replace(/\r\n/g, '\n');
+
+  it('keeps every paired file identical, newline-normalised', () => {
     const drifted: string[] = [];
     let compared = 0;
     for (const rel of claudeFiles) {
       const mirror = counterpart(rel);
       if (mirror === null || !existsSync(mirror)) continue; // reported by the pairing test
       compared += 1;
-      if (!readFileSync(join(CLAUDE_TREE, rel)).equals(readFileSync(mirror))) drifted.push(rel);
+      if (normalised(join(CLAUDE_TREE, rel)) !== normalised(mirror)) drifted.push(rel);
     }
     expect(drifted).toEqual([]);
     expect(compared).toBeGreaterThanOrEqual(MIN_PAIRED_FILES);
