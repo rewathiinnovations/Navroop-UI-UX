@@ -188,7 +188,17 @@ export const VERIFY_STEPS: VerifyStep[] = [
     label: 'Playwright authenticated journeys',
     command: 'node ./node_modules/@playwright/test/cli.js test --project=authenticated',
     fatal: true,
-    assertExecuted: requireExecuted(),
+    // One declared skip: journey 4's "POST publish is refused while an integration is
+    // missing". It reads the publish state first and skips itself when
+    // `missingIntegrations` is empty, because on a machine where GitHub, Cloudflare and
+    // Coolify are all connected that POST would push a repository and deploy for real.
+    // The journey covers the refusal only; the successful publish needs throwaway
+    // accounts no automated run has.
+    //
+    // Declared rather than tolerated: `allowSkipped` is a number so that a *second*
+    // skip — one nobody reasoned about — still turns the gate red. On CI, where none of
+    // the three is connected, the test runs and the count is 0, which this also accepts.
+    assertExecuted: requireExecuted({ allowSkipped: 1 }),
   },
   {
     // Fatal since 2026-08-21. It was `fatal: false` with no config, so it printed the
