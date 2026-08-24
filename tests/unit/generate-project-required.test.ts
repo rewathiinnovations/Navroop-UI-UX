@@ -8,13 +8,23 @@ import {
   readGenerationProjectId,
 } from '@/lib/generation/request-project';
 
-const routePath = path.join(
-  fileURLToPath(new URL('../../', import.meta.url)),
-  'app/api/generate-ai-code-stream/route.ts',
-);
-// Newline-normalised: core.autocrlf=true gives this file CRLF in a fresh Windows
+// Newline-normalised: core.autocrlf=true gives these files CRLF in a fresh Windows
 // checkout, and every multi-line probe below is written with `\n`.
-const source = readFileSync(routePath, 'utf8').replace(/\r\n/g, '\n');
+const read = (rel: string) =>
+  readFileSync(path.join(fileURLToPath(new URL('../../', import.meta.url)), rel), 'utf8').replace(
+    /\r\n/g,
+    '\n',
+  );
+
+const source = read('app/api/generate-ai-code-stream/route.ts');
+/**
+ * The guard sequence moved out of the route into `intakeGenerationRequest`. That is why
+ * the ordering assertions below read this file rather than the route: "refuse for free
+ * before you acquire" is now a property of a 190-line module instead of a convention
+ * spanning a 2,200-line handler, and the route's own obligation shrank to one thing —
+ * call intake before it acquires anything of its own.
+ */
+const intakeSource = read('lib/generation/intake.ts');
 
 /**
  * F-035: with no project id the route ran a full build outside every control it has.
@@ -70,36 +80,49 @@ describe('readGenerationProjectId', () => {
 });
 
 describe('generate-ai-code-stream refuses a project-less run (F-035)', () => {
-  it('validates the project id before anything is acquired', () => {
-    const guardAt = source.indexOf('readGenerationProjectId(');
+  it('validates the project id before anything intake acquires', () => {
+    const guardAt = intakeSource.indexOf('readGenerationProjectId(');
     expect(guardAt).toBeGreaterThan(0);
-    expect(source.indexOf('await request.json()')).toBeLessThan(guardAt);
-    for (const acquisition of [
-      'await checkCredits(',
-      'await holdProjectLock(',
-      'await createOrReuseJob(',
-      'getDefaultProviderQueue().acquire(',
-      'beginJobHeartbeat(',
-    ]) {
+    for (const acquisition of ['await checkCredits(', 'await holdProjectLock(']) {
       expect(
-        source.indexOf(acquisition),
+        intakeSource.indexOf(acquisition),
         `${acquisition} must come after the project guard`,
       ).toBeGreaterThan(guardAt);
     }
   });
 
+  it('clears intake before the route acquires the job row, the slot or the heartbeat', () => {
+    // The rest of F-035's list stayed in the route, so the ordering claim splits in two:
+    // intake refuses for free before it takes the lock (above), and the route does not
+    // reach its own acquisitions until intake has returned ok.
+    const intakeAt = source.indexOf('await intakeGenerationRequest(');
+    expect(intakeAt).toBeGreaterThan(0);
+    expect(source.indexOf('await request.json()')).toBeLessThan(intakeAt);
+    for (const acquisition of [
+      'await createOrReuseJob(',
+      'getDefaultProviderQueue().acquire(',
+      'beginJobHeartbeat(',
+    ]) {
+      expect(source.indexOf(acquisition), `${acquisition} must come after intake`).toBeGreaterThan(
+        intakeAt,
+      );
+    }
+    // And the refusal is returned rather than fallen through: nothing was acquired.
+    expect(source).toMatch(/if \(!intake\.ok\) return intake\.response;/);
+  });
+
   it('answers 400 with the boundary message', () => {
-    const guardAt = source.indexOf('readGenerationProjectId(');
-    const guard = source.slice(guardAt, guardAt + 400);
+    const guardAt = intakeSource.indexOf('readGenerationProjectId(');
+    const guard = intakeSource.slice(guardAt, guardAt + 400);
     expect(guard).toMatch(/status: 400/);
     expect(guard).toMatch(/projectCheck\.message/);
   });
 
   it('takes the lock and the job row unconditionally, so neither can be skipped again', () => {
-    // Four-space indentation is the top level of the handler's `try`: neither statement
-    // sits inside an `if (projectId)` any more.
-    expect(source).toMatch(
-      /\n {4}const hold = await holdProjectLock\(projectId, sessionUser\.id, 'generation'\);/,
+    // Two-space indentation is intake's top level, four-space the handler's `try`:
+    // neither statement sits inside an `if (projectId)` any more.
+    expect(intakeSource).toMatch(
+      /\n {2}const hold = await holdProjectLock\(projectId, sessionUser\.id, 'generation'\);/,
     );
     expect(source).toMatch(/\n {4}generationJob = await createOrReuseJob\(\{/);
     // The queue slot and the credit charge stay gated on the row's *status* — a reused
@@ -113,8 +136,13 @@ describe('generate-ai-code-stream refuses a project-less run (F-035)', () => {
     // The lock, the Job row, the usage event and the conversation state each used to
     // re-derive `requestProjectId || context?.projectId`, so each was its own chance to
     // disagree about whether this run has a project. One resolution, read everywhere.
-    expect(source).toMatch(/const projectId = projectCheck\.projectId;/);
-    expect(source).toMatch(/holdProjectLock\(projectId, sessionUser\.id, 'generation'\)/);
+    expect(intakeSource).toMatch(/const projectId = projectCheck\.projectId;/);
+    expect(intakeSource).toMatch(/holdProjectLock\(projectId, sessionUser\.id, 'generation'\)/);
+    // One resolution, handed to the route rather than re-derived there.
+    expect(intakeSource).toMatch(/return \{ ok: true, prompt, requestedModel, projectId,/);
+    expect(source).toMatch(
+      /const \{ prompt, requestedModel, projectId, sessionUser, hold \} = intake;/,
+    );
     // Indentation-agnostic: prettier owns formatting here, so pinning the exact
     // six-space indent made this assert on a reflow rather than on the property,
     // which is that the metering call reads the one resolved id and the shared

@@ -147,43 +147,46 @@ describe('readGenerationInput refuses to store an unoffered model', () => {
   });
 });
 
-const routeSource = readFileSync(
-  path.join(
-    fileURLToPath(new URL('../../', import.meta.url)),
-    'app/api/generate-ai-code-stream/route.ts',
-  ),
-  'utf8',
-);
+const readSource = (rel: string) =>
+  readFileSync(path.join(fileURLToPath(new URL('../../', import.meta.url)), rel), 'utf8');
+
+const routeSource = readSource('app/api/generate-ai-code-stream/route.ts');
+const intakeSource = readSource('lib/generation/intake.ts');
 
 /**
  * The route-boundary half of F-003, asserted the same way
- * `generate-provider-preflight.test.ts` asserts the release path: the handler is a
- * ~2300-line streaming Next route with a session, a credit check, a project lock, a
- * Job row and a provider slot ahead of the model, so the ordering is what matters and
- * source is the only place it is visible. The refusal has to sit beside the prompt
- * guard — ahead of every acquisition — or a rejected model still costs a lock and a
+ * `generate-provider-preflight.test.ts` asserts the release path: what matters is the
+ * ordering, and source is the only place it is visible. The guard moved out of the route
+ * into `intakeGenerationRequest` along with the rest of the boundary checks, so the claim
+ * is now asserted where it lives — the refusal sits beside the prompt guard, ahead of the
+ * session, the credit check and the lock, or a rejected model still costs a lock and a
  * queue slot.
  */
 describe('the generate route refuses an unoffered body model at the boundary', () => {
   it('checks the requested model and answers 400 with the plain refusal', () => {
-    expect(routeSource).toMatch(/unknownModelMessage\(requestedModel\)/);
-    const guardAt = routeSource.indexOf('unknownModelMessage(requestedModel)');
+    expect(intakeSource).toMatch(/unknownModelMessage\(requestedModel\)/);
+    const guardAt = intakeSource.indexOf('unknownModelMessage(requestedModel)');
     expect(guardAt).toBeGreaterThan(0);
-    expect(routeSource.slice(guardAt, guardAt + 200)).toMatch(/status:\s*400/);
+    expect(intakeSource.slice(guardAt, guardAt + 200)).toMatch(/status:\s*400/);
   });
 
   it('refuses before the session, credits, lock, Job row and provider slot', () => {
-    const guardAt = routeSource.indexOf('unknownModelMessage(requestedModel)');
+    const guardAt = intakeSource.indexOf('unknownModelMessage(requestedModel)');
     // Not vacuous: a missing guard would make every `indexOf` below beat -1.
     expect(guardAt).toBeGreaterThan(0);
     for (const acquisition of [
       'await getSessionUser()',
       'await checkCredits(',
       'await holdProjectLock(',
-      'await createOrReuseJob(',
-      'getDefaultProviderQueue().acquire(',
     ]) {
-      expect(routeSource.indexOf(acquisition), acquisition).toBeGreaterThan(guardAt);
+      expect(intakeSource.indexOf(acquisition), acquisition).toBeGreaterThan(guardAt);
+    }
+    // The Job row and the provider slot stayed in the route, so their half of the
+    // ordering is now "after the whole intake call" rather than "after this one guard".
+    const intakeAt = routeSource.indexOf('await intakeGenerationRequest(');
+    expect(intakeAt).toBeGreaterThan(0);
+    for (const acquisition of ['await createOrReuseJob(', 'getDefaultProviderQueue().acquire(']) {
+      expect(routeSource.indexOf(acquisition), acquisition).toBeGreaterThan(intakeAt);
     }
   });
 
@@ -191,6 +194,6 @@ describe('the generate route refuses an unoffered body model at the boundary', (
     // Same invariant as generate-provider-preflight: validation must not become a
     // default that demotes the configured primary.
     expect(routeSource).toMatch(/\{\s*requestedModel\s*\}/);
-    expect(routeSource).not.toMatch(/requestedModel\s*=\s*[^;]*appConfig\.ai\.defaultModel/);
+    expect(intakeSource).not.toMatch(/requestedModel\s*=\s*[^;]*appConfig\.ai\.defaultModel/);
   });
 });

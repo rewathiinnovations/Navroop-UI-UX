@@ -187,7 +187,9 @@ const ROUTE_AUTHZ: Record<string, RouteAuthz> = {
   // The route that had no ownership check at all (F-313): it spends credits,
   // takes the owner's project lock and settles generated code onto the project,
   // with the project id read from the request body.
-  'POST /api/generate-ai-code-stream': { gate: 'owner' },
+  // The ownership check runs in `intakeGenerationRequest`, with the rest of the boundary
+  // guards, rather than inline in a 2,200-line handler. Same gate, one module away.
+  'POST /api/generate-ai-code-stream': { gate: 'owner', gateFile: 'lib/generation/intake.ts' },
   'POST /api/github/push': { gate: 'owner', action: 'lib/github/actions#pushProjectToGitHub' },
   'POST /api/projects/:id/assets': {
     gate: 'owner',

@@ -319,13 +319,16 @@ describe('the lock primitives stay behind holdProjectLock', () => {
   });
 
   /**
-   * Every scope that holds the lock across async work. `lib/checkpoints/actions.ts` is
-   * absent on purpose: it holds through `withProjectLock`, which is itself built on
-   * `holdProjectLock` and is covered by the assertions above.
+   * Every scope that *takes* the lock. `lib/checkpoints/actions.ts` is absent on purpose:
+   * it holds through `withProjectLock`, which is itself built on `holdProjectLock` and is
+   * covered by the assertions above. `lib/generation/intake.ts` stands in for the generate
+   * route for the same reason — the route still holds the lock across its whole stream and
+   * owns the `finally` that releases it, but the acquisition is the last thing intake does,
+   * after the guards that must precede it.
    */
   it('routes every lock holder through holdProjectLock', () => {
     const holders = [
-      'app/api/generate-ai-code-stream/route.ts',
+      'lib/generation/intake.ts',
       'app/api/projects/[id]/import/route.ts',
       'app/api/projects/[id]/publish/route.ts',
       'lib/audit/actions.ts',
@@ -338,5 +341,13 @@ describe('the lock primitives stay behind holdProjectLock', () => {
     );
 
     expect(missing).toEqual([]);
+  });
+
+  it('leaves the generate route holding what intake took, and releasing it', () => {
+    // The delegation above is only safe if the route still owns the unwind. Without this,
+    // moving the acquisition out could quietly drop the release with nothing to say so.
+    const route = readFileSync('app/api/generate-ai-code-stream/route.ts', 'utf8');
+    expect(route).toContain('await intakeGenerationRequest(');
+    expect(route).toMatch(/releaseGenerationLock = hold\.release;/);
   });
 });

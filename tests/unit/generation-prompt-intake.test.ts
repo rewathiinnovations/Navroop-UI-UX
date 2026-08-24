@@ -53,6 +53,8 @@ function code(relative: string) {
 }
 
 const GENERATE_ROUTE = 'app/api/generate-ai-code-stream/route.ts';
+/** The boundary guards the handler used to run inline. */
+const INTAKE = 'lib/generation/intake.ts';
 const PLAN_ROUTES = [
   'app/api/projects/[id]/plan/route.ts',
   'app/api/projects/[id]/plan/refine/route.ts',
@@ -134,21 +136,29 @@ describe('wrapUserRequest fences the prompt off from the instructions (F-009)', 
 
 describe('the generation route uses the validator and the wrapper (F-005, F-007, F-009)', () => {
   it('validates through readUserPrompt ahead of every acquisition', () => {
-    const text = source(GENERATE_ROUTE);
-    const guardAt = text.indexOf('readUserPrompt(');
+    const intake = source(INTAKE);
+    const guardAt = intake.indexOf('readUserPrompt(');
     expect(guardAt).toBeGreaterThan(0);
-    expect(text.indexOf('await request.json()')).toBeLessThan(guardAt);
+    for (const acquisition of ['await checkCredits(', 'await holdProjectLock(']) {
+      expect(
+        intake.indexOf(acquisition),
+        `${acquisition} must come after the prompt guard`,
+      ).toBeGreaterThan(guardAt);
+    }
+    // The handler parses the body and hands it to intake before it acquires anything of
+    // its own, so the guard still precedes the job row, the queue slot and the heartbeat.
+    const text = source(GENERATE_ROUTE);
+    const intakeAt = text.indexOf('await intakeGenerationRequest(');
+    expect(intakeAt).toBeGreaterThan(0);
+    expect(text.indexOf('await request.json()')).toBeLessThan(intakeAt);
     for (const acquisition of [
-      'await checkCredits(',
-      'await holdProjectLock(',
       'await createOrReuseJob(',
       'getDefaultProviderQueue().acquire(',
       'beginJobHeartbeat(',
     ]) {
-      expect(
-        text.indexOf(acquisition),
-        `${acquisition} must come after the prompt guard`,
-      ).toBeGreaterThan(guardAt);
+      expect(text.indexOf(acquisition), `${acquisition} must come after intake`).toBeGreaterThan(
+        intakeAt,
+      );
     }
   });
 
@@ -207,19 +217,20 @@ describe('generation submit is rate limited (F-010)', () => {
   });
 
   it('is applied by the route before the credit check and before any acquisition', () => {
-    const text = source(GENERATE_ROUTE);
-    const limitAt = text.indexOf('allowGenerationSubmit(');
+    const intake = source(INTAKE);
+    const limitAt = intake.indexOf('allowGenerationSubmit(');
     expect(limitAt).toBeGreaterThan(0);
     // After the session (the bucket keys on the member) …
-    expect(text.indexOf('await getSessionUser()')).toBeLessThan(limitAt);
+    expect(intake.indexOf('await getSessionUser()')).toBeLessThan(limitAt);
     // … and before anything that costs.
-    for (const acquisition of [
-      'await checkCredits(',
-      'await holdProjectLock(',
-      'await createOrReuseJob(',
-    ]) {
-      expect(text.indexOf(acquisition)).toBeGreaterThan(limitAt);
+    for (const acquisition of ['await checkCredits(', 'await holdProjectLock(']) {
+      expect(intake.indexOf(acquisition)).toBeGreaterThan(limitAt);
     }
+    // The Job row is the route's, and it is downstream of the whole intake call.
+    const text = source(GENERATE_ROUTE);
+    expect(text.indexOf('await createOrReuseJob(')).toBeGreaterThan(
+      text.indexOf('await intakeGenerationRequest('),
+    );
   });
 });
 

@@ -3,12 +3,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-const routePath = path.join(
-  fileURLToPath(new URL('../../', import.meta.url)),
-  'app/api/generate-ai-code-stream/route.ts',
-);
+const readSource = (rel: string) =>
+  readFileSync(path.join(fileURLToPath(new URL('../../', import.meta.url)), rel), 'utf8');
 
-const source = readFileSync(routePath, 'utf8');
+const source = readSource('app/api/generate-ai-code-stream/route.ts');
+/** The boundary guards moved here out of the handler; the acquisitions did not. */
+const intakeSource = readSource('lib/generation/intake.ts');
 
 /**
  * F-001: `if (!prompt)` used to be the LAST setup check, after the credit check, the
@@ -20,25 +20,31 @@ const source = readFileSync(routePath, 'utf8');
  */
 describe('generate-ai-code-stream validates the prompt before acquiring anything (F-001)', () => {
   it('rejects a missing, non-string or whitespace-only prompt right after the body parse', () => {
-    // The guard is now `readUserPrompt` (lib/generation/user-prompt.ts), which also bounds
+    // The guard is `readUserPrompt` (lib/generation/user-prompt.ts), which also bounds
     // the length — see tests/unit/generation-prompt-intake.test.ts for what it accepts.
+    // It now runs inside `intakeGenerationRequest` rather than inline in the handler.
     // What matters here is unchanged: it runs before anything is acquired.
-    const guardAt = source.indexOf('readUserPrompt(promptInput)');
+    const guardAt = intakeSource.indexOf('readUserPrompt(input.promptInput)');
     expect(guardAt).toBeGreaterThan(0);
-    // The guard sits after the body parse …
-    expect(source.indexOf('await request.json()')).toBeLessThan(guardAt);
-    // … and ahead of every acquisition in setup order: credits, lock, job row,
-    // queue slot, heartbeat.
+    // First in intake, and ahead of the two things intake itself acquires.
+    for (const acquisition of ['await checkCredits(', 'await holdProjectLock(']) {
+      expect(
+        intakeSource.indexOf(acquisition),
+        `${acquisition} must come after the prompt guard`,
+      ).toBeGreaterThan(guardAt);
+    }
+    // The handler parses the body, then hands it straight to intake — so the guard
+    // still sits after the parse and ahead of the acquisitions left in the route.
+    const intakeAt = source.indexOf('await intakeGenerationRequest(');
+    expect(intakeAt).toBeGreaterThan(0);
+    expect(source.indexOf('await request.json()')).toBeLessThan(intakeAt);
     for (const acquisition of [
-      'await checkCredits(',
-      'await holdProjectLock(',
       'await createOrReuseJob(',
       'getDefaultProviderQueue().acquire(',
       'beginJobHeartbeat(',
     ]) {
-      const acquisitionAt = source.indexOf(acquisition);
-      expect(acquisitionAt, `${acquisition} must come after the prompt guard`).toBeGreaterThan(
-        guardAt,
+      expect(source.indexOf(acquisition), `${acquisition} must come after intake`).toBeGreaterThan(
+        intakeAt,
       );
     }
   });

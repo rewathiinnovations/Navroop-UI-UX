@@ -3,17 +3,12 @@ import { streamText } from 'ai';
 import type { ConversationMessage, ConversationEdit } from '@/types/conversation';
 import { appConfig } from '@/config/app.config';
 import { buildUiUxProMaxBrief } from '@/lib/ui-ux-pro-max/build-design-brief';
-import { getSessionUser } from '@/lib/auth';
 import { looksLikeUrl } from '@/lib/projects/prompt';
 import { attachGenerationInputTokens, logGenerationEvent } from '@/lib/usage-costs';
 import { buildCachedMessages } from '@/lib/generation/prompt-cache';
 import { filesFromReply, replaceBlockInReply } from '@/lib/generation/parse-blocks';
-import {
-  GENERATION_RATE_LIMIT_MESSAGE,
-  allowGenerationSubmit,
-} from '@/lib/generation/submit-rate-limit';
-import { readUserPrompt, wrapUserRequest } from '@/lib/generation/user-prompt';
-import { readGenerationProjectId } from '@/lib/generation/request-project';
+import { wrapUserRequest } from '@/lib/generation/user-prompt';
+import { intakeGenerationRequest } from '@/lib/generation/intake';
 
 /** Markdown code fence, kept in a constant so prompt strings stay readable. */
 const FENCE = '```';
@@ -27,8 +22,6 @@ import { stackShapeMismatch } from '@/lib/stacks';
 import { loadAssetManifest } from '@/lib/assets/load-manifest';
 import { injectMatchedSkills } from '@/lib/skills/inject';
 import { buildMemoryBlock } from '@/lib/memory/build-context';
-import { creditDeniedJson } from '@/lib/plans/http';
-import { checkCredits } from '@/lib/plans/limits';
 import { WORKSPACE_ROW_ID } from '@/lib/storage/usage';
 import { jsonError } from '@/lib/api/error-response';
 import { withRequest } from '@/lib/api/with-request';
@@ -36,8 +29,7 @@ import { prisma } from '@/lib/db';
 import { getCurrentProjectFiles } from '@/lib/github/current-files';
 import { log, logError } from '@/lib/logger';
 import { trackFailure, trackStart, trackSuccess } from '@/lib/observability/track';
-import { holdProjectLock, LOCK_LOST_MESSAGE, ProjectLockLostError } from '@/lib/projects/lock';
-import { lockConflictJson } from '@/lib/projects/lock-http';
+import { LOCK_LOST_MESSAGE, ProjectLockLostError } from '@/lib/projects/lock';
 import {
   beginJobHeartbeat,
   createOrReuseJob,
@@ -63,7 +55,6 @@ import { getDefaultCircuit } from '@/lib/ai/circuit';
 import { jobErrorCodeForProviderFailure, providerFailureMessage } from '@/lib/ai/failover';
 import { getDefaultProviderQueue, QUEUE_TIMEOUT_MESSAGE } from '@/lib/ai/queue';
 import {
-  isDeepSeekModel,
   maxOutputTokensForEntry,
   modelIdForEntry,
   NO_PROVIDER_CONFIGURED_MESSAGE,
@@ -71,7 +62,6 @@ import {
   providerDisplayName,
   ProviderNotConfiguredError,
   requireUsableProviderChain,
-  unknownModelMessage,
   type ProviderEntry,
 } from '@/lib/ai/providers';
 import { loadEffectiveProviderEnv } from '@/lib/ai/effective-env';
@@ -292,100 +282,17 @@ async function generateAiCodeStream(request: NextRequest) {
       buildFixAttempt,
       buildFixSignature,
     } = await request.json();
-    // Reject a bad prompt before anything is acquired. This guard used to sit after the
-    // credit check, the project lock (with its 60s renew timer), the Job row, the
-    // provider-queue slot and the job heartbeat, and its bare `return` leaked all five
-    // for the life of the process (F-001). It must stay ahead of every acquisition below.
-    //
-    // `readUserPrompt` is the whole contract: a string, non-empty after trimming, and no
-    // longer than MAX_USER_PROMPT_CHARS. A whitespace-only request used to buy a full build
-    // on no instruction, a non-string was coerced five different ways downstream (F-005),
-    // and nothing bounded the length at all — so an oversized paste was refused by the
-    // provider, after the credit was charged, as a `request_rejected` the recovery panel
-    // offers no Try again for (F-007). Everything below reads the trimmed `prompt`.
-    const promptCheck = readUserPrompt(promptInput);
-    if (!promptCheck.ok) {
-      return NextResponse.json({ success: false, error: promptCheck.message }, { status: 400 });
-    }
-    const prompt = promptCheck.prompt;
-    // Explicit only: defaulting this to appConfig.ai.defaultModel pushed that
-    // model to the front of the chain and demoted the configured primary
-    // (AI_PRIMARY_* / Admin -> Configuration). The concrete `model` used for
-    // logging and legacy provider objects is derived from the chain below.
-    const requestedModel =
-      typeof requestedModelRaw === 'string' && requestedModelRaw.trim()
-        ? requestedModelRaw.trim()
-        : undefined;
-    // Validated here, ahead of the session, the credit check, the project lock, the Job
-    // row and the provider-queue slot: an unoffered model must not cost any of those.
-    // It used to be trimmed and nothing else, then handed to the chain and on to
-    // `client(entry.model)`, so any authenticated member could run every build on a
-    // model the operator never configured and never priced — and a nonexistent id came
-    // back from DeepSeek as `request_rejected`, which reads as an outage (F-003).
-    if (requestedModel && !isDeepSeekModel(requestedModel)) {
-      return NextResponse.json(
-        { success: false, error: unknownModelMessage(requestedModel) },
-        { status: 400 },
-      );
-    }
-    // The run's project, resolved once and required. A request with neither `projectId`
-    // nor `context.projectId` used to run the whole build with `generationJob` null, which
-    // skipped the provider-queue slot, the credit charge inside `markJobRunning`, the caps,
-    // the heartbeat, the progress batcher and every terminal settle — a metered feature
-    // turned off by omitting one field (F-035). See `readGenerationProjectId` for why this
-    // is a refusal rather than a workspace-scoped meter. Validated with the prompt and the
-    // model, before the session and before anything is acquired.
-    const projectCheck = readGenerationProjectId(requestProjectId, context?.projectId);
-    if (!projectCheck.ok) {
-      return NextResponse.json({ success: false, error: projectCheck.message }, { status: 400 });
-    }
-    const projectId = projectCheck.projectId;
-
-    const sessionUser = await getSessionUser();
-    if (!sessionUser) {
-      return NextResponse.json({ error: 'Sign in required' }, { status: 401 });
-    }
-
-    // The project id comes from the request body, so the session gate above is
-    // not the whole authorization: without this, any signed-in member could name
-    // another member's project and have this handler charge the workspace, take
-    // that project's lock away from its owner, open a Job on it and settle
-    // generated code over its `lastCode`. `persistProjectGeneration`
-    // (lib/projects/actions.ts) already refuses a non-owner for exactly that
-    // reason; this is the same decision on the route that does the writing
-    // (F-313). It runs before the rate limiter, the credit check and the lock:
-    // a refusal that has already spent or locked something is not a refusal.
-    const ownedProject = await prisma.project.findFirst({
-      where: { id: projectId, deletedAt: null },
-      select: { id: true, ownerId: true },
+    // Every guard that must clear before anything is acquired, in the order it must
+    // clear it, now lives in one module rather than as a convention at the top of this
+    // handler. On !ok nothing has been taken, so the response returns directly.
+    const intake = await intakeGenerationRequest({
+      promptInput,
+      requestedModelRaw,
+      requestProjectId,
+      contextProjectId: context?.projectId,
     });
-    if (!ownedProject) {
-      return jsonError('Project not found', 'NOT_FOUND', 404);
-    }
-    if (sessionUser.id !== ownedProject.ownerId && sessionUser.role !== 'ADMIN') {
-      return jsonError('Forbidden', 'FORBIDDEN', 403);
-    }
-    // Rate, not total. `checkCredits` bounds the month's spend and the
-    // `one_active_job_per_project` index bounds concurrency per *project* — so a loop
-    // creating a project and firing one generation each could spend the whole allowance as
-    // fast as HTTP allows, with the spend ceiling (which trails by the job's own duration)
-    // as the only backstop. Keyed on the member, ahead of the credit check and every
-    // acquisition (F-010).
-    if (!allowGenerationSubmit(sessionUser.id).allowed) {
-      log.warn('generation.rate_limited', { userId: sessionUser.id });
-      return jsonError(GENERATION_RATE_LIMIT_MESSAGE, 'RATE_LIMITED', 429);
-    }
-    const creditCheck = await checkCredits(WORKSPACE_ROW_ID, sessionUser.id, 'generation');
-    if (!creditCheck.ok) return creditDeniedJson(creditCheck);
-
-    // `holdProjectLock` rather than the hand-rolled acquire + heartbeat + release triple.
-    // `acquireLock` is re-entrant for the same user, so when this user already held a live
-    // lock on the project — their own audit or publish, or a hold leaked by an earlier run —
-    // the old code took `ok: true`, started a second timer renewing a hold it did not own,
-    // and then released the *other* feature's lock in its cleanup (security review NAV-03).
-    // The hold knows whether it owns anything, so `release()` is a no-op on re-entry.
-    const hold = await holdProjectLock(projectId, sessionUser.id, 'generation');
-    if (!hold.ok) return lockConflictJson(hold);
+    if (!intake.ok) return intake.response;
+    const { prompt, requestedModel, projectId, sessionUser, hold } = intake;
     releaseGenerationLock = hold.release;
     // Aborted the moment a renewal proves this hold is gone. A generation writes
     // `Project.lastCode` minutes after it takes the lock, so from that moment another run
