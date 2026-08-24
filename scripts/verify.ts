@@ -1,13 +1,15 @@
 import { spawn } from 'node:child_process';
 import { isSchemaDriftCommand, runSchemaDriftCheck } from '../lib/verify/schema-drift.ts';
 import { runVerify, type VerifyRunResult } from '../lib/verify/orchestrator.ts';
+import { resolvePnpmCommand } from '../lib/verify/pnpm-binary.ts';
 
 function runCommand(command: string) {
   if (isSchemaDriftCommand(command)) {
     return Promise.resolve(runSchemaDriftCheck());
   }
   return new Promise<{ ok: boolean; output?: string }>((resolve) => {
-    const child = spawn(command, {
+    // pnpm is not on PATH on every machine this runs on; see pnpm-binary.ts.
+    const child = spawn(resolvePnpmCommand(command), {
       stdio: ['ignore', 'pipe', 'pipe'],
       shell: true,
       env: process.env,
@@ -40,7 +42,8 @@ function printSummary(result: VerifyRunResult) {
   }
 }
 
-const mode = process.argv.includes('--full') || process.env.VERIFY_FULL === '1' ? 'verify:full' : 'verify';
+const mode =
+  process.argv.includes('--full') || process.env.VERIFY_FULL === '1' ? 'verify:full' : 'verify';
 const result = await runVerify({ mode, runCommand });
 printSummary(result);
 process.exit(result.ok ? 0 : 1);
