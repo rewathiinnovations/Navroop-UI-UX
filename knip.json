@@ -16,12 +16,5 @@
     "scripts/seed-e2e-account.ts",
     "scripts/verify-storage.ts"
   ],
-  "ignoreDependencies": [
-    "@axe-core/playwright",
-    "fast-check",
-    "msw",
-    "husky",
-    "lint-staged",
-    "prettier"
-  ]
+  "ignoreDependencies": ["@axe-core/playwright", "fast-check", "husky", "lint-staged", "prettier"]
 }
