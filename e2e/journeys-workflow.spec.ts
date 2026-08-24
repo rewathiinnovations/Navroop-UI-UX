@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { expect, test, type Page, type APIRequestContext } from '@playwright/test';
 import { PROMPT_PLACEHOLDER } from '../components/app/studio/PromptBox';
 import { getStack, STACK_IDS } from '../lib/stacks';
+import { nameFromPrompt } from '../lib/projects/schema';
 import { deleteProject, STORED_SITE, useIdleProject } from './support/projects';
 import { e2eAccounts, seedAbandonedBuildJob } from './support/seed-account';
 
@@ -195,13 +196,29 @@ test.describe('journey 2 — create project from a prompt', () => {
     expect(patch.problem, patch.problem ?? '').toBeNull();
     expect(patch.patched, 'the create action must have been reached and rewritten').toBe(true);
 
-    // The prompt is what the project was created from, so it has to be on the row
-    // the workspace is showing — a workspace that opened some *other* project
+    // The prompt is what the project was created from, so the row the workspace is
+    // showing has to trace back to it — a workspace that opened some *other* project
     // would satisfy every assertion above.
+    //
+    // Asserted through `name`, not `initialPrompt`. This read `body.project.initialPrompt`
+    // until F-809 narrowed `projectDetailSelect` to what the two consumers actually
+    // render: the detail endpoint used to return every scalar on `Project` to any
+    // signed-in member, and each new column published itself there. `initialPrompt` is
+    // not in that list and must not be added back to satisfy a test — the field the
+    // endpoint deliberately stopped serving is not the field to assert on.
+    //
+    // `name` carries the same evidence. The dashboard sends no name, so the row's name is
+    // `nameFromPrompt(prompt)` — derived from this prompt and nothing else — and it is
+    // already served because the workspace renders it.
     const response = await page.request.get(`/api/projects/${createdProjectId}`);
     expect(response.ok()).toBeTruthy();
-    const body = (await response.json()) as { project?: { initialPrompt?: string } };
-    expect(body.project?.initialPrompt).toBe(prompt);
+    const body = (await response.json()) as { project?: { id?: string; name?: string } };
+    expect(body.project?.id, 'the API must return the project the URL names').toBe(
+      createdProjectId,
+    );
+    expect(body.project?.name, 'the row must be the one built from this prompt').toBe(
+      nameFromPrompt(prompt),
+    );
   });
 });
 

@@ -173,17 +173,31 @@ test.describe('journey 7 — admin team invite', () => {
 
       await dialog.locator('#invite-email').fill(email);
       await dialog.locator('#invite-name').fill('Invited Journey Member');
-      await dialog.getByRole('button', { name: 'Create invite' }).click();
+      await dialog.getByRole('button', { name: 'Send invite' }).click();
 
-      // Invite-only means the temporary password is the entire handover, and it
-      // is shown exactly once — so an empty or missing one strands the invitee.
-      await expect(dialog.getByRole('heading', { name: 'Member created' })).toBeVisible({
+      // The handover is a single-use link now, not a temporary password.
+      //
+      // This asserted a "Member created" heading and read a one-time password out of a
+      // `<code>` element, which is what `InviteMember.tsx` used to render. It renders
+      // neither: the finished dialog is titled "Invite sent" (or "Invite resent") and
+      // says in as many words that "no password is shown here, and none needs to be
+      // passed on". So the old assertions could not pass against any build of this
+      // component — they described a product that had already changed underneath them.
+      await expect(dialog.getByRole('heading', { name: /^Invite (sent|resent)$/ })).toBeVisible({
         timeout: 30_000,
       });
-      const password = await dialog.locator('code').innerText();
-      expect(password.trim().length, 'the temporary password must be shown once').toBeGreaterThan(
-        4,
-      );
+
+      // Mail delivery is environment, not product. When it is configured the dialog
+      // names the address the link went to; when it is not, the same state renders an
+      // alert saying the member was added but the link could not be sent. Either way a
+      // member now exists, which is what this journey is named for — so both branches
+      // are accepted and which one happened is asserted rather than left ambiguous.
+      const sent = dialog.getByText('A single-use link is on its way to');
+      if (await sent.isVisible()) {
+        await expect(sent).toContainText(email);
+      } else {
+        await expect(dialog.getByRole('alert')).toContainText('could not be sent');
+      }
 
       await dialog.getByRole('button', { name: 'Done' }).click();
 
