@@ -209,6 +209,41 @@ export type IgnoredSubset = {
  * Ask git which of these paths it ignores. `git check-ignore` reports only ignored
  * paths, so a tracked or untracked-but-visible file is simply absent from the reply.
  */
+/**
+ * `process.env` with git's repository-location variables removed.
+ *
+ * git exports `GIT_DIR` (and friends) into every hook it runs, and those variables beat
+ * `cwd` when git decides which repository it is looking at. So a `spawnSync('git', …,
+ * { cwd: someDir })` that inherits the ambient environment does not ask about `someDir`
+ * at all under a hook — it asks about the repository whose hook is running, and answers
+ * confidently about the wrong tree.
+ *
+ * That made `pnpm run verify` unpassable from `.husky/pre-push`, which is the only way it
+ * normally runs: the "reports git as unavailable outside a repository" case created a temp
+ * directory outside any repo, and git found one anyway through the inherited `GIT_DIR`.
+ * The gate was red for every push regardless of the diff, which is the kind of thing that
+ * teaches people to reach for `--no-verify` (see `docs/verify-bypasses.log`).
+ *
+ * Stripped rather than overridden: there is no value of `GIT_DIR` that means "discover
+ * normally from cwd", only its absence.
+ */
+function envWithoutGitLocation(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const key of [
+    'GIT_DIR',
+    'GIT_WORK_TREE',
+    'GIT_COMMON_DIR',
+    'GIT_INDEX_FILE',
+    'GIT_OBJECT_DIRECTORY',
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+    'GIT_CEILING_DIRECTORIES',
+    'GIT_PREFIX',
+  ]) {
+    delete env[key];
+  }
+  return env;
+}
+
 export function gitIgnoredSubset(root: string, paths: readonly string[]): IgnoredSubset {
   if (paths.length === 0) return { paths: new Set(), available: true };
 
@@ -217,6 +252,8 @@ export function gitIgnoredSubset(root: string, paths: readonly string[]): Ignore
     input: `${paths.join('\0')}\0`,
     encoding: 'utf8',
     windowsHide: true,
+    // Without this, `cwd` is advisory: an inherited GIT_DIR decides the repository.
+    env: envWithoutGitLocation(),
   });
 
   // 0 = some ignored, 1 = none ignored. Anything else (no git, not a repo) is an
