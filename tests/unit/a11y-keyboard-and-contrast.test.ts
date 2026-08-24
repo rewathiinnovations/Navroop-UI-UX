@@ -86,7 +86,9 @@ describe('popovers stop claiming to be menus they are not (F-410)', () => {
   // The two mixed-content account popovers keep their visual design and get a
   // real disclosure contract; the two that really are command lists move onto
   // the Radix DropdownMenu already vendored in the repo.
-  const disclosures = ['components/app/studio/UserMenu.tsx', 'components/layout/AccountMenu.tsx'];
+  // UserMenu.tsx sat beside AccountMenu here until F-448’s unreachable tree was deleted;
+  // it had no importer and went with it. AccountMenu is the live account popover.
+  const disclosures = ['components/layout/AccountMenu.tsx'];
   const radixMenus = ['components/layout/WorkspaceDropdown.tsx', 'app/(app)/projects/page.tsx'];
 
   it.each([...disclosures, ...radixMenus])('%s declares no hand-rolled menu role', (path) => {
@@ -157,9 +159,10 @@ describe('async list transitions are announced (F-426)', () => {
 
 describe('motion spinners honour prefers-reduced-motion (F-433)', () => {
   it.each([
+    // InlineResults.tsx and dot-grid-loader.tsx were the other two entries and were
+    // deleted with F-448's unreachable tree. CodeApplicationProgress is the one that
+    // still renders, so it is the one still held to the contract.
     'components/CodeApplicationProgress.tsx',
-    'components/app/(home)/sections/ai-readiness/InlineResults.tsx',
-    'components/shared/ui/dot-grid-loader.tsx',
   ])('%s gates every repeat: Infinity on useReducedMotion', (path) => {
     const code = source(path);
     expect(code).toContain('repeat: Infinity');

@@ -1,8 +1,6 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, posix, relative, resolve, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
-
-import { ANY_UNREACHABLE } from '../../eslint.config.mjs';
 
 /**
  * F-790 and F-791. The gate looked strict — `eslint . --max-warnings 0` plus a knip
@@ -50,44 +48,39 @@ describe('the re-enabled ESLint rules stay enabled', () => {
     });
   }
 
-  it('no-explicit-any is an error, disabled only by the one bounded override', () => {
+  it('no-explicit-any is an error with no exemption anywhere', () => {
     expect(eslintConfigSource).toMatch(/'@typescript-eslint\/no-explicit-any':\s*'error'/);
-    // Exactly one `off`, and it belongs to the `files: ANY_UNREACHABLE` block. A
-    // second one would be a new hole; zero would mean the override was dropped
-    // without typing the files, which `--max-warnings 0` would then fail on.
+    // This used to permit exactly one `off`, scoped to an ANY_UNREACHABLE allowlist of
+    // nine importerless PixiJS/marketing modules. Deleting F-448's unreachable tree took
+    // all nine, so the exemption they justified is gone and the count is now zero. The
+    // assertion tightened rather than being deleted: a reintroduced `off` is a new hole
+    // whether or not anyone writes an allowlist around it.
     const offs = eslintConfigSource.match(disabledPattern('@typescript-eslint/no-explicit-any'));
-    expect(offs).toHaveLength(1);
-    const override = eslintConfigSource.slice(eslintConfigSource.indexOf('files: ANY_UNREACHABLE'));
-    expect(override).toMatch(/'@typescript-eslint\/no-explicit-any':\s*'off'/);
+    expect(offs).toBeNull();
+    expect(eslintConfigSource).not.toContain('ANY_UNREACHABLE');
   });
 });
 
 /**
- * The one hole left in `no-explicit-any`: nine modules with no importer, whose `any`s
- * wrap untyped PixiJS internals. It is a list rather than a global `off` so it can
- * only shrink, and these two tests are what make "can only shrink" true rather than
- * aspirational.
+ * `no-explicit-any` used to have one hole: nine modules with no importer, whose `any`s
+ * wrapped untyped PixiJS internals. It was a list rather than a blanket `off` precisely
+ * so it could only shrink — and it shrank to nothing when F-448's unreachable tree was
+ * deleted, because every path in it lived there.
+ *
+ * What that leaves is stronger than the old pair of tests: not "the allowlist has not
+ * been widened" but "there is no `any` in first-party source at all". The scan stays
+ * because that is the claim `--max-warnings 0` makes and this is what checks it against
+ * the tree rather than against the config.
  */
-describe('the no-explicit-any allowlist can only shrink', () => {
-  it('is not empty for no reason, and every path in it still exists', () => {
-    // When F-448's unreachable tree is deleted, the entry must go with it. A stale
-    // path here is an exemption protecting nothing, which is how the original
-    // blanket `off` survived review.
-    for (const path of ANY_UNREACHABLE) {
-      expect(
-        existsSync(join(repoRoot, path)),
-        `${path} no longer exists — drop it from ANY_UNREACHABLE`,
-      ).toBe(true);
-    }
+describe('no first-party source declares an `any`', () => {
+  it('finds source files to scan', () => {
+    // Guards the scan itself: a walk that silently matched nothing would make the
+    // assertion below pass for the wrong reason.
+    expect(readdirSync(repoRoot).length).toBeGreaterThan(10);
   });
 
-  it('covers every file that still declares an `any`', () => {
-    const offenders = sourceFilesWithExplicitAny();
-    const allowed = new Set(ANY_UNREACHABLE);
-    const unlisted = offenders.filter((path) => !allowed.has(path));
-    // A new `any` outside the allowlist is what ESLint now rejects; this asserts the
-    // allowlist itself has not been widened to accommodate one.
-    expect(unlisted).toEqual([]);
+  it('reports no file carrying an explicit any', () => {
+    expect(sourceFilesWithExplicitAny()).toEqual([]);
   });
 });
 
