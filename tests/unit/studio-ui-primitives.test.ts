@@ -1,12 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
 import Link from 'next/link';
 import { describe, expect, it } from 'vitest';
 import StatTile from '@/components/admin/StatTile';
-import Spinner, { SPINNER_SIZES, type SpinnerSize } from '@/components/ui/spinner';
-import Tabs from '@/components/shared/tabs/Tabs';
 
 const read = (file: string) => readFileSync(resolve(process.cwd(), file), 'utf8');
 
@@ -47,97 +43,6 @@ describe('StatTile routes internal admin links on the client', () => {
 
   it('gives the linked tile a focus ring, since it is now a keyboard stop', () => {
     expect(String(element('/admin/team').props.className)).toContain('focus-visible:ring-2');
-  });
-});
-
-/**
- * F-441: the size map read `{ sm: h-4, md: h-20, lg: h-8 }`. Tailwind runs on a px
- * scale here, so that is 4 px / 20 px / 8 px — `lg` smaller than `md` and `sm`
- * effectively invisible. The invariant, not the literals, is what must hold.
- */
-describe('Spinner sizes grow with their names', () => {
-  const px = (size: SpinnerSize) => {
-    const match = SPINNER_SIZES[size].match(/^h-(\d+) w-\1$/);
-    if (!match) throw new Error(`${size} is not a square px size: ${SPINNER_SIZES[size]}`);
-    return Number(match[1]);
-  };
-
-  it('orders sm < md < lg', () => {
-    expect(px('sm')).toBeLessThan(px('md'));
-    expect(px('md')).toBeLessThan(px('lg'));
-  });
-
-  it('keeps every size large enough to be seen', () => {
-    for (const size of ['sm', 'md', 'lg'] as const) {
-      expect(px(size)).toBeGreaterThanOrEqual(12);
-    }
-  });
-
-  it('paints the class for the size it was asked for', () => {
-    const markup = renderToStaticMarkup(createElement(Spinner, { size: 'lg' }));
-    expect(markup).toContain(SPINNER_SIZES.lg);
-  });
-
-  it('leaves the default caller untouched at 20 px', () => {
-    expect(renderToStaticMarkup(createElement(Spinner, {}))).toContain(SPINNER_SIZES.md);
-  });
-});
-
-/**
- * F-443: a row of plain `<button>`s with no `role`, no `aria-selected` and no
- * arrow-key movement. Assistive tech saw an undifferentiated button row and the
- * whole group was one Tab stop per button rather than one stop for the group.
- */
-describe('the shared Tabs has real tab semantics', () => {
-  const TABS = [
-    { value: 'one', label: 'One', panelId: 'panel-one' },
-    { value: 'two', label: 'Two' },
-    { value: 'three', label: 'Three' },
-  ];
-
-  const markup = renderToStaticMarkup(
-    createElement(Tabs, {
-      tabs: TABS,
-      activeTab: 'two',
-      setActiveTab: () => {},
-      label: 'Plans',
-    }),
-  );
-
-  it('groups the buttons in a named tablist', () => {
-    expect(markup).toContain('role="tablist"');
-    expect(markup).toContain('aria-label="Plans"');
-  });
-
-  it('marks every button a tab and exactly one of them selected', () => {
-    expect(markup.match(/role="tab"/g)).toHaveLength(TABS.length);
-    expect(markup.match(/aria-selected="true"/g)).toHaveLength(1);
-    expect(markup.match(/aria-selected="false"/g)).toHaveLength(TABS.length - 1);
-  });
-
-  it('roves the tabIndex so the group is a single Tab stop', () => {
-    expect(markup.match(/tabindex="-1"/g)).toHaveLength(TABS.length - 1);
-    expect(markup.match(/tabindex="0"/g)).toHaveLength(1);
-  });
-
-  it('points at a panel only when the consumer named one', () => {
-    expect(markup.match(/aria-controls="panel-one"/g)).toHaveLength(1);
-    expect(markup.match(/aria-controls=/g)).toHaveLength(1);
-  });
-
-  it('moves selection and focus together on arrow, Home and End', () => {
-    const source = read('components/shared/tabs/Tabs.tsx');
-    for (const key of ['ArrowRight', 'ArrowLeft', 'Home', 'End']) {
-      // Quote-agnostic: prettier owns quote style in this repo, so pinning the
-      // assertion to one of them makes the test fail on a reformat rather than
-      // on a behaviour change. What matters is that the key is handled at all.
-      expect(source).toMatch(new RegExp(`['"\`]${key}['"\`]`));
-    }
-    expect(source).toContain('onKeyDown={(event) => onKeyDown(event, index)}');
-  });
-
-  it('keys on the tab value, so reordering does not remount the wrong tab', () => {
-    expect(read('components/shared/tabs/Tabs.tsx')).not.toContain('key={index}');
   });
 });
 

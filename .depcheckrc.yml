@@ -11,8 +11,9 @@
 # does not belong here — delete it from package.json and regenerate the lockfile in the
 # same change, so a green gate keeps meaning "nothing unused is declared".
 #
-# knip's own unused-dependency report is wider (it sees the components/shared/*
-# marketing surface as unreachable, F-448) and stays non-fatal for that reason.
+# knip is a fatal gate too now (on unused *files*). Its report used to be wider than this
+# one because it read the components/shared/* marketing surface as unreachable, which it
+# was; deleting that tree (F-448) took the list to zero.
 ignores:
   # postcss.config.mjs names all three as plugins.
   - autoprefixer

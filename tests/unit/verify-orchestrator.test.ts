@@ -102,16 +102,25 @@ describe('verify orchestrator', () => {
     expect(result.reproduce).toBe('node ./node_modules/vitest/vitest.mjs run --coverage');
   });
 
-  it('continues after a knip report failure but stops on depcheck', async () => {
-    const reportOnly = await runVerify({
+  it('stops on knip as well as depcheck, now that both can be green', async () => {
+    // knip was report-only until 2026-08-25 and this asserted the run stayed green
+    // through a knip failure. It could not be fatal while its unused-file list was 271
+    // entries of F-448's unreachable tree; with that deleted and knip.json declaring
+    // the entrypoints knip cannot infer, the list is empty and the step holds it there.
+    const orphanedFile = await runVerify({
       mode: 'verify',
       async runCommand(command) {
-        if (command.includes('knip')) return { ok: false };
+        if (command.includes('knip'))
+          return { ok: false, output: 'Unused files (1)\nlib/orphan.ts' };
         return stubOk(command);
       },
     });
-    expect(reportOnly.ok).toBe(true);
-    expect(reportOnly.results.find((row) => row.id === 'knip')?.ok).toBe(false);
+    expect(orphanedFile.ok).toBe(false);
+    expect(orphanedFile.failedStep?.id).toBe('knip');
+    // Scoped to files: the unused-exports report would fail every push on ~100
+    // exported types that are a module's published surface.
+    const knipStep = stepsForMode('verify').find((step) => step.id === 'knip');
+    expect(knipStep?.command).toContain('--include files');
 
     // depcheck became fatal on 2026-08-21 once `.depcheckrc.yml` declared the ten
     // entries it had been printing on every run (F-645). A newly unused dependency

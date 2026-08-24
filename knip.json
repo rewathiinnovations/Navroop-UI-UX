@@ -1,5 +1,5 @@
 {
-  "ignore": ["generated/**", "coverage/**"],
+  "ignore": ["generated/**", "coverage/**", ".claude/**", ".cursor/**", "**/*.css"],
   "entry": [
     "tests/*.test.ts",
     "tests/setup/vitest.setup.ts",
@@ -15,7 +15,16 @@
     "scripts/secret-scan.ts",
     "scripts/seed-e2e-account.ts",
     "scripts/verify-storage.ts",
-    "scripts/setup-worktree.mjs"
+    "scripts/setup-worktree.mjs",
+    "scripts/verify.ts",
+    "scripts/verify-bypass.ts",
+    "scripts/rollback.ts",
+    "scripts/smoke-test.ts",
+    "scripts/ensure-test-db.ts",
+    "scripts/migrate-test-db.ts",
+    "prisma/seed.ts",
+    "prisma/seed-templates.mjs",
+    "docker-entrypoint.mjs"
   ],
   "ignoreDependencies": ["@axe-core/playwright", "fast-check", "husky", "lint-staged", "prettier"]
 }

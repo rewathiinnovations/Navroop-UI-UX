@@ -196,22 +196,34 @@ export const VERIFY_STEPS: VerifyStep[] = [
     // that cannot fail (F-645). `.depcheckrc.yml` now declares each of those ten,
     // split into "used but not through an import depcheck can see" and "unused,
     // pending removal", so depcheck exits 0 on a clean tree and a *new* unused
-    // dependency is a red gate. knip stays a report: its unused list is wider because
-    // it reads the components/shared/* marketing surface as unreachable (F-448).
+    // dependency is a red gate. knip became fatal the same way, once the surface that
+    // made its list unactionable was deleted — see the next step.
     id: 'depcheck',
     label: 'depcheck',
     command: 'node ./node_modules/depcheck/bin/depcheck.js',
     fatal: true,
   },
   {
-    // `--no-exit-code` was removed on 2026-08-19: with `fatal: false` on top of
-    // it, knip's findings were reported twice over and enforced never, and the
-    // summary printed a ✓ that claimed knip had found nothing. The tick now
-    // reflects what knip actually said; the step still does not block a push.
+    // `--no-exit-code` was removed on 2026-08-19: with `fatal: false` on top of it,
+    // knip's findings were reported twice over and enforced never, and the summary
+    // printed a ✓ claiming knip had found nothing.
+    //
+    // Fatal since 2026-08-25. The reason it could not block was that its unused-file
+    // list ran to 271, dominated by the F-448 marketing surface it correctly read as
+    // unreachable — and a list that long is one nobody can act on, so the step was the
+    // shape F-645 warns about: a check that cannot fail. That tree is deleted, and
+    // knip.json now declares the script and Dockerfile entrypoints knip could not infer
+    // (it was reporting `scripts/verify.ts` as unused). The count is 0, so the step can
+    // hold it there and a newly orphaned file stops the push.
+    //
+    // Scoped to `--include files` on purpose. Dead files are unambiguous. knip's
+    // unused-*exports* list is ~100 exported types that are a module's published
+    // surface — failing a push on those would recreate the original problem pointing
+    // the other way: a gate nobody can get green. Run knip bare to see them.
     id: 'knip',
-    label: 'knip (report)',
-    command: 'node ./node_modules/knip/bin/knip.js',
-    fatal: false,
+    label: 'knip (unused files)',
+    command: 'node ./node_modules/knip/bin/knip.js --include files',
+    fatal: true,
   },
   {
     // The one remaining pnpm call: `audit` resolves the lockfile itself and has
