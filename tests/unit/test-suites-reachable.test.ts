@@ -52,6 +52,13 @@ const SKIP_DIRS = new Set([
   'test-results',
   'generated', // Prisma client output.
   '.data', // Runtime data directory.
+  // Scratch working copies a superpowers SDD run leaves behind, one per task
+  // (`.superpowers/sdd/<spec>/<task>/…`). Gitignored, so nothing there is ever
+  // collected, committed or reviewed — a completed run left two copies of
+  // `audit-failure-surfaces.test.ts` under it and this guard reported them as
+  // orphans on every machine that still had the scratch. A real suite cannot live
+  // here: the copies are of files that already exist under `tests/`.
+  '.superpowers',
   '.turbo',
   '.vercel',
   'dist',
@@ -183,9 +190,9 @@ describe('every test file is reachable by a runner', () => {
     }
   });
 
-  it('skips nested checkouts and build output', async () => {
-    // Control for the two exclusion rules, on a tree this test builds, so it
-    // holds on a fresh clone where no worktree exists.
+  it('skips nested checkouts, build output and agent scratch', async () => {
+    // Control for the three exclusion rules, on a tree this test builds, so it
+    // holds on a fresh clone where no worktree and no scratch run exists.
     const root = fixtureRoot();
     mkdirSync(join(root, 'src'), { recursive: true });
     writeFileSync(join(root, 'src', 'wanted.test.ts'), '');
@@ -194,9 +201,29 @@ describe('every test file is reachable by a runner', () => {
     mkdirSync(join(root, 'worktree', 'tests'), { recursive: true });
     writeFileSync(join(root, 'worktree', '.git'), 'gitdir: ../../.git/worktrees/x');
     writeFileSync(join(root, 'worktree', 'tests', 'other-branch.test.ts'), '');
+    // No `.git` marker of its own, so the nested-checkout rule does not cover it.
+    mkdirSync(join(root, '.superpowers', 'sdd', 'base', 'task4', 'tests', 'unit'), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(root, '.superpowers', 'sdd', 'base', 'task4', 'tests', 'unit', 'scratch.test.ts'),
+      '',
+    );
 
     const found = (await walk('.', root)).filter((file) => TEST_FILE.test(file));
     expect(found).toEqual(['src/wanted.test.ts']);
+  });
+
+  it('still reports a test colocated in a source directory', async () => {
+    // The exclusions above must not become a way to hide a real orphan: anything
+    // outside them is still walked and still classified by `reachableBy`.
+    const root = fixtureRoot();
+    mkdirSync(join(root, 'lib', 'plans'), { recursive: true });
+    writeFileSync(join(root, 'lib', 'plans', 'limits.test.ts'), '');
+
+    const found = (await walk('.', root)).filter((file) => TEST_FILE.test(file));
+    expect(found).toEqual(['lib/plans/limits.test.ts']);
+    expect(reachableBy('lib/plans/limits.test.ts')).toBeNull();
   });
 
   it('leaves no test file orphaned', async () => {

@@ -51,8 +51,8 @@ import { settleStreamedGeneration } from '@/lib/jobs/settle-generation';
 
 const PLAN_CONTENT = {
   summary: 'A one page bakery site',
-  pages: [{ name: 'Home', purpose: 'Sell bread' }],
-  features: ['Hero', 'Menu'],
+  pages: [{ name: 'Home', description: 'A landing page to sell bread' }],
+  keyFeatures: ['Hero', 'Menu'],
   stack: 'NEXTJS',
 };
 

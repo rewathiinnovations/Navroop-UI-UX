@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  addGenerationMessage,
+  attachToProject,
   clearGeneration,
   executeGenerationJob,
   getGenerationState,
@@ -128,5 +130,20 @@ describe('runGenerateStream frame handling', () => {
 
     expect(result.generatedCode).toBe(FILE_BLOCK);
     expect(messages).toEqual([]);
+  });
+
+  it('clears messages when attaching to a different project (no cross-project leak)', () => {
+    // First attach establishes the project; a fresh state has no messages to leak.
+    attachToProject('project-a');
+    addGenerationMessage('hello from project A', 'user');
+    expect(getGenerationState().messages).toHaveLength(1);
+
+    // Same project: messages survive (a re-render must not wipe the thread).
+    attachToProject('project-a');
+    expect(getGenerationState().messages).toHaveLength(1);
+
+    // Different project: the old project's conversation must not carry over.
+    attachToProject('project-b');
+    expect(getGenerationState().messages).toHaveLength(0);
   });
 });

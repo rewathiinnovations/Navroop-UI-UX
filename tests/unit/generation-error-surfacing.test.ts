@@ -17,8 +17,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { appConfig } from '@/config/app.config';
-import { temperatureForModel } from '@/lib/ai/temperature';
+import { CODEGEN_TEMPERATURE, temperatureForModel } from '@/lib/ai/temperature';
 import { generationRequestErrorMessage } from '@/lib/generation/request-error';
 import { jobErrorCodeFromError } from '@/lib/jobs/error-code';
 import { JobCapError } from '@/lib/consumption/caps';
@@ -105,14 +104,20 @@ describe('every stop of the stream worker sends an error frame (F-038)', () => {
 });
 
 describe('one temperature decision for every provider call (F-041)', () => {
-  it('withholds the temperature from a thinking-mode model', () => {
-    expect(temperatureForModel('deepseek-v4-pro')).toBeUndefined();
-    expect(temperatureForModel('deepseek-reasoner-pro')).toBeUndefined();
+  it('withholds the temperature in thinking mode, which every DeepSeek model runs by default', () => {
+    for (const model of ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp']) {
+      expect(temperatureForModel(model, { thinking: true })).toBeUndefined();
+    }
   });
 
-  it('sends the configured temperature to every other model', () => {
-    expect(temperatureForModel('deepseek-v4')).toBe(appConfig.ai.defaultTemperature);
-    expect(temperatureForModel('deepseek-chat')).toBe(appConfig.ai.defaultTemperature);
+  /**
+   * The other half of the same decision. Codegen wants a low, non-zero temperature; a
+   * thinking model refuses the field's presence, so it can only apply with thinking off.
+   * Returning `0` instead of `undefined` would send the key and be refused.
+   */
+  it('sends the codegen temperature when thinking is off', () => {
+    expect(temperatureForModel('deepseek-v4-flash', { thinking: false })).toBe(CODEGEN_TEMPERATURE);
+    expect(CODEGEN_TEMPERATURE).toBe(0.3);
   });
 
   it('is the only way the route decides a temperature', () => {

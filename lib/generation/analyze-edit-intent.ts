@@ -10,6 +10,7 @@
  */
 import { generateObject } from 'ai';
 import { z } from 'zod';
+import { chatModelForProvider } from '@/lib/ai/client-for-entry';
 import { getProviderForModel } from '@/lib/ai/provider-manager';
 import { ProviderNotConfiguredError } from '@/lib/ai/providers';
 import { log, logError } from '@/lib/logger';
@@ -81,7 +82,7 @@ type ManifestLike = { files?: Record<string, unknown> };
 
 async function selectModel(model: string, userId: string | null) {
   const { client, actualModel } = await getProviderForModel(model, userId);
-  return client(actualModel);
+  return chatModelForProvider(client, actualModel);
 }
 
 export async function analyzeEditIntent(

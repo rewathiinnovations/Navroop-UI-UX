@@ -1,8 +1,9 @@
 import sharp from 'sharp';
 import { generateText } from 'ai';
+import { chatModelForProvider } from '@/lib/ai/client-for-entry';
 import { getProviderForModel } from '@/lib/ai/provider-manager';
+import { RunUsage } from '@/lib/consumption/run-usage';
 import { buildCachedMessages } from '@/lib/generation/prompt-cache';
-import { resolveInputTokens } from '@/lib/generation/token-estimate';
 import { recordJobStepFailure } from '@/lib/jobs/step-failure';
 import { logGenerationEvent } from '@/lib/usage-costs';
 import { buildStablePromptPrefix } from '@/lib/stack-prompts';
@@ -141,23 +142,39 @@ async function completeXml(input: {
       ]
     : cached;
 
-  const result = await generateText({
-    model: client(actualModel),
-    messages,
-  });
-  const inputTokens = resolveInputTokens(
-    result.usage,
-    `${input.stablePrefix}\n${input.volatileUser}`,
-  );
-  console.info('[import] inputTokens', inputTokens);
-  await logGenerationEvent({
-    projectId: input.projectId,
-    userId: input.userId,
-    kind: 'followup',
-    isUrlClone: true,
-    inputTokens,
-  });
-  return { text: result.text, inputTokens };
+  const promptText = `${input.stablePrefix}\n${input.volatileUser}`;
+  const spent = new RunUsage();
+  spent.willSend(promptText);
+  try {
+    const result = await generateText({
+      model: chatModelForProvider(client, actualModel),
+      messages,
+    });
+    spent.settle(result.usage, result.text);
+    return { text: result.text, inputTokens: spent.totals.tokensIn };
+  } finally {
+    // Two holes closed in one place. A section whose call threw is caught by the loop in
+    // `generateImportedSections` and turned into a warning — it used to log no event at
+    // all, so the failures that had already been billed reported nothing. And the event
+    // now carries what it cost onto `Workspace.spendUsd`: nothing calls `recordJobUsage`
+    // for an IMPORT job, so this row was the only record of the spend and the row alone
+    // never moved the ceiling. If an IMPORT ever starts recording job usage, one of the
+    // two has to stop accruing or one import will move the ceiling twice.
+    const totals = spent.claim();
+    if (totals) {
+      console.info('[import] inputTokens', totals.tokensIn);
+      await logGenerationEvent({
+        projectId: input.projectId,
+        userId: input.userId,
+        kind: 'followup',
+        isUrlClone: true,
+        inputTokens: totals.tokensIn,
+        outputTokens: totals.tokensOut,
+        model: actualModel,
+        accrueToSpendCeiling: true,
+      });
+    }
+  }
 }
 
 function joinFilesXml(chunks: string[]) {

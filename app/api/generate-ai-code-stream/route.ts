@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { streamText } from 'ai';
+import { stepCountIs, streamText } from 'ai';
 import type { ConversationMessage, ConversationEdit } from '@/types/conversation';
 import { appConfig } from '@/config/app.config';
 import { buildUiUxProMaxBrief } from '@/lib/ui-ux-pro-max/build-design-brief';
@@ -20,10 +20,23 @@ const FENCE = '```';
 import { conversationStateFor } from '@/lib/generation/conversation-state';
 import { shouldSendGeneratedCode } from '@/lib/generation/complete-frame';
 import { StreamedFileTracker } from '@/lib/generation/stream-file-tracker';
+import {
+  MODEL_THINKING_STATUS,
+  WAITING_FOR_MODEL_STATUS,
+  classifyStreamPart,
+} from '@/lib/generation/stream-parts';
 import { fileContextTokenCap, selectFileContext } from '@/lib/generation/selective-context';
+import { createGenerationFileStore } from '@/lib/generation/tools/file-store';
+import {
+  AGENT_STEP_BUDGET_MESSAGE,
+  buildGenerationTools,
+  exhaustedStepBudget,
+} from '@/lib/generation/tools';
+import { agentToolsEnabled, maxAgentSteps } from '@/lib/ai/agent-tools';
 import { buildStablePromptPrefix, buildVolatilePromptSuffix } from '@/lib/stack-prompts';
 import { resolveRequestGenerationProfile } from '@/lib/stack-resolve';
 import { stackShapeMismatch } from '@/lib/stacks';
+import { withStarterFiles } from '@/lib/stacks/starter';
 import { loadAssetManifest } from '@/lib/assets/load-manifest';
 import { injectMatchedSkills } from '@/lib/skills/inject';
 import { buildMemoryBlock } from '@/lib/memory/build-context';
@@ -61,7 +74,7 @@ import { temperatureForModel } from '@/lib/ai/temperature';
 import { isToolCallValidationError } from '@/lib/ai/tool-validation';
 import { getDefaultCircuit } from '@/lib/ai/circuit';
 import { jobErrorCodeForProviderFailure, providerFailureMessage } from '@/lib/ai/failover';
-import { getDefaultProviderQueue, QUEUE_TIMEOUT_MESSAGE } from '@/lib/ai/queue';
+import { getDefaultProviderQueue, QUEUE_TIMEOUT_MESSAGE, queuePositionLabel } from '@/lib/ai/queue';
 import {
   isDeepSeekModel,
   maxOutputTokensForEntry,
@@ -75,7 +88,11 @@ import {
   type ProviderEntry,
 } from '@/lib/ai/providers';
 import { loadEffectiveProviderEnv } from '@/lib/ai/effective-env';
-import { clientForEntry } from '@/lib/ai/client-for-entry';
+import {
+  chatModelForEntry,
+  thinkingEnabledFromEnv,
+  wrapReasoningModel,
+} from '@/lib/ai/client-for-entry';
 import {
   bindStreamErrorCapture,
   EmptyCompletionError,
@@ -85,6 +102,7 @@ import { sanitizeGenerationPath } from '@/lib/generation/parse-files';
 import {
   collectRecoveredStreamText,
   detectTruncatedFiles,
+  truncationDetectedStepError,
   truncationRecoveryOutcome,
   type TruncationRecoveryOutcome,
 } from '@/lib/generation/truncation-recovery';
@@ -97,11 +115,20 @@ import {
   attemptProducedOutput,
   classifyReplyOutcome,
   describeNoChanges,
+  imagePlacementCorrection,
+  imagesOwedByReply,
+  imagesPlacedIn,
   MISSING_FILES_ASKED_AGAIN,
   MISSING_FILES_CORRECTION,
   MISSING_FILES_STEP_ERROR,
+  MISSING_IMAGES_STEP_ERROR,
+  unplacedImagesAskedAgain,
+  unplacedImagesNotice,
 } from '@/lib/generation/no-changes';
-import { summarizeGenerationOutput } from '@/lib/generation/output-summary';
+import {
+  createConversationalScrubber,
+  summarizeGenerationOutput,
+} from '@/lib/generation/output-summary';
 import { runBuildValidation } from '@/lib/validation/run-build-validation';
 
 /**
@@ -134,6 +161,12 @@ export const maxDuration = 1200;
  * thousands of output tokens is not bought a second time as input.
  */
 const CORRECTIVE_ECHO_CHARS = 2000;
+
+/**
+ * Said when Stop / Start over settled the row between stream end and settle: the
+ * person's own stop, not a persist failure.
+ */
+const CANCELLED_BEFORE_SAVING_LINE = 'The build was stopped before anything could be saved.';
 
 // Helper function to analyze user preferences from conversation history
 function analyzeUserPreferences(messages: ConversationMessage[]): {
@@ -172,6 +205,25 @@ function analyzeUserPreferences(messages: ConversationMessage[]): {
     commonPatterns: [...new Set(patterns)].slice(0, 3), // Top 3 unique patterns
     preferredEditStyle: targetedEditCount > comprehensiveEditCount ? 'targeted' : 'comprehensive',
   };
+}
+
+/**
+ * The corrective ask's file list laid over the first reply's, keyed by path.
+ *
+ * The ask can be about pictures rather than about missing files, and in that case the
+ * first reply is the site — eleven files that are right about everything except their
+ * images. A correction only resends the two or three files that carry a token, so
+ * substituting its list would ship those as the whole project. Merging is also what
+ * `filesFromReply` does to the appended reply text (later block wins), so the array the
+ * route reasons about and the map the settle stores stay the same set.
+ */
+function mergeGeneratedFiles(
+  base: { path: string; content: string }[],
+  corrected: { path: string; content: string }[],
+): { path: string; content: string }[] {
+  const byPath = new Map(base.map((file) => [file.path, file]));
+  for (const file of corrected) byPath.set(file.path, file);
+  return [...byPath.values()];
 }
 
 /**
@@ -280,7 +332,7 @@ async function generateAiCodeStream(request: NextRequest) {
       prompt: promptInput,
       model: requestedModelRaw,
       context,
-      isEdit = false,
+      isEdit: clientIsEdit,
       styleHint,
       projectId: requestProjectId,
       stack: requestStack,
@@ -292,6 +344,7 @@ async function generateAiCodeStream(request: NextRequest) {
       buildFixAttempt,
       buildFixSignature,
     } = await request.json();
+    let isEdit = clientIsEdit ?? false;
     // Reject a bad prompt before anything is acquired. This guard used to sit after the
     // credit check, the project lock (with its 60s renew timer), the Job row, the
     // provider-queue slot and the job heartbeat, and its bare `return` leaked all five
@@ -357,7 +410,7 @@ async function generateAiCodeStream(request: NextRequest) {
     // a refusal that has already spent or locked something is not a refusal.
     const ownedProject = await prisma.project.findFirst({
       where: { id: projectId, deletedAt: null },
-      select: { id: true, ownerId: true },
+      select: { id: true, ownerId: true, phase: true },
     });
     if (!ownedProject) {
       return jsonError('Project not found', 'NOT_FOUND', 404);
@@ -392,6 +445,46 @@ async function generateAiCodeStream(request: NextRequest) {
     // may be writing the same row: this one has to stop and refuse to persist rather than
     // finish under a lock that no longer protects the write (F-730).
     const lockLost = hold.lost;
+
+    // Server-side override: the client's isEdit decision can be wrong when the
+    // file map hasn't loaded yet (race on first build), the fetch 403'd (member
+    // on teammate's project), or the browser is stale. The server always has the
+    // truth — lastCode and phase — so override to prevent the model from
+    // replacing an existing site with a brand-new one (F-665 pattern).
+    //
+    // `lastCode` used to ride along in the ownership select above so this could read it
+    // as `Boolean(...)`. It is the entire `<file …>` serialisation of the site, bounded
+    // only by `LAST_CODE_MAX_BYTES` (4 MB), so every send on an established project — a
+    // one-line follow-up edit included — pulled the whole site body out of Postgres to
+    // answer a yes/no, ahead of the rate limit, the credit check and any provider call.
+    // Three things fix that. The answer is only needed when the client claimed a fresh
+    // build, since forcing `isEdit` true is the only thing it is used for. `count`
+    // answers "is there a body" without transferring one — `NOT null` plus `NOT ''` is
+    // exactly what `Boolean(lastCode)` meant. And it sits here rather than beside the
+    // ownership check because `isEdit` is first read by `createOrReuseJob` below: a
+    // caller the rate limiter, the credit check or the lock is about to refuse must not
+    // pay for a query first.
+    if (!isEdit) {
+      const serverHasSite =
+        ownedProject.phase === 'COMPLETE' ||
+        (await prisma.project.count({
+          where: {
+            id: projectId,
+            deletedAt: null,
+            AND: [{ NOT: { lastCode: null } }, { NOT: { lastCode: '' } }],
+          },
+        })) > 0;
+      if (serverHasSite) {
+        log.info('generation.isEdit_override', {
+          projectId,
+          userId: sessionUser.id,
+          clientIsEdit: false,
+          serverHasSite: true,
+          phase: ownedProject.phase,
+        });
+        isEdit = true;
+      }
+    }
 
     const idempotencyKey =
       typeof requestIdempotencyKey === 'string' && requestIdempotencyKey.trim()
@@ -438,190 +531,14 @@ async function generateAiCodeStream(request: NextRequest) {
 
     const model = requestedModel ?? modelIdForEntry(providerChain[0]);
     const primaryProvider = providerChain[0];
-    if (generationJob?.status === 'QUEUED' && primaryProvider) {
-      providerSlot = getDefaultProviderQueue().acquire(primaryProvider.provider, {
-        jobId: generationJob.id,
-        onPosition: (n) => {
-          void updateJobFields(generationJob!.id, { queuePosition: n });
-        },
-      });
-      if (providerSlot.position > 0) {
-        await updateJobFields(generationJob.id, { queuePosition: providerSlot.position });
-      }
-      const started = await providerSlot.started;
-      if (!started.ok) {
-        // The waiter timed out without ever taking a slot, and `release()` decrements the
-        // running count unconditionally — dropping the handle here is what keeps every
-        // cleanup path from corrupting the queue counter.
-        providerSlot = null;
-        await releaseSetup({
-          errorCode: 'queue_timeout',
-          errorMessage: started.errorMessage || QUEUE_TIMEOUT_MESSAGE,
-        });
-        return jsonError(started.errorMessage || QUEUE_TIMEOUT_MESSAGE, 'QUEUE_TIMEOUT', 429);
-      }
-    }
-    if (generationJob?.status === 'QUEUED') {
-      generationJob = await markJobRunning(generationJob.id, {
-        chargeCredits: true,
-        acquireProjectLock: false,
-      });
-      if (generationJob && primaryProvider) {
-        await updateJobFields(generationJob.id, {
-          queuePosition: 0,
-          provider: primaryProvider.provider,
-          model: primaryProvider.model,
-        });
-      }
-    }
-    // A live heartbeat hides the row from the staleness reaper, so it beats for exactly
-    // as long as the work runs — including after the browser goes away, because the
-    // stream finishes and persists server-side. `request.signal` only records the
-    // disconnect (see JobHeartbeatOptions.signal); the interval stops when the work
-    // settles or when the stream worker's `finally` runs. When a heartbeat write finds
-    // the row already settled — Cancel / Start over flipped it — `onInactive` aborts the
-    // in-flight provider stream so a cancelled build stops buying tokens (F-022).
-    const jobCancelled = new AbortController();
-    jobHeartbeat = generationJob
-      ? beginJobHeartbeat(generationJob.id, {
-          signal: request.signal,
-          onInactive: () => jobCancelled.abort(new Error('The build was cancelled')),
-        })
-      : null;
-    // Losing the project lock stops the run through the same controller, so the in-flight
-    // provider stream unwinds exactly as a Cancel does and no more tokens are bought. What
-    // the two mean is not the same, so the catch below reads `lockLost.aborted` to tell them
-    // apart: a cancel was asked for, a lost lock is a failure that saved nothing (F-730).
-    const abortForLockLoss = () => jobCancelled.abort(lockLost.reason);
-    if (lockLost.aborted) abortForLockLoss();
-    else lockLost.addEventListener('abort', abortForLockLoss, { once: true });
-    jobProgress = generationJob ? createProgressBatcher(generationJob.id) : null;
-    const planCaps = await getPlanCaps(WORKSPACE_ROW_ID);
-    const capTracker = new JobCapTracker(planCaps);
-    let servedProvider = primaryProvider?.provider ?? null;
-    let servedModel = primaryProvider?.model ?? null;
 
-    const generationProfile = await resolveRequestGenerationProfile({
-      stack: requestStack,
-      designDirection: requestDirection,
-      projectId,
-    });
-    const projectStack = generationProfile.stack;
-    const projectDirection = generationProfile.designDirection;
-
-    trackStart('generation.start', {
-      action: 'generation',
-      stack: projectStack,
-      workspaceId: WORKSPACE_ROW_ID,
-      model,
-    });
-    log.info('generation.request', {
-      isEdit,
-      stack: projectStack,
-      designDirection: projectDirection,
-      model,
-      fileCount: context?.currentFiles ? Object.keys(context.currentFiles).length : 0,
-    });
-
-    // The GenerationEvent this run's token spend belongs to, resolved now rather than at
-    // settle time (F-749). `attachGenerationInputTokens` used to take a projectId and
-    // write to whichever event was newest for it when the run finished — so a follow-up
-    // that started while this run was streaming stole the count, or already carried one
-    // and the count was dropped silently.
-    let usageEventId: string | null = null;
-    if (isEdit) {
-      usageEventId = await logGenerationEvent({
-        projectId,
-        userId: sessionUser.id,
-        kind: 'followup',
-        isUrlClone: looksLikeUrl(prompt),
-      });
-    } else {
-      // A first build's event is written by `startInitialGeneration` in the request that
-      // approved the plan, so this route never holds its id. Reading it here — before a
-      // single token is spent — still pins the row: a generation that starts later cannot
-      // be the one this picked, which is exactly the interleaving that used to misattribute.
-      //
-      // Build kinds only. `image` events are logged with no token count and never get one,
-      // so "the newest event with no tokens" would happily hand a build's spend to an
-      // image generated in between.
-      const pending = await prisma.generationEvent.findFirst({
-        where: {
-          projectId,
-          inputTokens: null,
-          kind: { in: ['initial', 'followup'] },
-        },
-        orderBy: { createdAt: 'desc' },
-        select: { id: true },
-      });
-      usageEventId = pending?.id ?? null;
-    }
-
-    // Resolve this run's conversation state.
-    //
-    // Without project scoping the shared state carried the previous project's
-    // "RECENTLY CREATED/EDITED FILES (DO NOT RECREATE)" list — Next.js app/
-    // files — into a fresh REACT project's first build, and the model updated
-    // that phantom tree instead of following the stack prompt. Everything below
-    // reads `conversation`, never the global, so an overlapping request for
-    // another project cannot swap this run's history out mid-stream.
-    // The id resolved and required at the top of the handler, under the name the
-    // file-context branches below read it by.
-    const conversationProjectId = projectId;
-    const conversation = conversationStateFor(conversationProjectId, sessionUser.id);
-    log.info('generation.conversation_state', {
-      requestId: getRequestId(),
-      projectId: conversationProjectId,
-      conversationId: conversation.conversationId,
-      messages: conversation.context.messages.length,
-    });
-    // Add user message to conversation history
-    // No `metadata`: the only field it ever carried was `sandboxId`, a leftover of the
-    // deleted sandbox subsystem that is now always undefined (F-766).
-    const userMessage: ConversationMessage = {
-      id: `msg-${Date.now()}`,
-      role: 'user',
-      content: prompt,
-      timestamp: Date.now(),
-    };
-    conversation.context.messages.push(userMessage);
-
-    // Clean up old messages to prevent unbounded growth
-    if (conversation.context.messages.length > 20) {
-      // Keep only the last 15 messages
-      conversation.context.messages = conversation.context.messages.slice(-15);
-      console.log(
-        '[generate-ai-code-stream] Trimmed conversation history to prevent context overflow',
-      );
-    }
-
-    // Clean up old edits
-    if (conversation.context.edits.length > 10) {
-      conversation.context.edits = conversation.context.edits.slice(-8);
-    }
-
-    // No process-global publish here. The old unkeyed `global.*` conversation slot was a
-    // single view overwritten on every request; its readers — checkpoint labels,
-    // memory extraction, the follow-up plan context — now peek the per-project registry
-    // (lib/generation/conversation-state.ts) with their own project id.
-
-    // Debug: Show a sample of actual file content
-    if (context?.currentFiles && Object.keys(context.currentFiles).length > 0) {
-      const firstFile = Object.entries(context.currentFiles)[0];
-      console.log('[generate-ai-code-stream] - sample file:', firstFile[0]);
-      console.log(
-        '[generate-ai-code-stream] - sample content preview:',
-        typeof firstFile[1] === 'string' ? firstFile[1].substring(0, 100) + '...' : 'not a string',
-      );
-    }
-
-    // Create a stream for real-time updates
+    // Open the SSE body before waiting for a provider slot. A first build
+    // opened while another DeepSeek run still held the slot used to sit on the
+    // client's local "Starting AI generation..." line for the whole wait,
+    // because this handler did not return until `providerSlot.started` resolved.
     const encoder = new TextEncoder();
     const stream = new TransformStream();
     const writer = stream.writable.getWriter();
-
-    // The client leaving is a fact the work loop has to be able to see. A swallowed write
-    // failure is why generation kept burning tokens and credits for a reader that was gone.
     let clientDisconnected = false;
     let clientDisconnectReason: string | null = null;
     const noteClientDisconnected = (reason: string) => {
@@ -639,9 +556,6 @@ async function generateAiCodeStream(request: NextRequest) {
     request.signal.addEventListener('abort', () => noteClientDisconnected('request aborted'), {
       once: true,
     });
-    // A TransformStream writable has highWaterMark 1, so a reader that stops consuming but
-    // is not yet torn down parks `writer.write` forever — and a parked producer never reaches
-    // its `finally`. Racing each write against the abort is what lets it unwind.
     const clientGone = new Promise<void>((resolve) => {
       if (request.signal.aborted) {
         resolve();
@@ -649,10 +563,7 @@ async function generateAiCodeStream(request: NextRequest) {
       }
       request.signal.addEventListener('abort', () => resolve(), { once: true });
     });
-
     const writeChunk = async (chunk: Uint8Array) => {
-      // The catch is attached before the race, so the write we walk away from cannot
-      // surface later as an unhandled rejection.
       const written = writer
         .write(chunk)
         .catch((error: unknown) =>
@@ -660,25 +571,207 @@ async function generateAiCodeStream(request: NextRequest) {
         );
       await Promise.race([written, clientGone]);
     };
-
-    // Function to send progress updates with flushing
     const sendProgress = async (data: Record<string, unknown>) => {
       if (clientDisconnected) return;
       await writeChunk(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
-      // Force flush by writing a keep-alive comment
-      if (!clientDisconnected && (data.type === 'stream' || data.type === 'conversation')) {
+      if (
+        !clientDisconnected &&
+        (data.type === 'stream' || data.type === 'conversation' || data.type === 'status')
+      ) {
         await writeChunk(encoder.encode(': keepalive\n\n'));
       }
     };
 
-    // Start processing in background
     (async () => {
-      // Every provider call this run makes adds to one accumulator: the main
-      // stream, each failover attempt, the corrective ask, and each truncation
-      // recovery. Declared out here so the catch below can record what a failed
-      // run burned — a provider that took the prompt billed for it (F-027).
       const runUsage = new RunUsage();
+      let jobCancelled = new AbortController();
+      let servedProvider = primaryProvider?.provider ?? null;
+      let servedModel = primaryProvider?.model ?? null;
       try {
+        await sendProgress({ type: 'status', message: WAITING_FOR_MODEL_STATUS });
+
+        if (generationJob?.status === 'QUEUED' && primaryProvider) {
+          providerSlot = getDefaultProviderQueue().acquire(primaryProvider.provider, {
+            jobId: generationJob.id,
+            onPosition: (n) => {
+              void updateJobFields(generationJob!.id, { queuePosition: n });
+            },
+          });
+          if (providerSlot.position > 0) {
+            await updateJobFields(generationJob.id, { queuePosition: providerSlot.position });
+            await sendProgress({
+              type: 'status',
+              message: queuePositionLabel(providerSlot.position),
+            });
+          }
+          const started = await providerSlot.started;
+          if (!started.ok) {
+            // The waiter timed out without ever taking a slot, and `release()` decrements the
+            // running count unconditionally — dropping the handle here is what keeps every
+            // cleanup path from corrupting the queue counter.
+            providerSlot = null;
+            const message = started.errorMessage || QUEUE_TIMEOUT_MESSAGE;
+            await sendProgress({ type: 'error', error: message });
+            await releaseSetup({
+              errorCode: 'queue_timeout',
+              errorMessage: message,
+            });
+            return;
+          }
+        }
+        if (generationJob?.status === 'QUEUED') {
+          generationJob = await markJobRunning(generationJob.id, {
+            chargeCredits: true,
+            acquireProjectLock: false,
+          });
+          if (generationJob && primaryProvider) {
+            await updateJobFields(generationJob.id, {
+              queuePosition: 0,
+              provider: primaryProvider.provider,
+              model: primaryProvider.model,
+            });
+          }
+        }
+        // A live heartbeat hides the row from the staleness reaper, so it beats for exactly
+        // as long as the work runs — including after the browser goes away, because the
+        // stream finishes and persists server-side. `request.signal` only records the
+        // disconnect (see JobHeartbeatOptions.signal); the interval stops when the work
+        // settles or when the stream worker's `finally` runs. When a heartbeat write finds
+        // the row already settled — Cancel / Start over flipped it — `onInactive` aborts the
+        // in-flight provider stream so a cancelled build stops buying tokens (F-022).
+        jobCancelled = new AbortController();
+        jobHeartbeat = generationJob
+          ? beginJobHeartbeat(generationJob.id, {
+              signal: request.signal,
+              onInactive: () => jobCancelled.abort(new Error('The build was cancelled')),
+            })
+          : null;
+        // Losing the project lock stops the run through the same controller, so the in-flight
+        // provider stream unwinds exactly as a Cancel does and no more tokens are bought. What
+        // the two mean is not the same, so the catch below reads `lockLost.aborted` to tell them
+        // apart: a cancel was asked for, a lost lock is a failure that saved nothing (F-730).
+        const abortForLockLoss = () => jobCancelled.abort(lockLost.reason);
+        if (lockLost.aborted) abortForLockLoss();
+        else lockLost.addEventListener('abort', abortForLockLoss, { once: true });
+        jobProgress = generationJob ? createProgressBatcher(generationJob.id) : null;
+        const planCaps = await getPlanCaps(WORKSPACE_ROW_ID);
+        const capTracker = new JobCapTracker(planCaps);
+        const generationProfile = await resolveRequestGenerationProfile({
+          stack: requestStack,
+          designDirection: requestDirection,
+          projectId,
+        });
+        const projectStack = generationProfile.stack;
+        const projectDirection = generationProfile.designDirection;
+
+        trackStart('generation.start', {
+          action: 'generation',
+          stack: projectStack,
+          workspaceId: WORKSPACE_ROW_ID,
+          model,
+        });
+        log.info('generation.request', {
+          isEdit,
+          stack: projectStack,
+          designDirection: projectDirection,
+          model,
+          fileCount: context?.currentFiles ? Object.keys(context.currentFiles).length : 0,
+        });
+
+        // The GenerationEvent this run's token spend belongs to, resolved now rather than at
+        // settle time (F-749). `attachGenerationInputTokens` used to take a projectId and
+        // write to whichever event was newest for it when the run finished — so a follow-up
+        // that started while this run was streaming stole the count, or already carried one
+        // and the count was dropped silently.
+        let usageEventId: string | null = null;
+        if (isEdit) {
+          usageEventId = await logGenerationEvent({
+            projectId,
+            userId: sessionUser.id,
+            kind: 'followup',
+            isUrlClone: looksLikeUrl(prompt),
+          });
+        } else {
+          // A first build's event is written by `startInitialGeneration` in the request that
+          // approved the plan, so this route never holds its id. Reading it here — before a
+          // single token is spent — still pins the row: a generation that starts later cannot
+          // be the one this picked, which is exactly the interleaving that used to misattribute.
+          //
+          // Build kinds only. `image` events are logged with no token count and never get one,
+          // so "the newest event with no tokens" would happily hand a build's spend to an
+          // image generated in between.
+          const pending = await prisma.generationEvent.findFirst({
+            where: {
+              projectId,
+              inputTokens: null,
+              kind: { in: ['initial', 'followup'] },
+            },
+            orderBy: { createdAt: 'desc' },
+            select: { id: true },
+          });
+          usageEventId = pending?.id ?? null;
+        }
+
+        // Resolve this run's conversation state.
+        //
+        // Without project scoping the shared state carried the previous project's
+        // "RECENTLY CREATED/EDITED FILES (DO NOT RECREATE)" list — Next.js app/
+        // files — into a fresh REACT project's first build, and the model updated
+        // that phantom tree instead of following the stack prompt. Everything below
+        // reads `conversation`, never the global, so an overlapping request for
+        // another project cannot swap this run's history out mid-stream.
+        // The id resolved and required at the top of the handler, under the name the
+        // file-context branches below read it by.
+        const conversationProjectId = projectId;
+        const conversation = conversationStateFor(conversationProjectId, sessionUser.id);
+        log.info('generation.conversation_state', {
+          requestId: getRequestId(),
+          projectId: conversationProjectId,
+          conversationId: conversation.conversationId,
+          messages: conversation.context.messages.length,
+        });
+        // Add user message to conversation history
+        // No `metadata`: the only field it ever carried was `sandboxId`, a leftover of the
+        // deleted sandbox subsystem that is now always undefined (F-766).
+        const userMessage: ConversationMessage = {
+          id: `msg-${Date.now()}`,
+          role: 'user',
+          content: prompt,
+          timestamp: Date.now(),
+        };
+        conversation.context.messages.push(userMessage);
+
+        // Clean up old messages to prevent unbounded growth
+        if (conversation.context.messages.length > 20) {
+          // Keep only the last 15 messages
+          conversation.context.messages = conversation.context.messages.slice(-15);
+          console.log(
+            '[generate-ai-code-stream] Trimmed conversation history to prevent context overflow',
+          );
+        }
+
+        // Clean up old edits
+        if (conversation.context.edits.length > 10) {
+          conversation.context.edits = conversation.context.edits.slice(-8);
+        }
+
+        // No process-global publish here. The old unkeyed `global.*` conversation slot was a
+        // single view overwritten on every request; its readers — checkpoint labels,
+        // memory extraction, the follow-up plan context — now peek the per-project registry
+        // (lib/generation/conversation-state.ts) with their own project id.
+
+        // Debug: Show a sample of actual file content
+        if (context?.currentFiles && Object.keys(context.currentFiles).length > 0) {
+          const firstFile = Object.entries(context.currentFiles)[0];
+          console.log('[generate-ai-code-stream] - sample file:', firstFile[0]);
+          console.log(
+            '[generate-ai-code-stream] - sample content preview:',
+            typeof firstFile[1] === 'string'
+              ? firstFile[1].substring(0, 100) + '...'
+              : 'not a string',
+          );
+        }
+
         // Send initial status
         await sendProgress({ type: 'status', message: 'Initializing AI...' });
 
@@ -710,12 +803,12 @@ async function generateAiCodeStream(request: NextRequest) {
 
           // Include recently created files - CRITICAL for preventing duplicates
           const recentMsgs = conversation.context.messages.slice(-5);
-          const recentlyCreatedFiles: string[] = [];
-          recentMsgs.forEach((msg) => {
-            if (msg.metadata?.editedFiles) {
-              recentlyCreatedFiles.push(...msg.metadata.editedFiles);
-            }
-          });
+          // The paths this session's recorded edits actually wrote. This used to read
+          // `msg.metadata.editedFiles`, which nothing in the codebase ever set, so the
+          // "DO NOT RECREATE" section below could never fire.
+          const recentlyCreatedFiles = [
+            ...new Set(conversation.context.edits.flatMap((edit) => edit.targetFiles || [])),
+          ];
 
           if (recentlyCreatedFiles.length > 0) {
             const uniqueFiles = [...new Set(recentlyCreatedFiles)];
@@ -773,7 +866,7 @@ async function generateAiCodeStream(request: NextRequest) {
           // prompt (F-829).
           designDirection: projectDirection,
           isEdit,
-        });
+        }).brief;
 
         const memoryProjectId =
           (typeof requestProjectId === 'string' && requestProjectId) ||
@@ -787,9 +880,16 @@ async function generateAiCodeStream(request: NextRequest) {
             console.warn('[memory] build block failed', error);
           }
         }
-        // Stable prefix is byte-identical for the same stack + direction + ACTIVE memory.
+        // Whether this run writes files through tools or through parsed fences.
+        // Resolved here rather than beside `streamOptions` because the output
+        // contract is part of the cacheable prefix: the model has to be told
+        // which one it is on before it is told anything else.
+        const useTools = await agentToolsEnabled(model);
+        // Stable prefix is byte-identical for the same stack + direction + ACTIVE
+        // memory + output mode.
         const stablePrefix = buildStablePromptPrefix(projectStack, projectDirection, {
           memoryBlock,
+          outputMode: useTools ? 'tools' : 'fences',
         });
         // Skills are conditional and sit AFTER the cacheable prefix, never inside it.
         const injectedSkills = await injectMatchedSkills(
@@ -951,15 +1051,18 @@ async function generateAiCodeStream(request: NextRequest) {
             // First generation mode - make it beautiful!
             contextParts.push('\n🎨 FIRST GENERATION MODE - CREATE SOMETHING BEAUTIFUL!');
             contextParts.push("\nThis is the user's FIRST experience. Make it impressive:");
-            contextParts.push('1. **USE TAILWIND PROPERLY** - Use standard Tailwind color classes');
-            contextParts.push('2. **NO PLACEHOLDERS** - Use real content, not lorem ipsum');
+            // Items 1 and 5 used to be "USE TAILWIND PROPERLY - standard Tailwind
+            // color classes" and "STANDARD CLASSES - bg-white, text-gray-900,
+            // bg-blue-500, NOT bg-background". Both are gone: they contradicted
+            // the stable prefix, which now *requires* the semantic tokens the
+            // starter stylesheet defines. Per-request prose that fights the
+            // cacheable prefix is the worst of both — it is not cached and it
+            // wins, because it arrives last.
+            contextParts.push('1. **NO PLACEHOLDERS** - Use real content, not lorem ipsum');
             contextParts.push(
-              '3. **COMPLETE COMPONENTS** - Header, Hero, Features, Footer minimum',
+              '2. **COMPLETE COMPONENTS** - Header, Hero, Features, Footer minimum',
             );
-            contextParts.push('4. **VISUAL POLISH** - Shadows, hover states, transitions');
-            contextParts.push(
-              '5. **STANDARD CLASSES** - bg-white, text-gray-900, bg-blue-500, NOT bg-background',
-            );
+            contextParts.push('3. **VISUAL POLISH** - Shadows, hover states, transitions');
             contextParts.push(
               '\nCreate a polished, professional application that works perfectly on first load.',
             );
@@ -1004,6 +1107,9 @@ async function generateAiCodeStream(request: NextRequest) {
         }
 
         await sendProgress({ type: 'status', message: 'Planning application structure...' });
+        // The model call can sit on reasoning tokens for a long time before the
+        // first file. Leave "Planning..." up and the Code pane looks stuck.
+        await sendProgress({ type: 'status', message: WAITING_FOR_MODEL_STATUS });
 
         // Nobody is listening: stop before the model call rather than paying for tokens and
         // credits nobody will see. The `finally` settles the job.
@@ -1022,6 +1128,42 @@ async function generateAiCodeStream(request: NextRequest) {
 
         // Never exceed the workspace plan's per-job token cap.
         const outputTokenCap = Math.min(appConfig.ai.maxTokens, planCaps.maxTokensPerJob);
+
+        /**
+         * The turn's file state for the tool path.
+         *
+         * Built even when `useTools` is false, because it costs one object copy
+         * and it keeps every downstream substitution below a plain ternary
+         * rather than a nullable it has to guard.
+         *
+         * The base carries the starter kit, not just the project's stored files.
+         * Starter files are deliberately kept out of `Project.lastCode` — a
+         * non-empty `lastCode` is the product's evidence that a site exists — so
+         * `backendFiles` alone does not contain `components/ui/button.tsx` or
+         * `lib/utils.ts`, while the prompt's own ALREADY IN THE PROJECT rule and
+         * both bundlers (via `withStarterFiles`) say they are there. Measured
+         * live: the model read `components/ui/button.tsx`, `input.tsx`,
+         * `label.tsx` and `tailwind.config.js`, was told "No file at ...", and
+         * spent four of its steps finding that out — the setup for hand-rolling
+         * a Button, which is exactly what naming those paths exists to prevent.
+         *
+         * Only the *base* widens. `writtenFiles()` still returns writes alone, so
+         * the persist payload and `changedPaths` are unchanged and an untouched
+         * starter file is never re-stored.
+         */
+        const toolStore = createGenerationFileStore({
+          base: withStarterFiles(projectStack, backendFiles, projectDirection),
+          stack: projectStack,
+        });
+        const agentStepBudget = useTools ? await maxAgentSteps() : 0;
+        /**
+         * Rearms the provider idle bound from inside a tool's `execute`.
+         *
+         * Set per attempt by the collect callback below, which is the only place
+         * a `collectCtx` exists. Null until the first attempt starts, so the
+         * optional call is real rather than defensive.
+         */
+        let toolProgress: (() => void) | null = null;
 
         // Typed on purpose: this object used to be `any`, which let the AI SDK v4 names
         // `maxTokens` and `experimental_providerMetadata` sit here unnoticed. Both are
@@ -1046,10 +1188,48 @@ async function generateAiCodeStream(request: NextRequest) {
           stopSequences: [], // Don't stop early
         };
 
+        if (useTools) {
+          // `toolChoice: 'auto'`, never `'required'`: thinking mode rejects
+          // `required` outright with "Thinking mode does not support this
+          // tool_choice", which classifies as `malformed` and so would not even
+          // fail over (measured — see MODEL_SUPPORTS_TOOLS).
+          streamOptions.tools = buildGenerationTools({
+            store: toolStore,
+            notify: (event) => {
+              // Both halves matter: the frame is what puts the write in the chat
+              // and on the file rail, and `progress()` is what stops a step that
+              // only calls tools from being reaped as a stalled stream.
+              toolProgress?.();
+              void sendProgress(
+                event.phase === 'call'
+                  ? { type: 'tool_call', tool: event.tool, path: event.path }
+                  : {
+                      type: 'tool_result',
+                      tool: event.tool,
+                      path: event.path,
+                      ok: event.ok,
+                      detail: event.detail,
+                      // The whole file, once, on a successful write. The client's
+                      // rail has no other source for it — tool arguments are not
+                      // forwarded — so without this the Code pane showed every
+                      // tool-written file as an empty body. Not a new cost: the
+                      // fence path streams the same bytes as text deltas.
+                      content: event.content,
+                    },
+              );
+            },
+          });
+          streamOptions.toolChoice = 'auto';
+          streamOptions.stopWhen = stepCountIs(agentStepBudget);
+        }
+
         // One decision for every provider call this run makes — see `temperatureForModel`
         // for the two call sites that disagreed (F-041). Left off the object entirely for a
-        // thinking-mode model, which rejects the option rather than ignoring it.
-        const temperature = temperatureForModel(actualModel);
+        // thinking-mode model, which rejects the option rather than ignoring it — so the
+        // mode this request will actually be sent in is what decides, read from the same
+        // `providerEnv` that builds the client.
+        const thinking = thinkingEnabledFromEnv(providerEnv);
+        const temperature = temperatureForModel(actualModel, { thinking });
         if (temperature !== undefined) {
           streamOptions.temperature = temperature;
         }
@@ -1061,6 +1241,12 @@ async function generateAiCodeStream(request: NextRequest) {
         const promptTextForEstimate = `${stablePrefix}\n${injectedSkills.block}\n${volatileSuffix}\n${fullPrompt}`;
         let generatedCode = '';
         let files: { path: string; content: string }[] = [];
+        /**
+         * Files the tool path removed this turn. Counted alongside `files` when
+         * deciding whether the turn changed anything: a deletion leaves no file
+         * behind, so a turn that only deleted would otherwise read as no-change.
+         */
+        let toolDeletions = 0;
         let componentCount = 0;
         let providersTried: string[] = [];
         /**
@@ -1076,10 +1262,9 @@ async function generateAiCodeStream(request: NextRequest) {
             async (entry, ctx) => {
               servedProvider = entry.provider;
               servedModel = entry.model;
-              const client = clientForEntry(entry, providerEnv);
               const nextOptions = {
                 ...streamOptions,
-                model: client(entry.model),
+                model: wrapReasoningModel(chatModelForEntry(entry, providerEnv, entry.model)),
                 maxOutputTokens: Math.min(outputTokenCap, maxOutputTokensForEntry(entry)),
                 abortSignal: ctx.signal,
               };
@@ -1097,15 +1282,40 @@ async function generateAiCodeStream(request: NextRequest) {
             async (stream, entry, collectCtx) => {
               servedProvider = entry.provider;
               servedModel = entry.model;
+              // A tool's own `execute` emits no stream part while it runs, so the
+              // tools rearm the idle bound through this rather than through the
+              // loop below. Rebound per attempt: a failover retry gets a new
+              // collect context, and holding the old one would rearm a bound that
+              // no longer governs anything.
+              toolProgress = () => collectCtx.progress();
               generatedCode = '';
               files = [];
               const streamedFiles = new StreamedFileTracker();
               let isInTag = false;
               let conversationalBuffer = '';
+              // Everything below sends `conversationalBuffer` straight to the client as the
+              // assistant's chat message, and a real build put four `NEED_IMAGE: …` lines and
+              // two `Skill: …` markers there — internal protocol, read verbatim by a paying
+              // customer after their first build. The scrubber is stateful because the buffer
+              // is flushed whenever a `<file …>` opener interrupts the prose, so a directive
+              // can be cut in half by the flush; per-attempt because a failover retry starts a
+              // fresh reply.
+              const conversational = createConversationalScrubber();
               streamedReply.streamAttempts += 1;
+              let thinkingStartedAt: number | null = null;
+              let sentThinkingComplete = false;
+              const finishThinking = async () => {
+                if (thinkingStartedAt == null || sentThinkingComplete) return;
+                sentThinkingComplete = true;
+                const durationSec = Math.round((Date.now() - thinkingStartedAt) / 1000);
+                await sendProgress({
+                  type: 'thinking_complete',
+                  duration: durationSec > 0 ? durationSec : undefined,
+                });
+              };
 
               // Stream the response and parse in real-time
-              for await (const textPart of stream.textStream || []) {
+              for await (const part of stream.fullStream || []) {
                 // Deliberately no `break` on a disconnected client. Breaking
                 // here threw away a build the moment someone reloaded the tab:
                 // the loop stopped mid-site, the settle below never got a
@@ -1113,11 +1323,50 @@ async function generateAiCodeStream(request: NextRequest) {
                 // was lost. The site is persisted server-side, so finishing
                 // the stream is what lets them come back to it. Writes to the
                 // browser are already skipped while it is gone.
-                // Every chunk rearms the idle bound in `executeWithCompletionFailover`.
-                // Without it, a provider that accepted the request and then went quiet held
-                // this handler, the queue slot and the project lock for 20 minutes (F-030).
+                const classified = classifyStreamPart(part);
+                if (classified.kind === 'ignore') continue;
+                // Every token rearms the idle bound — reasoning included. Waiting
+                // on `textStream` alone treated a thinking-mode model as dead
+                // (F-030) and left the Code pane on "Planning...".
                 collectCtx.progress();
-                const text = textPart || '';
+                if (classified.kind === 'reasoning') {
+                  if (thinkingStartedAt == null) {
+                    thinkingStartedAt = Date.now();
+                    await sendProgress({ type: 'status', message: MODEL_THINKING_STATUS });
+                  }
+                  if (classified.text) {
+                    await sendProgress({ type: 'thinking', text: classified.text });
+                  }
+                  continue;
+                }
+                if (classified.kind === 'reasoning-end') {
+                  await finishThinking();
+                  continue;
+                }
+                // Tool parts are handled before the text path: they carry no
+                // reply text, and falling through would append `''` to the reply
+                // and run the fence scanner over nothing. Reaching `progress()`
+                // above is the point — a step that only writes files is
+                // otherwise silent for as long as the model takes to write them.
+                //
+                // The `tool-input-*` parts carry the tool arguments as they
+                // stream, which for `write_file` is the entire file. They are
+                // deliberately not forwarded as `stream` frames: they are JSON
+                // arguments, not prose, and chat shows the tool's own frames.
+                if (
+                  classified.kind === 'tool-call' ||
+                  classified.kind === 'tool-result' ||
+                  classified.kind === 'tool-error' ||
+                  classified.kind === 'tool-input-start' ||
+                  classified.kind === 'tool-input-delta' ||
+                  classified.kind === 'tool-input-end' ||
+                  classified.kind === 'step-finish'
+                ) {
+                  await finishThinking();
+                  continue;
+                }
+                await finishThinking();
+                const text = classified.text || '';
                 generatedCode += text;
                 const closedFiles = streamedFiles.push(text);
                 const capAbort = capTracker.addChunk(text);
@@ -1138,11 +1387,16 @@ async function generateAiCodeStream(request: NextRequest) {
                 if (hasOpenTag) {
                   // Send any buffered conversational text before the tag
                   if (conversationalBuffer.trim() && !isInTag) {
-                    await sendProgress({
-                      type: 'conversation',
-                      text: conversationalBuffer.trim(),
-                    });
+                    const speech = conversational.take(conversationalBuffer).trim();
                     conversationalBuffer = '';
+                    // A flush that was nothing but protocol sends no frame at all — an empty
+                    // `conversation` frame renders as an empty assistant bubble.
+                    if (speech) {
+                      await sendProgress({
+                        type: 'conversation',
+                        text: speech,
+                      });
+                    }
                   }
                   isInTag = true;
                 }
@@ -1198,6 +1452,7 @@ async function generateAiCodeStream(request: NextRequest) {
                   }
                 }
               }
+              await finishThinking();
 
               console.log('\n\n[generate-ai-code-stream] Streaming complete.');
 
@@ -1225,11 +1480,15 @@ async function generateAiCodeStream(request: NextRequest) {
                 });
               }
 
-              // Send any remaining conversational text
-              if (conversationalBuffer.trim()) {
+              // Send any remaining conversational text. `finish` runs unconditionally, even
+              // on an empty buffer: the scrubber may still be holding the front half of a
+              // directive from the last flush, and dropping it on the floor here is how half
+              // a token would reach the transcript on the next turn's re-read.
+              const remaining = conversational.finish(conversationalBuffer).trim();
+              if (remaining) {
                 await sendProgress({
                   type: 'conversation',
-                  text: conversationalBuffer.trim(),
+                  text: remaining,
                 });
               }
 
@@ -1285,7 +1544,53 @@ async function generateAiCodeStream(request: NextRequest) {
               // rejected usage promise must not take the run down: the
               // accumulator falls back to a character estimate of what was
               // sent and streamed.
-              runUsage.settle(await stream.usage.catch(() => undefined), generatedCode);
+              //
+              // `totalUsage`, never `usage`. The SDK documents `usage` as "the
+              // token usage of the last step" and `totalUsage` as the sum across
+              // steps. On the fence path there is exactly one step and the two
+              // are identical, which is why this read was correct for years; on
+              // the tool path a build is one step per `write_file` plus a
+              // closing one, so `usage` reported only the closing prose — a
+              // measured 338 output tokens for six files and ~430 lines of code.
+              // Everything downstream is derived from this number:
+              // `Job.estimatedCostUsd`, the `/admin/usage` figures, and
+              // `Workspace.spendUsd`, which is the auto-pause spend ceiling. It
+              // under-reports, and it under-reports silently.
+              //
+              // The text handed alongside is only the fallback when a provider
+              // omits its own count, and on the tool path the code went out as
+              // tool arguments rather than as streamed text — so that estimate
+              // is low too. It is a fallback, not the normal path.
+              runUsage.settle(
+                await stream.totalUsage.catch(() => undefined),
+                useTools
+                  ? [generatedCode, ...Object.values(toolStore.writtenFiles())].join('\n')
+                  : generatedCode,
+              );
+
+              // The budget is a cost guardrail, so hitting it is a warning on a
+              // succeeded job rather than a failure: every file in the store went
+              // through the same write gate as any other, so the partial site is
+              // real work the user has already paid for. Deliberately no
+              // `buildFix` retry either — an incomplete request very likely does
+              // fail the build, and spending two repair generations on half a
+              // brief is the opposite of a guardrail.
+              if (useTools) {
+                const stepCount = await stream.steps.then(
+                  (steps) => steps.length,
+                  // A rejected steps promise is not evidence the budget was hit.
+                  () => 0,
+                );
+                if (exhaustedStepBudget(stepCount, agentStepBudget)) {
+                  log.warn('generation.step_budget_exhausted', {
+                    jobId: generationJob?.id ?? null,
+                    steps: stepCount,
+                    limit: agentStepBudget,
+                    filesWritten: toolStore.writtenPaths().length,
+                  });
+                  await sendProgress({ type: 'warning', message: AGENT_STEP_BUDGET_MESSAGE });
+                }
+              }
 
               const summary = summarizeGenerationOutput(generatedCode);
               log.info('generation.stream_complete', {
@@ -1364,18 +1669,59 @@ async function generateAiCodeStream(request: NextRequest) {
         // server-side work: parse, persist, settle. The browser is welcome to
         // be gone for all of it.
 
-        // A reply that parsed to zero files but owed us some — it claimed a change, or
-        // pasted source that missed the `{path=…}` contract — gets exactly one corrective
-        // ask, against the provider that just answered.
+        // From here on, the two paths are one. Everything downstream — the
+        // owed-files classification, `stackShapeMismatch`, the build check, the
+        // caps and the settle — reads `files`, so the tool writes are folded
+        // into it once, here, rather than at each of those six call sites. The
+        // store is authoritative on this path: `files` from the fence scanner is
+        // empty by contract, because the reply is prose.
+        if (useTools) {
+          const writtenFiles = toolStore.writtenFiles();
+          files = toolStore.writtenPaths().map((path) => ({ path, content: writtenFiles[path] }));
+          // Once per distinct path, after the stream, never per tool call:
+          // `JobCapTracker.addFile` aborts with `loop_detected` on the third
+          // write to one path, and a legitimate write -> build -> rewrite cycle
+          // reaches three easily. Iteration is bounded by the step budget
+          // instead, which is the thing that actually costs money.
+          for (const file of files) {
+            const fileAbort = capTracker.addFile(file.path, file.content);
+            jobProgress?.addFile(file.path, file.content);
+            if (fileAbort) {
+              await jobProgress?.flush();
+              throw fileAbort;
+            }
+          }
+          // A deletion is a change with no file to show for it, so it has to be
+          // counted separately or `classifyReplyOutcome` below reads a turn that
+          // removed a file as "changed nothing" and fails a run that did exactly
+          // what was asked.
+          toolDeletions = toolStore.deletedPaths().length;
+        }
+
+        // A reply can owe two things, and both are asked for in one corrective turn against
+        // the provider that just answered. Files: the reply parsed to zero of them but
+        // claimed a change, or pasted source that missed the `{path=…}` contract. Pictures:
+        // it wrote its `NEED_IMAGE:` requests as prose instead of into a `src`, so the
+        // site it did send has no image where one was asked for — the live cafe build,
+        // eleven files with no `<img>` and an empty Assets tab. Buying those pictures
+        // instead of asking for them back produced the same empty page with a bill on it,
+        // so the repair is the same one owed files get: make the model put the token where
+        // the contract says it goes, then let the file-side fulfilment place it.
         //
         // This is deliberately not failover. Failover answers "is this vendor working", and
         // a model that talked is a working vendor: walking the chain for it pays a second
         // provider to repeat the mistake. Credits were charged once for this job, at
         // `markJobRunning({ chargeCredits: true })` before the first call, and nothing here
-        // charges again — the ask is part of the same job. It happens at most once: the
-        // `askedAgain` flag below is what stops a model that likes talking from being paid
-        // to talk in a loop.
+        // charges again — the ask is part of the same job, and it reaches no image provider
+        // at all. It happens at most once, whichever complaint prompted it: two consecutive
+        // corrective streams on one build is a worse trade than reporting the second miss.
+        //
+        // `askedForFilesAgain` is named for the complaint it was written for and now marks
+        // that single ask as spent, whatever was owed — it is what stops a model that likes
+        // talking from being paid to talk in a loop.
         let askedForFilesAgain = false;
+        /** Whether the ask that went out carried the pictures complaint, for the notice below. */
+        let askedToPlaceImages = false;
         const correctiveEntry =
           (servedProvider && servedModel
             ? providerChain.find(
@@ -1385,59 +1731,110 @@ async function generateAiCodeStream(request: NextRequest) {
             : null) ??
           providerChain[0] ??
           null;
+        // The corrective ask is fence-specific: it re-asks for `{path=…}` blocks.
+        // On the tool path a file either went through `write_file` or the model
+        // genuinely wrote none, and asking it to "use the fenced format" would
+        // contradict the output contract it was given and buy a second
+        // generation to do it.
+        const owedFiles =
+          !useTools &&
+          classifyReplyOutcome({
+            fileCount: files.length,
+            reply: generatedCode,
+            askedAgain: false,
+          }) === 'ask_again';
+        // A turn that changed nothing owes no pictures. "Which hero shot did you have in
+        // mind? Something like NEED_IMAGE: …" is a question, which `classifyReplyOutcome`
+        // reads as an answer — and starting a second generation over one is the same false
+        // failure that classifier exists to stop. Files sent, or files owed, is the exact
+        // complement of it here: the only other fileless outcome is a silent stream, which
+        // has no prose to read a request out of.
+        const owedImages =
+          files.length > 0 || owedFiles ? imagesOwedByReply({ reply: generatedCode, files }) : [];
         if (
           correctiveEntry &&
           // Nobody is listening, so this would buy tokens for a reply no one reads and a
           // build no one asked to see — the same reason the first call is skipped above.
           !clientDisconnected &&
-          classifyReplyOutcome({
-            fileCount: files.length,
-            reply: generatedCode,
-            askedAgain: false,
-          }) === 'ask_again'
+          (owedFiles || owedImages.length > 0)
         ) {
           askedForFilesAgain = true;
+          askedToPlaceImages = owedImages.length > 0;
           log.warn('generation.missing_files_ask_again', {
             jobId: generationJob?.id ?? null,
             provider: correctiveEntry.provider,
             model: correctiveEntry.model,
+            owedFiles,
+            owedImages: owedImages.length,
             ...summarizeGenerationOutput(generatedCode),
           });
           // Recorded even when the ask then succeeds. Without it this class of miss is
           // invisible in /admin/jobs, and the only evidence we ever had of it was a user's
-          // photograph of the chat.
-          await recordJobStepFailure(generationJob?.id, {
-            key: 'return-files',
-            label: 'Return the changed files',
-            error: MISSING_FILES_STEP_ERROR,
+          // photograph of the chat. One step per complaint, under its own key, because
+          // `recordJobStepFailure` merges by key and a page with no pictures and a reply
+          // with no files are different faults to read on the row.
+          if (owedFiles) {
+            await recordJobStepFailure(generationJob?.id, {
+              key: 'return-files',
+              label: 'Return the changed files',
+              error: MISSING_FILES_STEP_ERROR,
+            });
+          }
+          if (owedImages.length > 0) {
+            await recordJobStepFailure(generationJob?.id, {
+              key: 'place-images',
+              label: 'Place the requested images',
+              error: MISSING_IMAGES_STEP_ERROR,
+            });
+          }
+          // Plain words, never the protocol: the `NEED_IMAGE:` lines themselves are already
+          // stripped out of the transcript, so naming them here would put back exactly what
+          // the strip removes.
+          await sendProgress({
+            type: 'info',
+            message: [
+              owedFiles ? MISSING_FILES_ASKED_AGAIN : null,
+              owedImages.length > 0 ? unplacedImagesAskedAgain(owedImages.length) : null,
+            ]
+              .filter(Boolean)
+              .join(' '),
           });
-          await sendProgress({ type: 'info', message: MISSING_FILES_ASKED_AGAIN });
           try {
             // A second full generation: the whole message list again, plus the
             // echo and the correction. It was previously free of charge in the
             // books because the usage read only ever looked at the main stream.
+            //
+            // One turn carrying both complaints, each with the contract it broke quoted
+            // verbatim under it — `MISSING_FILES_CORRECTION` for the fenced output format,
+            // `imagePlacementCorrection` for where a token has to sit. Restating either in
+            // this file's own words is how two descriptions of one contract drift apart.
+            const correction = [
+              owedFiles ? MISSING_FILES_CORRECTION : null,
+              owedImages.length > 0 ? imagePlacementCorrection(owedImages) : null,
+            ]
+              .filter(Boolean)
+              .join('\n\n');
             const correctiveEcho = generatedCode.slice(0, CORRECTIVE_ECHO_CHARS);
-            runUsage.willSend(
-              `${promptTextForEstimate}\n${correctiveEcho}\n${MISSING_FILES_CORRECTION}`,
-            );
+            runUsage.willSend(`${promptTextForEstimate}\n${correctiveEcho}\n${correction}`);
             const capture = bindStreamErrorCapture();
-            const correctiveClient = clientForEntry(correctiveEntry, providerEnv);
             const corrective = capture.attach(
               streamText({
                 ...streamOptions,
-                model: correctiveClient(correctiveEntry.model),
+                model: wrapReasoningModel(
+                  chatModelForEntry(correctiveEntry, providerEnv, correctiveEntry.model),
+                ),
                 maxOutputTokens: Math.min(outputTokenCap, maxOutputTokensForEntry(correctiveEntry)),
                 // Decided from the entry that will actually serve this ask, not inherited
                 // from `streamOptions`: the corrective entry need not be the model the main
                 // call's decision was made for (F-041).
-                temperature: temperatureForModel(correctiveEntry.model),
+                temperature: temperatureForModel(correctiveEntry.model, { thinking }),
                 messages: [
                   ...(streamOptions.messages ?? []),
                   // Its own words back, capped: the claim is what it has to answer for, and
                   // a reply that ran to tens of thousands of tokens must not be bought a
                   // second time as input.
                   { role: 'assistant', content: correctiveEcho },
-                  { role: 'user', content: MISSING_FILES_CORRECTION },
+                  { role: 'user', content: correction },
                 ],
                 onError: capture.onError,
               }),
@@ -1470,23 +1867,54 @@ async function generateAiCodeStream(request: NextRequest) {
               },
             );
             if (correctedFiles.length > 0) {
-              generatedCode = correctedCode;
-              files = correctedFiles;
-              // Counted against the job's caps exactly like the first pass: the file cap and
-              // the per-path loop guard apply to the whole job, not per stream, and
-              // `partialFiles` is what "keep what was built" recovers.
-              for (const file of files) {
-                const fileAbort = capTracker.addFile(file.path, file.content);
-                jobProgress?.addFile(file.path, file.content);
-                if (fileAbort) {
-                  await jobProgress?.flush();
-                  throw fileAbort;
+              // Adopted only when it produced what was owed, judged per complaint. Files
+              // owed and files arrived is already answered by the branch above, and taking
+              // them costs nothing because a reply that owed files had none. Pictures are
+              // the case that can still miss: a model can obey "send the files" while
+              // describing the images in prose a second time, and swapping the eleven files
+              // the user watched arrive for whatever the nudge resent would leave the page
+              // without a photograph anyway. So the first reply stands only when it was the
+              // pictures alone that were owed — never when doing so would also throw away
+              // the files this ask finally produced.
+              const placedImages = imagesPlacedIn(correctedFiles, owedImages);
+              if (!owedFiles && owedImages.length > 0 && placedImages === 0) {
+                log.warn('generation.missing_images_ask_again_missed', {
+                  jobId: generationJob?.id ?? null,
+                  owedImages: owedImages.length,
+                  correctedFiles: correctedFiles.length,
+                  ...summarizeGenerationOutput(correctedCode),
+                });
+              } else {
+                // Appended rather than substituted whenever the first reply produced files —
+                // which is every pictures-only ask, where those files *are* the site and the
+                // correction resends only the two or three that carry a token. `filesFromReply`
+                // keys on the declared path and lets the later block win, so the corrected file
+                // replaces its twin and the ones it did not resend survive; the settle re-parses
+                // this same text, so the array and the stored map agree. With no files in the
+                // first reply there is nothing to keep, and the corrected reply stands alone.
+                if (files.length > 0) {
+                  generatedCode = `${generatedCode}\n\n${correctedCode}`;
+                } else {
+                  generatedCode = correctedCode;
                 }
+                files = mergeGeneratedFiles(files, correctedFiles);
+                // Counted against the job's caps exactly like the first pass: the file cap and
+                // the per-path loop guard apply to the whole job, not per stream, and
+                // `partialFiles` is what "keep what was built" recovers. Only the corrected
+                // files, because the first reply's were counted as they streamed.
+                for (const file of correctedFiles) {
+                  const fileAbort = capTracker.addFile(file.path, file.content);
+                  jobProgress?.addFile(file.path, file.content);
+                  if (fileAbort) {
+                    await jobProgress?.flush();
+                    throw fileAbort;
+                  }
+                }
+                await sendProgress({
+                  type: 'info',
+                  message: `The second ask returned ${correctedFiles.length} file${correctedFiles.length === 1 ? '' : 's'}.`,
+                });
               }
-              await sendProgress({
-                type: 'info',
-                message: `The second ask returned ${files.length} file${files.length === 1 ? '' : 's'}.`,
-              });
             } else {
               // The first reply is kept when the ask adds nothing: it is what the user
               // watched arrive, and adopting a second helping of prose would let a nudged
@@ -1512,17 +1940,42 @@ async function generateAiCodeStream(request: NextRequest) {
           }
         }
 
-        // Extract explanation
+        // Extract explanation, and only an explanation the model actually wrote.
+        //
+        // No prompt in `lib/stack-prompts/*` asks for an `<explanation>` block — the
+        // output contract is fenced ```lang{path=…} files and prose — so this matched
+        // nothing on every real run and the `'Code generated successfully!'` default it
+        // used to carry is what shipped. It rode the `complete` frame, and the workspace
+        // posts that as an `ai` message under a guard a non-empty default can never fail,
+        // so every finished build closed with a canned sentence attributed to the model,
+        // immediately after the model's own closing words: the duplicate closing line
+        // F-053 removed, rebuilt out of a fallback value. Nothing is invented here now,
+        // and `explanation` no longer rides the frame at all.
+        //
+        // When the tag *is* present its text reaches chat the way every other word the
+        // model speaks does — one scrubbed `conversation` frame. That was the second half
+        // of the bug: the `isInTag` gate in the stream loop keeps an `<explanation>` block
+        // out of `conversationalBuffer`, so this extraction was the one route to the
+        // transcript that `createConversationalScrubber` did not cover, and a
+        // `NEED_IMAGE:` or `Skill:` directive written inside the block would have been
+        // read verbatim by the user.
         const explanationMatch = generatedCode.match(/<explanation>([\s\S]*?)<\/explanation>/);
-        const explanation = explanationMatch
-          ? explanationMatch[1].trim()
-          : 'Code generated successfully!';
+        if (explanationMatch) {
+          const spoken = createConversationalScrubber().finish(explanationMatch[1]).trim();
+          if (spoken) await sendProgress({ type: 'conversation', text: spoken });
+        }
 
         // Validate generated code for truncation issues. Keyed to the fenced `{path=…}`
         // contract the prompt actually specifies: this used to count `<file path="` tags,
         // a shape no prompt asks for, so the warnings were always empty, the recovery
         // below was unreachable and a reply cut off mid-file shipped as a finished build.
-        const truncatedFiles = detectTruncatedFiles(generatedCode);
+        //
+        // Skipped entirely on the tool path. There is no fence to be left
+        // unclosed: a `write_file` call either arrived with complete content or
+        // did not arrive, and the scanner run over a prose reply would either
+        // find nothing (wasted) or match prose that looks like code and buy a
+        // recovery generation to "complete" a file that was never truncated.
+        const truncatedFiles = useTools ? [] : detectTruncatedFiles(generatedCode);
         const truncationWarnings: string[] = truncatedFiles.map((file) => file.warning);
 
         // Handle truncation with automatic retry (if enabled in config)
@@ -1585,7 +2038,6 @@ ${wrapUserRequest(prompt)}
 
 Provide the complete file content without any truncation. Include all necessary imports, complete all functions, and close all tags properly.`;
 
-                const recoveryClient = clientForEntry(recoveryEntry, providerEnv);
                 // One call per truncated file, each with its own prompt. None of
                 // them were counted: `collectRecoveredStreamText` drains the
                 // stream and never touches usage.
@@ -1593,7 +2045,9 @@ Provide the complete file content without any truncation. Include all necessary 
                 const capture = bindStreamErrorCapture();
                 const completionResult = capture.attach(
                   streamText({
-                    model: recoveryClient(recoveryEntry.model),
+                    model: wrapReasoningModel(
+                      chatModelForEntry(recoveryEntry, providerEnv, recoveryEntry.model),
+                    ),
                     messages: [
                       {
                         role: 'system',
@@ -1606,7 +2060,7 @@ Provide the complete file content without any truncation. Include all necessary 
                     // OpenAI test that can never be true for a DeepSeek id, so `-pro` (which
                     // the main call is careful to exclude) received a temperature and every
                     // recovery call on that model was rejected by the provider (F-041).
-                    temperature: temperatureForModel(recoveryEntry.model),
+                    temperature: temperatureForModel(recoveryEntry.model, { thinking }),
                     // truncationRecoveryMaxTokens existed in config but was never passed,
                     // so recovery ran uncapped and could truncate a second time.
                     maxOutputTokens: Math.min(
@@ -1726,6 +2180,21 @@ Provide the complete file content without any truncation. Include all necessary 
           }
         }
 
+        // Recovery off is not silence: when nothing re-asks for the cut-off files, this
+        // step is the only trace detection leaves where an operator looks. With recovery
+        // on, the truncation-recovery step above already records the outcome, and a full
+        // repair clears the warnings entirely.
+        if (
+          truncationWarnings.length > 0 &&
+          !appConfig.codeApplication.enableTruncationRecovery
+        ) {
+          await recordJobStepFailure(generationJob?.id, {
+            key: 'truncation-detected',
+            label: 'Check the reply for cut-off files',
+            error: truncationDetectedStepError(truncationWarnings),
+          });
+        }
+
         // Everything this run spent, across every call. `close` charges a call
         // that was announced and never settled — an aborted or rejected stream
         // whose prompt the provider still billed.
@@ -1763,10 +2232,13 @@ Provide the complete file content without any truncation. Include all necessary 
         // Morph `<edit>` block count was evidence of nothing, so counting it let an edit
         // that changed nothing report success), and a reply that owed files and did not
         // deliver after being asked twice is still a failure. An answer is not.
+        // A departed client never got the corrective ask, so a reply that owed files
+        // cannot discharge the debt here: counting the ask as spent classifies it as the
+        // no-files failure it is, instead of settling success over an unchanged site.
         const replyOutcome = classifyReplyOutcome({
-          fileCount: files.length,
+          fileCount: files.length + toolDeletions,
           reply: generatedCode,
-          askedAgain: askedForFilesAgain,
+          askedAgain: askedForFilesAgain || clientDisconnected,
         });
         const chatAnswer = replyOutcome === 'answer';
         const hadNoChanges = replyOutcome === 'no_files';
@@ -1822,6 +2294,10 @@ Provide the complete file content without any truncation. Include all necessary 
                     ...Object.fromEntries(files.map((file) => [file.path, file.content])),
                   },
                   changedPaths: files.map((file) => file.path),
+                  // Without this the static scan cannot see the starter kit and
+                  // reports `@/lib/utils` as an unresolved import, spending a
+                  // repair generation rewriting correct code.
+                  designDirection: projectDirection,
                   jobId: generationJob?.id ?? null,
                   attempt: Number(buildFixAttempt ?? 0),
                   previousSignature:
@@ -1894,6 +2370,14 @@ Provide the complete file content without any truncation. Include all necessary 
                 jobId: generationJob.id,
                 producedFiles: files.length,
                 streamedCode: generatedCode,
+                // On the tool path the store is the record of what was written;
+                // `generatedCode` is prose and parses to nothing.
+                producedFileMap: useTools ? toolStore.writtenFiles() : null,
+                // The other half of the tool path's output. Kept out of
+                // `producedFileMap` because a key there means "store this
+                // content", and an empty string is a legal file rather than a
+                // "remove this" sentinel.
+                deletedPaths: useTools ? toolStore.deletedPaths() : null,
                 noChangeReason,
                 stackMismatchReason,
                 tokensIn: inputTokens,
@@ -1988,6 +2472,16 @@ Provide the complete file content without any truncation. Include all necessary 
         }
 
         if (streamSettle?.outcome === 'failed') {
+          // Stop / Start over settled the row between stream end and settle. That is the
+          // person's own stop, not a persist failure: no step failure, no trackFailure,
+          // and none of the "workspace never became ready" copy.
+          if (streamSettle.errorCode === 'cancelled') {
+            log.info('generation.settled_cancelled_elsewhere', {
+              jobId: generationJob?.id ?? null,
+            });
+            await sendProgress({ type: 'info', message: CANCELLED_BEFORE_SAVING_LINE });
+            return;
+          }
           const persistMiss =
             streamSettle.errorMessage ||
             'The generated files were not saved because the workspace never became ready.';
@@ -2041,6 +2535,61 @@ Provide the complete file content without any truncation. Include all necessary 
           });
         }
 
+        // The honest floor under the corrective ask: pictures the model described in words
+        // and never placed. Reached whichever way that happened — the ask was skipped, the
+        // ask failed, or the model wrote prose a second time — and `asked` is what keeps
+        // the sentence from claiming a retry that never went out. Read off the final reply
+        // and the final file list, so a correction that put the tokens in a `src` says
+        // nothing here and the file-side fulfilment gets on with making them.
+        //
+        // Nothing bought these. A picture nothing references is spend with no product: the
+        // round before this one fulfilled prose requests as real assets, up to six image
+        // credits for a page that still had no photograph on it and a chat line asking the
+        // customer to place them. So the person is told the truth instead of billed for
+        // assets that are not on the page. Plain words, never the protocol: the
+        // `NEED_IMAGE:` lines are stripped from the transcript, and naming them here would
+        // put back exactly what the strip removes.
+        //
+        // The settle counts the same requests off the same final reply and says so itself
+        // (`replyDescribedImagesNotice`), so this speaks only when that sentence did not
+        // arrive — one fact, one line in the transcript. It is still logged either way,
+        // because `asked` is the part only this side knows and it is what tells an operator
+        // whether the corrective ask is working.
+        const unplacedImages = imagesOwedByReply({ reply: generatedCode, files });
+        if (unplacedImages.length > 0) {
+          log.warn('generation.images_unplaced', {
+            jobId: generationJob?.id ?? null,
+            count: unplacedImages.length,
+            asked: askedToPlaceImages,
+            reportedBySettle: Boolean(streamSettle?.imageNotice),
+          });
+          if (!streamSettle?.imageNotice) {
+            await sendProgress({
+              type: 'warning',
+              message: unplacedImagesNotice({
+                count: unplacedImages.length,
+                asked: askedToPlaceImages,
+              }),
+            });
+          }
+        }
+
+        // What the settle made of the tokens that did reach a file: how many became real
+        // pictures and how many no provider could serve. Deleting a request without saying
+        // anything would trade one silent failure for another. `warning` when a picture is
+        // genuinely missing, `info` otherwise: both land in chat as a system line
+        // (`generation-runtime.ts`).
+        if (streamSettle?.imageNotice) {
+          log.info('generation.images_reported', {
+            jobId: generationJob?.id ?? null,
+            ...streamSettle.images,
+          });
+          await sendProgress({
+            type: (streamSettle.images?.unfulfilled ?? 0) > 0 ? 'warning' : 'info',
+            message: streamSettle.imageNotice,
+          });
+        }
+
         trackSuccess('generation.success', {
           action: 'generation',
           stack: projectStack,
@@ -2054,10 +2603,14 @@ Provide the complete file content without any truncation. Include all necessary 
         // browser already accumulated this exact text from the `stream` frames:
         // it is the largest payload in the product and was sent twice on every
         // build (F-043). `completedCodeFromFrame` reads the buffer back client-side.
+        //
+        // No `explanation` field: the workspace turns one into an `ai` chat message,
+        // and the only value this frame ever carried was the canned default removed
+        // above. What the model said is already in chat, sent as `conversation`
+        // frames by the stream loop as it said it.
         await sendProgress({
           type: 'complete',
           generatedCode: shouldSendGeneratedCode(streamedReply) ? generatedCode : undefined,
-          explanation,
           files: files.length,
           components: componentCount,
           model,

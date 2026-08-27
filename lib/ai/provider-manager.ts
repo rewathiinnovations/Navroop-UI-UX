@@ -1,15 +1,8 @@
 import type { OpenAIProvider } from '@ai-sdk/openai';
 import { log } from '@/lib/logger';
-import { clientForEntry } from './client-for-entry';
+import { clientForEntry, clientIdentityForEntry, thinkingEnabledFromEnv } from './client-for-entry';
 import { loadEffectiveProviderEnv } from './effective-env';
-import {
-  DEEPSEEK_BASE_URL_ENV,
-  DEEPSEEK_DEFAULT_BASE_URL,
-  getProviderApiKey,
-  isDeepSeekModel,
-  requireUsableProviderChain,
-  type ProviderEntry,
-} from './providers';
+import { isDeepSeekModel, requireUsableProviderChain, type ProviderEntry } from './providers';
 
 /**
  * Resolves the client for the app's own AI helpers (edit planning, import
@@ -42,17 +35,29 @@ export type ProviderClient = OpenAIProvider;
 export interface ProviderResolution {
   client: ProviderClient;
   actualModel: string;
+  /**
+   * Whether the client this resolution returns sends `thinking: { type: 'enabled' }`.
+   *
+   * Read from the same `env` the client was built from, and returned rather than
+   * left for the caller to re-derive: a thinking model rejects a request that also
+   * carries a `temperature`, so the two decisions have to come from one reading.
+   * A caller that guessed would send both and be refused.
+   */
+  thinking: boolean;
 }
 
 let cachedClient: ProviderClient | null = null;
 let cachedKey = '';
 
 function clientFor(entry: ProviderEntry, env: Record<string, string | undefined>): ProviderClient {
-  // Keyed on the resolved credential, not on process.env: changing the key in
-  // Admin → Configuration must retire this client, not keep serving one built
-  // from the superseded value for the life of the process.
-  const baseURL = env[DEEPSEEK_BASE_URL_ENV]?.trim() || DEEPSEEK_DEFAULT_BASE_URL;
-  const key = `${getProviderApiKey(entry, env) ?? ''}:${baseURL}`;
+  // Keyed on everything the client was built from, not on process.env: changing any of it
+  // in Admin → Configuration must retire this client, not keep serving one built from the
+  // superseded values for the life of the process. The key is computed by the module that
+  // builds the client (`clientIdentityForEntry`) rather than spelled out again here — the
+  // hand-written `apiKey + ':' + baseURL` version stopped covering the client the moment
+  // the thinking flag was baked into its fetch, so the "Thinking / reasoning" toggle was
+  // obeyed by generation and ignored by every helper that comes through this cache.
+  const key = clientIdentityForEntry(entry, env);
   if (!cachedClient || cachedKey !== key) {
     cachedClient = clientForEntry(entry, env);
     cachedKey = key;
@@ -91,7 +96,11 @@ export async function getProviderForModel(
     // ids, and the substitution used to be invisible on both sides.
     log.warn('ai.unknown_model_substituted', { requestedModel: modelId, actualModel: entry.model });
   }
-  return { client: clientFor(entry, env), actualModel: entry.model };
+  return {
+    client: clientFor(entry, env),
+    actualModel: entry.model,
+    thinking: thinkingEnabledFromEnv(env),
+  };
 }
 
 export default getProviderForModel;

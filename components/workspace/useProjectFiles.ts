@@ -5,6 +5,8 @@ import { PROJECT_FILES_CHANGED_EVENT } from '@/lib/preview/events';
 
 export type ProjectFiles = {
   stack: string;
+  /** Decides the starter stylesheet's token block, so the preview shows this project's palette. */
+  designDirection: string | null;
   files: Record<string, string>;
   loading: boolean;
   error: string | null;
@@ -20,6 +22,7 @@ export type ProjectFiles = {
  */
 export function useProjectFiles(projectId: string | null): ProjectFiles {
   const [stack, setStack] = useState('NEXTJS');
+  const [designDirection, setDesignDirection] = useState<string | null>(null);
   const [files, setFiles] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(Boolean(projectId));
   const [error, setError] = useState<string | null>(null);
@@ -38,11 +41,16 @@ export function useProjectFiles(projectId: string | null): ProjectFiles {
     fetch(`/api/projects/${projectId}/files`)
       .then(async (response) => {
         if (!response.ok) throw new Error(`Could not load the project files (${response.status})`);
-        return (await response.json()) as { stack: string; files: Record<string, string> };
+        return (await response.json()) as {
+          stack: string;
+          designDirection?: string | null;
+          files: Record<string, string>;
+        };
       })
       .then((data) => {
         if (cancelled) return;
         setStack(data.stack);
+        setDesignDirection(data.designDirection ?? null);
         setFiles(data.files ?? {});
         setError(null);
       })
@@ -64,5 +72,5 @@ export function useProjectFiles(projectId: string | null): ProjectFiles {
     return () => window.removeEventListener(PROJECT_FILES_CHANGED_EVENT, reload);
   }, [reload]);
 
-  return { stack, files, loading, error, reload };
+  return { stack, designDirection, files, loading, error, reload };
 }

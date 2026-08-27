@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   completedCodeFromFrame,
   shouldSendGeneratedCode,
+  truncationWarningLine,
   type StreamedReplyState,
 } from '@/lib/generation/complete-frame';
 
@@ -74,5 +75,32 @@ describe('completedCodeFromFrame', () => {
     expect(sent).toBeUndefined();
     // …and the client rebuilds it from its own accumulated buffer.
     expect(completedCodeFromFrame(sent, reply)).toBe(reply);
+  });
+});
+
+describe('truncationWarningLine', () => {
+  it('is null when the frame carries no warnings', () => {
+    expect(truncationWarningLine(undefined)).toBeNull();
+    expect(truncationWarningLine(null)).toBeNull();
+    expect(truncationWarningLine('not an array')).toBeNull();
+    expect(truncationWarningLine([])).toBeNull();
+  });
+
+  it('ignores entries that are not non-empty strings', () => {
+    expect(truncationWarningLine([42, '', null, 'File src/App.tsx was cut off'])).toBe(
+      'This reply looks cut off mid-file: File src/App.tsx was cut off',
+    );
+  });
+
+  it('names at most three files and counts the rest', () => {
+    const warnings = [
+      'File a.ts was cut off',
+      'File b.ts was cut off',
+      'File c.ts was cut off',
+      'File d.ts was cut off',
+    ];
+    expect(truncationWarningLine(warnings)).toBe(
+      'This reply looks cut off mid-file: File a.ts was cut off File b.ts was cut off File c.ts was cut off (+1 more)',
+    );
   });
 });

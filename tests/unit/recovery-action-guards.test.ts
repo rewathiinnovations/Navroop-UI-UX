@@ -28,7 +28,8 @@ const store = vi.hoisted(() => ({
   claimKeptPartialJob: vi.fn(),
   getActiveJob: vi.fn(),
   getJob: vi.fn(),
-  getLatestJob: vi.fn(),
+  getLatestJobByKind: vi.fn(),
+  getLatestJobOfKinds: vi.fn(),
   releaseKeptPartialClaim: vi.fn(),
   setProjectResumablePhase: vi.fn(),
   settleKeptPartialJob: vi.fn(),
@@ -53,7 +54,8 @@ vi.mock('@/lib/jobs/store', () => ({
   claimKeptPartialJob: store.claimKeptPartialJob,
   getActiveJob: store.getActiveJob,
   getJob: store.getJob,
-  getLatestJob: store.getLatestJob,
+  getLatestJobByKind: store.getLatestJobByKind,
+  getLatestJobOfKinds: store.getLatestJobOfKinds,
   releaseKeptPartialClaim: store.releaseKeptPartialClaim,
   setProjectResumablePhase: store.setProjectResumablePhase,
   settleKeptPartialJob: store.settleKeptPartialJob,
@@ -75,7 +77,31 @@ const JOB = {
   lastStep: 'writing_files',
   errorCode: 'provider_error',
   creditsChargedAt: new Date('2026-08-19T00:00:00.000Z'),
+  createdAt: new Date('2026-08-19T00:00:00.000Z'),
 };
+
+/**
+ * The project's job rows, answered the way the kind-scoped lookup asks for them.
+ *
+ * `getLatestChatJob` asks for the chat kinds and nothing else — in one statement, with the
+ * set bound into it — so a row of any other kind is unreachable from the no-jobId fallback
+ * however new it is. That is the whole point of the fix: filtering by kind *after*
+ * `ORDER BY createdAt DESC LIMIT 1` filters a row that has already been chosen.
+ */
+function jobHistory(rows: Array<Record<string, unknown>>) {
+  const newestOf = (kinds: readonly string[]) => {
+    const matches = rows.filter((row) => kinds.includes(row.kind as string)) as Array<{
+      createdAt: Date;
+    }>;
+    return matches.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0] ?? null;
+  };
+  store.getLatestJobOfKinds.mockImplementation(
+    async (_projectId: string, kinds: readonly string[]) => newestOf(kinds),
+  );
+  store.getLatestJobByKind.mockImplementation(async (_projectId: string, kind: string) =>
+    newestOf([kind]),
+  );
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -161,7 +187,7 @@ describe('resolveRecoveryTarget', () => {
     expect(result).not.toHaveProperty('job');
     // A named job is judged on its own row. Asking "is it the newest?" instead is what made
     // a ZIP download lock the panel out.
-    expect(store.getLatestJob).not.toHaveBeenCalled();
+    expect(store.getLatestJobByKind).not.toHaveBeenCalled();
   });
 
   it('acts on the named build even when a bookkeeping job is newer', async () => {
@@ -169,12 +195,16 @@ describe('resolveRecoveryTarget', () => {
     // check. Downloading the ZIP with the recovery panel open used to answer "This project
     // has moved on" about a build that was exactly where it was left.
     store.getJob.mockResolvedValue(JOB);
-    store.getLatestJob.mockResolvedValue({
-      ...JOB,
-      id: 'job-9',
-      kind: 'EXPORT',
-      status: 'SUCCEEDED',
-    });
+    jobHistory([
+      {
+        ...JOB,
+        id: 'job-9',
+        kind: 'EXPORT',
+        status: 'SUCCEEDED',
+        createdAt: new Date('2026-08-19T01:00:00.000Z'),
+      },
+      JOB,
+    ]);
     store.getActiveJob.mockResolvedValue(null);
 
     const result = await resolveRecoveryTarget('proj-1', 'job-1');
@@ -202,22 +232,53 @@ describe('resolveRecoveryTarget', () => {
   it('will not reach a running publish when the client names no job', async () => {
     // The watchdog can open the recovery panel with no job object, so the server falls back
     // to the newest job — this is the case where that fallback used to cancel a publish.
-    store.getLatestJob.mockResolvedValue({ ...JOB, kind: 'PUBLISH', status: 'RUNNING' });
+    // A publish is not a chat kind, so the lookup never asks for one and there is nothing
+    // left to refuse: no job, not the wrong job.
+    jobHistory([{ ...JOB, kind: 'PUBLISH', status: 'RUNNING' }]);
 
     const result = await resolveRecoveryTarget('proj-1', undefined);
 
-    expect(result).toMatchObject({ ok: false, code: 'NOT_RECOVERABLE', status: 409 });
+    expect(result).toMatchObject({ ok: false, code: 'NOT_FOUND', status: 404 });
     expect(result).not.toHaveProperty('job');
+    expect(store.getLatestJobByKind).not.toHaveBeenCalledWith('proj-1', 'PUBLISH');
   });
 
   it('falls back to the newest chat job when the client names none', async () => {
-    store.getLatestJob.mockResolvedValue(JOB);
+    jobHistory([JOB]);
     store.getActiveJob.mockResolvedValue(null);
 
     const result = await resolveRecoveryTarget('proj-1', undefined);
 
     expect(result).toMatchObject({ ok: true, job: { id: 'job-1' } });
     expect(store.getJob).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The auto quality scan files a settled AUDIT row when it finishes — `insertSettledJob`
+   * stamps `createdAt` with the scan's `startedAt`, later than the build's — so on every
+   * project that had ever built successfully the newest row was a scan. `getLatestJob` is
+   * kind-blind, and the `showsChatRecovery` test below it then refused what it returned, so
+   * the fallback answered 409 NOT_RECOVERABLE about a build sitting exactly where it was
+   * left: every button on a watchdog-opened recovery panel, dead. One DeepSeek 429 during
+   * the scan is enough to produce the row.
+   */
+  it('resolves the build, not the newer AUDIT row a failed scan left behind', async () => {
+    jobHistory([
+      { ...JOB, status: 'FAILED' },
+      {
+        ...JOB,
+        id: 'job-scan',
+        kind: 'AUDIT',
+        status: 'FAILED',
+        errorCode: 'provider_error',
+        createdAt: new Date('2026-08-19T00:05:00.000Z'),
+      },
+    ]);
+    store.getActiveJob.mockResolvedValue(null);
+
+    const result = await resolveRecoveryTarget('proj-1', undefined);
+
+    expect(result).toMatchObject({ ok: true, job: { id: 'job-1', kind: 'BUILD' } });
   });
 
   it('returns the job when the panel is still current', async () => {

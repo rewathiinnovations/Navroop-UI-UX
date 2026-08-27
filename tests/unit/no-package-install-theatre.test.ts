@@ -26,8 +26,17 @@ import {
  * stage (`installing`) that nothing ever set.
  *
  * The in-browser preview resolves dependencies to pinned esm.sh URLs
- * (`lib/preview/deps.ts`) and reports what it cannot resolve through
- * `findUnsupportedImports`. That is the real mechanism, and it is the only one.
+ * (`lib/preview/deps.ts`) and refuses the ones it cannot serve in
+ * `resolveBareSpecifier` (`lib/preview/resolve-bare.ts`), which is the resolve
+ * hook of both bundlers — so an unresolvable package is a build error rather than
+ * a clean compile that dies in the iframe. That is the real mechanism, and it is
+ * the only one.
+ *
+ * `findUnsupportedImports` used to be named here as that mechanism. It never had a
+ * production caller, and the resolver now does the job at the point that decides
+ * the build, so it is gone. The two copy assertions below stay true and stay
+ * asserted: nothing is installed for the preview — a dependency is *registered*
+ * in `package.json`, and resolution is still from the CDN.
  */
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));

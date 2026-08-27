@@ -60,13 +60,14 @@ export async function createProductionPreviewDeps(
 ): Promise<BuildStaticPreviewDeps | null> {
   const project = await prisma.project.findFirst({
     where: { id: projectId, deletedAt: null },
-    select: { id: true, stack: true, lastCode: true },
+    select: { id: true, stack: true, lastCode: true, designDirection: true },
   });
   if (!project) return null;
 
   return {
     stack: project.stack,
     files: getCurrentProjectFiles({ lastCode: project.lastCode }),
+    designDirection: project.designDirection,
     store: prismaStore(),
     storage: {
       async upload(input) {

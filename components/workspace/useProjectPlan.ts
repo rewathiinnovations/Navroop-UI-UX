@@ -179,6 +179,33 @@ export function useProjectPlan({
     [projectId],
   );
 
+  const updatePlan = useCallback(
+    async (content: WorkspacePlan['content']) => {
+      if (!projectId || !plan) return { ok: false as const, error: 'No plan to edit' };
+      try {
+        const response = await fetch(`/api/projects/${projectId}/plan`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ planId: plan.id, content }),
+        });
+        const data = (await response.json().catch(() => null)) as {
+          plan?: unknown;
+          error?: string;
+        } | null;
+        if (!response.ok) {
+          return { ok: false as const, error: data?.error || 'Could not save the plan' };
+        }
+        const next = toWorkspacePlan(data?.plan);
+        if (!next) return { ok: false as const, error: 'Could not read the saved plan' };
+        setPlan(next);
+        return { ok: true as const };
+      } catch {
+        return { ok: false as const, error: 'Could not save the plan' };
+      }
+    },
+    [plan, projectId],
+  );
+
   const approve = useCallback(async () => {
     if (!projectId || approving) return { ok: false as const, error: 'Project is not ready' };
     setApproving(true);
@@ -240,6 +267,7 @@ export function useProjectPlan({
     approving,
     refine,
     approve,
+    updatePlan,
     refresh,
     watchForPlan,
   };

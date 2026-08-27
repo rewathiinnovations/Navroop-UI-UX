@@ -11,8 +11,15 @@ export type PersistProjectInput = {
   previewUrl?: string | null;
   screenshot?: string | null;
   lastCode?: string | null;
-  status?: string | null;
-  progressMessage?: string | null;
+  // No status / progressMessage — and this save was never the writer of either.
+  // `saveCurrentProject`, its only caller, runs on the URL-import path to create the
+  // row; a build's status came from `setJobStatus` in lib/generation/generation-runtime.ts,
+  // which is where the repeating write was and where it was removed. What is left there
+  // is one terminal PATCH per run, because `generationStatus: 'ready'` is what makes
+  // `persistProjectGeneration` cut the checkpoint and build the preview. Progress itself
+  // is the server's: `markJobRunning` writes `generating` onto the row,
+  // `createProgressBatcher` writes the step and partial files onto the Job row, and the
+  // workspace polls both back through GET /api/projects/{id}/job.
   sourceMessage?: string | null;
   source?: string | null;
 };
@@ -30,9 +37,6 @@ export async function persistProject(input: PersistProjectInput) {
     thumbnailUrl: input.screenshot,
     screenshot: input.screenshot,
     lastCode: input.lastCode,
-    generationStatus: input.status,
-    status: input.status,
-    progressMessage: input.progressMessage,
     sourceMessage: input.sourceMessage,
     source: input.source,
   };

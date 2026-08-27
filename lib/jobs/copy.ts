@@ -70,6 +70,8 @@ const CAUSE_LINES: Record<JobErrorCode, string> = {
   queue_timeout: 'The build waited too long in the queue',
   client_disconnected: CLIENT_DISCONNECTED_MESSAGE,
   no_files_generated: 'The AI finished without producing any files',
+  no_checks_available:
+    'No code check could run on this deployment — an operator has to enable them',
   stack_mismatch:
     "The AI wrote files that don't fit this project's framework, so they were not applied",
   tool_call_validation_failed: 'The AI replied in a form we could not use — try again',
@@ -239,6 +241,9 @@ const NO_RETRY_CODES = new Set<string>([
   'push_refused',
   // There is nothing left to retry against: the project row is gone.
   'project_deleted',
+  // Retrying re-runs the same absent checks and refuses identically; the remedy is an
+  // operator enabling a check, not another attempt.
+  'no_checks_available',
 ]);
 
 export function offersRecoveryRetry(input: {
@@ -355,7 +360,13 @@ export function applyOutcome(input: {
   const failed = input.errors.filter(isApplyFileFailure).length;
 
   if (failed === 0) {
-    return { message: `Successfully applied ${created} files`, warning: null };
+    // `countLabel`, not `${created} files`: every single-file edit on the tool path
+    // closes with this sentence, and "Successfully applied 1 files" was the
+    // flagship copy of that path. Zero and two are unchanged.
+    return {
+      message: `Successfully applied ${countLabel(created, 'file', 'files')}`,
+      warning: null,
+    };
   }
 
   const failedBit = countLabel(failed, 'file could not be written', 'files could not be written');

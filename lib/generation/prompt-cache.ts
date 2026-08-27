@@ -14,7 +14,24 @@
  */
 
 export type CachedGenerationMessage = {
-  role: 'system' | 'user';
+  /**
+   * `assistant` is included because the tool path turns one request into a
+   * multi-step conversation and a two-role union would claim otherwise.
+   * `buildCachedMessages` still returns exactly the two-element prefix below: the
+   * later turns are the SDK's to append, not this function's to invent.
+   *
+   * `'tool'` is deliberately **not** here, and that is a structural fact rather
+   * than a preference. A tool result's `content` in the AI SDK is a structured
+   * `ToolContent` array, not a string — so `{ role: 'tool', content: string }` is
+   * assignable to no member of `ModelMessage`, and adding it makes this whole
+   * alias unassignable at both call sites (`streamText` here and `generateText` in
+   * `lib/projects/plan.ts`). A type that has to be cast away at every use is worse
+   * than a narrow one.
+   *
+   * Tool *definitions* travel in `streamText`'s `tools` field rather than in the
+   * messages, so they cost the cached prefix nothing.
+   */
+  role: 'system' | 'user' | 'assistant';
   content: string;
 };
 

@@ -409,3 +409,111 @@ describe('settleStreamedGeneration — the site write is atomic', () => {
     expect(after.contentVersion).toBe(before.contentVersion + 1);
   });
 });
+
+/**
+ * `delete_file` and the second half of `rename_file` are only real if the removal
+ * survives the persist step. The payload the tool path hands settle is a
+ * path→content map, in which an empty string is a legal file — so a deletion
+ * cannot be expressed there and travels as its own list. These pin that it
+ * arrives, and that it survives the compare-and-set retry, which re-merges onto a
+ * fresh base and would otherwise resurrect the file.
+ */
+describe('settleStreamedGeneration — deletions', () => {
+  it('removes a deleted path from the stored site', async () => {
+    const job = await startBuild();
+    await prisma.project.update({
+      where: { id: PROJECT },
+      data: {
+        lastCode:
+          '<file path="app/page.tsx">\nexport const a = 1;\n</file>\n<file path="app/old.tsx">\nexport const old = 1;\n</file>',
+      },
+    });
+
+    const settled = await settleStreamedGeneration({
+      jobId: job.id,
+      producedFiles: 1,
+      streamedCode: 'Removed the unused route.',
+      producedFileMap: { 'app/page.tsx': 'export const a = 2;' },
+      deletedPaths: ['app/old.tsx'],
+    });
+
+    expect(settled.outcome).toBe('succeeded');
+    const after = await prisma.project.findUniqueOrThrow({
+      where: { id: PROJECT },
+      select: { lastCode: true },
+    });
+    expect(after.lastCode).toContain('app/page.tsx');
+    expect(after.lastCode).toContain('export const a = 2;');
+    expect(after.lastCode).not.toContain('app/old.tsx');
+  });
+
+  /**
+   * A turn that only deleted has no written file. Gating the persist on writes
+   * alone skipped the write entirely, so the file stayed on disk while chat
+   * reported it gone — and `classifyReplyOutcome` read the turn as no-change.
+   */
+  it('persists a turn that deleted a file and wrote none', async () => {
+    const job = await startBuild();
+    await prisma.project.update({
+      where: { id: PROJECT },
+      data: {
+        lastCode:
+          '<file path="app/page.tsx">\nexport const a = 1;\n</file>\n<file path="app/gone.tsx">\nexport const gone = 1;\n</file>',
+      },
+    });
+
+    const settled = await settleStreamedGeneration({
+      jobId: job.id,
+      producedFiles: 0,
+      streamedCode: 'Deleted the unused route.',
+      producedFileMap: {},
+      deletedPaths: ['app/gone.tsx'],
+    });
+
+    expect(settled.outcome).toBe('succeeded');
+    const after = await prisma.project.findUniqueOrThrow({
+      where: { id: PROJECT },
+      select: { lastCode: true },
+    });
+    expect(after.lastCode).not.toContain('app/gone.tsx');
+    // The rest of the site is untouched — a deletion is not a replacement.
+    expect(after.lastCode).toContain('app/page.tsx');
+  });
+
+  it('a deletion survives losing the compare-and-set once', async () => {
+    await seed();
+    await prisma.project.update({
+      where: { id: PROJECT },
+      data: {
+        lastCode: '<file path="app/doomed.tsx">\nexport const doomed = 1;\n</file>',
+      },
+    });
+    const before = await prisma.project.findUniqueOrThrow({
+      where: { id: PROJECT },
+      select: { lastCode: true, contentVersion: true },
+    });
+
+    // A concurrent writer lands first, so the settle's reading is stale and the
+    // merge is retried against a base that still carries the doomed file.
+    await prisma.project.update({
+      where: { id: PROJECT },
+      data: {
+        lastCode:
+          '<file path="app/doomed.tsx">\nexport const doomed = 1;\n</file>\n<file path="app/other.tsx">\nexport const other = 1;\n</file>',
+        contentVersion: { increment: 1 },
+      },
+    });
+
+    await writeMergedSite(PROJECT, { 'app/kept.tsx': 'export const kept = 1;' }, before, [
+      'app/doomed.tsx',
+    ]);
+
+    const after = await prisma.project.findUniqueOrThrow({
+      where: { id: PROJECT },
+      select: { lastCode: true },
+    });
+    expect(after.lastCode).not.toContain('app/doomed.tsx');
+    expect(after.lastCode).toContain('app/other.tsx');
+    expect(after.lastCode).toContain('app/kept.tsx');
+  });
+});

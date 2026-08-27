@@ -12,7 +12,20 @@
  */
 
 export type ParsedBlock = {
+  /**
+   * The block's identity within this reply. A second block claiming an already
+   * used path is suffixed `-2` here so truncation repair can target each block
+   * individually — see `dedupePath`.
+   */
   path: string;
+  /**
+   * What the fence actually named, before any dedupe suffix. Two blocks naming
+   * one path describe one file on disk, so the file map keys on this and lets
+   * the later block win — the model restating a file is a revision, and storing
+   * the suffixed twin as a second project file left the stale first copy winning
+   * every import resolution while `App-2.tsx` shipped unused.
+   */
+  canonicalPath: string;
   code: string;
   language: string;
   /**
@@ -125,7 +138,7 @@ function extensionForLanguage(language: string): string {
   }
 }
 
-type ResolvedBlock = Omit<ParsedBlock, 'truncated'>;
+type ResolvedBlock = Omit<ParsedBlock, 'truncated' | 'canonicalPath'>;
 
 /**
  * `./src/App.tsx`, `/src/App.tsx` and `src/App.tsx` name one file, and every
@@ -238,6 +251,7 @@ function scanBlocks(text: string): ScannedBlock[] {
     if (!resolved.code.trim()) continue;
     blocks.push({
       ...resolved,
+      canonicalPath: resolved.path,
       path: dedupePath(resolved.path, usedPaths),
       // No closing fence on the match means the reply stopped inside this file.
       truncated: !match[0].endsWith('\n```'),
@@ -292,8 +306,10 @@ export function filesFromReply(input: string): Record<string, string> {
     if (!block.declaredPath) continue;
     // No `./` stripping here: `resolveBlockPath` normalized the declared path
     // before `dedupePath` numbered it, so this key is already the one
-    // `detectTruncatedFiles` and `replaceBlockInReply` name.
-    out[block.path] = block.code;
+    // `detectTruncatedFiles` and `replaceBlockInReply` name. Keyed by
+    // `canonicalPath`, so two blocks naming one file collapse into it — later
+    // block wins — instead of storing a `-2` twin the site never imports.
+    out[block.canonicalPath] = block.code;
   }
   return out;
 }

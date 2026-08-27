@@ -35,7 +35,7 @@ function live(path: string): string {
 describe('a disconnected client does not abandon the generation', () => {
   it('keeps consuming the model stream', () => {
     const source = live(ROUTE);
-    expect(source).toContain('for await (const textPart of stream.textStream');
+    expect(source).toContain('for await (const part of stream.fullStream');
     expect(source).not.toMatch(/if \(clientDisconnected\) break;/);
   });
 
@@ -73,5 +73,27 @@ describe('a disconnected client does not abandon the generation', () => {
     const body = onAbort.slice(0, closeAt);
     // Stopping here is what made live work look stale to watchdog and reaper.
     expect(body).not.toContain('stop()');
+  });
+
+  it('never settles success over a reply that owed files', () => {
+    const source = live(ROUTE);
+    // A departed client skips the corrective ask, so "owed files" cannot be discharged:
+    // classification must count the ask as spent, or a prose reply that claimed changes
+    // fell through to succeedJob over an unchanged site.
+    expect(source).toContain('askedAgain: askedForFilesAgain || clientDisconnected');
+  });
+
+  it('exits quietly when Stop settled the row in the settle window', () => {
+    const source = live(ROUTE);
+    // The persist-miss branch must not report a user cancel as "the workspace never
+    // became ready", record a step failure, or track a generation failure for it.
+    const anchorAt = source.indexOf("streamSettle?.outcome === 'failed'");
+    expect(anchorAt).toBeGreaterThan(-1);
+    const branch = source.slice(anchorAt, anchorAt + 1200);
+    const cancelledGuardAt = branch.indexOf("streamSettle.errorCode === 'cancelled'");
+    expect(cancelledGuardAt).toBeGreaterThan(-1);
+    // The quiet exit comes before any persist-miss copy is composed.
+    const persistMissAt = branch.indexOf('const persistMiss');
+    expect(persistMissAt).toBeGreaterThan(cancelledGuardAt);
   });
 });

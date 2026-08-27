@@ -77,6 +77,11 @@ services:
       # production, none of which any code read (F-712, and Morph itself is gone).
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-}
+      # `ai.deepseek.thinking`. Omitting the field leaves V4 reasoning on, so the only way to
+      # turn it off is an explicit `disabled` — which never arrived while this line was absent:
+      # the operator set DEEPSEEK_THINKING in Coolify, /admin/config reported it unset, and
+      # generation kept reasoning.
+      DEEPSEEK_THINKING: ${DEEPSEEK_THINKING:-}
       AI_PRIMARY_MODEL: ${AI_PRIMARY_MODEL:-}
       AI_PROVIDER_CONCURRENCY: ${AI_PROVIDER_CONCURRENCY:-}
       NAVROOP_FILE_CONTEXT_TOKEN_CAP: ${NAVROOP_FILE_CONTEXT_TOKEN_CAP:-}

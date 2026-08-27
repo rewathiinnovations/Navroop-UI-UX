@@ -17,7 +17,7 @@ import {
   claimKeptPartialJob,
   getActiveJob,
   getJob,
-  getLatestJob,
+  getLatestJobOfKinds,
   releaseKeptPartialClaim,
   setProjectResumablePhase,
   settleKeptPartialJob,
@@ -26,8 +26,46 @@ import {
   isRecoveryJobStatus,
   parsePartialFiles,
   type GenerationJobRow,
+  type JobKind,
   type PartialFile,
 } from './types';
+
+/**
+ * The kinds the chat surface is about, as a list rather than a predicate.
+ *
+ * `showsChatRecovery` says whether one row belongs to chat, and that is the wrong shape
+ * for picking the newest one: `getLatestJob` is `ORDER BY "createdAt" DESC LIMIT 1` over
+ * every kind, so filtering after it filters a single row that has already been chosen. The
+ * auto quality scans file a settled AUDIT row after every successful build — and
+ * `insertSettledJob` stamps `createdAt` with the scan's `startedAt`, which is later than
+ * the build's — so "newest row" became "the scan" on every project that had ever built,
+ * and both readers below then saw a job the chat had never shown.
+ *
+ * `tests/unit/chat-job-outlives-scan-row.test.ts` pins this against `showsChatRecovery`, so
+ * a kind cannot be added to one and forgotten in the other.
+ */
+export const CHAT_JOB_KINDS: readonly JobKind[] = ['PLAN', 'BUILD', 'FOLLOWUP', 'IMPORT'];
+
+/**
+ * The newest job the chat surface could have been showing, in one round trip.
+ *
+ * This composed `getLatestJobByKind` over `CHAT_JOB_KINDS` for a while — four statements
+ * fanned out with `Promise.all`. Its hot caller is `GET /api/projects/[id]/job`, which the
+ * workspace polls every 2s per open viewer for the first two minutes of a build and every
+ * 10s after; a project sitting in BUILDING with its job already settled reaches this
+ * fallback on every single tick, so the fan-out turned a two-query request into a
+ * five-query one — on the same endpoint where a lone `project.findFirst` had already been
+ * measured as a third to a half of the request's database work (F-643). The other caller,
+ * `resolveRecoveryTarget`'s no-jobId path, paid the same four for one click.
+ *
+ * `getLatestJobOfKinds` asks the same question with the kind set bound into the statement.
+ * That placement is the load-bearing part, not an optimisation: filtering `getLatestJob`'s
+ * single row by kind afterwards filters a row that has already been chosen, which is how a
+ * settled AUDIT row came to answer for the chat surface in the first place.
+ */
+export function getLatestChatJob(projectId: string): Promise<GenerationJobRow | null> {
+  return getLatestJobOfKinds(projectId, CHAT_JOB_KINDS);
+}
 
 /**
  * Failures that were ours rather than the build's.
@@ -261,15 +299,21 @@ export type RecoveryTarget =
  * watchdog, which fires on a heartbeat gap and does not need a job object, so a panel with
  * no rendered job is normal rather than a broken caller. That path falls back to the newest
  * job, but only within the kinds the recovery UI can possibly be showing
- * (`showsChatRecovery`) — a publish, audit or cron job is never reachable without being
+ * (`CHAT_JOB_KINDS`) — a publish, audit or cron job is never reachable without being
  * named, which is the defect that let "start over" cancel a running publish.
+ *
+ * The kind restriction has to be part of that lookup, not a test applied to its result.
+ * `getLatestJob` picked the newest row of any kind and the `showsChatRecovery` check below
+ * then refused it, so once the auto quality scans started filing an AUDIT row after every
+ * successful build this path answered 409 NOT_RECOVERABLE for every project that had ever
+ * built — the panel's own buttons, dead, on a build sitting right where it was left.
  */
 export async function resolveRecoveryTarget(
   projectId: string,
   jobId: unknown,
 ): Promise<RecoveryTarget> {
   const named = typeof jobId === 'string' ? jobId.trim() : '';
-  const job = named ? await getJob(named) : await getLatestJob(projectId);
+  const job = named ? await getJob(named) : await getLatestChatJob(projectId);
   // A named job belonging to another project is not this caller's to see, so it reads as
   // missing rather than forbidden.
   if (!job || job.projectId !== projectId) {

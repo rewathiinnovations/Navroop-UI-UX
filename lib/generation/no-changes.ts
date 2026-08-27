@@ -1,3 +1,12 @@
+import {
+  formatNeedImageToken,
+  hasNeedImageMarker,
+  needImageKey,
+  parseNeedImageDirectives,
+  type NeedImageDirective,
+} from '@/lib/assets/need-image';
+import { explanationFromReply } from '@/lib/generation/parse-blocks';
+import { BASE_RULES } from '@/lib/stack-prompts/base-rules';
 import { COMPLETION_RULES } from '@/lib/stack-prompts/shared';
 
 const FOLLOW_UP_NO_FILES =
@@ -164,6 +173,107 @@ Send the files now, complete. Do not ask a question. Do not explain what you wou
 
 ${COMPLETION_RULES}`;
 
+/**
+ * The second thing a reply can owe: every picture it described in prose that no file it
+ * sent actually carries.
+ *
+ * Live reproduction (deepseek-v4-flash, NEXTJS, a cafe landing page): the model wanted
+ * four photographs and wrote all four requests as prose lines in its reply rather than as
+ * the `src` value of an image element. Eleven files shipped with no `<img>`, no
+ * `next/image` and no `backgroundImage`; `/api/projects/{id}/assets` answered
+ * `{"assets":[]}`. The prompt already says the token IS the URL and must never sit on a
+ * line of its own — but a prompt is a request, not a guarantee, and the round that made
+ * the settle *buy* those pictures instead only added a bill to the same empty page. So it
+ * is decided here, on the reply, and repaired the way owed files are: one corrective ask
+ * to the model that just answered, then the file-side fulfilment that already works.
+ * Nothing in this module reaches an image provider.
+ *
+ * The prose parse runs on {@link explanationFromReply} — the reply with its fenced blocks
+ * removed — rather than on the whole reply, because a token inside a `src` is exactly the
+ * case that is *not* owed, and the prose terminator set would read it (quote and all) as a
+ * second request for the same picture. Subtracting on {@link needImageKey} rather than on
+ * the raw text is what makes `… | 1:1` in the file and `… | 1:1 | About section` in the
+ * prose one picture, so a request written in both places is not reported as unplaced.
+ */
+export function imagesOwedByReply(input: {
+  reply: string;
+  files: ReadonlyArray<{ content: string }>;
+}): NeedImageDirective[] {
+  if (!hasNeedImageMarker(input.reply)) return [];
+  const placed = placedImageKeys(input.files);
+  return parseNeedImageDirectives(explanationFromReply(input.reply), 'prose').filter(
+    (directive) => !placed.has(needImageKey(directive)),
+  );
+}
+
+/**
+ * How many of `owed` the given files now carry — the adoption test for the corrective ask.
+ *
+ * A corrected reply is worth taking only when it produced what was owed; a second helping
+ * of prose must leave the first reply standing, or the run would trade eleven good files
+ * for whatever the nudge happened to resend.
+ */
+export function imagesPlacedIn(
+  files: ReadonlyArray<{ content: string }>,
+  owed: readonly NeedImageDirective[],
+): number {
+  if (owed.length === 0) return 0;
+  const placed = placedImageKeys(files);
+  return owed.filter((directive) => placed.has(needImageKey(directive))).length;
+}
+
+function placedImageKeys(files: ReadonlyArray<{ content: string }>): Set<string> {
+  const contents = files.map((file) => file.content).join('\n');
+  if (!hasNeedImageMarker(contents)) return new Set();
+  return new Set(parseNeedImageDirectives(contents, 'file').map(needImageKey));
+}
+
+/**
+ * How many requests the corrective ask lists back.
+ *
+ * The file side is bounded by the site — a token has to sit in a `src` to count — but
+ * reply prose has no such bound, and a chatty model listing thirty "nice to have" pictures
+ * would otherwise turn the ask into a wall of protocol that buries the instruction under
+ * it. Anything past this stays unplaced and is reported as unplaced.
+ */
+export const MAX_CORRECTIVE_IMAGE_TOKENS = 8;
+
+/**
+ * The prompt's own image rules, quoted rather than restated.
+ *
+ * Same discipline as {@link MISSING_FILES_CORRECTION} repeating `COMPLETION_RULES`: two
+ * descriptions of one contract drift apart and the model satisfies whichever it read.
+ * `BASE_RULES` ends with its `IMAGES:` section, so the slice is the whole of it; an empty
+ * result means that section moved or was renamed, which is a drift the correction must not
+ * paper over with a paraphrase — `tests/unit/reply-owed-images.test.ts` fails on it.
+ */
+export const IMAGE_PLACEMENT_RULES = (() => {
+  const at = BASE_RULES.indexOf('\nIMAGES:\n');
+  return at === -1 ? '' : BASE_RULES.slice(at + 1).trim();
+})();
+
+/** The corrective ask for pictures the reply described instead of placing. */
+export function imagePlacementCorrection(owed: readonly NeedImageDirective[]): string {
+  const listed = owed.slice(0, MAX_CORRECTIVE_IMAGE_TOKENS);
+  const one = listed.length === 1;
+  const complaint = [
+    `Your last reply asked for ${one ? 'a picture' : `${listed.length} pictures`} in words instead of placing ${one ? 'it' : 'them'}.`,
+    'A NEED_IMAGE token only becomes a photograph where it stands: written as the src value inside a file it is rewritten to a real URL before the files are saved, and written anywhere else — a line of its own, a list, a comment, your reply text — it produces no picture at all.',
+    `The files you sent carry no image for ${one ? 'this request' : 'any of these requests'}:`,
+  ].join(' ');
+  const tokens = listed.map(formatNeedImageToken).join('\n');
+  // The list above puts the tokens on lines of their own, which is the shape the rules
+  // forbid — so the instruction says outright that the list is the request and not the
+  // layout. Without that a model can copy the nearest example it can see, which here is
+  // the mistake it is being corrected for.
+  const instruction =
+    'That list is what you asked for, not where it goes. Send those files now, complete, with each token above written exactly as it appears here — as the src value of its image element, or as the og:image URL in metadata. Do not ask a question. Do not explain what you would do.';
+  const rules = IMAGE_PLACEMENT_RULES
+    ? `${COMPLETION_RULES}\n\n${IMAGE_PLACEMENT_RULES}`
+    : COMPLETION_RULES;
+  return `${complaint}\n\n${tokens}\n\n${instruction}\n\n${rules}`;
+}
+
 /** Told to the user in chat when the corrective ask goes out — a retry is never silent. */
 export const MISSING_FILES_ASKED_AGAIN =
   'That reply tried to change the project but contained no files we could save, so the AI was asked once more for them.';
@@ -171,3 +281,40 @@ export const MISSING_FILES_ASKED_AGAIN =
 /** Recorded on the job so /admin/jobs shows the miss even when the retry then succeeds. */
 export const MISSING_FILES_STEP_ERROR =
   'The reply tried to change the project but contained no file blocks, so nothing could be saved.';
+
+/** The images twin of {@link MISSING_FILES_ASKED_AGAIN}. Plain words, never the protocol. */
+export function unplacedImagesAskedAgain(count: number): string {
+  return count === 1
+    ? 'That reply described an image in words instead of putting it on the page, so the AI was asked once more to place it.'
+    : `That reply described ${count} images in words instead of putting them on the page, so the AI was asked once more to place them.`;
+}
+
+/** Recorded on the job so /admin/jobs shows the miss even when the ask then succeeds. */
+export const MISSING_IMAGES_STEP_ERROR =
+  'The reply asked for images in its own words instead of writing the tokens into an image src, so the generated files carried no pictures.';
+
+/**
+ * The floor under the corrective ask: what the person is told when the pictures are still
+ * not on the page.
+ *
+ * Reached when the ask was skipped, failed, or the model wrote prose a second time. The
+ * `NEED_IMAGE:` lines themselves are stripped from the transcript (`stripNeedImageTokens`),
+ * and deleting them silently would trade one invisible failure for another — the person
+ * asked for a cafe page, four photographs were requested, and the page has none. Says that
+ * in plain words. It does not claim the pictures exist somewhere: nothing bought them,
+ * because a picture nothing references is spend with no product.
+ */
+export function unplacedImagesNotice(input: { count: number; asked: boolean }): string {
+  const one = input.count === 1;
+  const described = one
+    ? 'The AI described an image in words instead of putting it on the page'
+    : `The AI described ${input.count} images in words instead of putting them on the page`;
+  const retried = input.asked ? (one ? ', and did not place it when asked again' : ', and did not place them when asked again') : '';
+  const result = one
+    ? ', so the page has no photograph there.'
+    : ', so the page has no photographs where they belong.';
+  const nextStep = one
+    ? ' Ask for it again, or upload your own picture from the Assets tab.'
+    : ' Ask for them again, or upload your own pictures from the Assets tab.';
+  return `${described}${retried}${result}${nextStep}`;
+}

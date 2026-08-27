@@ -8,6 +8,7 @@ const OVERLAY_BASE_URLS = [
   { env: 'DEEPSEEK_BASE_URL', setting: 'ai.deepseek.baseUrl' },
   { env: 'AI_PROVIDER_CONCURRENCY', setting: 'ai.concurrency' },
   { env: 'AI_PRIMARY_MODEL', setting: 'ai.primaryModel' },
+  { env: 'DEEPSEEK_THINKING', setting: 'ai.deepseek.thinking' },
 ] as const;
 
 /**

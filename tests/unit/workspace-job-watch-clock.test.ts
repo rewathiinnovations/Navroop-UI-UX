@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { watchStartedAtMs } from '@/components/workspace/useGenerationJob';
+import { shouldFetchOnWatchStart, watchStartedAtMs } from '@/components/workspace/useGenerationJob';
 import { CLIENT_POLL_CEILING_MS } from '@/lib/jobs/poll';
 
 /**
@@ -58,5 +58,62 @@ describe('watchStartedAtMs', () => {
       now - 26 * 60_000,
     );
     expect(now - clock).toBeGreaterThanOrEqual(CLIENT_POLL_CEILING_MS);
+  });
+});
+
+/**
+ * The watch's opening `void tick()` is unconditional, so every re-run of the poll
+ * effect spends a `GET /api/projects/{id}/job` — six of them landed in a
+ * 34-second window on an idle workspace whose build had already SUCCEEDED, which
+ * is a third of that tab's entire request budget at rest. A settled row cannot
+ * change again: `tick` reads it, `isJobSettled` bails, and nothing is scheduled,
+ * so the request re-reads what the hook is already holding.
+ *
+ * The cases below are the ones that must keep fetching. Skipping any of them
+ * would be the worse bug — a build nobody is watching.
+ */
+describe('shouldFetchOnWatchStart', () => {
+  const base: Parameters<typeof shouldFetchOnWatchStart>[0] = {
+    projectId: 'proj-1',
+    heldProjectId: 'proj-1',
+    heldStatus: 'SUCCEEDED',
+    isJobActive: false,
+    alreadyArmed: true,
+  };
+
+  it('does not re-read a settled row when the effect merely re-ran', () => {
+    expect(shouldFetchOnWatchStart(base)).toBe(false);
+    expect(shouldFetchOnWatchStart({ ...base, heldStatus: 'FAILED' })).toBe(false);
+    expect(shouldFetchOnWatchStart({ ...base, heldStatus: 'CANCELLED' })).toBe(false);
+    expect(shouldFetchOnWatchStart({ ...base, heldStatus: 'ABANDONED' })).toBe(false);
+  });
+
+  it('reads whenever the watch is opening rather than re-running', () => {
+    // Phase reaching BUILDING, a remount, a project switch: the row in hand
+    // describes work that finished before this watch existed.
+    expect(shouldFetchOnWatchStart({ ...base, alreadyArmed: false })).toBe(true);
+  });
+
+  it('reads for a job in flight', () => {
+    expect(shouldFetchOnWatchStart({ ...base, heldStatus: 'RUNNING' })).toBe(true);
+    expect(shouldFetchOnWatchStart({ ...base, heldStatus: 'QUEUED' })).toBe(true);
+    expect(shouldFetchOnWatchStart({ ...base, heldStatus: null })).toBe(true);
+  });
+
+  it('reads while a stream in this tab outruns the polled row', () => {
+    // The previous build's SUCCEEDED sits in front of the job that has just
+    // started here — the same staleness `activeJob` hides from the chat.
+    expect(shouldFetchOnWatchStart({ ...base, isJobActive: true })).toBe(true);
+  });
+
+  it('reads when the settled row belongs to the project we just left', () => {
+    expect(shouldFetchOnWatchStart({ ...base, heldProjectId: 'proj-0' })).toBe(true);
+    expect(shouldFetchOnWatchStart({ ...base, heldProjectId: null })).toBe(true);
+  });
+
+  it('fetches nothing without a project', () => {
+    expect(
+      shouldFetchOnWatchStart({ ...base, projectId: null, alreadyArmed: false }),
+    ).toBe(false);
   });
 });

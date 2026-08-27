@@ -22,16 +22,64 @@ export const DEEPSEEK_BASE_URL_ENV = 'DEEPSEEK_BASE_URL';
 export const DEEPSEEK_DEFAULT_BASE_URL = 'https://api.deepseek.com';
 
 /**
- * Models offered in the admin dropdown. DeepSeek keeps these two aliases
- * pointing at the current snapshot (V4-Flash-0731 / V4-Pro-0813), so pinning
- * dated ids here would go stale on their next release.
+ * Models offered in the admin dropdown and available to generation.
+ *
+ * Every model is a reasoning model — they emit tokens in `reasoning_content`
+ * and require the reasoning-SSE fetch rewrite plus thinking enabled in the
+ * request body (see deepseek-reasoning-sse.ts) to surface output. The default
+ * is `deepseek-v4-flash`, which reasons while staying fast and cheap;
+ * `deepseek-v4-pro` is the strongest tier, and `deepseek-v4-flash-vision-exp`
+ * additionally accepts image input (DeepSeek docs: "The newly released
+ * deepseek-v4-flash-vision-exp is an experimental model that additionally
+ * accepts image input").
+ *
+ * Image input is not hypothetical here and it is not branched on: URL import
+ * sends real `{ type: 'image' }` parts to whatever model this list resolved to
+ * (`lib/import/segment.ts`, `lib/import/generate-sections.ts`), so the vision
+ * entry is the one choice that makes those two calls legal and picking it is a
+ * real decision an operator makes on /admin/config. There was an
+ * `isDeepSeekVisionModel(model)` here to express that and it had no callers in
+ * the entire repository — a `knip` failure describing behaviour no code
+ * implemented. Do not add the predicate back on its own: it belongs in the same
+ * change as the import call site that asks it whether it may attach a
+ * screenshot, and until that lands the honest statement is this comment.
  */
 export const DEEPSEEK_MODELS = [
-  { id: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash — faster, cheaper' },
-  { id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro — strongest' },
+  { id: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash - reasoning, faster (default)' },
+  { id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro - reasoning, strongest' },
+  { id: 'deepseek-v4-flash-vision-exp', label: 'DeepSeek V4 Flash Vision - image input' },
 ] as const;
 
 export const DEFAULT_DEEPSEEK_MODEL = 'deepseek-v4-flash';
+
+/**
+ * Whether a model accepts tool calls, measured rather than assumed.
+ *
+ * `scripts/probe-tool-support.ts` issues one real `generateText` with one
+ * trivial tool against the configured deployment. All three answered
+ * `TOOLS: supported` under `toolChoice: 'auto'` in both thinking modes
+ * (probed 2026-08-25).
+ *
+ * One finding matters more than the verdict: thinking mode rejects
+ * `toolChoice: 'required'` outright — "Thinking mode does not support this
+ * tool_choice", which `classifyProviderFailure` reads as `malformed`, so it
+ * would not even fail over. Generation therefore sends `'auto'`, and this map
+ * is not a licence to send `'required'`.
+ *
+ * Per-model rather than a blanket `true` because a model added to
+ * `DEEPSEEK_MODELS` later has not been probed, and defaulting an unknown to
+ * "supported" would ship it a generation path that cannot write a file.
+ */
+export const MODEL_SUPPORTS_TOOLS: Record<string, boolean> = {
+  'deepseek-v4-flash': true,
+  'deepseek-v4-pro': true,
+  'deepseek-v4-flash-vision-exp': true,
+};
+
+/** An unprobed model answers `false`: an unknown capability is not a working one. */
+export function modelSupportsTools(model: string): boolean {
+  return MODEL_SUPPORTS_TOOLS[model] === true;
+}
 
 export const NO_PROVIDER_CONFIGURED_MESSAGE =
   'DeepSeek is not configured — add an API key in Admin → Configuration.';

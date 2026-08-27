@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Loader2 } from 'lucide-react';
+import { Loader2, Square } from 'lucide-react';
 import {
   summarizeStreamingFiles,
   type StreamingFilesSummary,
@@ -70,6 +70,7 @@ export default function BuildingIndicator({
   queueAhead,
   files,
   startedAt,
+  onStop,
 }: {
   trigger?: PlanTrigger | null;
   queueAhead?: number | null;
@@ -77,6 +78,8 @@ export default function BuildingIndicator({
   files?: GenerationFile[] | null;
   /** Job `startedAt`; drives the elapsed clock while no file exists yet. */
   startedAt?: string | null;
+  /** When provided, a Stop button renders beside the status so the user can halt the build. */
+  onStop?: () => void;
 }) {
   const streaming = streamingFilesLabel(files);
   const elapsed = useElapsedLabel(startedAt);
@@ -95,6 +98,17 @@ export default function BuildingIndicator({
     >
       <Loader2 className="size-15 shrink-0 animate-spin text-[var(--studio-accent)] motion-reduce:animate-none" />
       <span className="min-w-0 truncate">{label}</span>
+      {onStop && (
+        <button
+          type="button"
+          onClick={onStop}
+          aria-label="Stop generation"
+          className="ml-auto inline-flex shrink-0 items-center gap-6 rounded-8 border border-[var(--studio-line-strong)] px-10 py-6 text-[12px] font-medium text-[var(--studio-fg)] hover:bg-[var(--studio-danger)]/10 hover:text-[var(--studio-danger)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
+        >
+          <Square className="size-12 fill-current" />
+          Stop
+        </button>
+      )}
       {/* Light traveling the bottom edge — the build reads as alive even when
           no chat frame has arrived yet. Honest: it shows activity, never progress. */}
       <span aria-hidden className="absolute inset-x-0 bottom-0 h-2 overflow-hidden">

@@ -83,7 +83,7 @@ describe('the generate route wires job cancellation to the provider stream (F-02
     // The heartbeat already polls the row every 10s; when a write observes the row is no
     // longer QUEUED/RUNNING — Cancel / Start over flipped it — the route's controller
     // must abort so the provider stream stops buying tokens.
-    expect(routeSource).toMatch(/const jobCancelled = new AbortController\(\)/);
+    expect(routeSource).toMatch(/jobCancelled = new AbortController\(\)/);
     expect(routeSource).toMatch(/onInactive:\s*\(\)\s*=>\s*jobCancelled\.abort\(/);
     // The signal reaches the failover run…
     expect(routeSource).toMatch(/signal:\s*jobCancelled\.signal/);

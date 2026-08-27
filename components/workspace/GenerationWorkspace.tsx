@@ -7,6 +7,7 @@ import SidebarInput from '@/components/app/generation/SidebarInput';
 import ProjectWorkspace from '@/components/workspace/ProjectWorkspace';
 import { pagesFromFiles } from '@/components/workspace/pages-from-files';
 import {
+  appliedCodeForSend,
   hasExistingSite,
   hasStoredSite,
   sendOutcomeForStream,
@@ -19,6 +20,7 @@ import {
   type WorkspacePlan,
   type WorkspaceView,
 } from '@/components/workspace/types';
+import { startingGenerationFields } from '@/lib/generation/starting-progress';
 import GenerationCodeView from '@/components/workspace/GenerationCodeView';
 import CodeApplicationProgress from '@/components/CodeApplicationProgress';
 import { persistProject } from '@/lib/projects/persist-client';
@@ -96,6 +98,89 @@ interface BrandExtractResponse {
  * chat metadata that renders it so the two cannot drift apart.
  */
 type CreditDenial = NonNullable<NonNullable<ChatMessage['metadata']>['creditDenial']>;
+
+/**
+ * The project row as the title watch below reads it. Only the four fields that watch needs,
+ * because it is handed whatever `GET /api/projects/{id}` answered and must not assume more.
+ */
+type SettleReadProject = {
+  name?: string | null;
+  title?: string | null;
+  updatedAt?: string | null;
+  nameAwaitingPlan?: boolean;
+};
+
+/**
+ * How long to wait before each read of the plan-derived rename, in milliseconds since the
+ * previous one. Fine-grained where plans usually land and coarse after that: eight reads
+ * covering just over two minutes, and in the ordinary case the first or second one already
+ * sees the settled name and the watch stops.
+ *
+ * The count is the point. During PLANNING this workspace already reads the project, the plan
+ * and the job every five seconds — around 80 requests over the span this array covers — so a
+ * back-off that stops on the first settled read costs a fraction of what a fourth 5-second
+ * poll would, and costs nothing at all once the project is out of PLANNING.
+ */
+export const NAME_SETTLE_DELAYS_MS = [2000, 4000, 6000, 10000, 15000, 20000, 30000, 45000];
+
+/**
+ * How many automatic build-fix passes one user message may run here, whatever the
+ * server keeps offering.
+ *
+ * `applyGeneratedCode` recurses on the `buildFix` that came back from the repair
+ * generation, and every pass is a fresh POST to /api/generate-ai-code-stream,
+ * which charges a credit unconditionally. Written that way the only exit is the
+ * server withholding `buildFix` — which is a real cap (`MAX_AUTOFIX_ATTEMPTS` in
+ * lib/validation/autofix-policy.ts) but a cap this side cannot see, driven by a
+ * counter this side is responsible for echoing back. Dropping `buildFixAttempt`
+ * once, on either end, turns the recursion into an unbounded billing loop with no
+ * local defence. This is that defence: the count lives in the client's own frame,
+ * so the number of extra generations one message can trigger is bounded here even
+ * if the whole server-side policy misbehaves.
+ *
+ * The number is copied rather than imported. `autofix-policy` runtime-imports
+ * `lib/validation/fix-prompt`, whose only tie to the esbuild half is an
+ * `import type` from `build-check` — erased today, and one conversion away from
+ * dragging `lib/preview/server-bundle` into this `'use client'` graph, which is
+ * the 500 that tests/unit/client-import-boundary.test.ts exists to catch. A copy
+ * can drift instead, so tests/unit/build-fix-loop-bound.test.ts fails when the two
+ * numbers disagree: with the server at four and this at two the same transcript
+ * would carry "automatic fix 2 of 4" from the server's own chat notice and
+ * "automatic fix 2 of 2" from the line below, and the loop would stop where
+ * neither message said it would.
+ */
+export const MAX_CLIENT_BUILD_FIX_PASSES = 2;
+
+/**
+ * What one read of the project row tells the title watch.
+ *
+ * `userRenamed` wins over everything, and it is checked first on purpose. The server already
+ * refuses the write — `renameFromPlan` puts the provisional name in the WHERE, so a rename the
+ * user made while the plan was in flight is never overwritten in the database — but this watch
+ * reads a row it did not write, and a read already in flight when the rename PATCH landed would
+ * otherwise paint the old name back over the one the person just typed.
+ *
+ * A read that failed (`project: null`) keeps the watch going rather than concluding anything:
+ * an offline browser or a 502 is not evidence that the name has settled.
+ */
+export function settleTitleFromRead(input: {
+  userRenamed: boolean;
+  project: SettleReadProject | null;
+}): { title: string | null; updatedAt: string | null; keepWatching: boolean } {
+  if (input.userRenamed) return { title: null, updatedAt: null, keepWatching: false };
+  if (!input.project) return { title: null, updatedAt: null, keepWatching: true };
+  // The flag is the server's answer to "is this name still provisional", so its absence —
+  // an older payload, a project that never had a provisional name — means settled.
+  if (input.project.nameAwaitingPlan === true) {
+    return { title: null, updatedAt: null, keepWatching: true };
+  }
+  const name = projectDisplayName(input.project);
+  return {
+    title: name || null,
+    updatedAt: typeof input.project.updatedAt === 'string' ? input.project.updatedAt : null,
+    keepWatching: false,
+  };
+}
 
 function AISandboxPage({
   githubConnected = false,
@@ -182,6 +267,26 @@ function AISandboxPage({
   const fileMapUnreadableRef = useRef(false);
   /** Which project the map in state belongs to, so a switch can clear it. */
   const loadedFilesProjectRef = useRef<string | null>(null);
+  /** Project that wrote conversationContext.appliedCode — not the URL-clone label. */
+  const appliedCodeProjectIdRef = useRef<string | null>(null);
+  /** Project whose generationProgress.files this tab is showing. */
+  const progressProjectIdRef = useRef<string | null>(null);
+
+  // Declared before the effects that write it — the React Compiler lint refuses
+  // an access that textually precedes the declaration.
+  const [conversationContext, setConversationContext] = useState<{
+    scrapedWebsites: Array<{ url: string; content: unknown; timestamp: Date }>;
+    generatedComponents: Array<{ name: string; path: string; content: string }>;
+    appliedCode: Array<{ files: string[]; timestamp: Date }>;
+    currentProject: string;
+    lastGeneratedCode?: string;
+  }>({
+    scrapedWebsites: [],
+    generatedComponents: [],
+    appliedCode: [],
+    currentProject: '',
+    lastGeneratedCode: undefined,
+  });
 
   // The Code tab used to fill only after an apply in this browser session, so
   // reopening a finished project showed an empty tree. Load the persisted site
@@ -204,6 +309,13 @@ function AISandboxPage({
       setSandboxFiles({});
       setFileStructure('');
       setGenerationProgress((prev) => (prev.isGenerating ? prev : { ...prev, files: [] }));
+      // The conversation is per project, so a real project switch must not carry
+      // the previous project's chat into the new one. `attachToProject` clears
+      // `messages` only on the mount path (state.projectId was null); this effect
+      // is what runs on a client-side navigation where React keeps the component.
+      setChatMessages([]);
+      appliedCodeProjectIdRef.current = null;
+      setConversationContext((prev) => ({ ...prev, appliedCode: [] }));
     }
     fileMapUnreadableRef.current = false;
     let cancelled = false;
@@ -255,20 +367,6 @@ function AISandboxPage({
     };
   }, [projectId, projectIdFromPath]);
 
-  const [conversationContext, setConversationContext] = useState<{
-    scrapedWebsites: Array<{ url: string; content: unknown; timestamp: Date }>;
-    generatedComponents: Array<{ name: string; path: string; content: string }>;
-    appliedCode: Array<{ files: string[]; timestamp: Date }>;
-    currentProject: string;
-    lastGeneratedCode?: string;
-  }>({
-    scrapedWebsites: [],
-    generatedComponents: [],
-    appliedCode: [],
-    currentProject: '',
-    lastGeneratedCode: undefined,
-  });
-
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
 
@@ -280,8 +378,139 @@ function AISandboxPage({
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'signin'>('idle');
   const [projectUpdatedAt, setProjectUpdatedAt] = useState<string | null>(null);
   const [selectedPage, setSelectedPage] = useState('/');
+  const loadedTitleProjectRef = useRef<string | null>(projectIdFromPath);
+  /**
+   * The server's answer to "the name on this row is still the provisional prompt-derived one
+   * and the plan that replaces it has not landed". Set from every read of the project row, and
+   * the only thing that arms the watch below.
+   */
+  const [nameAwaitingPlan, setNameAwaitingPlan] = useState(false);
+  /**
+   * Set the moment this tab renames the project, and cleared only on a real project switch.
+   * An explicit name is the user's, so nothing the plan produces may land on top of it.
+   */
+  const userRenamedRef = useRef(false);
+
+  // The header identity (name + "Last saved") is set by `initializePage`, which runs
+  // only on mount. A client-side sidebar switch navigates to `/project/{id}` — the
+  // same route segment — so React reconciles this component without remounting it,
+  // and the title/updatedAt would otherwise keep showing the previous project. This
+  // effect refreshes them when the path id changes; `loadedTitleProjectRef` makes the
+  // mount a no-op because `initializePage` already owns that fetch.
+  useEffect(() => {
+    const id = projectIdFromPath;
+    if (!id || loadedTitleProjectRef.current === id) return;
+    loadedTitleProjectRef.current = id;
+    // A different project, so this tab has not renamed *this* one.
+    userRenamedRef.current = false;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch(`/api/projects/${encodeURIComponent(id)}`);
+        if (cancelled || !response.ok) return;
+        const { project } = await response.json();
+        if (cancelled) return;
+        setProjectTitle(projectDisplayName(project) || 'Untitled project');
+        if (project.updatedAt) setProjectUpdatedAt(project.updatedAt);
+        setNameAwaitingPlan(project.nameAwaitingPlan === true);
+      } catch {
+        // A stale header is cosmetic; the next save or reload refreshes it.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectIdFromPath]);
+
+  /**
+   * Delivers the plan-derived rename to a workspace that is already open.
+   *
+   * `deferPlanning` — what the dashboard sends, so the primary create path — answers the
+   * create before any plan exists, so the row still carries the raw prompt slice
+   * (`Build a landing page for "Chai Point", a`, the string that becomes the sidebar entry,
+   * the GitHub repo name and the published subdomain). The browser lands here, reads the row
+   * once in `initializePage`, and `renameFromPlan` writes `Chai Point` seconds later. Nothing
+   * re-read it, so the header wore the slice for the whole session while the dashboard and the
+   * database agreed on the good name — the exact symptom the rename was added to remove, now
+   * with two views disagreeing.
+   *
+   * Deliberately not a fourth poll next to the plan, job and project polls this workspace
+   * already runs during PLANNING. The server arms it — `nameAwaitingPlan` is false for a
+   * project the user named, for a URL import, for skip-planning and for any project that
+   * already has a site — it backs off, and the first read that shows a settled name ends it.
+   * A project whose plan names no subject never flips the flag and simply runs the back-off
+   * out; that costs eight reads once, and the name it keeps showing is already the right one.
+   */
+  useEffect(() => {
+    const id = projectIdFromPath ?? projectId;
+    if (!id || !nameAwaitingPlan) return;
+    let cancelled = false;
+    let attempt = 0;
+    let timer = 0;
+
+    const stop = () => {
+      cancelled = true;
+      setNameAwaitingPlan(false);
+    };
+
+    const read = async () => {
+      if (cancelled) return;
+      let project: SettleReadProject | null = null;
+      try {
+        const response = await fetch(`/api/projects/${encodeURIComponent(id)}`);
+        if (response.ok) {
+          const body = (await response.json()) as { project?: SettleReadProject | null };
+          project = body.project ?? null;
+        }
+      } catch {
+        // Offline, or the row could not be read. `settleTitleFromRead` treats that as "still
+        // unknown" rather than "settled", so the next attempt covers it.
+      }
+      if (cancelled) return;
+      const decision = settleTitleFromRead({ userRenamed: userRenamedRef.current, project });
+      if (decision.title) setProjectTitle(decision.title);
+      if (decision.updatedAt) setProjectUpdatedAt(decision.updatedAt);
+      if (!decision.keepWatching) {
+        stop();
+        return;
+      }
+      attempt += 1;
+      const delay = NAME_SETTLE_DELAYS_MS[attempt];
+      if (delay === undefined) {
+        stop();
+        return;
+      }
+      timer = window.setTimeout(() => void read(), delay);
+    };
+
+    timer = window.setTimeout(() => void read(), NAME_SETTLE_DELAYS_MS[0]);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [nameAwaitingPlan, projectId, projectIdFromPath]);
+
   const pendingRestoreCodeRef = useRef<string | null>(null);
   const sendModeRef = useRef<ChatMode>('build');
+  /**
+   * The URL-import kickoff timer inside `startGeneration`, cancellable until it fires.
+   * The callback hands paid work (scrape, import, generation) to the module-level
+   * runtime, which outlives this page — so a timer left armed after the person
+   * navigated away started that work nobody was watching, and a switch to another
+   * `/project/{id}` ran it against the wrong project. Cleared on unmount and on any
+   * path-param change; once fired it nulls itself, so clearing is always a no-op for
+   * work already running.
+   */
+  const urlImportKickoffRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (urlImportKickoffRef.current != null) {
+        window.clearTimeout(urlImportKickoffRef.current);
+        urlImportKickoffRef.current = null;
+      }
+    };
+  }, [projectIdFromPath]);
 
   // Clear old conversation data on component mount and restore the saved project
   useEffect(() => {
@@ -350,6 +579,10 @@ function AISandboxPage({
             const loadedTitle = projectDisplayName(project) || 'Untitled project';
             setProjectTitle(loadedTitle);
             if (project.updatedAt) setProjectUpdatedAt(project.updatedAt);
+            // On the deferred-planning create path this is the read that gets the provisional
+            // prompt slice, seconds before `renameFromPlan` replaces it. The flag is what arms
+            // the watch above so the header does not keep the slice for the whole session.
+            setNameAwaitingPlan(project.nameAwaitingPlan === true);
             setHomeContextInput(project.style || '');
             setSelectedStyle(project.style || null);
             if (project.model) setAiModel(project.model);
@@ -555,6 +788,23 @@ function AISandboxPage({
     setStatus({ text, active });
   };
 
+  /**
+   * The one client-initiated save, and it exists to create a row: the sole caller
+   * is the URL-import path below, which reaches it only when nothing has a project
+   * id yet. So this is a POST to /api/projects — the id it returns is what the
+   * import, the workspace state and the `router.replace` onto /project/{id} all
+   * need, and `readCreateInput` reads nothing else off the body.
+   *
+   * It does not report generation progress. It used to send `status` and
+   * `progressMessage` on every save, which put the browser in charge of a column
+   * the server already owns: `createProgressBatcher` and the job heartbeat write
+   * the authoritative progress onto the Job row, and this workspace polls it back
+   * through `GET /api/projects/{id}/job`. Nothing renders `Project.progressMessage`,
+   * and `Project.generationStatus` is written by the job lifecycle
+   * (`lib/jobs/lifecycle.ts` on start, the settle path on finish) — a client that
+   * writes it can only disagree with the row, and a tab closed mid-build leaves
+   * `generating` behind with nobody left to correct it.
+   */
   const saveCurrentProject = async (overrides?: {
     sandboxId?: string;
     previewUrl?: string;
@@ -587,8 +837,8 @@ function AISandboxPage({
         // collapsed the whole chat answer into one bogus src/App.jsx and the
         // site was destroyed. lastGeneratedCode stays in state for prompt and
         // title text only.
-        status: getGenerationState().status,
-        progressMessage: getGenerationState().generationProgress.status || null,
+        //
+        // No status / progressMessage either — see the note above this function.
         sourceMessage: [...getGenerationState().messages]
           .reverse()
           .find((entry) => entry.type === 'user' && entry.content.trim())?.content,
@@ -620,6 +870,21 @@ function AISandboxPage({
     isEdit: boolean = false,
     overrideSandboxData?: SandboxData,
     buildFix?: BuildFixRequest | null,
+    /**
+     * Automatic build-fix passes already spent on this user message. Only the
+     * recursion below ever sets it; every other caller starts a new message at 0.
+     */
+    buildFixPass: number = 0,
+    /**
+     * Paths this turn's tools wrote, when the generation took the tool path.
+     *
+     * The closing "applied N files" sentence needs a source, and on the tool path
+     * the reply has none: `TOOL_OUTPUT_RULES` forbids code in the reply text, so
+     * `appliedPathsFromReply` reads prose and finds nothing. The file rail cannot
+     * answer either — the workspace seeds it with the project's existing files on
+     * mount, so a one-file edit counted as eleven.
+     */
+    toolWrittenPaths: readonly string[] = [],
   ) => {
     setLoading(true);
 
@@ -635,17 +900,32 @@ function AISandboxPage({
         sandboxId: effectiveSandboxData?.sandboxId,
       });
 
-      // Close the build → fix → re-generate loop. The server decides whether a
+      // Close the build → fix → re-generate loop. The server decides *whether* a
       // retry is warranted (attempt cap, repeated-failure guard, actionability)
-      // and only then returns buildFix; the client's job is to run it, not to
-      // re-derive the policy. Absent buildFix means the loop is over.
+      // and only then returns buildFix; nothing here re-derives that policy.
+      // Absent buildFix means the loop is over.
+      //
+      // What this side does own is *how many times* it will act on the offer,
+      // because it is this side that turns each offer into a billed POST. See
+      // MAX_CLIENT_BUILD_FIX_PASSES.
       //
       // It arrives on the *generate* complete frame. This used to read it off
       // `applyResult.finalData`, which `runApplyStream` returns as null by
       // design — so the branch was unreachable and the loop never ran once.
-      if (buildFix?.instruction) {
+      if (buildFix?.instruction && buildFixPass >= MAX_CLIENT_BUILD_FIX_PASSES) {
+        // Refusing the server's offer, and saying so. Silently dropping it would
+        // leave the person looking at a broken preview with no explanation, which
+        // is the failure the loop exists to prevent.
         addChatMessage(
-          `Build failed — attempting an automatic fix (${buildFix.attempt}/2).`,
+          `The build still fails after ${MAX_CLIENT_BUILD_FIX_PASSES} automatic fix attempts. No more generations were spent on it — describe what is wrong and I will try again.`,
+          'system',
+        );
+      } else if (buildFix?.instruction) {
+        // Named as what it is: another generation, billed. The old line said only
+        // "attempting an automatic fix", so a message that cost three credits
+        // showed two charges attributed to nothing the person had asked for.
+        addChatMessage(
+          `Build failed — running automatic fix ${buildFixPass + 1} of ${MAX_CLIENT_BUILD_FIX_PASSES}. This is a separate generation and is charged like any other message.`,
           'system',
         );
         try {
@@ -662,14 +942,20 @@ function AISandboxPage({
             buildFixSignature: buildFix.signature,
           });
           if (fixResult?.generatedCode) {
-            // Recurse with whatever the repair reply itself validated to; the
-            // server stops the loop by withholding buildFix once the cap or the
-            // guard trips.
+            // Recurse with whatever the repair reply itself validated to. The
+            // server stops the loop by withholding buildFix once its cap or its
+            // repeated-failure guard trips; the incremented pass count is the
+            // half of the bound this side owns, so the recursion terminates even
+            // if the server never withholds anything.
             return await applyGeneratedCode(
               fixResult.generatedCode,
               true,
               overrideSandboxData,
               fixResult.buildFix,
+              buildFixPass + 1,
+              // The repair pass is its own turn, so its own tool writes are what
+              // the closing sentence should count.
+              fixResult.toolWrittenPaths ?? [],
             );
           }
           addChatMessage('The automatic build fix produced no changes.', 'system');
@@ -692,7 +978,23 @@ function AISandboxPage({
       // doubt a result that was fine, on every single turn.
       // Whichever shape the caller handed over: a generation reply is fenced
       // `{path=…}` output, a retried URL import is `<file path=…>` XML (F-054).
-      const appliedFiles = appliedPathsFromReply(code);
+      //
+      // The tool path puts no code in the reply *by contract* — TOOL_OUTPUT_RULES
+      // tells the model "never put code in your reply text", so the reply is prose
+      // and the reply reader correctly finds nothing in it. Closing on that count
+      // told the user "Successfully applied 0 files" for a build that had just
+      // written eleven, which is F-054 again by a new route.
+      //
+      // `toolWrittenPaths` is that path's record, collected per turn from the
+      // `tool_result` frames. Deliberately not the file rail: the workspace seeds
+      // the rail with the project's existing files on mount, so counting its
+      // completed entries reported a one-file edit as eleven.
+      //
+      // Reply first, so the fence and import paths are untouched. A prose-only
+      // answer ("hello") leaves both empty and still closes at zero, which is
+      // correct — nothing was written.
+      const pathsFromReply = appliedPathsFromReply(code);
+      const appliedFiles = pathsFromReply.length > 0 ? pathsFromReply : [...toolWrittenPaths];
       await fetchSandboxFiles();
       const applyCopy = applyPageCopy({ filesCreated: appliedFiles });
       const lastChat = getGenerationState().messages.at(-1)?.content;
@@ -758,7 +1060,9 @@ function AISandboxPage({
     // "Code appears here as each file is written" instead of a bare spinner.
     if (
       activeTab === 'generation' &&
-      (generationProgress.isGenerating || generationProgress.files.length > 0)
+      (generationProgress.isGenerating ||
+        generationProgress.files.length > 0 ||
+        isJobActive)
     ) {
       return <GenerationCodeView progress={generationProgress} />;
     } else if (activeTab === 'preview') {
@@ -1018,28 +1322,45 @@ function AISandboxPage({
     // The decision fails closed: a project this browser could not read, or one
     // the server already rendered as COMPLETE, is treated as having a site even
     // when every client-side input is empty.
+    const storedSite = hasStoredSite({
+      initialPhase,
+      fileMapUnreadable: fileMapUnreadableRef.current,
+    });
+    const streamedFiles =
+      progressProjectIdRef.current && progressProjectIdRef.current !== projectId
+        ? []
+        : generationProgress.files;
     const isEdit = hasExistingSite({
       projectFiles: sandboxFiles,
-      streamedFiles: generationProgress.files,
-      appliedCode: conversationContext.appliedCode,
-      storedSite: hasStoredSite({
-        initialPhase,
-        fileMapUnreadable: fileMapUnreadableRef.current,
+      streamedFiles,
+      appliedCode: appliedCodeForSend({
+        appliedCode: conversationContext.appliedCode,
+        sourceProjectId: appliedCodeProjectIdRef.current,
+        projectId,
       }),
+      storedSite,
+    });
+    const start = startingGenerationFields({
+      isEdit,
+      hasCompletedFiles: streamedFiles.some((file) => file.completed !== false),
     });
 
     try {
-      // Generation tab is already active from scraping phase
+      // The Code pane is where the stream is legible. Approve used to leave
+      // Preview up, which labelled the empty panel with the job enum
+      // `generating` and never showed the file being written.
+      setActiveTab('generation');
+      progressProjectIdRef.current = projectId;
       setGenerationProgress((prev) => ({
         ...prev, // Preserve all existing state
         isGenerating: true,
-        status: 'Starting AI generation...',
+        status: start.status,
         components: [],
         currentComponent: 0,
         streamedCode: '',
-        isStreaming: false,
-        isThinking: true,
-        thinkingText: 'Analyzing your request...',
+        isStreaming: start.isStreaming,
+        isThinking: start.isThinking,
+        thinkingText: start.thinkingText,
         thinkingDuration: undefined,
         currentFile: undefined,
         lastProcessedPosition: 0,
@@ -1120,7 +1441,14 @@ function AISandboxPage({
         // from them, so there is nothing to boot or wait for first. This used
         // to be gated on live sandbox data, which is now always null — every
         // generation streamed in, printed its files, and was then dropped.
-        await applyGeneratedCode(generatedCode, isEdit, undefined, streamResult.buildFix);
+        await applyGeneratedCode(
+          generatedCode,
+          isEdit,
+          undefined,
+          streamResult.buildFix,
+          0,
+          streamResult.toolWrittenPaths ?? [],
+        );
       }
 
       // Show completion status briefly then switch to preview
@@ -1274,7 +1602,8 @@ function AISandboxPage({
     // This ensures the loading screen shows properly
     captureUrlScreenshot(displayUrl);
 
-    setTimeout(async () => {
+    urlImportKickoffRef.current = window.setTimeout(async () => {
+      urlImportKickoffRef.current = null;
       setShowHomeScreen(false);
       setHomeScreenFading(false);
 
@@ -1663,6 +1992,7 @@ Focus on the key sections and content, making it clean and modern. Follow the st
             },
           );
 
+          appliedCodeProjectIdRef.current = projectId;
           setConversationContext((prev) => ({
             ...prev,
             generatedComponents: [],
@@ -1736,6 +2066,12 @@ Focus on the key sections and content, making it clean and modern. Follow the st
 
   const renameProject = async (nextTitle: string) => {
     setProjectTitle(nextTitle);
+    // Before the PATCH, not after it: the plan-derived rename watch may already have a read in
+    // flight, and it must not paint the row's older name back over what the person just typed.
+    // The server refuses the plan's write for the same reason (`renameFromPlan` matches on the
+    // provisional name), so both halves agree that an explicit name is final.
+    userRenamedRef.current = true;
+    setNameAwaitingPlan(false);
     const id = projectId || projectIdFromPath;
     if (!id) return;
     setSaveState('saving');
@@ -1829,6 +2165,10 @@ Focus on the key sections and content, making it clean and modern. Follow the st
       streamFiles={generationProgress.files}
       streamedText={generationProgress.streamedCode}
       generationStatus={generationJobStatus}
+      streamStatus={generationProgress.status}
+      isThinking={generationProgress.isThinking}
+      thinkingText={generationProgress.thinkingText}
+      thinkingDuration={generationProgress.thinkingDuration}
       onStartApprovedBuild={(promptContext) => {
         void sendChatMessage(promptContext, { mode: 'build', silent: true });
       }}

@@ -1,11 +1,32 @@
 /**
  * Turns a generated project's file map into something the in-browser bundler
  * can build: an entry module, the virtual filesystem, and any shims the stack
- * needs. Pure and dependency-free so it can be unit-tested and reused by the
- * server-side publish bundler.
+ * needs. Side-effect-free and I/O-free so it can be unit-tested and reused by the
+ * server-side publish bundler. Two things it reads from outside its arguments: the
+ * origin project-asset URLs resolve against (`previewAssetOrigin` below), which is
+ * `location` in the tab and `NEXT_PUBLIC_APP_URL` on the server; and the pinned
+ * dependency maps, so the returned assembly can carry the import map its bare
+ * specifiers were resolved against — the bundler and the served document have to
+ * agree about which packages exist, or a build compiles and then fails to load.
+ *
+ * **Everything this file value-imports ships to the browser.**
+ * `components/workspace/BrowserPreview.tsx` is a `'use client'` component and
+ * calls `assemblePreview` on every chunk of a generation stream, so its whole
+ * transitive value graph is downloaded and parsed by every visitor to
+ * `/project/[id]` — including one who never opens the Code pane. Nothing here
+ * reaches a server-only module or a `node:*` builtin, so the failure class is
+ * weight and disclosure rather than a Turbopack cold-compile 500: the generation
+ * prompts are model instructions, and a value edge to them makes their exact
+ * wording readable from the client bundle. Add an import only for something the
+ * preview genuinely needs at runtime *in the frame*, and prefer `import type`,
+ * which the bundler never sees. `tests/unit/preview-client-graph.test.ts` walks
+ * this graph, pins it as an upper bound and names the prompt-text modules and
+ * exports it may not reach.
  */
 
+import { projectPreviewDeps } from '@/lib/preview/deps';
 import { PREVIEW_LAYOUT_BASENAME } from '@/lib/preview/labels';
+import { withStarterFiles } from '@/lib/stacks/starter';
 
 export type PreviewAssembly =
   | { kind: 'html'; html: string }
@@ -14,6 +35,16 @@ export type PreviewAssembly =
       entry: string;
       files: Record<string, string>;
       aliases: Record<string, string>;
+      /**
+       * The import map this assembly's bare specifiers resolve against: the
+       * always-available set plus whichever optional packages the project's own
+       * `package.json` asks for.
+       *
+       * Carried on the assembly rather than recomputed by each caller so the
+       * bundler and the document's import map cannot disagree — a bundle built
+       * against a wider set than the frame serves compiles and then fails to load.
+       */
+      deps: Record<string, string>;
     }
   | { kind: 'empty'; reason: string };
 
@@ -28,24 +59,62 @@ const ROOT_CANDIDATES: Record<string, string[]> = {
 /** Entry modules a project may ship that already mount the app themselves. */
 const SELF_MOUNTING_ENTRIES = ['src/main.tsx', 'src/main.jsx', 'src/index.tsx', 'src/index.jsx'];
 
-export function assemblePreview(stack: string, rawFiles: Record<string, string>): PreviewAssembly {
-  const files = normalizeFiles(rawFiles);
-  if (Object.keys(files).length === 0) {
+export function assemblePreview(
+  stack: string,
+  rawFiles: Record<string, string>,
+  directionId?: string | null,
+): PreviewAssembly {
+  const projectFiles = normalizeFiles(rawFiles);
+  // Emptiness is a fact about the *project*, not about the merged set: the
+  // starter kit is eleven files, so asking after the merge would turn "this
+  // project has no files yet" into "no root component found".
+  if (Object.keys(projectFiles).length === 0) {
     return { kind: 'empty', reason: 'This project has no files yet.' };
   }
 
+  // Normalised first, then the starter kit *underneath*: a project file stored
+  // as `./app/globals.css` has to beat the starter's `app/globals.css`, and
+  // merging before normalisation would leave both keys in the map with the
+  // winner decided by insertion order.
+  //
+  // This one call is what puts the locked stack in front of the browser
+  // preview, `buildStaticSite`, the served `/preview-static` build and
+  // `checkBuild` — all four route through here. It is also the only import on
+  // this file's browser graph that is wider than what the frame uses:
+  // `withStarterFiles` asks the `lib/stacks/templates` barrel for a whole repo
+  // scaffold and filters it down to the starter kit, so the `package.json` /
+  // `tsconfig.json` / `vite.config.js` builders and the stack definition table
+  // ride into the bundle to produce files the filter then discards. The pin in
+  // `tests/unit/preview-client-graph.test.ts` lists them as the residual to
+  // remove; the fix belongs in `lib/stacks/starter.ts`, not here.
+  //
+  // The asset rewrite sits on top of that merge, so the STATIC_HTML branch's
+  // `inlineLocalAssets` inlines a stylesheet whose `url(...)` references have
+  // already been made absolute.
+  const merged = withResolvableAssetUrls(
+    withStarterFiles(stack, projectFiles, directionId),
+    previewAssetOrigin(),
+  );
+
   if (stack === 'STATIC_HTML') {
-    const html = files['index.html'] ?? files['public/index.html'];
+    const html = merged['index.html'] ?? merged['public/index.html'];
     if (!html) {
       return { kind: 'empty', reason: 'No index.html found in this project.' };
     }
-    return { kind: 'html', html: inlineLocalAssets(html, files) };
+    return { kind: 'html', html: inlineLocalAssets(html, merged) };
   }
 
+  // Below this line the file set is headed for esbuild, which is not Tailwind —
+  // hence the layer flattening, which STATIC_HTML deliberately does not get.
+  const files = withFlattenedTailwindLayers(merged);
+
   const aliases = stack === 'NEXTJS' ? withNextShims(files) : {};
+  // From the project's own files, not the merged set: the starter kit's manifest
+  // must not widen what a project may import.
+  const deps = projectPreviewDeps(rawFiles);
   const selfMounting = SELF_MOUNTING_ENTRIES.find((path) => path in files);
   if (selfMounting && stack === 'REACT') {
-    return { kind: 'bundle', entry: selfMounting, files, aliases };
+    return { kind: 'bundle', entry: selfMounting, files, aliases, deps };
   }
 
   const root = ROOT_CANDIDATES[stack]?.find((path) => path in files);
@@ -76,7 +145,243 @@ export function assemblePreview(stack: string, rawFiles: Record<string, string>)
     entry: ENTRY_PATH,
     files: { ...bundleFiles, [ENTRY_PATH]: entry },
     aliases,
+    deps,
   };
+}
+
+/**
+ * The prefix the local storage driver hands out for a project image
+ * (`localUrl` in `lib/storage/index.ts` returns `/uploads/{key}`). The S3 driver
+ * returns an absolute public-bucket URL instead, which the match below never
+ * touches because it is anchored to the start of the reference.
+ */
+const PROJECT_ASSET_PREFIX = '/uploads/';
+
+/**
+ * One project-asset reference, anchored to the character that opens it.
+ *
+ * The opener has to be a quote, a `url(`, a `srcSet` separator or an unquoted
+ * `=`, because `/uploads/` is only a reference when it *starts* the URL:
+ * `https://cdn.example.com/uploads/hero.webp` and a `` `${base}/uploads/x` ``
+ * template both carry the same six characters in the middle and must be left
+ * exactly as they are. The run then stops at anything that ends a URL token, so
+ * a `srcSet` descriptor (`… 2x`), a closing `)` and a template hole (`${id}`)
+ * all survive. A `data:` payload cannot be hit: base64's `=` is padding, so it
+ * only ever appears at the very end of one.
+ *
+ * The comma is both an opener and a terminator, because `srcSet` may separate
+ * its candidates with no space at all (`"/uploads/a.webp,/uploads/b.webp 2x"`,
+ * which the HTML parser accepts). Terminating only on whitespace read that as
+ * one URL, so the whole descriptor list became the first candidate's path and
+ * the second image was never rewritten — the exact failure the rewrite exists to
+ * end, one attribute over. No project-asset URL can contain a comma itself:
+ * these are `normalizeKey` outputs.
+ */
+const PROJECT_ASSET_REFERENCE = new RegExp(
+  `(^|["'\`(,=\\s])(${PROJECT_ASSET_PREFIX}[^\\s"'\`),<>\\\\{]*)`,
+  'g',
+);
+
+/**
+ * Rewrites project-asset references to absolute URLs against the app origin.
+ *
+ * A `ProjectAsset` is bytes in object storage plus a row holding the URL this
+ * app serves them at, and on the local driver that URL is app-relative. The
+ * string reaches generated code verbatim — `lib/assets/manifest.ts` lists it for
+ * the model to reuse and `lib/assets/fulfill.ts` substitutes it in for a
+ * `NEED_IMAGE:` token — so the preview frame is asked to load `/uploads/…`. That
+ * frame is a `srcdoc` document sandboxed *without* `allow-same-origin`: its
+ * origin is opaque, so a root-relative URL has nothing to resolve against and
+ * the request never leaves the page. Every photograph rendered as its alt text
+ * while `HEAD /uploads/projects/{id}/assets/{id}.webp` answered 200 on the app
+ * origin, so a customer approved a page with no pictures on it and published one
+ * with pictures.
+ *
+ * An absolute URL is the fix that needs no new privilege: an image, a stylesheet
+ * `url(...)` and a `srcSet` candidate are subresource loads, which are not
+ * subject to the same-origin policy, so an opaque-origin document may fetch all
+ * three from another origin. The sandbox must stay exactly as it is —
+ * `allow-same-origin` on model-authored JavaScript would hand it the viewer's
+ * session (F-140) — and a `<base>` tag was the other candidate and is worse: it
+ * would silently redirect every *other* relative URL in the document too.
+ *
+ * Only the preview assembly is rewritten. The published site resolves the same
+ * paths the other way round: `collectPublishAssets` (`lib/publish/assets.ts`)
+ * copies the bytes into `{publicDir}/uploads/…` in the deploy repo so the
+ * deployed page answers its own `/uploads/…`, which needs the stored project
+ * files to keep the relative form. Nothing here touches them — the map arrives
+ * from `normalizeFiles`, which already copied it, and this returns a new map.
+ */
+function withResolvableAssetUrls(
+  files: Record<string, string>,
+  origin: string | null,
+): Record<string, string> {
+  if (!origin) return files;
+  const out: Record<string, string> = {};
+  for (const [path, content] of Object.entries(files)) {
+    out[path] = content.includes(PROJECT_ASSET_PREFIX)
+      ? content.replace(
+          PROJECT_ASSET_REFERENCE,
+          (_match, opener: string, url: string) => `${opener}${origin}${url}`,
+        )
+      : content;
+  }
+  return out;
+}
+
+/**
+ * The origin `/uploads/…` has to be resolved against, or null when this
+ * deployment cannot say.
+ *
+ * In the tab that is the location serving the workspace: it is the ground truth
+ * for where the asset was just fetched from, and the only answer that survives
+ * this repository's two checkouts running on two ports with two different
+ * `NEXT_PUBLIC_APP_URL` values. On the server — `buildStaticSite`, which runs the
+ * same assembly for the served `/preview-static` build — there is no location,
+ * so the build-time public URL is read instead; production refuses to boot
+ * without it (`assertInternalOrigin`, `lib/api/internal-origin.ts`).
+ *
+ * Null rather than a guessed host when nothing parses: inventing an origin
+ * points every image on the page at a host that does not exist. What that floor
+ * actually costs is not uniform, and this comment used to claim it was — "one
+ * broken image" is true only of the half of it that is a string. A `src` or a
+ * `srcSet` left relative is the broken image the rewrite exists to end, and
+ * nothing worse. A CSS `url(/uploads/…)` left relative is the whole preview: the
+ * virtual resolver behind the bundler (`lib/preview/bundle.ts` in the tab,
+ * `lib/preview/server-bundle.ts` on the server) reads a `url()` token as a
+ * module specifier, finds no such entry in the file map and fails the build
+ * naming the stylesheet, so a page that would have rendered with one missing
+ * background does not render at all. Making that reference `external` to esbuild
+ * belongs in those two resolvers, which own the build options; until it is there
+ * the floor for a stylesheet that names a project image is a dead preview, not a
+ * degraded one. A truthy string is not a URL, so `https://undefined` is refused
+ * by name.
+ */
+function previewAssetOrigin(): string | null {
+  const fromLocation = (globalThis as { location?: { origin?: unknown } }).location?.origin;
+  if (typeof fromLocation === 'string' && fromLocation) {
+    const parsed = parseOrigin(fromLocation);
+    if (parsed) return parsed;
+  }
+  // Guarded because this module is on the `'use client'` graph: Next inlines
+  // `NEXT_PUBLIC_*` into the browser bundle, and the guard is what keeps a build
+  // that did not from throwing `process is not defined` inside the workspace.
+  const fromEnv = typeof process === 'undefined' ? null : process.env.NEXT_PUBLIC_APP_URL;
+  return parseOrigin(fromEnv);
+}
+
+function parseOrigin(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+  if (!parsed.hostname || parsed.hostname === 'undefined' || parsed.hostname === 'null') return null;
+  return parsed.origin;
+}
+
+/**
+ * The three layer names Tailwind v3 owns. `@layer base` in a Tailwind stylesheet
+ * is a *build directive*, not the CSS at-rule that shares its spelling: the
+ * PostCSS plugin removes the wrapper and emits its contents into the
+ * corresponding `@tailwind` position. Any other name is a real cascade layer the
+ * author meant (Tailwind itself errors on one, having no `@tailwind foo` to put
+ * it in), so it is left exactly as written.
+ */
+const TAILWIND_LAYER_BLOCK = /@layer\s+(?:base|components|utilities)\s*\{/iy;
+
+/**
+ * Unwraps Tailwind's layer directives, because the preview has no PostCSS.
+ *
+ * The stylesheet reaches the frame through esbuild, which treats `@layer base {
+ * … }` as what it literally is — a real CSS cascade layer — while the built site
+ * never has one, because Tailwind stripped the wrapper before the browser saw
+ * it. Layer order is resolved *before* specificity, so every declaration inside
+ * that block sits below every unlayered declaration no matter how specific it
+ * is, and the Play CDN injects its preflight unlayered. The starter stylesheet's
+ * `border-color: hsl(var(--border))` therefore lost to preflight's gray-200 in
+ * the preview and won in the exported repo, the ZIP and the published site: a
+ * `className="border rounded-lg"` card was approved in one colour and shipped in
+ * another, against the one property `lib/preview/server-bundle.ts` claims.
+ *
+ * Model-authored CSS has the identical bug and is the larger half of it — every
+ * shadcn/ui snippet in the training data wraps its base rules this way, so a
+ * project that writes its own `app/globals.css` reproduces it without the
+ * starter kit being involved at all.
+ *
+ * STATIC_HTML is excluded at the call site rather than here: that stack ships
+ * its stylesheet to nginx byte for byte, so its `@layer` really is a cascade
+ * layer in production, and flattening it would *create* the divergence this
+ * removes.
+ *
+ * An unbalanced sheet returns unchanged. Dropping an opener whose closer was
+ * never found would emit a stray `}` and take out every rule after it, which is
+ * a worse answer than the layering this exists to fix.
+ */
+function withFlattenedTailwindLayers(files: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [path, content] of Object.entries(files)) {
+    out[path] = path.endsWith('.css') ? flattenTailwindLayers(content) : content;
+  }
+  return out;
+}
+
+function flattenTailwindLayers(css: string): string {
+  if (!css.includes('@layer')) return css;
+  const out: string[] = [];
+  let copied = 0;
+  let i = 0;
+  let depth = 0;
+  // The brace depth each unwrapped block was opened at, innermost last: its
+  // closer is the `}` seen back at that same depth.
+  const unwrapped: number[] = [];
+
+  while (i < css.length) {
+    const char = css[i];
+    // Comments and strings first: a `{` inside `content: "{"` or a commented-out
+    // rule would otherwise move the depth counter and mis-pair every closer
+    // after it.
+    if (char === '/' && css[i + 1] === '*') {
+      const end = css.indexOf('*/', i + 2);
+      i = end === -1 ? css.length : end + 2;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      i += 1;
+      while (i < css.length && css[i] !== char) i += css[i] === '\\' ? 2 : 1;
+      i += 1;
+      continue;
+    }
+    if (char === '@') {
+      TAILWIND_LAYER_BLOCK.lastIndex = i;
+      const opener = TAILWIND_LAYER_BLOCK.exec(css);
+      if (opener) {
+        out.push(css.slice(copied, i));
+        i += opener[0].length;
+        copied = i;
+        unwrapped.push(depth);
+        depth += 1;
+        continue;
+      }
+    }
+    if (char === '{') depth += 1;
+    else if (char === '}') {
+      depth -= 1;
+      if (unwrapped[unwrapped.length - 1] === depth) {
+        unwrapped.pop();
+        out.push(css.slice(copied, i));
+        copied = i + 1;
+      }
+    }
+    i += 1;
+  }
+
+  if (unwrapped.length > 0) return css;
+  out.push(css.slice(copied));
+  return out.join('');
 }
 
 export type NextRoute = { path: string; file: string };

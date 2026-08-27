@@ -16,7 +16,7 @@ import {
 } from '@/components/workspace/types';
 import {
   VERSION_PILL_LIMIT,
-  VersionPills,
+  VersionMenu,
   WorkspaceToolMenu,
   versionPillList,
 } from '@/components/workspace/WorkspaceViewControls';
@@ -259,12 +259,12 @@ function history(count: number): Checkpoint[] {
 }
 
 /**
- * The pills are a shortcut to the last few checkpoints, so the two things they must
- * get right are which ones they show and what they call them. `getCheckpoints` takes
- * no limit — thinning drops snapshots, never rows — so an unbounded row would push
+ * The window the header's version shortcut draws from, so the two things it must get
+ * right are which checkpoints it shows and what it calls them. `getCheckpoints` takes
+ * no limit — thinning drops snapshots, never rows — so an unbounded list would push
  * the rest of the header off screen on any long-lived project.
  */
-describe('version pills', () => {
+describe('the version window', () => {
   it('shows the newest few, newest last, and numbers them over the whole history', () => {
     const pills = versionPillList(history(9));
 
@@ -288,68 +288,103 @@ describe('version pills', () => {
     expect(versionPillList([])).toEqual([]);
   });
 
-  it('renders one named, pressable button per version', () => {
-    const markup = renderToStaticMarkup(
-      createElement(VersionPills, {
-        checkpoints: history(3),
-        activeId: 'cp-2',
-        onPreview: () => {},
-      }),
-    );
-
-    expect(markup.match(/<button/g)).toHaveLength(3);
-    expect(markup).toContain('aria-label="Preview v3"');
-    // The previewed version is the pressed one, and only that one.
-    expect(markup.match(/aria-pressed="true"/g)).toHaveLength(1);
-    const pressed = markup.slice(markup.indexOf('aria-pressed="true"'));
-    expect(pressed.slice(0, pressed.indexOf('</button>'))).toContain('v2');
-  });
-
-  it('refuses a thinned version instead of offering a click the server will reject', () => {
-    // `previewCheckpoint` answers a pruned checkpoint with a pruned error, so a live
-    // pill here would be a button whose only outcome is a failure message.
-    const markup = renderToStaticMarkup(
-      createElement(VersionPills, {
-        checkpoints: [checkpoint('cp-1', { snapshotPruned: true })],
-        onPreview: () => {},
-      }),
-    );
-
-    expect(markup).toContain('disabled=""');
-    expect(markup).toContain('snapshot removed, cannot preview');
-  });
-
-  it('hands the checkpoint id to the click handler', () => {
-    const onPreview = vi.fn();
-    const pills = VersionPills({ checkpoints: history(3), onPreview });
-    const clicked = clickHandlers(pills);
-
-    expect(clicked).toHaveLength(3);
-    // Left to right is oldest to newest, so the last pill is the newest checkpoint.
-    clicked.at(-1)?.();
-    expect(onPreview).toHaveBeenCalledWith('cp-3');
-  });
 });
 
 /**
- * Walks the element tree the component returned and collects every button's
- * `onClick`. There is no DOM in this suite, so this is how a click is exercised
- * without asserting on the component's internals.
+ * The shipped shortcut. It replaced a `VersionPills` row that rendered every version
+ * as its own button, so the swap introduced something the pills never had to do:
+ * pick one version to name on a single trigger. The pills were the tested component
+ * and the menu had no test at all, so the coverage moved here with the behaviour —
+ * the pills are gone, and only what ships is asserted.
+ *
+ * The menu panel is portaled by Radix and never reaches server markup, so the items
+ * are asserted on the element tree the component returns (through `renderHookOnce`,
+ * since the menu owns its `open` state) while the trigger, which does render, keeps
+ * its markup assertions.
  */
-function clickHandlers(node: unknown, found: (() => void)[] = []): (() => void)[] {
-  if (Array.isArray(node)) {
-    for (const child of node) clickHandlers(child, found);
-    return found;
+describe('the header version menu', () => {
+  type MenuProps = Parameters<typeof VersionMenu>[0];
+
+  function tree(props: MenuProps) {
+    return renderHookOnce(() => VersionMenu(props));
   }
-  if (!node || typeof node !== 'object') return found;
-  const element = node as { type?: unknown; props?: Record<string, unknown> };
-  if (!element.props) return found;
-  if (element.type === 'button' && typeof element.props.onClick === 'function') {
-    found.push(element.props.onClick as () => void);
+
+  function markup(props: MenuProps) {
+    return renderToStaticMarkup(createElement(VersionMenu, props));
   }
-  clickHandlers(element.props.children, found);
-  return found;
-}
+
+  it('names the newest version while nothing is being previewed', () => {
+    // Seven checkpoints, no preview: the window is v3…v7 and it reads oldest-first,
+    // so naming its first entry put 'v3' on the header while v7 filled the pane.
+    const html = markup({ checkpoints: history(7), onPreview: () => {} });
+
+    expect(html).toContain('>v7<');
+    expect(html).not.toContain('>v3<');
+
+    const [group] = elementsOfType(
+      tree({ checkpoints: history(7), onPreview: () => {} }),
+      DropdownMenuRadioGroup,
+    );
+    // Nothing is checked: naming the newest version is not the same as previewing it.
+    expect(group.props.value).toBe('');
+  });
+
+  it('names the previewed version instead, even one outside the window', () => {
+    // v2 is older than the newest five, which is exactly the case the trigger has to
+    // survive after a reload parks the project on an old version (F-102).
+    expect(markup({ checkpoints: history(7), activeId: 'cp-2', onPreview: () => {} })).toContain(
+      '>v2<',
+    );
+  });
+
+  it('renders nothing at all before the first checkpoint exists', () => {
+    // A brand-new project opened before its first build: the pills returned `null` for
+    // an empty list, and without that guard the header carried a 'Versions' trigger
+    // opening a menu with zero items and no empty state.
+    expect(markup({ checkpoints: [], onPreview: () => {} })).toBe('');
+    expect(tree({ checkpoints: [], onPreview: () => {} })).toBeNull();
+  });
+
+  it('offers the newest few as radio items, oldest first', () => {
+    const items = elementsOfType(
+      tree({ checkpoints: history(7), onPreview: () => {} }),
+      DropdownMenuRadioItem,
+    );
+
+    expect(items).toHaveLength(VERSION_PILL_LIMIT);
+    expect(items.map((item) => item.props.value)).toEqual([
+      'cp-3',
+      'cp-4',
+      'cp-5',
+      'cp-6',
+      'cp-7',
+    ]);
+  });
+
+  it('disables a thinned version rather than offering a click the server will reject', () => {
+    // `previewCheckpoint` answers a pruned checkpoint with a pruned error, so a live
+    // item here would be a row whose only outcome is a failure message.
+    const checkpoints = [checkpoint('cp-2'), checkpoint('cp-1', { snapshotPruned: true })];
+    const items = elementsOfType(tree({ checkpoints, onPreview: () => {} }), DropdownMenuRadioItem);
+
+    expect(items.map((item) => [item.props.value, item.props.disabled])).toEqual([
+      ['cp-1', true],
+      ['cp-2', false],
+    ]);
+  });
+
+  it('reports the chosen version upward, and marks the one being previewed', () => {
+    const onPreview = vi.fn();
+    const [group] = elementsOfType(
+      tree({ checkpoints: history(3), activeId: 'cp-2', onPreview }),
+      DropdownMenuRadioGroup,
+    );
+
+    expect(group.props.value).toBe('cp-2');
+    (group.props.onValueChange as (value: string) => void)('cp-3');
+    expect(onPreview).toHaveBeenCalledWith('cp-3');
+  });
+});
 
 /**
  * Renders a hook once through the server renderer and hands back what it returned.

@@ -52,3 +52,23 @@ export function completedCodeFromFrame(frameCode: unknown, accumulated: string):
   if (typeof frameCode === 'string' && frameCode.length > 0) return frameCode;
   return accumulated;
 }
+
+/**
+ * The complete frame's truncation warnings → one chat line, or null.
+ *
+ * The route attaches these when a reply was cut off mid-file. They used to be
+ * sent and dropped — nothing read them — so a truncated build looked identical
+ * to a clean one until the preview failed to compile with no explanation
+ * anywhere. Only the first three files are named; the count covers the rest.
+ */
+export function truncationWarningLine(warnings: unknown): string | null {
+  if (!Array.isArray(warnings)) return null;
+  const list = warnings.filter(
+    (warning): warning is string => typeof warning === 'string' && warning.trim().length > 0,
+  );
+  if (list.length === 0) return null;
+  const shown = list.slice(0, 3).join(' ');
+  const more = list.length - Math.min(list.length, 3);
+  const line = more > 0 ? `${shown} (+${more} more)` : shown;
+  return `This reply looks cut off mid-file: ${line}`;
+}

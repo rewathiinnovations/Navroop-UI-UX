@@ -13,7 +13,7 @@ import { uniqueRepoName } from './repo-name';
 export { CONNECT_FIRST_MESSAGE };
 
 export const GITHUB_REAUTH_MESSAGE =
-  'GitHub rejected the saved credentials. Reconnect GitHub from Connectors (or Admin → Configuration) and push again.';
+  'GitHub rejected the saved credentials. Disconnect and reconnect GitHub from Connectors, then push again.';
 
 /**
  * GitHub answers an expired or revoked token with "Bad credentials", which is
@@ -77,6 +77,7 @@ type PushDb = {
         ownerId: true;
         stack: true;
         lastCode: true;
+        designDirection: true;
         githubRepoFullName: true;
         githubRepoUrl: true;
       };
@@ -86,6 +87,7 @@ type PushDb = {
       ownerId: string;
       stack: string;
       lastCode: string | null;
+      designDirection: string | null;
       githubRepoFullName: string | null;
       githubRepoUrl: string | null;
     } | null>;
@@ -118,6 +120,7 @@ export async function pushProjectToGitHubForUser(
       ownerId: true,
       stack: true,
       lastCode: true,
+      designDirection: true,
       githubRepoFullName: true,
       githubRepoUrl: true,
     },
@@ -149,7 +152,10 @@ export async function pushProjectToGitHubForUser(
   }
   // Push a repository, not a folder of components: the stack scaffold,
   // Dockerfile and ignore files go with it so the push is deployable as-is.
-  const files = buildRepoFiles(project.stack, generated, { projectName: project.name });
+  const files = buildRepoFiles(project.stack, generated, {
+    projectName: project.name,
+    designDirection: project.designDirection,
+  });
 
   const githubFetch = deps.githubFetch ?? fetch;
   let fullName = project.githubRepoFullName;

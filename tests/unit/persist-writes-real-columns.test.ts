@@ -12,7 +12,7 @@
  *
  * These cases fail if any dropped column comes back into the payload or the update.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const DROPPED_COLUMNS = [
   'sandboxId',
@@ -59,6 +59,7 @@ vi.mock('@/lib/projects/plan', () => ({
 // Dynamic so every vi.mock above registers before the module graph is evaluated.
 const { persistProjectGeneration } = await import('@/lib/projects/actions');
 const { readGenerationInput, hasGenerationFields } = await import('@/lib/projects/http');
+const { persistProject } = await import('@/lib/projects/persist-client');
 
 const OWNER = { id: 'owner-1', role: 'MEMBER' };
 const PROJECT = 'proj_persist';
@@ -68,6 +69,10 @@ beforeEach(() => {
   auth.getSessionUser.mockResolvedValue(OWNER);
   db.projectFindFirst.mockResolvedValue({ id: PROJECT, phase: 'BUILDING', ownerId: OWNER.id });
   db.projectUpdate.mockResolvedValue({ id: PROJECT, owner: OWNER });
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe('the generation persist writes only real Project columns', () => {
@@ -154,5 +159,70 @@ describe('the request parser does not carry dropped columns', () => {
     const result = readGenerationInput({ lastCode: { a: 1 } });
     expect(result).toMatchObject({ ok: false, status: 400 });
     if (!result.ok) expect(result.error).toContain('lastCode');
+  });
+});
+
+/**
+ * The browser is not the writer of generation progress.
+ *
+ * `saveCurrentProject` used to put `status` and `progressMessage` into every save,
+ * so the client was a second writer of `Project.generationStatus` — a column the
+ * job lifecycle owns — and the only writer of `progressMessage`, which nothing
+ * renders. The authoritative progress is on the Job row (`createProgressBatcher`
+ * plus the heartbeat) and the workspace already polls it back through
+ * `GET /api/projects/{id}/job`. The failure that made it worth removing: a tab
+ * closed mid-build leaves `generating` on the project with nobody to correct it.
+ *
+ * The casts below are the shape the old callers sent, so this case fails against
+ * the old client rather than merely describing the new one.
+ */
+describe('the client save does not report generation progress', () => {
+  function captureBody() {
+    const sent: { url: string; body: Record<string, unknown> }[] = [];
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => {
+      sent.push({
+        url: String(input),
+        body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>,
+      });
+      return Promise.resolve(
+        new Response(JSON.stringify({ project: { id: PROJECT, name: 'Site' } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    });
+    return sent;
+  }
+
+  it('sends neither status nor progressMessage, however the caller asks', async () => {
+    const sent = captureBody();
+    // A variable, not an inline literal: excess-property checking would refuse the
+    // two dead fields at the call site, and the point is what happens at runtime
+    // when they are handed over anyway.
+    const legacyInput = {
+      prompt: 'https://example.com',
+      title: 'Site',
+      status: 'generating',
+      progressMessage: 'Generating code...',
+    };
+
+    await persistProject(legacyInput);
+
+    expect(sent).toHaveLength(1);
+    for (const field of ['status', 'generationStatus', 'progressMessage']) {
+      expect(sent[0]?.body).not.toHaveProperty(field);
+    }
+  });
+
+  it('still creates the project, which is the whole reason it runs', async () => {
+    const sent = captureBody();
+
+    const result = await persistProject({ prompt: 'https://example.com', title: 'Site' });
+
+    expect(sent[0]?.url).toBe('/api/projects');
+    expect(sent[0]?.body).toMatchObject({ initialPrompt: 'https://example.com', name: 'Site' });
+    expect(result.saved).toBe(true);
+    // The id the URL import and the router.replace onto /project/{id} both need.
+    if (result.saved) expect(result.project.id).toBe(PROJECT);
   });
 });

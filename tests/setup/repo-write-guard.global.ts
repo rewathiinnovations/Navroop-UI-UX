@@ -8,13 +8,21 @@
  *
  * The engine lives in `./repo-write-guard` so it can be tested directly; this file
  * is only the wiring.
+ *
+ * `./storage-dir-guard` is imported for its side effect and imported *here* rather
+ * than only in `vitest.setup.ts` because this module is evaluated in the main
+ * process before the worker pool is forked: the workers then inherit the fence
+ * instead of each minting its own, and this process can read the same
+ * `STORAGE_LOCAL_DIR` in `teardown` to decide what it is still entitled to accuse.
  */
+import './storage-dir-guard';
 import {
   DEFAULT_ALLOWLIST,
   compareSnapshots,
   formatViolations,
   gitIgnoredSubset,
   keepInvisibleAdditions,
+  resolveFencedPrefixes,
   resolveStatePrefixes,
   snapshotTree,
   type TreeSnapshot,
@@ -31,9 +39,11 @@ export function teardown() {
   if (!before) return;
 
   const statePrefixes = resolveStatePrefixes(root, process.env.DATA_DIR);
+  const fencedPrefixes = resolveFencedPrefixes(root, process.env.STORAGE_LOCAL_DIR);
   const candidates = compareSnapshots(before, snapshotTree(root), {
     statePrefixes,
     allowlist: DEFAULT_ALLOWLIST,
+    fencedPrefixes,
   });
 
   const added = candidates.filter((violation) => violation.kind === 'added').map((violation) => violation.path);

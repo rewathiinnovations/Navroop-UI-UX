@@ -1,5 +1,10 @@
 import { INSPECTOR_SCRIPT, INSPECTOR_SCRIPT_ID } from '@/lib/visual-edits/inspector';
-import { buildImportMap, PREVIEW_DEPS, TAILWIND_BROWSER_URL } from './deps';
+import {
+  buildImportMap,
+  PREVIEW_DEPS,
+  TAILWIND_BROWSER_URL,
+  TAILWIND_PREVIEW_CONFIG,
+} from './deps';
 
 /**
  * Builds the document the preview iframe renders.
@@ -75,6 +80,56 @@ const ERROR_BRIDGE = `
 `;
 
 /**
+ * A sandboxed srcdoc has no base URL, so `document.baseURI` resolves to the
+ * parent document's URL (the app origin). A plain `<a href="#reserve">` therefore
+ * navigates the frame out to `http://<app>/project/<id>#reserve` — past the app
+ * auth gate and off the preview — instead of scrolling to the in-frame section.
+ * The Next router's click handler only intercepts `/`-prefixed links, so hash
+ * anchors fall through to that escape. This document-level handler catches them
+ * for every stack and scrolls inside the frame.
+ */
+const HASH_LINK_INTERCEPTOR = `
+(function () {
+  document.addEventListener("click", function (event) {
+    if (event.defaultPrevented || event.button !== 0) return;
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    var anchor = event.target && event.target.closest ? event.target.closest("a") : null;
+    if (!anchor) return;
+    var href = anchor.getAttribute("href");
+    if (href == null || href[0] !== "#") return;
+    // Always swallow the click: a hash link must never leave the preview document.
+    event.preventDefault();
+      var id = href.slice(1);
+    if (id) {
+      try { id = decodeURIComponent(id); } catch {}
+      var target = document.getElementById(id);
+      if (target) {
+        target.scrollIntoView({ behavior: "smooth", block: "start" });
+        return;
+      }
+    }
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  });
+})();
+`;
+
+/**
+ * The Play CDN's theme, assigned only if the CDN actually arrived.
+ *
+ * `cdn.tailwindcss.com` is a third-party origin the frame is allowed to lose —
+ * an offline dev machine, a corporate proxy, a CSP on the preview host — and a
+ * bare `tailwind.config = …` in the very next script then dies with
+ * `ReferenceError: tailwind is not defined`. That turned "the preview is
+ * unstyled", which is what a blocked CDN used to cost, into "the preview reports
+ * an error", which is a strictly worse answer to the same missing script. Worse
+ * still while the assignment sat ahead of ERROR_BRIDGE: the throw reached no
+ * listener, and the iframe is sandboxed without allow-same-origin, so nothing
+ * outside could see it either — the frame just went quiet. The bridge is
+ * installed before this now, and this cannot throw in the first place.
+ */
+const TAILWIND_CONFIG_SCRIPT = `if (typeof tailwind !== "undefined") tailwind.config = ${TAILWIND_PREVIEW_CONFIG};`;
+
+/**
  * The inspector, ready to be turned on. It installs a `message` listener and
  * nothing else until the workspace activates it, so an unused Visual Edits
  * toolbar costs the frame one idle listener.
@@ -107,10 +162,17 @@ setTimeout(function () {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <script type="importmap">${JSON.stringify(importMap)}</script>
-<script src="${TAILWIND_BROWSER_URL}"></script>
-<style>${css}</style>
+<!-- Shim, bridge and interceptor first: nothing that can throw may run ahead of
+     the bridge, or the frame has no way to report it. -->
 <script>${NODE_GLOBALS_SHIM}</script>
 <script>${ERROR_BRIDGE}</script>
+<script>${HASH_LINK_INTERCEPTOR}</script>
+<script src="${TAILWIND_BROWSER_URL}"></script>
+<!-- The Play CDN's documented configuration API: a second script that assigns
+     tailwind.config. This is what makes bg-background / text-foreground resolve
+     to the project's CSS variables instead of compiling to nothing. -->
+<script>${TAILWIND_CONFIG_SCRIPT}</script>
+<style>${css}</style>
 </head>
 <body>
 <div id="root"></div>
@@ -151,8 +213,9 @@ ${INSPECTOR_TAG}
 function injectBridgeIntoHtml(html: string) {
   // Shim first, then the bridge: a static page can carry a script that touches
   // `process` just as a bundled one can, and the shim is worthless if it lands
-  // after the code that needed it.
-  const bridge = `<script>${NODE_GLOBALS_SHIM}</script><script>${ERROR_BRIDGE}</script>`;
+  // after the code that needed it. The hash interceptor is the third script: it
+  // keeps `#section` links inside the frame, exactly as in the bundled preview.
+  const bridge = `<script>${NODE_GLOBALS_SHIM}</script><script>${ERROR_BRIDGE}</script><script>${HASH_LINK_INTERCEPTOR}</script>`;
   // The inspector rides with the ready signal, on the same "must be placed
   // explicitly, never dropped by a no-match" rule: Visual Edits has to work on a
   // static-HTML project too, and its only way in is this document.

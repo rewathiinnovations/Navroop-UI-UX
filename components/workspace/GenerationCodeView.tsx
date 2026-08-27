@@ -1,6 +1,6 @@
 'use client';
 
-import StreamingCodePanel from './StreamingCodePanel';
+import StreamingCodePanel, { streamPaneStatus } from './StreamingCodePanel';
 import type { GenerationProgressState } from '@/lib/generation/types';
 
 /**
@@ -18,51 +18,13 @@ import type { GenerationProgressState } from '@/lib/generation/types';
  * ever reached that markup.
  */
 export default function GenerationCodeView({ progress }: { progress: GenerationProgressState }) {
-  // The thinking banner belongs to the seconds before any code exists. It used to
-  // stay up for the whole build, so a run with 33 files written still said
-  // "Analyzing your request…" — the screen claiming to be thinking while the file
-  // rail filled up behind it. Once a file has landed, the code is the story.
-  const showThinking =
-    progress.isGenerating &&
-    progress.files.length === 0 &&
-    (progress.isThinking || Boolean(progress.thinkingText));
-  const thinkingSeconds = progress.thinkingDuration;
+  // The thinking banner moved to the chat panel (`ChatPanel`), where the user is
+  // waiting. The Code pane is all code: no file has landed yet, the panel's own
+  // empty state says "Code appears here as each file is written".
   const totalComponents = progress.components.length;
 
   return (
-    <div className="absolute inset-0 flex flex-col gap-12 overflow-hidden p-16">
-      {showThinking ? (
-        <div className="shrink-0">
-          <p className="mb-6 flex items-center gap-8 text-[13px] font-medium text-purple-600 dark:text-purple-400">
-            {progress.isThinking ? (
-              <>
-                <span
-                  aria-hidden
-                  className="size-8 rounded-full bg-purple-600 motion-safe:animate-pulse dark:bg-purple-400"
-                />
-                AI is thinking...
-              </>
-            ) : (
-              <>
-                <span aria-hidden>✓</span>
-                {/* "Thought for 0 seconds" is what an unknown duration used to
-                    print, which reads as a bug rather than as no information. */}
-                {typeof thinkingSeconds === 'number' && thinkingSeconds > 0
-                  ? `Thought for ${thinkingSeconds} seconds`
-                  : 'Finished thinking'}
-              </>
-            )}
-          </p>
-          {progress.thinkingText ? (
-            <div className="max-h-48 overflow-y-auto rounded-12 border border-purple-500/30 bg-purple-500/10 p-12 scrollbar-hide dark:border-purple-400/25 dark:bg-purple-400/10">
-              <pre className="font-mono text-[12px] whitespace-pre-wrap text-purple-700 dark:text-purple-300">
-                {progress.thinkingText}
-              </pre>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-
+    <div className="flex h-full min-h-0 flex-col gap-12 overflow-hidden p-16">
       <div className="min-h-0 flex-1">
         {/* `activePath` is deliberately not passed: the trailing incomplete entry
             is the open file, and the panel's selector is the only thing allowed
@@ -70,8 +32,14 @@ export default function GenerationCodeView({ progress }: { progress: GenerationP
         <StreamingCodePanel
           files={progress.files}
           droppedPaths={progress.droppedPaths}
-          status={progress.status}
+          status={streamPaneStatus(progress.status)}
           streamedText={progress.streamedCode}
+          // The Code view outlives the build — the workspace keeps rendering it
+          // while `files` is non-empty — and a finished build has no open file,
+          // so the panel would sit on the last thing streamed (a Footer, on the
+          // measured run). Only then may it choose the project's entry file.
+          settled={!progress.isGenerating && progress.files.length > 0}
+          className="h-full"
         />
       </div>
 

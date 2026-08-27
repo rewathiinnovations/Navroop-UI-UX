@@ -22,7 +22,8 @@ const store = vi.hoisted(() => ({
   claimKeptPartialJob: vi.fn(),
   getActiveJob: vi.fn(),
   getJob: vi.fn(),
-  getLatestJob: vi.fn(),
+  getLatestJobByKind: vi.fn(),
+  getLatestJobOfKinds: vi.fn(),
   releaseKeptPartialClaim: vi.fn(),
   setProjectResumablePhase: vi.fn(),
   settleKeptPartialJob: vi.fn(),
@@ -46,15 +47,38 @@ vi.mock('@/lib/jobs/store', () => ({
   claimKeptPartialJob: store.claimKeptPartialJob,
   getActiveJob: store.getActiveJob,
   getJob: store.getJob,
-  getLatestJob: store.getLatestJob,
+  getLatestJobByKind: store.getLatestJobByKind,
+  getLatestJobOfKinds: store.getLatestJobOfKinds,
   releaseKeptPartialClaim: store.releaseKeptPartialClaim,
   setProjectResumablePhase: store.setProjectResumablePhase,
   settleKeptPartialJob: store.settleKeptPartialJob,
 }));
 
 const PUBLISH_JOB = { id: 'job-publish', projectId: 'proj-1', kind: 'PUBLISH', status: 'RUNNING' };
-const BUILD_JOB = { id: 'job-build', projectId: 'proj-1', kind: 'BUILD', status: 'ABANDONED' };
+const BUILD_JOB = {
+  id: 'job-build',
+  projectId: 'proj-1',
+  kind: 'BUILD',
+  status: 'ABANDONED',
+  createdAt: new Date('2026-08-20T10:00:00.000Z'),
+};
 const EXPORT_JOB = { id: 'job-export', projectId: 'proj-1', kind: 'EXPORT', status: 'SUCCEEDED' };
+
+/**
+ * The kind-scoped lookup the no-jobId fallback now runs: one statement, the chat kinds
+ * bound into it, so a PUBLISH / EXPORT / AUDIT row cannot come back from it however new it
+ * is. The per-kind lookup it replaced stays mocked so a return to the fan-out would be
+ * visible rather than silently answered.
+ */
+function jobHistory(rows: Array<Record<string, unknown>>) {
+  store.getLatestJobOfKinds.mockImplementation(
+    async (_projectId: string, kinds: readonly string[]) =>
+      rows.find((row) => kinds.includes(row.kind as string)) ?? null,
+  );
+  store.getLatestJobByKind.mockImplementation(
+    async (_projectId: string, kind: string) => rows.find((row) => row.kind === kind) ?? null,
+  );
+}
 
 function post(body: Record<string, unknown>) {
   return startOver(
@@ -77,11 +101,23 @@ describe('POST /api/projects/[id]/job/start-over', () => {
   });
 
   it('does not cancel a running publish when the client names no job', async () => {
-    store.getLatestJob.mockResolvedValue(PUBLISH_JOB);
+    // The publish is the newest row on the project, and the fallback never asks for its
+    // kind — it resolves the newest *chat* job, which the live publish then makes stale.
+    store.getActiveJob.mockResolvedValue(PUBLISH_JOB);
+    jobHistory([BUILD_JOB]);
 
     const response = await post({});
 
     expect(response.status).toBe(409);
+    expect(lifecycle.cancelJob).not.toHaveBeenCalled();
+  });
+
+  it('refuses when the project has no chat job to fall back to', async () => {
+    jobHistory([]);
+
+    const response = await post({});
+
+    expect(response.status).toBe(404);
     expect(lifecycle.cancelJob).not.toHaveBeenCalled();
   });
 
@@ -110,7 +146,7 @@ describe('POST /api/projects/[id]/job/start-over', () => {
     // A ZIP download writes an EXPORT row through withRecordedJob, which becomes the newest
     // job on the project. Judging the named job by whether it is the newest turned that into
     // "This project has moved on" on a build sitting exactly where it was left.
-    store.getLatestJob.mockResolvedValue(EXPORT_JOB);
+    jobHistory([EXPORT_JOB, BUILD_JOB]);
     store.getActiveJob.mockResolvedValue(null);
 
     const response = await post({ jobId: 'job-build' });

@@ -126,8 +126,22 @@ export const SETTINGS: readonly SettingEntry[] = [
     env: 'AI_PRIMARY_MODEL',
     fallback: 'deepseek-v4-flash',
     options: [
-      { value: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash — faster, cheaper' },
-      { value: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro — strongest' },
+      { value: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash - reasoning, faster (default)' },
+      { value: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro - reasoning, strongest' },
+      { value: 'deepseek-v4-flash-vision-exp', label: 'DeepSeek V4 Flash Vision - image input' },
+    ],
+  },
+  {
+    key: 'ai.deepseek.thinking',
+    group: 'ai',
+    label: 'Thinking / reasoning',
+    help: 'Whether generations ask the model to reason before answering. DeepSeek V4 thinks by default, so Enabled sends `thinking: { type: "enabled" }` (and surfaces the trace in chat) while Disabled must send `thinking: { type: "disabled" }` — omitting the field leaves reasoning on. Enabled is the safer default; disabled writes only the final answer and can produce a less considered reply.',
+    kind: 'select',
+    env: 'DEEPSEEK_THINKING',
+    fallback: 'enabled',
+    options: [
+      { value: 'enabled', label: 'Enabled — model reasons before replying (default)' },
+      { value: 'disabled', label: 'Disabled — plain reply, no reasoning trace' },
     ],
   },
   {
@@ -152,6 +166,78 @@ export const SETTINGS: readonly SettingEntry[] = [
     // audit log (F-094). The variable still works as the fallback.
     env: 'NAVROOP_FILE_CONTEXT_TOKEN_CAP',
     fallback: '30000',
+  },
+  {
+    key: 'ai.agentTools',
+    group: 'ai',
+    label: 'Tool-based file writing',
+    help: 'How the model delivers the files it writes. Tool calls remove a whole class of silent failure: a code block that is truncated, unlabelled, or written as prose parses to zero files, which is indistinguishable from the model having answered a question instead. Auto uses tool calls when the configured model supports them and falls back to code blocks when it does not; every DeepSeek model offered here was measured as supporting them, so Auto means tools on this deployment. The default is Auto. Switch to Off to force code blocks for every generation.',
+    kind: 'select',
+    // Deliberately no `env:`, on the same reasoning as generation.buildAutoFix
+    // below: this is a toggle an operator may flip without a redeploy, so it
+    // belongs in the database rather than owing .env.example a line.
+    //
+    // `auto`, and this is a decision with evidence behind it rather than a
+    // default nobody chose. `auto` resolves through `modelSupportsTools`, which
+    // is `true` for all three models in DEEPSEEK_MODELS — so `auto` means "tools
+    // on for every generation", and that is the intended state now that both
+    // halves are proven:
+    //
+    //   Server half — write_file -> store -> settle -> lastCode -> checkBuild
+    //   passed, verified end to end.
+    //
+    //   Client half — this is what kept the default at `off`.
+    //   `applyToolFileWrite` and the two SSE frame handlers in
+    //   generation-runtime.ts had executed zero times, and
+    //   `nothingRenderableYet` keys off the `completed` flag they set. They now
+    //   have tests/unit/generation-tool-rail.test.ts behind them, and a live
+    //   browser drive on a real DeepSeek build confirmed the rest: a
+    //   `tool_result` frame carrying the whole file (2063 bytes for a one-word
+    //   edit), the file rail completing with that content rather than an empty
+    //   body, the preview iframe mounting and rendering the site, and exactly
+    //   one `write_file` for a one-line change.
+    //
+    // Two defects had to be closed first, both of which made a working tool
+    // build look broken: the rail completed every file empty because both
+    // handlers passed `content: null`, and the closing chat line read
+    // "Successfully applied 0 files" because the tool path puts no code in the
+    // reply for `appliedPathsFromReply` to find.
+    fallback: 'auto',
+    options: [
+      { value: 'auto', label: 'Auto — tools when the model supports them (default)' },
+      { value: 'on', label: 'On — always use tools' },
+      { value: 'off', label: 'Off — always use code blocks' },
+    ],
+  },
+  {
+    key: 'ai.maxAgentSteps',
+    group: 'ai',
+    label: 'Tool steps per request',
+    help: 'How many tool-calling rounds one generation may take before it stops and asks for the work to be split. Each round can write a file, so a large first build needs more of them than a one-line edit; the cap is what stops a model that has started looping from spending a whole budget on it. Work already finished is kept and saved when the cap is reached. The built-in default is 24.',
+    kind: 'number',
+    // Deliberately no `env:`, same reasoning as ai.agentTools above and
+    // generation.buildAutoFix below. Nothing needs this set before first boot —
+    // the registry fallback *is* the built-in default — so a variable would add
+    // a second place for the number to live and owe .env.example a line for a
+    // value no deployment has to pre-set.
+    fallback: '24',
+  },
+  {
+    key: 'generation.buildAutoFix',
+    group: 'ai',
+    label: 'Automatic build fixes',
+    help: 'When generated code fails the build check, the workspace can ask the model to repair it. Each repair is a separate generation — a second request to the provider, charged as its own message — and at most 2 of them run per message before the loop gives up. Off leaves the code exactly as generated; the check still runs and the person is still told what is broken, they just fix it by asking. On is the default because with it off a failing build reaches the preview and the only remedy is the same corrective message, typed by hand and billed the same.',
+    kind: 'select',
+    // Deliberately no `env:`. A toggle an operator may flip without a redeploy is
+    // a tunable, and tunables live in the database (admin-panel-settings-over-env);
+    // a new variable here would also owe `.env.example` a line, and it is exactly
+    // that kind of half-wired config — a reader, a writer, and no way to set it —
+    // that left this loop billing three generations per message with no off switch.
+    fallback: 'on',
+    options: [
+      { value: 'on', label: 'On — retry a failed build automatically (default)' },
+      { value: 'off', label: 'Off — leave the code as generated and report the failure' },
+    ],
   },
   {
     key: 'ai.cost.inputPerMillionUsd',

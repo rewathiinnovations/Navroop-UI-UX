@@ -8,30 +8,26 @@
 export const appConfig = {
   // AI Model Configuration
   ai: {
-    // Default AI model. Restored to upstream's frontier default — the fork had
-    // reverted this to 2.5-flash, which was the single clearest codegen regression.
-    defaultModel: 'google/gemini-3-pro-preview',
+    // Default AI model. DeepSeek is the only provider and `deepseek-v4-flash`
+    // is the reasoning default — every DeepSeek model reasons (they emit
+    // `reasoning_content` and need the reasoning-SSE rewrite plus thinking
+    // enabled in the request body).
+    defaultModel: 'deepseek-v4-flash',
 
-    // Available models. Flash stays as the cheap option; the frontier tiers lead.
+    // Available models. DeepSeek's current catalog (api-docs.deepseek.com):
+    // the reasoning tiers offered in Admin → Configuration.
+    // `deepseek-v4-flash-vision-exp` additionally accepts image input.
     availableModels: [
-      'google/gemini-3-pro-preview',
-      'anthropic/claude-opus-5',
-      'anthropic/claude-sonnet-5',
-      'openai/gpt-5',
-      'google/gemini-2.5-pro',
-      'google/gemini-2.5-flash',
-      'moonshotai/kimi-k2-instruct-0905',
+      'deepseek-v4-flash',
+      'deepseek-v4-pro',
+      'deepseek-v4-flash-vision-exp',
     ],
 
     // Model display names
     modelDisplayNames: {
-      'google/gemini-3-pro-preview': 'Gemini 3 Pro (Preview)',
-      'anthropic/claude-opus-5': 'Claude Opus 5',
-      'anthropic/claude-sonnet-5': 'Claude Sonnet 5',
-      'openai/gpt-5': 'GPT-5',
-      'google/gemini-2.5-pro': 'Gemini 2.5 Pro',
-      'google/gemini-2.5-flash': 'Gemini 2.5 Flash',
-      'moonshotai/kimi-k2-instruct-0905': 'Kimi K2 (Groq)',
+      'deepseek-v4-flash': 'DeepSeek V4 Flash',
+      'deepseek-v4-pro': 'DeepSeek V4 Pro',
+      'deepseek-v4-flash-vision-exp': 'DeepSeek V4 Flash Vision',
     } as Record<string, string>,
 
     // Temperature settings for non-reasoning models
@@ -57,8 +53,12 @@ export const appConfig = {
 
   // Code Application Configuration
   codeApplication: {
-    // Enable/disable automatic truncation recovery
-    enableTruncationRecovery: false, // Disabled - too many false positives
+    // Automatic truncation recovery: re-asks the model for each file the reply cut off.
+    // Detection runs regardless of this flag and is reported in chat and /admin/jobs;
+    // recovery itself stays off until the fence-contract detector rewrite has been
+    // reviewed against live output — the old "too many false positives" verdict predates
+    // that rewrite, and enabling this also buys extra model calls per truncated file.
+    enableTruncationRecovery: false,
   },
 
   // UI Configuration

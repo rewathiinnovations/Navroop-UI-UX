@@ -36,6 +36,7 @@ type WorkerRequestInit = { method: string; headers: Record<string, string>; body
 type WorkerReply = {
   ok: boolean;
   status: number;
+  headers: { get(name: string): string | null };
   arrayBuffer: () => Promise<ArrayBuffer>;
   json: () => Promise<unknown>;
 };
@@ -45,6 +46,10 @@ function reply(body: Buffer | string, status = 200): WorkerReply {
   return {
     ok: status < 400,
     status,
+    headers: new Map<string, string>([
+      ['content-type', 'image/jpeg'],
+      ['content-length', String(payload.byteLength)],
+    ]),
     arrayBuffer: async () =>
       payload.buffer.slice(payload.byteOffset, payload.byteOffset + payload.byteLength),
     json: async () => JSON.parse(payload.toString()) as unknown,

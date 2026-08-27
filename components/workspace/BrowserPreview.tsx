@@ -197,6 +197,7 @@ export function waitingMessage(
 function BrowserPreviewImpl({
   stack,
   files,
+  designDirection,
   stream,
   settleMs = DEFAULT_SETTLE_MS,
   className,
@@ -208,6 +209,12 @@ function BrowserPreviewImpl({
   stack: string;
   /** Files already persisted for the project; the base layer. */
   files: Record<string, string>;
+  /**
+   * The project's design direction. Decides which token block the starter
+   * stylesheet carries, so the frame renders this project's palette rather
+   * than the default one.
+   */
+  designDirection?: string | null;
   /** Present only while a generation is mounted behind this pane. */
   stream?: PreviewStream | null;
   settleMs?: number;
@@ -268,10 +275,15 @@ function BrowserPreviewImpl({
   // `previewFilesKey` reads the same bytes but copies nothing. The assembly still
   // rebuilds per chunk, but the settle reducer compares `target.key` and drops a
   // rebuild whose key already matches, so an unchanged file set never recompiles.
-  const assembly = useMemo(() => assemblePreview(stack, compilable), [stack, compilable]);
+  const assembly = useMemo(
+    () => assemblePreview(stack, compilable, designDirection),
+    [stack, compilable, designDirection],
+  );
   const target = useMemo<SettleTarget>(
-    () => ({ key: `${stack}:${previewFilesKey(compilable)}`, assembly }),
-    [stack, compilable, assembly],
+    // The direction is in the key: without it, switching direction leaves the
+    // previous bundle mounted because the file set is byte-identical.
+    () => ({ key: `${stack}:${designDirection ?? ''}:${previewFilesKey(compilable)}`, assembly }),
+    [stack, designDirection, compilable, assembly],
   );
   const [settle, dispatch] = useReducer(settleReducer, { active: target, pending: null });
 
@@ -314,6 +326,7 @@ function BrowserPreviewImpl({
       setState((prev) => ({ status: 'bundling', srcdoc: srcdocOf(prev) }));
       const result = await bundlePreview(settled.files, settled.entry, {
         aliases: settled.aliases,
+        deps: settled.deps,
       });
       if (cancelled) return;
 
@@ -323,7 +336,9 @@ function BrowserPreviewImpl({
       }
       setState({
         status: 'running',
-        srcdoc: buildPreviewSrcdoc({ code: result.code, css: result.css }),
+        // The same `deps` the bundle resolved against: a document whose import map
+        // is narrower than what compiled loads a module the frame cannot serve.
+        srcdoc: buildPreviewSrcdoc({ code: result.code, css: result.css, deps: settled.deps }),
       });
     }
 

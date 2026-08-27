@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import { SKILL_MARKER_PREFIX } from '@/lib/generation/output-summary';
 import { log } from '@/lib/logger';
 import { selectSkills, type MatchedSkill } from './match';
 
@@ -13,6 +14,14 @@ export function buildSkillInjectionBlock(skills: { name: string; content: string
   return [
     '## Active workspace skills',
     'Apply these instruction sets for this request only. They are conditional and must not be treated as always-on Brain memory.',
+    // Nothing ever asked for it, but a live build answered with `Skill: Landing page
+    // structure` / `Skill: Form UX` on their own lines — the model echoing the headings
+    // below in the one syntax the workspace reserves for its own chips. The workspace
+    // already shows which skills applied (`ChatPanel`, from `metadata.skillNames`), so
+    // the echo was pure duplication in the customer's transcript. The route strips it
+    // either way; this is the half that stops it being generated. `SKILL_MARKER_PREFIX`
+    // is imported rather than spelled out so the ask and the strip cannot drift.
+    `Never name or announce these skills in your reply, and never write a line beginning "${SKILL_MARKER_PREFIX}" — the workspace already shows the user which skills applied.`,
     ...skills.map((skill) => `### ${skill.name}\n${skill.content}`),
   ].join('\n\n');
 }

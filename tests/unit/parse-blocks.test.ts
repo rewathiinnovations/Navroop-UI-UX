@@ -84,6 +84,22 @@ describe('extractCodeBlocks', () => {
     ]);
   });
 
+  it('maps two blocks claiming one path to one file, later block winning', () => {
+    // The `-2` identity above is for repair targeting only. Stored as a second
+    // project file, `App-2.tsx` shipped unused while every import resolved to
+    // the stale first copy — a model restating a file is a revision of one file,
+    // not a new one.
+    const reply = [
+      `${fence}tsx{path=src/App.tsx}`,
+      'const a = 1;',
+      fence,
+      `${fence}tsx{path=src/App.tsx}`,
+      'const b = 2;',
+      fence,
+    ].join('\n');
+    expect(filesFromReply(reply)).toEqual({ 'src/App.tsx': 'const b = 2;' });
+  });
+
   it('strips thinking blocks before parsing', () => {
     expect(stripThinkingBlocks('<think>plan</think>done')).toBe('done');
     const reply = `<thinking>weighing options</thinking>\n${fence}tsx{path=src/App.tsx}\nconst a = 1;\n${fence}`;

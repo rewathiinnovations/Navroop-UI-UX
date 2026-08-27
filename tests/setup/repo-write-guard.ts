@@ -27,10 +27,21 @@
  *   `tests/integration/publish-compensate-resume.test.ts` mid-suite. So git is used
  *   to classify a candidate, never to detect the change — the detection is the mtime
  *   and size comparison below, because `git status` is blind to ignored paths.
+ *
+ * There is a fourth question the before/after diff cannot answer on its own: *who*
+ * wrote the file. A dev server runs from this checkout by design, and on 2026-08-27
+ * it wrote a preview build and a checkpoint snapshot into `public/uploads` nine
+ * seconds into a run where all 4,421 tests passed — reported here as the suite's
+ * pollution, which it was not. Silencing that by allowlisting `public/uploads`
+ * would delete the check. `fencedPrefixes` is the honest answer instead: the
+ * harness now points the suite's object storage at a throwaway directory
+ * (`tests/setup/storage-dir-guard.ts`), so no test can reach the uploads root, and
+ * the guard stops speaking for a prefix it has been fenced away from. Nothing is
+ * subtracted that the fence does not already prevent.
  */
 import { spawnSync } from 'node:child_process';
 import { readdirSync, statSync, type Dirent } from 'node:fs';
-import { join, relative, resolve, sep } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 /** Build output and dependency trees: churn constantly and are nobody's state. */
 export const SKIP_DIRECTORIES: ReadonlySet<string> = new Set([
@@ -48,12 +59,15 @@ export const SKIP_DIRECTORIES: ReadonlySet<string> = new Set([
   '.vercel',
 ]);
 
+/** The local object-storage root, named because the fence below turns on it. */
+export const UPLOADS_PREFIX = 'public/uploads';
+
 /**
  * The paths a misconfigured suite writes instead of a temp directory:
  * `DATA_DIR` (observability config, caches), `STORAGE_LOCAL_DIR` (uploaded
  * assets), and the backup destination.
  */
-export const DEFAULT_STATE_PREFIXES: readonly string[] = ['.data', 'public/uploads', 'tmp/backups'];
+export const DEFAULT_STATE_PREFIXES: readonly string[] = ['.data', UPLOADS_PREFIX, 'tmp/backups'];
 
 /**
  * Deliberately tiny. An entry belongs here only if the *harness* writes it, never
@@ -78,6 +92,22 @@ export type TreeSnapshot = Map<string, FileFacts>;
 /** Repo-relative, forward slashes, so keys and allowlist entries compare on any OS. */
 export function toKey(root: string, full: string): string {
   return relative(root, full).split(sep).join('/');
+}
+
+/**
+ * Does `candidate` sit inside the repository? Both the fence and the state-prefix
+ * resolution turn on this, so they cannot disagree.
+ *
+ * The `isAbsolute` arm is not defensive padding: on Windows `relative()` returns
+ * the *target* unchanged when the two paths live on different drives, and this
+ * checkout is on `D:` while `os.tmpdir()` is on `C:`. Testing only for a leading
+ * `..` therefore reads `C:/Users/.../navroop-test-uploads-x` as "inside D:\repo"
+ * and would leave the suite unfenced on the one platform it runs on here.
+ */
+export function isInsideRepo(root: string, candidate: string): boolean {
+  const relativePath = relative(resolve(root), resolve(root, candidate));
+  if (relativePath === '') return true;
+  return !relativePath.startsWith('..') && !isAbsolute(relativePath);
 }
 
 export function snapshotTree(root: string): TreeSnapshot {
@@ -125,6 +155,13 @@ export type CompareOptions = {
   statePrefixes: readonly string[];
   /** Repo-relative paths or directory prefixes that may change without failing. */
   allowlist: readonly string[];
+  /**
+   * Repo-relative prefixes the harness pointed the suite away from. Distinct from
+   * the allowlist on purpose: an allowlist entry is output the harness *makes*,
+   * while a fenced prefix is one the suite provably cannot reach, so whatever
+   * lands there belongs to another process and the guard has nothing to say.
+   */
+  fencedPrefixes: readonly string[];
 };
 
 function matchesPrefix(key: string, prefixes: readonly string[]): boolean {
@@ -139,9 +176,13 @@ export function compareSnapshots(
   const violations: WriteViolation[] = [];
   const allowed = (key: string) => matchesPrefix(key, options.allowlist);
   const isState = (key: string) => matchesPrefix(key, options.statePrefixes);
+  // Dropped before anything else, and for additions as well as content changes: a
+  // fenced prefix is gitignored, so `keepInvisibleAdditions` would otherwise keep
+  // every addition there no matter what the state prefixes say.
+  const fenced = (key: string) => matchesPrefix(key, options.fencedPrefixes);
 
   for (const [key, facts] of after) {
-    if (allowed(key)) continue;
+    if (allowed(key) || fenced(key)) continue;
     const previous = before.get(key);
     if (!previous) {
       violations.push({ path: key, kind: 'added' });
@@ -154,7 +195,7 @@ export function compareSnapshots(
   }
 
   for (const key of before.keys()) {
-    if (allowed(key) || after.has(key)) continue;
+    if (allowed(key) || fenced(key) || after.has(key)) continue;
     // Deleting the app's state is the same class of harm as overwriting it.
     if (isState(key)) violations.push({ path: key, kind: 'removed' });
   }
@@ -172,9 +213,29 @@ export function resolveStatePrefixes(root: string, dataDir: string | undefined):
   if (!configured) return prefixes;
 
   const key = toKey(root, resolve(root, configured));
-  const insideRepo = key.length > 0 && !key.startsWith('..');
-  if (insideRepo && !prefixes.includes(key)) prefixes.push(key);
+  if (key.length > 0 && isInsideRepo(root, configured) && !prefixes.includes(key)) prefixes.push(key);
   return prefixes;
+}
+
+/**
+ * The state prefixes the suite has been pointed away from, and therefore cannot be
+ * the author of.
+ *
+ * Only `public/uploads` is fencible today: `lib/storage/index.ts` resolves its local
+ * root through `getSetting('storage.localDir')`, whose environment hop is
+ * `STORAGE_LOCAL_DIR`, so redirecting that variable moves every driver write out of
+ * the tree. `.data` and `tmp/backups` stay watched — `DATA_DIR` is redirected inside
+ * the workers where this process cannot see it, and nothing redirects the backup
+ * destination at all, so for those two the guard still has to observe rather than
+ * conclude.
+ *
+ * A storage root still inside the repository is not a fence: the suite can reach the
+ * tree, so the uploads root keeps being watched exactly as before.
+ */
+export function resolveFencedPrefixes(root: string, storageDir: string | undefined): string[] {
+  const configured = storageDir?.trim();
+  if (!configured) return [];
+  return isInsideRepo(root, configured) ? [] : [UPLOADS_PREFIX];
 }
 
 export type VisibilityOptions = {
@@ -243,5 +304,10 @@ export function formatViolations(violations: readonly WriteViolation[]): string 
     '',
     'If a path is genuinely the harness\u2019s own output, add it to DEFAULT_ALLOWLIST',
     'in tests/setup/repo-write-guard.ts with the reason it belongs there.',
+    '',
+    'If another process wrote it \u2014 the dev server on :3000 writes preview builds and',
+    'snapshots \u2014 the remedy is a fence, never an allowlist entry: point the suite away',
+    'from the directory the way tests/setup/storage-dir-guard.ts does, so the write',
+    'provably cannot be the suite\u2019s. Allowlisting a state path deletes the check.',
   ].join('\n');
 }

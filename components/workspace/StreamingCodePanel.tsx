@@ -23,6 +23,22 @@ import { streamProgressLabel } from './BuildingIndicator';
  * `GenerationProgressState` — so it renders and tests without the workspace.
  */
 
+const JOB_ENUM_STATUS = new Set(['generating', 'applying', 'idle', 'ready', 'error']);
+
+/**
+ * The header the empty pane may show. `GenerationState.status` is a job enum
+ * (`generating`); putting that in the pane is how a first build sat on
+ * "generating" / "Code appears here as each file is written" while the stream
+ * was already writing a real progress line.
+ */
+export function streamPaneStatus(progressStatus: string | null | undefined): string | null {
+  const value = progressStatus?.trim() ?? '';
+  if (!value) return null;
+  if (value === 'generating' || value === 'applying') return 'Writing files…';
+  if (JOB_ENUM_STATUS.has(value)) return null;
+  return value;
+}
+
 /** Anything closer than this to the bottom still counts as "at the bottom". */
 const FOLLOW_SLACK_PX = 24;
 
@@ -69,11 +85,56 @@ export function selectionReducer(
   }
 }
 
+/**
+ * The file a finished build should open on, per stack, most specific first.
+ *
+ * A settled build has no open file, so the body fell through to the last entry
+ * in the rail — `components/Footer.tsx` on the measured build, the last thing
+ * streamed and the least informative thing to land on. `GenerationProgressState`
+ * carries no stack field, so the stack is read off the file set itself: Next's
+ * app router, then its pages router, then React/Vite, then static HTML. Match is
+ * case-insensitive because `App.tsx` and `app.tsx` both occur in the wild.
+ */
+const ENTRY_CANDIDATES = [
+  'app/page.tsx',
+  'app/page.jsx',
+  'src/app/page.tsx',
+  'src/app/page.jsx',
+  'pages/index.tsx',
+  'pages/index.jsx',
+  'src/pages/index.tsx',
+  'src/pages/index.jsx',
+  'src/app.tsx',
+  'src/app.jsx',
+  'src/main.tsx',
+  'src/main.jsx',
+  'src/index.tsx',
+  'src/index.jsx',
+  'app.tsx',
+  'app.jsx',
+  'index.html',
+  'public/index.html',
+  'src/index.html',
+];
+
+/** The entry file among `files`, or the first one written when none is known. */
+export function entryFile(files: GenerationFile[]): GenerationFile | null {
+  for (const candidate of ENTRY_CANDIDATES) {
+    const match = files.find((file) => file.path.toLowerCase() === candidate);
+    if (match) return match;
+  }
+  // An unfamiliar layout, or a stack this list has not been taught. The first
+  // file written still beats the last: generators emit the shell before the leaf
+  // components it imports.
+  return files[0] ?? null;
+}
+
 /** Which file the body shows: the reader's pick wins, otherwise the open one. */
 export function visibleFile(
   files: GenerationFile[],
   selection: StreamingPanelSelection,
   activePath: string | null,
+  settled = false,
 ): GenerationFile | null {
   if (!selection.following && selection.pinnedPath) {
     const pinned = files.find((file) => file.path === selection.pinnedPath);
@@ -82,6 +143,14 @@ export function visibleFile(
   if (activePath) {
     const open = files.find((file) => file.path === activePath);
     if (open) return open;
+  }
+  // `settled` means the build is over, not merely that the parser sits between
+  // two fences: mid-stream `activePath` is null after a closed `</file>` and
+  // before the next opener, and jumping to the entry file there would pull the
+  // reader off the file they are watching every time one finishes.
+  if (settled) {
+    const entry = entryFile(files);
+    if (entry) return entry;
   }
   return files.length > 0 ? (files[files.length - 1] ?? null) : null;
 }
@@ -119,6 +188,7 @@ function StreamingCodePanel({
   droppedPaths = [],
   status,
   streamedText,
+  settled = false,
   className,
 }: {
   files: GenerationFile[];
@@ -142,6 +212,11 @@ function StreamingCodePanel({
    * watching it work.
    */
   streamedText?: string | null;
+  /**
+   * The build has finished. Only then does the panel pick an entry file for the
+   * reader instead of whatever the stream left at the end of the rail.
+   */
+  settled?: boolean;
   className?: string;
 }) {
   const [selection, dispatch] = useReducer(selectionReducer, {
@@ -153,7 +228,7 @@ function StreamingCodePanel({
 
   const progress = useMemo(() => summarizeStreamingFiles(files), [files]);
   const openPath = activePath === undefined ? progress.activePath : activePath;
-  const shown = visibleFile(files, selection, openPath);
+  const shown = visibleFile(files, selection, openPath, settled);
   const progressLabel = streamProgressLabel(progress);
 
   useEffect(() => {
@@ -181,13 +256,22 @@ function StreamingCodePanel({
   return (
     <div
       className={cn(
-        'flex h-full min-h-0 w-full overflow-hidden rounded-12 border border-[var(--studio-line)] bg-[#1e1e1e]',
+        'flex h-full min-h-0 w-full flex-col overflow-hidden rounded-12 border border-[var(--studio-line)] bg-[#1e1e1e] md:flex-row',
         className,
       )}
     >
+      {/*
+        Below `md` the rail stops being a column and becomes a scrolling strip of
+        file chips above the code. At a 747px viewport the fixed 240px rail left
+        the code element 94px of measure against a 1638px scrollWidth — 6% of
+        each line, the rest behind a horizontal scrollbar (F-8). `md` is the
+        breakpoint the workspace already changes shape at (below it the app
+        sidebar is a drawer), not a new one invented here; the wide layout is
+        untouched.
+      */}
       <nav
         aria-label="Files being written"
-        className="flex w-[240px] shrink-0 flex-col gap-2 overflow-y-auto border-r border-white/10 p-8"
+        className="flex shrink-0 gap-2 overflow-auto border-b border-white/10 p-8 md:w-[240px] md:flex-col md:border-b-0 md:border-r"
       >
         {files.length === 0 ? (
           <p className="px-8 py-6 text-[12px] text-white/45">No files yet.</p>
@@ -200,7 +284,8 @@ function StreamingCodePanel({
             aria-current={shown?.path === file.path}
             onClick={() => dispatch({ type: 'pick', path: file.path })}
             className={cn(
-              'flex items-center gap-8 rounded-8 px-8 py-6 text-left text-[12px] transition-colors',
+              'flex shrink-0 items-center gap-8 rounded-8 px-8 py-6 text-left text-[12px] transition-colors',
+              'max-w-[200px] md:max-w-none',
               shown?.path === file.path
                 ? 'bg-white/12 text-white'
                 : 'text-white/65 hover:bg-white/8 hover:text-white',
@@ -224,7 +309,7 @@ function StreamingCodePanel({
         {droppedPaths.length > 0 ? (
           // The audit found several silent drops here. A path the parser refused
           // is a file the user asked for and will not get, so it is reported.
-          <div className="mt-8 rounded-8 border border-amber-500/40 bg-amber-500/10 p-8">
+          <div className="ml-8 max-w-[280px] shrink-0 rounded-8 border border-amber-500/40 bg-amber-500/10 p-8 md:ml-0 md:mt-8 md:max-w-none">
             <p className="flex items-center gap-6 text-[12px] font-medium text-amber-200">
               <AlertTriangle className="size-13 shrink-0" />
               {droppedPaths.length === 1
@@ -246,7 +331,7 @@ function StreamingCodePanel({
         ) : null}
       </nav>
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <header className="flex items-center gap-12 border-b border-white/10 px-12 py-8">
           <span className="min-w-0 flex-1 truncate text-[12px] text-white/70">
             {shown ? shown.path : (status ?? 'Waiting for the first file…')}
@@ -293,6 +378,13 @@ function StreamingCodePanel({
               Code appears here as each file is written.
             </p>
           )}
+          {/* Blinking cursor at the end of the file being written */}
+          {shown && !shown.completed ? (
+            <span
+              aria-hidden="true"
+              className="inline-block h-[1.1em] w-[2px] translate-y-[1px] animate-pulse bg-emerald-400 ml-16"
+            />
+          ) : null}
         </div>
       </div>
     </div>

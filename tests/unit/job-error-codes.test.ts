@@ -36,6 +36,7 @@ const EXPECTED_CODES = [
   'queue_timeout',
   'client_disconnected',
   'no_files_generated',
+  'no_checks_available',
   'tool_call_validation_failed',
   'credits_exhausted',
   'member_cap_reached',

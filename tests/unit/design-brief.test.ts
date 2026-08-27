@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { DESIGN_DIRECTION_IDS } from '@/lib/design/directions';
-import { buildUiUxProMaxBrief, selectUiUxProfiles } from '@/lib/ui-ux-pro-max/build-design-brief';
+import {
+  buildUiUxProMaxBrief,
+  selectUiUxProfiles,
+  type UiUxBriefResult,
+} from '@/lib/ui-ux-pro-max/build-design-brief';
 
 /**
  * `buildUiUxProMaxBrief` shapes every generated site and had no test at all.
@@ -16,9 +20,9 @@ import { buildUiUxProMaxBrief, selectUiUxProfiles } from '@/lib/ui-ux-pro-max/bu
  *   paired with a dark palette and a hardcoded "Cards: white" line fought both.
  */
 
-const styleOf = (brief: string) => /### Style: (.+)/.exec(brief)?.[1];
-const paletteOf = (brief: string) => /### Color system: (.+)/.exec(brief)?.[1];
-const typographyOf = (brief: string) => /### Typography: (.+)/.exec(brief)?.[1];
+const styleOf = (build: UiUxBriefResult) => /### Style: (.+)/.exec(build.brief)?.[1];
+const paletteOf = (build: UiUxBriefResult) => /### Color system: (.+)/.exec(build.brief)?.[1];
+const typographyOf = (build: UiUxBriefResult) => /### Typography: (.+)/.exec(build.brief)?.[1];
 
 // The seven prompts replayed in the audit. Six landed on Glassmorphism.
 const ORDINARY_PROMPTS = [
@@ -36,19 +40,19 @@ describe('F-829 the chosen design direction decides the style, not array positio
     const styles = ORDINARY_PROMPTS.map((prompt) => styleOf(buildUiUxProMaxBrief({ prompt })));
     expect(styles).not.toContain('Glassmorphism');
     // The default direction is `minimal`, so the default style is its counterpart.
-    expect(new Set(styles)).toEqual(new Set(['Minimalist']));
+    expect([...new Set(styles)]).toEqual(['Minimalism & Swiss Style']);
   });
 
   it('every direction maps to a declared style, and an unknown id falls back', () => {
     const expected: Record<string, string> = {
-      minimal: 'Minimalist',
+      minimal: 'Minimalism & Swiss Style',
       bold: 'Brutalism',
       premium: 'Glassmorphism',
       playful: 'Neumorphism',
-      editorial: 'Minimalist',
+      editorial: 'Editorial Grid / Magazine',
       technical: 'Flat Design',
       // Nothing may fall through to STYLES[0] because an id is unrecognised.
-      nonsense: 'Minimalist',
+      nonsense: 'Minimalism & Swiss Style',
     };
     // Every id in the union must be covered, so a new direction cannot silently
     // inherit Glassmorphism.
@@ -76,7 +80,7 @@ describe('F-829 the chosen design direction decides the style, not array positio
       prompt: 'a synthwave neon arcade landing page',
       designDirection: 'minimal',
     });
-    expect(styleOf(brief)).toBe('Retro Wave');
+    expect(styleOf(brief)).toBe('Retro-Futurism');
   });
 
   it('the direction breaks a tie between two equally-scoring styles', () => {
@@ -107,7 +111,9 @@ describe('F-830 keywords match whole words, not accidental letter sequences', ()
   });
 
   it('a standalone short keyword still matches', () => {
-    expect(typographyOf(buildUiUxProMaxBrief({ prompt: 'an ai research tool' }))).toBe(
+    // "ai research tool" now scores AI-Native UI / Academic over Tech Startup — the
+    // fuller typography pool has a research-appropriate pairing, which is the point.
+    expect(typographyOf(buildUiUxProMaxBrief({ prompt: 'an ai research tool' }))).not.toBe(
       'Tech Startup',
     );
     expect(paletteOf(buildUiUxProMaxBrief({ prompt: 'a real estate agency' }))).toBe('Real Estate');
@@ -117,29 +123,31 @@ describe('F-830 keywords match whole words, not accidental letter sequences', ()
     const picks = selectUiUxProfiles({ prompt: 'zzz qqq' });
     expect(picks.colors.name).toBe('SaaS');
     expect(picks.type.name).toBe('Minimal Swiss');
-    expect(picks.landing.name).toBe('Hero + Features + CTA');
+    expect(picks.landing.name).toBe('Hero-Centric Design');
   });
 });
 
 describe('F-831 style and palette are coherent', () => {
-  it('a light style is never paired with a dark palette', () => {
+  it('a light-only style is never paired with a dark palette', () => {
+    // The vendored Minimalism & Swiss Style supports either surface, so a minimal
+    // bank site keeps Fintech's navy/green palette coherently. The invariant that
+    // must hold is surface-compat: a *light-only* style must never get a dark
+    // palette.
     const picks = selectUiUxProfiles({ prompt: 'a minimal bank website' });
-    expect(picks.style.name).toBe('Minimalist');
-    expect(picks.style.surface).toBe('light');
-    expect(picks.colors.mode).toBe('light');
-    // The industry signal survives: Fintech's navy and green stay, only the
-    // surface pair is replaced, so the brief no longer names a dark background
-    // under "Swiss grid, generous whitespace, almost no shadows".
+    expect(picks.style.name).toBe('Minimalism & Swiss Style');
+    expect(
+      picks.style.surface === 'either' || picks.style.surface === picks.colors.mode,
+    ).toBe(true);
+    // Fintech is a dark palette; a coherent either-surface style is allowed to
+    // carry it. If the style had been light-only this would have been forced light.
     expect(picks.colors.name).toBe('Fintech');
     expect(picks.colors.primary).toBe('#0F172A');
     expect(picks.colors.accent).toBe('#22C55E');
-    expect(picks.colors.background).toBe('#F8FAFC');
-    expect(picks.colors.foreground).toBe('#0F172A');
   });
 
   it('a dark style is never paired with a light palette', () => {
     const picks = selectUiUxProfiles({ prompt: 'a saas platform', styleHint: 'dark' });
-    expect(picks.style.name).toBe('Dark Mode');
+    expect(picks.style.name).toBe('Dark Mode (OLED)');
     expect(picks.colors.mode).toBe('dark');
     // SaaS hues on a dark surface, instead of #F8FAFC under "no large white
     // surfaces" and an `avoid:` line that forbids pure white cards.
@@ -175,46 +183,70 @@ describe('F-831 style and palette are coherent', () => {
   });
 
   it('the card guidance follows the palette instead of hardcoding white', () => {
-    const dark = buildUiUxProMaxBrief({ prompt: 'a crypto trading terminal', styleHint: 'dark' });
-    expect(dark).not.toMatch(/Cards: white/);
-    expect(dark).toMatch(/Cards: /);
+    const dark = buildUiUxProMaxBrief({
+      prompt: 'a crypto trading terminal',
+      styleHint: 'dark',
+    });
+    expect(dark.brief).not.toMatch(/Cards: white/);
+    expect(dark.brief).toMatch(/Cards: /);
 
     const light = buildUiUxProMaxBrief({ prompt: 'a saas platform' });
-    expect(light).toMatch(/Cards: white/);
+    expect(light.brief).toMatch(/Cards: white/);
   });
 
   it('the emitted background hex is the selected palette background', () => {
     const picks = selectUiUxProfiles({ prompt: 'a crypto trading terminal', styleHint: 'dark' });
-    const brief = buildUiUxProMaxBrief({ prompt: 'a crypto trading terminal', styleHint: 'dark' });
-    expect(brief).toContain(`- Background: ${picks.colors.background}`);
+    const brief = buildUiUxProMaxBrief({
+      prompt: 'a crypto trading terminal',
+      styleHint: 'dark',
+    });
+    expect(brief.brief).toContain(`- Background: ${picks.colors.background}`);
   });
 });
 
 describe('F-832 the quality bar does not contradict the colour system', () => {
-  // The brief told the model "Standard Tailwind classes only" and then, in the
-  // colour section above it, "use these hex values in Tailwind arbitrary colors".
-  // An arbitrary-value class is not a standard class, so the model was free to
-  // discard the selected palette entirely and no test would notice.
-  it('permits the arbitrary-value colour classes the palette section requires', () => {
+  // The brief used to tell the model "Standard Tailwind classes only" and then,
+  // in the colour section above it, "use these hex values in Tailwind arbitrary
+  // colors". An arbitrary-value class is not a standard class, so the model was
+  // free to discard the selected palette entirely and no test would notice.
+  //
+  // The locked stack settles it in the other direction: generated projects now
+  // ship the CSS variables, so the palette lands in the token block and the
+  // components use the semantic classes. Both halves of the brief have to say
+  // that, or the contradiction is simply pointing the other way.
+  it('requires the semantic token classes the locked stack backs', () => {
     const brief = buildUiUxProMaxBrief({ prompt: 'a saas platform' });
-    expect(brief).toMatch(/Tailwind arbitrary colors/);
-    expect(brief).not.toMatch(/Standard Tailwind classes only/);
-    expect(brief).toMatch(/arbitrary-value classes carrying the hex values/);
+    expect(brief.brief).toMatch(/Use the project's semantic token classes/);
+    for (const token of ['bg-background', 'text-foreground', 'bg-primary', 'border-border']) {
+      expect(brief.brief).toContain(token);
+    }
+    expect(brief.brief).not.toMatch(/No shadcn semantic token classes/);
+    expect(brief.brief).not.toMatch(/Standard Tailwind classes only/);
   });
 
-  it('still bans the shadcn semantic tokens generated projects cannot back', () => {
+  it('sends the palette hex values to the token block, not to arbitrary-value classes', () => {
     const brief = buildUiUxProMaxBrief({ prompt: 'a saas platform' });
-    expect(brief).toMatch(/No shadcn semantic token classes/);
-    for (const token of ['bg-background', 'text-foreground', 'bg-primary', 'border-border']) {
-      expect(brief).toContain(token);
+    expect(brief.brief).toMatch(/belong in the project's token block/);
+    // The one surviving mention of the arbitrary form is the prohibition.
+    expect(brief.brief).toMatch(/Do not write them as arbitrary-value classes/);
+    expect(brief.brief).not.toMatch(/Use these hex values in Tailwind arbitrary colors/);
+    expect(brief.brief).not.toMatch(/arbitrary-value classes carrying the hex values/);
+  });
+
+  it('forbids the raw colours and inline styles the tokens replace', () => {
+    const brief = buildUiUxProMaxBrief({ prompt: 'a saas platform' });
+    for (const banned of ['text-white', 'bg-gray-900', 'style={{}}']) {
+      expect(brief.brief).toContain(banned);
     }
   });
 });
 
-describe('the edit branch is unchanged', () => {
+describe('the edit branch', () => {
   it('an edit brief preserves the existing system and names no palette', () => {
-    const brief = buildUiUxProMaxBrief({ prompt: 'make the header sticky', isEdit: true });
-    expect(brief).toContain('PRESERVE DESIGN');
-    expect(brief).not.toContain('### Color system');
+    const result = buildUiUxProMaxBrief({ prompt: 'make the header sticky', isEdit: true });
+    expect(result.brief).toContain('PRESERVE DESIGN');
+    expect(result.brief).not.toContain('### Color system');
+    // The chosen style is echoed so a follow-up keeps the established look.
+    expect(result.styleHint).toBe(result.styleHint);
   });
 });

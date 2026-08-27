@@ -10,6 +10,7 @@ import type { CodeFinding, CodeSeverity } from '@/lib/audit/types';
 import type { SendMessageOptions } from './types';
 import { useCodeAudit } from './useCodeAudit';
 import StatusPill, { type StatusTone } from '@/components/admin/StatusPill';
+import Hint from './Hint';
 
 const SEVERITY_LABEL: Record<CodeSeverity, string> = {
   high: 'High',
@@ -158,8 +159,13 @@ export default function CodeAuditPanel({
   onSend: (text: string, options: SendMessageOptions) => void;
   sending?: boolean;
 }) {
-  const { audit, scanning, error, scan, fixOne, fixAll, toggleIgnore } = useCodeAudit(projectId);
+  const { audit, scanning, error, hasFiles, filesHint, scan, fixOne, fixAll, toggleIgnore } =
+    useCodeAudit(projectId);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // `hasFiles`/`filesHint` come straight from `useCodeAudit`'s own poll (the same
+  // `getLatestCodeAudit` call it already makes) — mirrors PublishPanel's
+  // `canPublish`/`setupMessage` gate without a second, duplicate server round trip.
+  const scanHint = hasFiles ? (audit ? 'Scan again' : 'Scan') : (filesHint ?? 'Generate the project first');
 
   const grouped = useMemo(() => {
     const sorted = sortFindings(audit?.findings ?? []);
@@ -216,19 +222,33 @@ export default function CodeAuditPanel({
               Try to fix all
             </button>
           )}
-          <button
-            type="button"
-            disabled={scanning}
-            onClick={() => void scan()}
-            className="inline-flex h-36 items-center gap-6 rounded-full bg-[var(--studio-fg)] px-14 text-[13px] font-medium text-[var(--studio-bg)] disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {scanning ? (
-              <Loader2 className="size-14 animate-spin" />
-            ) : (
-              <Search className="size-14" />
-            )}
-            {audit ? 'Scan again' : 'Scan'}
-          </button>
+          {/*
+            Only a scan in flight disables this. `hasFiles` is the last answer the
+            panel heard, not a fact about the project now: a build that settles in
+            another tab, or on another instance, never reaches this one, and a
+            disabled button on a project that already has a whole site is a dead
+            end the user cannot argue with — it was reachable for as long as the
+            panel stayed open. The press is the authoritative re-check instead:
+            `runCodeAudit` answers the files question itself, before it takes the
+            project lock and before it charges a credit, so a click on a genuinely
+            empty project costs one read and returns the same sentence the hint
+            already carries.
+          */}
+          <Hint label={scanHint}>
+            <button
+              type="button"
+              disabled={scanning}
+              onClick={() => void scan()}
+              className="inline-flex h-36 items-center gap-6 rounded-full bg-[var(--studio-fg)] px-14 text-[13px] font-medium text-[var(--studio-bg)] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {scanning ? (
+                <Loader2 className="size-14 animate-spin" />
+              ) : (
+                <Search className="size-14" />
+              )}
+              {audit ? 'Scan again' : 'Scan'}
+            </button>
+          </Hint>
         </div>
       </div>
 

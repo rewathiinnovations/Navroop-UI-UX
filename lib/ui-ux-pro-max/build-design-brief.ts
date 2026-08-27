@@ -1,22 +1,12 @@
 import { resolveDirectionId, type DesignDirectionId } from '@/lib/design/directions';
-
-/**
- * Whether a style can sit on a light background, a dark one, or either. Used to
- * reject a style/palette pair that would contradict itself (F-831): the brief is
- * labelled "MANDATORY FOR THIS CREATION", so two incompatible backgrounds in it
- * leave the model to pick one and violate the other.
- */
-type Surface = 'light' | 'dark' | 'either';
-
-type StyleProfile = {
-  name: string;
-  aliases: string[];
-  keywords: string[];
-  surface: Surface;
-  prompt: string;
-  tokens: string;
-  avoid: string;
-};
+import {
+  STYLE_PROFILES,
+  TYPEFACE_PROFILES,
+  LANDING_PROFILES,
+  type StyleProfile as VendoredStyle,
+  type TypeProfile as VendoredType,
+  type LandingProfile as VendoredLanding,
+} from './profiles';
 
 type ColorProfile = {
   name: string;
@@ -29,117 +19,50 @@ type ColorProfile = {
   notes: string;
 };
 
-type TypeProfile = {
-  name: string;
-  keywords: string[];
-  heading: string;
-  body: string;
-  importUrl: string;
+type StyleProfile = VendoredStyle & {
+  aliases: string[];
 };
 
-type LandingProfile = {
-  name: string;
-  keywords: string[];
-  sections: string;
-  cta: string;
-};
+type TypeProfile = VendoredType;
+type LandingProfile = VendoredLanding;
 
-const STYLES: StyleProfile[] = [
-  {
-    name: 'Glassmorphism',
-    aliases: ['1', 'glass', 'frosted'],
-    keywords: ['glass', 'frosted', 'blur', 'translucent', 'saas', 'modern'],
-    surface: 'either',
-    prompt:
-      'Frosted glass cards, backdrop-blur 12-20px, translucent overlays (10-30% opacity), subtle 1px light borders, layered depth, vibrant background.',
-    tokens: '--blur: 16px; --glass: rgba(255,255,255,0.14); --radius: 16px;',
-    avoid:
-      'Low-contrast text on glass, heavy blur on every surface, missing fallback without backdrop-filter.',
-  },
-  {
-    name: 'Neumorphism',
-    aliases: ['2', 'soft ui', 'embossed'],
-    keywords: ['soft', 'wellness', 'health', 'meditation', 'pastel'],
-    surface: 'light',
-    prompt:
-      'Soft 3D surfaces, pastel monochrome, 12-16px radius, dual light/dark shadows, press-in states at 150ms.',
-    tokens:
-      '--radius: 14px; --shadow-light: -6px -6px 16px rgba(255,255,255,0.7); --shadow-dark: 6px 6px 16px rgba(0,0,0,0.08);',
-    avoid: 'Low-contrast text, complex dashboards, tiny controls.',
-  },
-  {
-    name: 'Brutalism',
-    aliases: ['3', 'raw', 'anti-design'],
-    keywords: ['brutal', 'raw', 'stark', 'editorial', 'bold', 'asymmetric'],
-    surface: 'light',
-    prompt:
-      'Raw high-contrast blocks, 0 radius, visible 2-4px borders, bold type 700+, instant transitions, primary red/blue/yellow + black/white.',
-    tokens: '--radius: 0px; --border: 3px solid #000; --weight: 800;',
-    avoid: 'Soft shadows, rounded corporate cards, timid greys.',
-  },
-  {
-    name: 'Minimalist',
-    aliases: ['4', 'minimal', 'swiss', 'clean'],
-    keywords: ['minimal', 'clean', 'simple', 'swiss', 'enterprise', 'docs'],
-    surface: 'light',
-    prompt:
-      'Swiss grid, generous whitespace, geometric sans, high contrast, essential elements only, almost no shadows or gradients.',
-    tokens: '--radius: 0px; --space: 2rem; --shadow: none;',
-    avoid: 'Decorative blobs, extra cards, cluttered nav.',
-  },
-  {
-    name: 'Dark Mode',
-    aliases: ['5', 'oled', 'dark'],
-    keywords: ['dark', 'night', 'oled', 'coding', 'cinema', 'premium'],
-    surface: 'dark',
-    prompt:
-      'OLED dark (#000/#121212/#0A0E27), neon accents used sparingly, 7:1 text contrast, minimal glow, no large white surfaces.',
-    tokens: '--bg: #0A0E17; --surface: #121826; --text: #F8FAFC; --accent: #38BDF8;',
-    avoid: 'Pure white cards, faint grey body text, glow on every element.',
-  },
-  {
-    name: 'Gradient Rich',
-    aliases: ['6', 'aurora', 'mesh'],
-    keywords: ['gradient', 'aurora', 'colorful', 'vibrant', 'music', 'lifestyle'],
-    surface: 'either',
-    prompt:
-      'Mesh/aurora backgrounds, complementary blends, 8-12s slow motion, high-contrast type over darkened overlays.',
-    tokens:
-      '--grad: radial-gradient(at 20% 20%, #6366F1, transparent 40%), radial-gradient(at 80% 0%, #F43F5E, transparent 35%);',
-    avoid: 'Text sitting on busy gradients without overlay, rainbow overload.',
-  },
-  {
-    name: '3D Depth',
-    aliases: ['7', '3d', 'dimensional'],
-    keywords: ['3d', 'depth', 'product', 'showcase', 'immersive'],
-    surface: 'either',
-    prompt:
-      'Layered depth, perspective, soft multi-shadows, parallax on 1-2 hero elements only, tactile cards. Prefer CSS 3D over WebGL unless asked.',
-    tokens: '--perspective: 1000px; --elev-1: 0 8px 24px rgba(0,0,0,0.12);',
-    avoid: 'WebGL on every section, animating layout properties.',
-  },
-  {
-    name: 'Retro Wave',
-    aliases: ['8', 'synthwave', 'cyberpunk', 'retro'],
-    keywords: ['retro', '80s', 'neon', 'cyber', 'synth', 'game'],
-    surface: 'dark',
-    prompt:
-      'Synthwave/cyber look: deep navy/black, neon pink/cyan, glow text, geometric grids, optional scanlines, monospace accents.',
-    tokens: '--bg: #0B0618; --neon: #FF2BD6; --cyan: #22D3EE;',
-    avoid: 'Low-contrast neon on neon, endless glitch loops.',
-  },
-  {
-    name: 'Flat Design',
-    aliases: ['flat'],
-    keywords: ['flat', 'startup', 'saas', 'dashboard', 'mvp'],
-    surface: 'light',
-    prompt:
-      '2D flat UI, 4-6 solid colors, no shadows/gradients, simple shapes, icon-led hierarchy, 150-200ms color/opacity hovers.',
-    tokens: '--shadow: none; --radius: 8px;',
-    avoid: 'Skeuomorphic textures, heavy glass.',
-  },
-];
+/**
+ * The vendored pool is the full skill breadth (49 General website styles, 74
+ * typefaces, 34 landing patterns). Only `General`-type styles are landing-page
+ * candidates — the `BI/Analytics`, `Landing Page` and `Mobile` rows are either
+ * dashboard-specific or an explicitly narrower sub-variant ("Neumorphism (Mobile)"),
+ * and offering a dashboard look for a marketing site or a mobile variant for a
+ * desktop build is a worse match than the closest general style.
+ */
+const STYLES: StyleProfile[] = STYLE_PROFILES.filter((style) => style.type === 'General').map(
+  (style) => ({
+    ...style,
+    aliases: [
+      style.name.toLowerCase(),
+      ...style.keywords.map((keyword) => keyword.toLowerCase()),
+    ],
+  }),
+);
 
+const TYPEFACES: TypeProfile[] = TYPEFACE_PROFILES;
+const LANDINGS: LandingProfile[] = LANDING_PROFILES;
+
+/**
+ * The color palettes remain a curated, industry-keyed table rather than being
+ * derived from the skill CSVs: the CSVs carry primary/secondary *hexes per style*
+ * and product color hints, but not a separate profile whose `mode + primary +
+ * accent + surfaces` all agree. Ten curated industries give a stable, tested
+ * color story; style expansion and typography breadth are where the vendored data
+ * lifts quality, and those are already sourced from it.
+ *
+ * `products.csv` is left out for the same kind of reason. Its rows recommend a
+ * style, a landing pattern and a colour focus per product type — the same three
+ * slots the keyword scorer below already fills, with the design direction breaking
+ * ties. Vendoring it a second time would give the brief two selectors for one slot
+ * and no rule for which wins, which is why the generated `PRODUCT_PROFILES` export
+ * sat unimported for its whole life. A product-type selector is a real feature; it
+ * arrives with the code that resolves that conflict, not before it.
+ */
 const COLORS: ColorProfile[] = [
   {
     name: 'SaaS',
@@ -243,116 +166,22 @@ const COLORS: ColorProfile[] = [
   },
 ];
 
-const TYPEFACES: TypeProfile[] = [
-  {
-    name: 'Modern Professional',
-    keywords: ['saas', 'business', 'corporate', 'startup'],
-    heading: 'Poppins',
-    body: 'Open Sans',
-    importUrl:
-      'https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&family=Poppins:wght@500;600;700&display=swap',
-  },
-  {
-    name: 'Tech Startup',
-    keywords: ['tech', 'ai', 'developer', 'software'],
-    heading: 'Space Grotesk',
-    body: 'DM Sans',
-    importUrl:
-      'https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=Space+Grotesk:wght@500;600;700&display=swap',
-  },
-  {
-    name: 'Classic Elegant',
-    keywords: ['luxury', 'fashion', 'spa', 'editorial', 'beauty'],
-    heading: 'Playfair Display',
-    body: 'Inter',
-    importUrl:
-      'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Playfair+Display:wght@500;600;700&display=swap',
-  },
-  {
-    name: 'Playful Creative',
-    keywords: ['kids', 'play', 'fun', 'game', 'education'],
-    heading: 'Fredoka',
-    body: 'Nunito',
-    importUrl:
-      'https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Nunito:wght@400;600;700&display=swap',
-  },
-  {
-    name: 'Minimal Swiss',
-    keywords: ['minimal', 'dashboard', 'docs', 'clean'],
-    heading: 'Inter',
-    body: 'Inter',
-    importUrl: 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap',
-  },
-  {
-    name: 'Wellness Calm',
-    keywords: ['health', 'wellness', 'yoga', 'organic'],
-    heading: 'Lora',
-    body: 'Raleway',
-    importUrl:
-      'https://fonts.googleapis.com/css2?family=Lora:wght@500;600;700&family=Raleway:wght@400;500;600&display=swap',
-  },
-];
-
-const LANDINGS: LandingProfile[] = [
-  {
-    name: 'Hero + Features + CTA',
-    keywords: ['saas', 'startup', 'product', 'tool'],
-    sections: '1. Hero 2. Value prop 3. 3-5 features 4. CTA 5. Footer',
-    cta: 'Primary CTA in hero and again after features',
-  },
-  {
-    name: 'Social Proof',
-    keywords: ['agency', 'service', 'consult', 'clinic'],
-    sections: '1. Hero 2. Problem 3. Solution 4. Testimonials 5. CTA',
-    cta: 'CTA after 3-5 named testimonials',
-  },
-  {
-    name: 'Menu / Catalog',
-    keywords: ['restaurant', 'food', 'shop', 'store', 'menu'],
-    sections: '1. Hero 2. Categories 3. Featured items 4. About 5. Contact/CTA',
-    cta: 'Reserve / Shop CTA sticky on mobile',
-  },
-  {
-    name: 'Portfolio',
-    keywords: ['portfolio', 'studio', 'architect', 'photographer'],
-    sections: '1. Name/hero 2. Selected work grid 3. About 4. Contact',
-    cta: 'Contact after work, not before',
-  },
-  {
-    name: 'Local Business',
-    keywords: ['dentist', 'lawyer', 'salon', 'gym', 'hotel'],
-    sections: '1. Hero 2. Services 3. Proof 4. Hours/map 5. Book CTA',
-    cta: 'Book/call visible in header and footer',
-  },
-];
-
 /**
  * The style each design direction resolves to when the prompt carries no style
- * keyword of its own. Before this existed the winner was `STYLES[0]`
- * (Glassmorphism) for any prompt that did not literally name a style — which is
- * most of them — so a bakery and a law firm both got frosted glass while the
- * PromptHero picker said `minimal` (F-829). Two directions may share a style:
- * `editorial` has no dedicated STYLES row and its tokens (no shadows, hairline
- * rules, print gutters) are Minimalist's.
+ * keyword of its own. These names exist in the vendored `General` pool.
  */
 const STYLE_FOR_DIRECTION: Record<DesignDirectionId, string> = {
-  minimal: 'Minimalist',
+  minimal: 'Minimalism & Swiss Style',
   bold: 'Brutalism',
   premium: 'Glassmorphism',
   playful: 'Neumorphism',
-  editorial: 'Minimalist',
+  editorial: 'Editorial Grid / Magazine',
   technical: 'Flat Design',
 };
 
-/**
- * Defaults for the tables a design direction says nothing about. Named
- * explicitly so "no keyword matched" is a decision rather than array position.
- * The typeface default is Inter, which is what `DEFAULT_DESIGN_DIRECTION`
- * (`minimal`) prescribes — the old fall-through picked Poppins/Open Sans.
- */
 const DEFAULT_COLOR = 'SaaS';
 const DEFAULT_TYPEFACE = 'Minimal Swiss';
-const DEFAULT_LANDING = 'Hero + Features + CTA';
+const DEFAULT_LANDING = 'Hero-Centric Design';
 
 /**
  * Surfaces used when the scored palette's mode contradicts the style. The hues
@@ -365,6 +194,20 @@ const SURFACES = {
   dark: { background: '#0A0E17', foreground: '#F8FAFC' },
 } as const;
 
+/**
+ * The hard UX quality bar, distilled from the skill's ux-guidelines and the
+ * curated rules the old brief carried. These are non-negotiable output rules,
+ * not suggestions — they are what separate "looks like a template" from a
+ * finished product.
+ *
+ * This prose is the whole bar, and it is deliberately not derived from the
+ * vendored pool. `scripts/generate-ui-ux-profiles.ts` used to also emit the 99
+ * `ux-guidelines.csv` rows as a `UX_RULES: UxRule[]` export — same name, never
+ * imported, and rendering them would put 99 category/issue/do/don't records into
+ * every creation prompt in place of these eleven lines. Two exports named
+ * `UX_RULES`, one of them dead, is how a later reader concludes the brief prints
+ * the CSV rows; only one now exists, and it is this one.
+ */
 const UX_RULES = `
 - Use Lucide or Heroicons only. Never use emoji as icons.
 - cursor-pointer on every clickable control. Hover/focus in 150-300ms (opacity/color/transform, never width/height/top).
@@ -373,7 +216,9 @@ const UX_RULES = `
 - Respect prefers-reduced-motion. Max 1-2 motion moments per view.
 - Mobile-first: 375 / 768 / 1024 / 1440. Sticky nav must not cover content (compensate padding).
 - Smooth scroll. Active nav state. Skeleton/spinner for async work.
-- No shadcn semantic token classes (bg-background / text-foreground / bg-primary / border-border): generated projects ship no CSS variables to back them, so they render as nothing. Stock Tailwind (bg-white, text-gray-900, bg-blue-600) and arbitrary-value classes carrying the hex values from the color system above (bg-[#2563EB], text-[#0F172A]) are both correct.
+- Use the project's semantic token classes (bg-background, text-foreground, bg-primary, text-primary-foreground, bg-card, text-muted-foreground, border-border): the global stylesheet defines them as CSS variables from the color system above, and the Tailwind config maps them. Never a raw colour (text-white, bg-black, bg-gray-900), never an arbitrary hex (bg-[#2563EB]), never style={{}}. A colour the tokens do not cover goes into the token block in the global stylesheet first.
+- Depth and gradients are tokens: bg-gradient-primary, bg-gradient-subtle, shadow-elegant, shadow-glow, ease-smooth, duration-smooth. Never hand-write a linear-gradient or a box-shadow in a component.
+- A primitive that needs a new look gets a cva variant in its own components/ui file, used by name. Never override one with a stack of ad-hoc classes at the call site, and remember a shadcn outline variant is transparent, so light text on it disappears.
 - Import Google Fonts in index.html or index.css. Apply heading/body fonts consistently.
 - Real content, not lorem. Distinct visual hierarchy. One primary CTA per section.
 `.trim();
@@ -384,25 +229,20 @@ const UX_RULES = `
  * `'home'` — fonts and palettes were assigned from letter coincidences (F-830).
  * A multi-word keyword scores proportionally to its length: "real estate" is a
  * far more specific signal than "agency", and the two used to tie.
- *
- * `text` is space-padded and stripped of punctuation by the caller, so a phrase
- * match on `' real estate '` is a whole-word match.
  */
 function scoreKeywords(tokens: readonly string[], text: string, keywords: readonly string[]) {
   let score = 0;
   for (const keyword of keywords) {
     const words = keyword.split(' ');
-    const hit = words.length === 1 ? tokens.includes(keyword) : text.includes(` ${keyword} `);
-    if (hit) score += 2 * words.length;
+    if (words.length === 1) {
+      if (tokens.includes(keyword)) score += 2;
+    } else if (text.includes(` ${keyword} `)) {
+      score += 2 * words.length;
+    }
   }
   return score;
 }
 
-/**
- * Every candidate sharing the top score, in table order, plus that score. The
- * old `pickBest` seeded `-1` and advanced on strict `>`, so it resolved ties
- * silently by array position and reported "nothing matched" as "row 0 matched".
- */
 function topScoring<T extends { keywords: string[] }>(
   items: readonly T[],
   tokens: readonly string[],
@@ -427,10 +267,6 @@ function pickByName<T extends { name: string }>(items: readonly T[], name: strin
   return found;
 }
 
-/**
- * Scored pick with an explicit, named default: a zero score means "the prompt
- * said nothing about this", which must not be answered with the first row.
- */
 function pickScored<T extends { name: string; keywords: string[] }>(
   items: readonly T[],
   tokens: readonly string[],
@@ -508,36 +344,62 @@ export function selectUiUxProfiles(input: {
   };
 }
 
+/**
+ * The styleHint is the echo the *next* call can use to keep the design stable
+ * across a follow-up edit. It is returned separately from the rendered brief so
+ * a caller that did not pass a hint — a first build — learns which style was
+ * chosen from the prompt alone and can carry it forward.
+ */
+export type UiUxBriefResult = { brief: string; styleHint: string };
+
 export function buildUiUxProMaxBrief(input: {
   prompt: string;
   styleHint?: string;
   designDirection?: string | null;
   isEdit?: boolean;
-}) {
+}): UiUxBriefResult {
+  const { style, colors, type, landing } = selectUiUxProfiles(input);
+
+  // The chosen style is the contract for later turns. Emitting it here means a
+  // follow-up edit (where the user did not name a style again) re-selects the same
+  // one instead of re-falling through to a direction default or keyword tie.
+  const styleHint = style.name;
+
   if (input.isEdit) {
-    return `
+    // An edit keeps the established design — but "preserve design" must still name
+    // the system it is preserving, or a long session drifts. styleHint carries the
+    // chosen style; if a previous turn stored it, echo it back explicitly.
+    const preserved = input.styleHint
+      ? `- Preserve the selected visual system: ${input.styleHint}\n`
+      : '';
+    return {
+      styleHint,
+      brief: `
 ## UI/UX PRO MAX (PRESERVE DESIGN)
 Keep the established visual system. Do not restyle the whole app.
-- Preserve colors, type, radius, and spacing already in the files
+${preserved}- Preserve colors, type, radius, and spacing already in the files
 - Only change what the user asked
 - Still follow: Lucide/Heroicons (no emoji icons), 44px targets, 150-300ms hovers, 4.5:1 contrast, standard Tailwind classes
-`.trim();
+`.trim(),
+    };
   }
 
-  const { style, colors, type, landing } = selectUiUxProfiles(input);
   const cards =
     colors.mode === 'dark'
       ? `Cards: a 6-10% white tint over ${colors.background} with a 1px rgba(255,255,255,0.12) border. Never a pure white card.`
       : `Cards: white or a 6-8% tint of ${colors.background}, clear 1px border`;
 
-  return `
+  const brief = `
 ## UI/UX PRO MAX DESIGN SYSTEM (MANDATORY FOR THIS CREATION)
-This brief is generated at creation time from the user's request. Follow it as the source of truth.
+This brief is generated at creation time from the user's request. It is the source of truth for the design: follow it exactly, and do not substitute a generic framework default when the brief names a specific choice.
 
 ### Style: ${style.name}
 ${style.prompt}
 Tokens: ${style.tokens}
 Do not: ${style.avoid}
+Best for: ${style.bestFor}
+Accessibility: ${style.accessibility}
+Mobile-friendly: ${style.mobile}
 
 ### Color system: ${colors.name}
 - Primary: ${colors.primary}
@@ -546,7 +408,7 @@ Do not: ${style.avoid}
 - Foreground: ${colors.foreground}
 - ${cards}
 Notes: ${colors.notes}
-Use these hex values in Tailwind arbitrary colors when needed (e.g. bg-[#2563EB]). Keep CTA contrast high.
+These hex values belong in the project's token block in the global stylesheet, as the CSS variables the semantic classes read. Do not write them as arbitrary-value classes (bg-[#2563EB]) in components. Keep CTA contrast high.
 This is a ${colors.mode} interface: every surface, card, and text color derives from the background above.
 
 ### Typography: ${type.name}
@@ -554,6 +416,7 @@ This is a ${colors.mode} interface: every surface, card, and text color derives 
 - Body: ${type.body}
 - Import once: ${type.importUrl}
 - Tight heading tracking, readable body 16px+, line-height 1.5-1.7
+${type.notes ? `- ${type.notes}` : ''}
 
 ### Page structure: ${landing.name}
 ${landing.sections}
@@ -568,4 +431,6 @@ ${UX_RULES}
 - Hover, focus, and disabled states on interactive elements
 - No placeholder grey boxes where real UI should exist
 `.trim();
+
+  return { brief, styleHint };
 }

@@ -187,6 +187,18 @@ export type GenerateResult = {
    */
   buildFix?: BuildFixRequest | null;
   /**
+   * Paths this turn's tools wrote, in first-seen order.
+   *
+   * The tool path puts no code in the reply — `TOOL_OUTPUT_RULES` forbids it — so
+   * `appliedPathsFromReply` has nothing to read and the closing "applied N files"
+   * sentence had no source. This is that source, and it is per-turn: the file rail
+   * is not, because the workspace seeds it with the project's existing files on
+   * mount, so counting completed rail entries reported a one-file edit as eleven.
+   *
+   * Empty on the fence path, where the reply is the record.
+   */
+  toolWrittenPaths?: string[];
+  /**
    * The SSE stream ended with no terminal frame — a transport drop, not a failure. The
    * build may still be finishing server-side, so the client neither PATCHed a status nor
    * applied anything; the job poll takes over (F-036).

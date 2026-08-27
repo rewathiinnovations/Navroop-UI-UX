@@ -15,11 +15,12 @@ import {
   type StartGenerationInput,
 } from './types';
 import { sanitizeGenerationPath } from './parse-files';
-import { completedCodeFromFrame } from './complete-frame';
+import { completedCodeFromFrame, truncationWarningLine } from './complete-frame';
 import { emitLockConflict, parseLockConflict } from '@/lib/projects/lock-client';
 import { PROJECT_FILES_CHANGED_EVENT } from '@/lib/preview/events';
 import { generationRequestErrorMessage } from './request-error';
 import { chatTextFromConversation } from './parse-blocks';
+import { startingGenerationFields } from './starting-progress';
 import { recoveryCauseLine } from '@/lib/jobs/copy';
 import {
   RESUME_LOST_LINE,
@@ -60,7 +61,6 @@ const jobQueue: RuntimeJob[] = [];
 let jobInFlight = false;
 
 let abortController: AbortController | null = null;
-let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let generatePromise: Promise<GenerateResult> | null = null;
 let applyPromise: Promise<ApplyResult> | null = null;
 
@@ -408,6 +408,75 @@ export function applyStreamedCode(
   return updatedState;
 }
 
+/**
+ * The tool path's door onto the same file rail the fence scanner feeds.
+ *
+ * `applyStreamedCode` derives everything from scanning text, which on the tool
+ * path contains no code at all — the reply is prose by contract. So the rail is
+ * driven by tool events instead: a `write_file` call marks the path in progress,
+ * its result completes it. The pane, the status line and
+ * `summarizeStreamingFiles` are unchanged, which is the point — the preview's
+ * "nothing renderable yet" branch keys off `files.some(f => f.completed)`, and a
+ * tool-written build has to reach that the same way a fenced one does.
+ *
+ * `content` is null for the call frame, because the arguments are not streamed
+ * to the client: the file's text lands with the result. An in-progress entry
+ * with empty content is correct — it is what the fence path shows for an open
+ * block too.
+ */
+export function applyToolFileWrite(
+  prev: GenerationProgressState,
+  path: string,
+  content: string | null,
+  completed: boolean,
+): GenerationProgressState {
+  const safe = sanitizeGenerationPath(path);
+  if (!safe.ok) {
+    // Server-side the write is refused by the same rule, so the rail says why
+    // rather than silently running one file short.
+    if (prev.droppedPaths.some((dropped) => dropped.path === path)) return prev;
+    return { ...prev, droppedPaths: [...prev.droppedPaths, { path, reason: safe.code }] };
+  }
+
+  const files = [...prev.files];
+  const existingIndex = files.findIndex((file) => file.path === safe.path);
+  const existing = existingIndex >= 0 ? files[existingIndex] : null;
+  const next: GenerationFile = {
+    path: safe.path,
+    content: content ?? existing?.content ?? '',
+    type: fileTypeFromPath(safe.path),
+    completed,
+    edited: false,
+  };
+  if (existingIndex >= 0) {
+    files[existingIndex] = next;
+  } else {
+    files.push(next);
+  }
+
+  return {
+    ...prev,
+    files,
+    status: completed ? `Completed ${safe.path}` : `Writing ${safe.path}`,
+    currentFile: completed
+      ? undefined
+      : { path: next.path, content: next.content, type: next.type },
+  };
+}
+
+/**
+ * The tools whose result puts a file on the rail.
+ *
+ * `write_file`, `edit_file` and `rename_file` are exactly the tools that go
+ * through the store's write gate, so they are exactly the ones that produce a
+ * file the Code pane should show. `read_file`, `search_files` and `delete_file`
+ * are status lines — a rail entry for a read is a file nothing is writing.
+ *
+ * A `Set` rather than a `Record` because this is a membership test against an
+ * untrusted frame field, which may be any value at all.
+ */
+const RAIL_WRITING_TOOLS = new Set(['write_file', 'edit_file', 'rename_file']);
+
 /** What the streaming panel and the status line read, so neither re-derives it. */
 export type StreamingFilesSummary = {
   /** The file being written, or null when no block is open. */
@@ -454,11 +523,24 @@ async function deliverPersistPreviewNotice(response: Response, status?: Generati
   }
 }
 
-async function persistProgress(partial: {
-  status?: GenerationStatus;
-  progressMessage?: string | null;
-  previewUrl?: string | null;
-}) {
+/**
+ * The single project PATCH the browser still makes, and only ever for a status the
+ * run has already finished with.
+ *
+ * It survives removal because `generationStatus: 'ready'` is not a progress report:
+ * `persistProjectGeneration` (lib/projects/actions.ts) keys the whole after-generation
+ * sequence off it — the `contentVersion` bump, `createCheckpointAfterGeneration`, and
+ * `capturePreviewAfterGeneration`, whose `previewNotice` comes back on this very
+ * response for `deliverPersistPreviewNotice` to put into chat. Nothing else in the repo
+ * calls those two, so a build that stopped sending this would finish with no checkpoint,
+ * no preview build and no explanation.
+ *
+ * No `progressMessage`. Nothing renders `Project.progressMessage`; the column's server
+ * writer is the URL-import job (`lib/import/run.ts`, through a direct call, not this
+ * route), and a failure's text reaches the user from `Job.errorMessage`, which the
+ * recovery panel and /admin/jobs already read.
+ */
+async function persistProgress(partial: { status?: GenerationStatus; previewUrl?: string | null }) {
   const projectId = state.projectId;
   if (!projectId) return;
   try {
@@ -473,48 +555,34 @@ async function persistProgress(partial: {
   }
 }
 
-function stopHeartbeat() {
-  if (heartbeatTimer) {
-    clearInterval(heartbeatTimer);
-    heartbeatTimer = null;
-  }
-}
-
-function startHeartbeat() {
-  stopHeartbeat();
-  heartbeatTimer = setInterval(() => {
-    if (!state.projectId || !isActiveGenerationStatus(state.status)) {
-      stopHeartbeat();
-      return;
-    }
-    void persistProgress({
-      status: state.status,
-      progressMessage: state.generationProgress.status || state.status,
-    });
-  }, 4000);
-}
-
+/**
+ * Moves the runtime's own status, and tells the server only when the run is over.
+ *
+ * An active status writes nothing. It used to write twice over: one PATCH the moment
+ * `generating`/`applying` was entered, and then a `setInterval(…, 4000)` repeating it
+ * for as long as the build ran — four PATCHes in a fifteen-second build, the last three
+ * byte-identical, because `generationProgress.status` had not moved between them (T4).
+ * None of them was the authority on anything. `markJobRunning` (lib/jobs/lifecycle.ts)
+ * writes `generationStatus: 'generating'` with phase BUILDING when the job starts,
+ * `createProgressBatcher` (lib/jobs/progress.ts) writes the current step and the partial
+ * files onto the Job row, `beginJobHeartbeat` advances `heartbeatAt`, and the settle path
+ * writes `ready`/`idle`/`error` back onto the project — all of which the workspace polls
+ * through `GET /api/projects/{id}/job`. A browser writing the same column could only
+ * disagree with it, and a tab closed mid-build stranded `generating` on the row where the
+ * reaper would otherwise have written `idle`.
+ */
 function setJobStatus(status: GenerationStatus, lastError: string | null = null): Promise<void> {
   patchGenerationState({ status, lastError });
-  if (isActiveGenerationStatus(status)) {
-    startHeartbeat();
-    void persistProgress({
-      status,
-      progressMessage: state.generationProgress.status || status,
-    });
-    return Promise.resolve();
-  }
-  stopHeartbeat();
+  if (isActiveGenerationStatus(status)) return Promise.resolve();
   // No `lastCode` here. The browser used to PATCH the model's raw markdown
   // reply into it, overwriting the normalized `<file path=…>` blocks
   // settleStreamedGeneration had just written server-side. getCurrentProjectFiles
   // finds no file block in markdown and falls back to one bogus `src/App.jsx`
   // holding the whole chat answer, so every finished generation destroyed the
   // multi-file site it had just built. The server owns the site; the client
-  // only reports status here.
+  // only reports the terminal status here.
   return persistProgress({
     status,
-    progressMessage: lastError || state.generationProgress.status || status,
     // No sandboxId: the column is gone, and sending it made this PATCH 500 —
     // which is what killed the stream reader on the first progress frame.
     previewUrl: state.sandboxData?.url || null,
@@ -524,7 +592,6 @@ function setJobStatus(status: GenerationStatus, lastError: string | null = null)
 export function clearGeneration() {
   abortController?.abort();
   abortController = new AbortController();
-  stopHeartbeat();
   generatePromise = null;
   applyPromise = null;
   state = {
@@ -549,6 +616,13 @@ export function attachToProject(projectId: string | null): GenerationState {
       projectId,
       sandboxData: null,
       lastGeneratedCode: null,
+      // The singleton survives client-side navigation, so leaving `messages`
+      // (and the rest of an old run's visible state) across a project switch
+      // showed project A's conversation in project B's chat. Clear them with
+      // the sandbox so a fresh project opens to a clean thread (F-051 re-check).
+      messages: [],
+      generationProgress: { ...EMPTY_GENERATION_PROGRESS, files: [] },
+      streamedText: '',
     });
   }
   return getGenerationState();
@@ -758,26 +832,33 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
     lastError: null,
     status: 'generating',
   });
-  setGenerationProgressState((prev) => ({
-    ...prev,
-    isGenerating: true,
-    status: input.isEdit ? 'Starting AI generation...' : 'Initializing AI...',
-    components: [],
-    currentComponent: 0,
-    streamedCode: '',
-    isStreaming: !input.isEdit,
-    isThinking: Boolean(input.isEdit),
-    thinkingText: input.isEdit ? 'Analyzing your request...' : undefined,
-    thinkingDuration: undefined,
-    currentFile: undefined,
-    lastProcessedPosition: 0,
-    isEdit: input.isEdit,
-    droppedPaths: [],
-    // A stream that died mid-file left its `completed: false` entry behind.
-    // Carrying that into the next run would show a file as being written by a
-    // stream that never opened it. Finished files still carry over.
-    files: (prev.files || []).filter((file) => file.completed),
-  }));
+  setGenerationProgressState((prev) => {
+    const completedFiles = (prev.files || []).filter((file) => file.completed);
+    const start = startingGenerationFields({
+      isEdit: Boolean(input.isEdit),
+      hasCompletedFiles: completedFiles.length > 0,
+    });
+    return {
+      ...prev,
+      isGenerating: true,
+      status: start.status,
+      components: [],
+      currentComponent: 0,
+      streamedCode: '',
+      isStreaming: start.isStreaming,
+      isThinking: start.isThinking,
+      thinkingText: start.thinkingText,
+      thinkingDuration: undefined,
+      currentFile: undefined,
+      lastProcessedPosition: 0,
+      isEdit: input.isEdit,
+      droppedPaths: [],
+      // A stream that died mid-file left its `completed: false` entry behind.
+      // Carrying that into the next run would show a file as being written by a
+      // stream that never opened it. Finished files still carry over.
+      files: completedFiles,
+    };
+  });
   setJobStatus('generating');
 
   const response = await fetch('/api/generate-ai-code-stream', {
@@ -805,11 +886,11 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
     if (body.reused) {
       // A build was already in flight, so the route attached to it and answered JSON
       // instead of SSE: nothing is streaming into *this* tab. Settling the runtime is
-      // not cosmetic — `setJobStatus('generating')` above armed the 4-second
-      // heartbeat, and `isActiveGenerationStatus` is the only thing that stops it, so
-      // leaving it set had this tab PATCHing `status: 'generating'` onto the project
-      // row for the rest of the session. The job that *is* running is the poller's to
-      // report. Handled like the 409 below, which is the same shape of refusal.
+      // not cosmetic — `isActiveGenerationStatus(state.status)` is what `startGeneration`
+      // and `attachToProject` read to decide a run is still live, so a tab left on
+      // `generating` refuses to start the next build and refuses to switch projects for
+      // the rest of the session. The job that *is* running is the poller's to report.
+      // Handled like the 409 below, which is the same shape of refusal.
       setJobStatus('idle');
       setGenerationProgressState((prev) => ({
         ...prev,
@@ -873,6 +954,11 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
   let explanation = '';
   let skillNames: string[] = [];
   let buildFix: GenerateResult['buildFix'] = null;
+  /**
+   * Paths this turn's tools wrote. Per-turn on purpose: the file rail carries the
+   * project's existing files too, so it cannot answer "what did this turn change".
+   */
+  const toolWrittenPaths: string[] = [];
   let buffer = '';
   // A `complete` or `error` frame is the server's verdict on this run. Without one, the
   // read loop ended on a transport failure (a slept laptop, a proxy cutting an idle SSE
@@ -933,6 +1019,47 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
           if (prose) addGenerationMessage(prose, 'ai');
         } else if (data.type === 'stream' && data.raw) {
           setGenerationProgressState((prev) => applyStreamedCode(prev, data.text));
+        } else if (data.type === 'tool_call') {
+          // Only the writing tools own a path on the rail. Any other tool is a
+          // status line: showing "Writing src/App.tsx" for a `read_file` would
+          // put a file on the rail that nothing is writing. Widened rather than
+          // branched per tool, so a new writing tool joins one list instead of
+          // adding a third copy of this block.
+          if (RAIL_WRITING_TOOLS.has(data.tool) && typeof data.path === 'string') {
+            setGenerationProgressState((prev) => applyToolFileWrite(prev, data.path, null, false));
+          } else if (typeof data.tool === 'string') {
+            setGenerationProgressState((prev) => ({ ...prev, status: `Running ${data.tool}` }));
+          }
+        } else if (data.type === 'tool_result') {
+          if (RAIL_WRITING_TOOLS.has(data.tool) && typeof data.path === 'string') {
+            if (data.ok === false) {
+              // A refused write is not a written file. Leaving the entry in
+              // progress would hold the rail open on a path that will never
+              // arrive, and the preview waits on `completed`.
+              setGenerationProgressState((prev) => ({
+                ...prev,
+                files: prev.files.filter((file) => file.path !== data.path || file.completed),
+                status: typeof data.detail === 'string' ? data.detail : prev.status,
+              }));
+            } else {
+              // The record the closing sentence counts. Deduplicated: a
+              // write -> build -> rewrite cycle touches one path several times
+              // and is still one changed file.
+              if (!toolWrittenPaths.includes(data.path)) toolWrittenPaths.push(data.path);
+              // The file's text arrives with the result frame, so the rail
+              // completes with a body instead of an empty one.
+              setGenerationProgressState((prev) =>
+                applyToolFileWrite(
+                  prev,
+                  data.path,
+                  typeof data.content === 'string' ? data.content : null,
+                  true,
+                ),
+              );
+            }
+          } else if (typeof data.detail === 'string' && data.detail.trim()) {
+            setGenerationProgressState((prev) => ({ ...prev, status: data.detail }));
+          }
         } else if (data.type === 'app') {
           setGenerationProgressState((prev) => ({
             ...prev,
@@ -957,6 +1084,13 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
             state.generationProgress.streamedCode,
           );
           explanation = data.explanation || '';
+          // Truncation warnings rode the complete frame and were dropped here, so a
+          // build cut off mid-file looked identical to a clean one until the preview
+          // failed to compile. Say so in chat.
+          const truncationLine = truncationWarningLine(data.warnings);
+          if (truncationLine) {
+            addGenerationMessage(truncationLine, 'system');
+          }
           if (Array.isArray(data.skillNames) && data.skillNames.length > 0) {
             skillNames = data.skillNames.filter(
               (name: unknown): name is string => typeof name === 'string',
@@ -1046,9 +1180,10 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
     // The stream ended with no `complete` and no `error` — a transport drop, not a
     // generation failure. The detached worker is still persisting the site and settling
     // the job server-side, so PATCHing `error` here would overwrite a verdict this tab
-    // cannot see (F-036). Stop this tab's heartbeat, write no status, then *reattach*:
-    // the loop replays the job's persisted files and step until it settles (F-092).
-    stopHeartbeat();
+    // cannot see (F-036). `patchGenerationState`, deliberately not `setJobStatus`: this
+    // clears the runtime's own busy flag without writing a status to the row. Then
+    // *reattach* — the loop replays the job's persisted files and step until it
+    // settles (F-092).
     patchGenerationState({ status: 'idle' });
     setGenerationProgressState((prev) => ({
       ...prev,
@@ -1075,7 +1210,7 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
     status: 'Generation complete!',
   }));
 
-  return { generatedCode, explanation, skillNames, buildFix };
+  return { generatedCode, explanation, skillNames, buildFix, toolWrittenPaths };
 }
 
 /**

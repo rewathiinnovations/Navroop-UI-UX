@@ -4,11 +4,11 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { cn } from '@/utils/cn';
 import '@/components/app/studio/studio.css';
 import ChatInput from './ChatInput';
-import ChatPanel from './ChatPanel';
+import ChatPanel, { isConversationSwitch } from './ChatPanel';
 import PreviewPanel from './PreviewPanel';
 import { BrowserPreview, type PreviewErrorKind } from './BrowserPreview';
 import type { GenerationFile } from '@/lib/generation/types';
-import StreamingCodePanel from './StreamingCodePanel';
+import StreamingCodePanel, { streamPaneStatus } from './StreamingCodePanel';
 import { useProjectFiles } from './useProjectFiles';
 import AssetsPanel from './AssetsPanel';
 import BrainPanel from './BrainPanel';
@@ -80,6 +80,10 @@ export default function ProjectWorkspace({
   streamFiles = null,
   streamedText = null,
   generationStatus = null,
+  streamStatus = null,
+  isThinking = false,
+  thinkingText,
+  thinkingDuration,
   onStartApprovedBuild,
   onRetryImport,
   onRetryPlan,
@@ -125,6 +129,14 @@ export default function ProjectWorkspace({
   /** Raw reply so far, shown only until the first file appears. */
   streamedText?: string | null;
   generationStatus?: string | null;
+  /** `GenerationProgressState.status` — never the job enum (`generating`). */
+  streamStatus?: string | null;
+  /** The model is producing chain-of-thought before any file has landed. */
+  isThinking?: boolean;
+  /** Streaming reasoning text. */
+  thinkingText?: string | null;
+  /** How long the model thought, once reasoning has finished. */
+  thinkingDuration?: number | null;
   onStartApprovedBuild?: (promptContext: string) => void;
   onRetryImport?: (source: { sourceUrl: string; mode: ImportMode }) => void | Promise<void>;
   onRetryPlan?: (prompt: string) => void | Promise<void>;
@@ -144,13 +156,45 @@ export default function ProjectWorkspace({
   const previewFrameRef = useRef<HTMLIFrameElement | null>(null);
   const [browserFrameMounted, setBrowserFrameMounted] = useState(false);
   const previewDevice = usePreviewDevice();
-  const { phase, plan, refining, approving, refine, approve, watchForPlan } = useProjectPlan({
+  const {
+    phase,
+    plan,
+    refining,
+    approving,
+    refine,
+    approve,
+    updatePlan,
+    watchForPlan,
+  } = useProjectPlan({
     projectId,
     initialPhase,
     initialPlan,
     isJobActive,
     generationStatus,
   });
+  const [editingPlan, setEditingPlan] = useState(false);
+  const [savingPlan, setSavingPlan] = useState(false);
+  /**
+   * The per-project half of this component's state, discarded on a real switch for
+   * the same reason `ChatPanel` discards its scroll control: a sidebar switch to
+   * another `/project/{id}` is the same route segment, so React reconciles this
+   * component instead of remounting it and every `useState` above survives.
+   * `editingPlan` is the one with teeth — left standing, it opens the *next*
+   * project's plan card in an edit form nobody asked for, over content the reader
+   * has not read yet — and `historyOpen` leaves a version drawer open on versions
+   * that belong to a project they just left. `chatCollapsed` is deliberately not
+   * here: how wide the chat pane is, is a layout preference about this viewport,
+   * not a fact about one project.
+   */
+  const workspaceProjectRef = useRef<string | null>(projectId);
+  useEffect(() => {
+    const previous = workspaceProjectRef.current;
+    workspaceProjectRef.current = projectId;
+    if (!isConversationSwitch(previous, projectId)) return;
+    setEditingPlan(false);
+    setSavingPlan(false);
+    setHistoryOpen(false);
+  }, [projectId]);
   /**
    * `previewingId` is the server's answer, not local state (F-102). It used to be a
    * `useState` here, set after a preview call that had overwritten `Project.lastCode` — so a
@@ -199,6 +243,13 @@ export default function ProjectWorkspace({
   // made `previewPaneKind` short-circuit this panel's children, so whatever the pane
   // would have rendered never mounted at all.
   const hasStoredFiles = Object.keys(projectFiles.files).length > 0;
+  // `hasStoredFiles` is only trustworthy once the files fetch has resolved
+  // successfully — it starts `false` while the request is in flight and stays
+  // `false` forever on a fetch error, neither of which means the project has
+  // no saved content. `WorkspaceTopBar` needs this to avoid hiding "Last
+  // saved" for a project that does have content, for as long as the fetch is
+  // pending or failed.
+  const filesKnown = !projectFiles.loading && !projectFiles.error;
   const hasFinishedStreamedFile = streamFiles?.some((file) => file.completed) ?? false;
   const nothingRenderableYet = !hasStoredFiles && !hasFinishedStreamedFile;
   // The frame only counts while this component is the one rendering it: the
@@ -248,6 +299,18 @@ export default function ProjectWorkspace({
         return;
       }
       if (result.promptContext) onStartApprovedBuild?.(result.promptContext);
+    });
+  };
+
+  const handleUpdatePlan = (content: WorkspacePlan['content']) => {
+    setSavingPlan(true);
+    void updatePlan(content).then((result) => {
+      setSavingPlan(false);
+      if (!result.ok) {
+        onThreadMessage?.(result.error, 'system');
+        return;
+      }
+      setEditingPlan(false);
     });
   };
 
@@ -341,6 +404,12 @@ export default function ProjectWorkspace({
     });
   };
 
+  const handleStopGeneration = () => {
+    void generationJob.cancel().then((result) => {
+      if (!result.ok) onThreadMessage?.(result.error, 'system');
+    });
+  };
+
   const share = async () => {
     try {
       await navigator.clipboard.writeText(window.location.href);
@@ -367,6 +436,8 @@ export default function ProjectWorkspace({
         projectName={projectName}
         saveState={saveState}
         updatedAt={updatedAt}
+        hasStoredFiles={hasStoredFiles}
+        filesKnown={filesKnown}
         onRename={onRename}
         view={view}
         onViewChange={onViewChange}
@@ -437,9 +508,18 @@ export default function ProjectWorkspace({
               plan={plan}
               approving={approving}
               onApprovePlan={handleApprove}
+              editingPlan={editingPlan}
+              savingPlan={savingPlan}
+              onEditPlan={() => setEditingPlan(true)}
+              onCancelEditPlan={() => setEditingPlan(false)}
+              onUpdatePlan={handleUpdatePlan}
+              onStopGeneration={handleStopGeneration}
               queueAhead={generationJob.job?.queuePosition}
               streamFiles={streamFiles}
               startedAt={generationJob.job?.startedAt}
+              isThinking={isThinking}
+              thinkingText={thinkingText}
+              thinkingDuration={thinkingDuration}
               recovery={
                 generationJob.recovery && showsChatRecovery(generationJob.job?.kind)
                   ? {
@@ -498,7 +578,7 @@ export default function ProjectWorkspace({
           </PanelErrorBoundary>
         </section>
 
-        <div className={cn('min-h-0 min-w-0 flex-1', !chatCollapsed && 'max-lg:hidden')}>
+        <div className={cn('flex min-h-0 min-w-0 flex-1 flex-col', !chatCollapsed && 'max-lg:hidden')}>
         <PanelErrorBoundary label="Preview">
           <PreviewPanel
             iframeRef={previewFrameRef}
@@ -520,6 +600,7 @@ export default function ProjectWorkspace({
             sending={sending}
             phase={phase}
             planTrigger={plan?.trigger}
+            planApproved={plan?.status === 'APPROVED'}
             previewing={previewing}
             previewingLabel={versionLabelFor(checkpoints, previewingId)}
             onExitPreview={() => {
@@ -568,7 +649,7 @@ export default function ProjectWorkspace({
               nothingRenderableYet ? (
                 <StreamingCodePanel
                   files={streamFiles ?? EMPTY_STREAM_FILES}
-                  status={generationStatus}
+                  status={streamPaneStatus(streamStatus)}
                   streamedText={streamedText}
                   className="h-full"
                 />
@@ -576,6 +657,7 @@ export default function ProjectWorkspace({
                 <BrowserPreview
                   stack={projectFiles.stack}
                   files={projectFiles.files}
+                  designDirection={projectFiles.designDirection}
                   stream={previewStream}
                   frameRef={previewFrameRef}
                   onFrameMounted={setBrowserFrameMounted}

@@ -96,6 +96,20 @@ const eslintConfig = defineConfig([
     'test-results/**',
     // Published preview builds written at runtime, already gitignored.
     'public/uploads/**',
+    // Agent scratch — throwaway monitors and probes, gitignored beside this entry.
+    // Not app source, and holding it to the app's rules failed `--max-warnings 0`
+    // on a `catch {}` in a monitor script that was never going to be committed.
+    'tmp/**',
+    // The rest of the scratch the .gitignore names, kept in step with it: a path
+    // that is scratch for git and source for the linter is the worst of both.
+    // `.superpowers/` is the one that actually bites — its `sdd/**` working copies
+    // are whole .ts/.tsx snapshots of `components/workspace` and `lib`, so `eslint .`
+    // would report every superseded draft against this branch's rules. `.freebuff/`
+    // and `.playwright-mcp/` hold only .log/.err/.yml today and so match no `files`
+    // pattern, but they are listed for the same reason: nothing under them is source.
+    '.superpowers/**',
+    '.freebuff/**',
+    '.playwright-mcp/**',
     // Vendored skill scripts (CommonJS). Not app source.
     '.cursor/**',
     // Nested Claude worktrees / skill copies. Not app source.

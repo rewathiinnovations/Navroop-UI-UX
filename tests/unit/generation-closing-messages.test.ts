@@ -17,6 +17,7 @@ import { applyPageCopy } from '@/lib/generation/apply-page-copy';
 
 const WORKSPACE = readFileSync('components/workspace/GenerationWorkspace.tsx', 'utf8');
 const ROUTE = readFileSync('app/api/generate-ai-code-stream/route.ts', 'utf8');
+const RUNTIME = readFileSync('lib/generation/generation-runtime.ts', 'utf8');
 const FENCE = '```';
 
 describe('appliedPathsFromReply reads whichever shape it is handed (F-054)', () => {
@@ -96,8 +97,28 @@ describe('the workspace closes a turn once (F-053)', () => {
   });
 
   it('derives the applied file list with the shape-agnostic reader', () => {
-    expect(WORKSPACE).toMatch(/const appliedFiles = appliedPathsFromReply\(code\)/);
+    expect(WORKSPACE).toMatch(/appliedPathsFromReply\(code\)/);
     expect(WORKSPACE).not.toMatch(/Object\.keys\(filesFromReply\(code\)\)/);
+  });
+
+  /**
+   * The tool path writes through `write_file` / `edit_file` and puts no code in the
+   * reply, because `TOOL_OUTPUT_RULES` forbids it — so the reply reader finds nothing
+   * and the turn closed with "Successfully applied 0 files" over a build that had
+   * written eleven. That is F-054 by a new route.
+   *
+   * The source is `toolWrittenPaths`, collected per turn from the `tool_result`
+   * frames. Deliberately *not* the file rail: the workspace seeds the rail with the
+   * project's existing files on mount, so counting completed rail entries reported a
+   * one-file edit as eleven — measured live, not hypothesised.
+   */
+  it('counts the turn’s own tool writes when the reply carries no code', () => {
+    expect(WORKSPACE).toMatch(/const pathsFromReply = appliedPathsFromReply\(code\)/);
+    expect(WORKSPACE).toMatch(/pathsFromReply\.length > 0 \? pathsFromReply : \[\.\.\.toolWrittenPaths\]/);
+    // The rail must not be the source, whatever else changes here.
+    expect(WORKSPACE).not.toMatch(/generationProgress\.files\.filter\(\(file\) => file\.completed\)/);
+    // And the runtime has to actually hand them over.
+    expect(RUNTIME).toMatch(/toolWrittenPaths/);
   });
 });
 

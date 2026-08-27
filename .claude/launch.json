@@ -1,0 +1,16 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dev",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "C:/Program Files/nodejs/node_modules/corepack/dist/corepack.js",
+        "pnpm",
+        "run",
+        "dev"
+      ],
+      "port": 3000
+    }
+  ]
+}

@@ -6,6 +6,7 @@ import {
   ChevronDown,
   Code2,
   Eye,
+  History,
   Images,
   Link2,
   Search,
@@ -20,7 +21,6 @@ import {
 } from '@/components/ui/shadcn/dropdown-menu';
 import { cn } from '@/utils/cn';
 import { formatRelativeTime } from '@/lib/format-relative-time';
-import Hint from './Hint';
 import {
   WORKSPACE_PRIMARY_TABS,
   WORKSPACE_TOOL_TABS,
@@ -252,64 +252,97 @@ export function versionLabelFor(checkpoints: Checkpoint[], id: string | null): s
 }
 
 /**
- * A shortcut to the last few versions. Clicking one runs the same preview call the
- * chat's "view this version" button and the history panel restore path already use —
- * a thinned checkpoint has no snapshot to preview, and the server answers those with
- * a pruned error, so the pill says so instead of offering a click that cannot work.
+ * The version shortcut as a dropdown instead of a row of pills. The pills grew
+ * with every checkpoint and pushed the rest of the header off the bar, so the
+ * shortcut is one trigger that names the version being previewed and lists the
+ * newest few in a menu — the full list still lives in `VersionHistoryPanel`.
+ *
+ * A thinned checkpoint has no snapshot to preview and the server answers those
+ * with a pruned error, so its item is disabled rather than offering a click that
+ * can only fail — the behaviour the pills this replaced already had.
  */
-export function VersionPills({
+export function VersionMenu({
   checkpoints,
   activeId = null,
   onPreview,
-  limit = VERSION_PILL_LIMIT,
-  className,
 }: {
   checkpoints: Checkpoint[];
   activeId?: string | null;
   onPreview: (id: string) => void;
-  limit?: number;
-  className?: string;
 }) {
-  const pills = versionPillList(checkpoints, limit);
+  const [open, setOpen] = useState(false);
+  const pills = versionPillList(checkpoints);
+  /**
+   * Before the first build there is no version to name, so the whole control goes
+   * away rather than offering a trigger reading 'Versions' that opens an empty
+   * menu with no items and no empty state — the pills this replaced returned
+   * `null` for the same list and the swap dropped that guard.
+   */
   if (pills.length === 0) return null;
 
+  const activeLabel = versionLabelFor(checkpoints, activeId);
+  /**
+   * `activeId` is `Project.previewingCheckpointId`, and null means no old version is
+   * being previewed — the pane is showing the live files, which are always the newest
+   * checkpoint. That holds in the two states that could plausibly break it: a restore
+   * does not roll the files back under an old row, it writes a fresh `restore`-trigger
+   * checkpoint that becomes the newest (`restoreCheckpoint`, `lib/checkpoints/actions.ts`)
+   * and clears the preview flag; and a build in flight has no checkpoint of its own yet,
+   * so the newest one is still the last version that exists to name.
+   *
+   * `versionPillList` returns its window OLDEST-first (it ends in `.reverse()`), so the
+   * newest is the LAST pill. Reading `pills[0]` named the oldest of the window instead:
+   * a project with seven checkpoints and nothing being previewed sat under a 'v3' header
+   * while v7 filled the pane, and only started telling the truth once the reader picked a
+   * version by hand.
+   */
+  const triggerLabel = activeLabel ?? pills[pills.length - 1].label;
+
   return (
-    <div
-      role="group"
-      aria-label="Project versions"
-      className={cn('flex items-center gap-3', className)}
-    >
-      {pills.map((pill) => (
-        <Hint
-          key={pill.id}
-          label={
-            pill.pruned ? `${pill.label} — snapshot removed` : `${pill.label} · ${pill.detail}`
-          }
+    <DropdownMenu open={open} onOpenChange={setOpen}>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label="Project versions"
+          className={cn(
+            'inline-flex min-h-[44px] items-center gap-4 rounded-full border border-[var(--studio-line)] px-10 text-[12px] font-medium tabular-nums transition-colors',
+            'text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)]',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]',
+          )}
         >
-          <button
-            type="button"
-            disabled={pill.pruned}
-            aria-pressed={pill.id === activeId}
-            aria-label={
-              pill.pruned
-                ? `${pill.label} — snapshot removed, cannot preview`
-                : `Preview ${pill.label}`
-            }
-            data-version={pill.version}
-            onClick={() => onPreview(pill.id)}
-            className={cn(
-              'inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-full border px-8 text-[11px] font-medium tabular-nums transition-colors',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]',
-              'disabled:cursor-not-allowed disabled:opacity-40',
-              pill.id === activeId
-                ? 'border-[var(--studio-line-strong)] bg-[var(--studio-surface)] text-[var(--studio-fg)] shadow-sm'
-                : 'border-[var(--studio-line)] text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)]',
-            )}
-          >
-            {pill.label}
-          </button>
-        </Hint>
-      ))}
-    </div>
+          <History className="size-15" aria-hidden />
+          <span className="hidden lg:inline">{triggerLabel}</span>
+          <ChevronDown className="size-12" aria-hidden />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="start"
+        sideOffset={6}
+        collisionPadding={8}
+        aria-label="Project versions"
+        className="studio-portal z-40 w-[240px] rounded-12 border-[var(--studio-line)] bg-[var(--studio-surface)] p-4 text-[var(--studio-fg)] shadow-sm"
+      >
+        <DropdownMenuRadioGroup value={activeId ?? ''} onValueChange={onPreview}>
+          {pills.map((pill) => (
+            <DropdownMenuRadioItem
+              key={pill.id}
+              value={pill.id}
+              disabled={pill.pruned}
+              className={cn(
+                WORKSPACE_MENU_ITEM,
+                pill.id === activeId
+                  ? 'font-medium text-[var(--studio-fg)]'
+                  : 'text-[var(--studio-muted)]',
+              )}
+            >
+              <span className="tabular-nums">{pill.label}</span>
+              <span className="ml-auto truncate pl-8 text-[var(--studio-faint)]">
+                {pill.detail}
+              </span>
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

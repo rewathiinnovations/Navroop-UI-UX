@@ -93,7 +93,16 @@ describe('the corrective ask for owed files is bounded and visible', () => {
     // Exactly one attempt: the flag is set before the ask and is what the final
     // classification reads, so a second miss is reported instead of asked again.
     expect(askBlock).toMatch(/askedForFilesAgain = true;/);
-    expect(source).toMatch(/askedAgain:\s*askedForFilesAgain,/);
+    // Two terms feed the final `askedAgain`, and dropping either one changes the verdict.
+    // Without the flag the route would ask forever; without `clientDisconnected` a departed
+    // client — who was never asked, because the ask is skipped for a dead stream — would let
+    // a fileless reply settle as a conversational answer over a site nothing had changed, so
+    // a spent ask is the correct reading and the miss is reported as the failure it is.
+    // Matched on the pair rather than on the literal line, because the surrounding
+    // classification call is edited often.
+    expect(source).toMatch(
+      /askedAgain:\s*(?:askedForFilesAgain\s*\|\|\s*clientDisconnected|clientDisconnected\s*\|\|\s*askedForFilesAgain)\s*,/,
+    );
   });
 
   it('tells the user and records the miss on the job', () => {

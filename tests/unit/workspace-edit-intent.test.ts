@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hasExistingSite, hasStoredSite } from '@/components/workspace/types';
+import { appliedCodeForSend, hasExistingSite, hasStoredSite } from '@/components/workspace/types';
 
 /**
  * Every chat follow-up used to reach /api/generate-ai-code-stream with
@@ -15,6 +15,29 @@ import { hasExistingSite, hasStoredSite } from '@/components/workspace/types';
  * straight back for anyone whose file map did not load. `storedSite` is the
  * fail-closed input; these cases pin the direction.
  */
+describe('appliedCodeForSend', () => {
+  it('drops appliedCode that belongs to a different project', () => {
+    expect(
+      appliedCodeForSend({
+        appliedCode: [{ files: [], timestamp: new Date() }],
+        sourceProjectId: 'old-project',
+        projectId: 'new-project',
+      }),
+    ).toEqual([]);
+  });
+
+  it('keeps appliedCode for the project that produced it', () => {
+    const appliedCode = [{ files: ['src/App.tsx'], timestamp: new Date() }];
+    expect(
+      appliedCodeForSend({
+        appliedCode,
+        sourceProjectId: 'same',
+        projectId: 'same',
+      }),
+    ).toBe(appliedCode);
+  });
+});
+
 describe('hasExistingSite', () => {
   it('is false for the first message of a project with no files', () => {
     expect(
@@ -131,6 +154,24 @@ describe('the isEdit flag the workspace sends', () => {
         projectFiles: {},
         streamedFiles: [],
         appliedCode: [],
+        storedSite: hasStoredSite({ initialPhase: 'PLANNING', fileMapUnreadable: false }),
+      }),
+    ).toBe(false);
+  });
+
+  it('is a fresh build when appliedCode is leftover from another project in this tab', () => {
+    // /project/[id] keeps GenerationWorkspace mounted across sidebar switches.
+    // appliedCode from a previous URL import must not make Approve on a new
+    // empty project send isEdit:true.
+    expect(
+      hasExistingSite({
+        projectFiles: {},
+        streamedFiles: [],
+        appliedCode: appliedCodeForSend({
+          appliedCode: [{ files: [], timestamp: new Date() }],
+          sourceProjectId: 'old-project',
+          projectId: 'new-project',
+        }),
         storedSite: hasStoredSite({ initialPhase: 'PLANNING', fileMapUnreadable: false }),
       }),
     ).toBe(false);

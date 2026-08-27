@@ -3,7 +3,7 @@ import { generateObject, generateText } from 'ai';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { getSessionUser, type SessionUser } from '@/lib/auth';
-import { clientForEntry } from '@/lib/ai/client-for-entry';
+import { chatModelForEntry } from '@/lib/ai/client-for-entry';
 import { completeWithProviderFailover } from '@/lib/ai/plan-complete';
 import {
   jobErrorCodeForProviderFailure,
@@ -12,8 +12,13 @@ import {
 } from '@/lib/ai/failover';
 import { ProviderRunError, type ProviderAttempt } from '@/lib/ai/run';
 import { buildUiUxProMaxBrief } from '@/lib/ui-ux-pro-max/build-design-brief';
-import { looksLikeUrl } from '@/lib/projects/prompt';
-import { parseWithZod, refinePlanSchema, followUpPlanSchema } from '@/lib/projects/schema';
+import { looksLikeUrl, nameFromPlanSummary } from '@/lib/projects/prompt';
+import {
+  parseWithZod,
+  refinePlanSchema,
+  followUpPlanSchema,
+  updatePlanContentSchema,
+} from '@/lib/projects/schema';
 import { logGenerationEvent } from '@/lib/usage-costs';
 import { buildCachedMessages } from '@/lib/generation/prompt-cache';
 import { resolveInputTokens } from '@/lib/generation/token-estimate';
@@ -26,6 +31,7 @@ import { buildMemoryBlock } from '@/lib/memory/build-context';
 import { revertApprovedPlan } from '@/lib/projects/plan-compensate';
 import { planRetryKind } from '@/lib/projects/plan-retry';
 import { peekConversationState } from '@/lib/generation/conversation-state';
+import { writeAudit } from '@/lib/audit/log';
 import { logError } from '@/lib/logger';
 import { recordJobStepFailure } from '@/lib/jobs/step-failure';
 
@@ -129,7 +135,7 @@ function buildPlanSystemPrompt(
   extras?: { memoryBlock?: string },
 ) {
   const stackId = getStack(stack).id;
-  const brief = buildUiUxProMaxBrief({ prompt: promptContext, isEdit: false });
+  const brief = buildUiUxProMaxBrief({ prompt: promptContext, isEdit: false }).brief;
   const stackPrompt = getStackPrompt(
     stackId,
     designDirection,
@@ -181,8 +187,7 @@ async function defaultCompletePlan(input: {
   const failover = await completeWithProviderFailover({
     userId: peekActor()?.id ?? null,
     run: async (entry, ctx) => {
-      const client = clientForEntry(entry, ctx.env);
-      const model = client(entry.model);
+      const model = chatModelForEntry(entry, ctx.env, entry.model);
       const cached = input.stablePrefix
         ? buildCachedMessages({
             stablePrefix: input.stablePrefix,
@@ -317,11 +322,52 @@ export function buildFollowUpPromptContext(
     .join('\n\n');
 }
 
+/**
+ * Names the project from the plan's subject, once the plan exists.
+ *
+ * A project's name is written at insert, which is before any plan has been generated, so it
+ * could only ever come from the raw prompt — which is how a project was called
+ * `Build a landing page for "Chai Point", a` and published on
+ * `build-a-landing-page-for-chai-point-a.navroop.app`. The plan for that same run already knew
+ * the business ("A warm, minimal landing page for Chai Point, a small tea cafe in Bangalore"),
+ * so the provisional name is replaced the moment the plan lands.
+ *
+ * `provisionalName` is in the WHERE, so the rename is the same statement that asserts the name
+ * is still the generated one — never a read-then-write. A user who renamed the project while
+ * the plan was in flight (the deferred path leaves them sitting in the workspace for the whole
+ * call) keeps their name, and a project created with an explicit name passes `null` here and
+ * is never touched at all. Nothing in here may throw: `createProject` deletes the row when this
+ * flow rejects, so a failed cosmetic rename would destroy a project that planned successfully.
+ */
+async function renameFromPlan(input: {
+  projectId: string;
+  provisionalName: string | null | undefined;
+  content: unknown;
+}): Promise<string | null> {
+  if (!input.provisionalName) return null;
+  const parsed = planContentSchema.safeParse(input.content);
+  if (!parsed.success) return null;
+  const proposed = nameFromPlanSummary(parsed.data.summary);
+  if (!proposed || proposed === input.provisionalName) return null;
+  try {
+    const { count } = await prisma.project.updateMany({
+      where: { id: input.projectId, deletedAt: null, name: input.provisionalName },
+      data: { name: proposed },
+    });
+    return count > 0 ? proposed : null;
+  } catch (error) {
+    logError('plan.rename_from_plan_failed', error, { projectId: input.projectId });
+    return null;
+  }
+}
+
 export async function applyCreateProjectPlanFlow(input: {
   projectId: string;
   userId: string;
   initialPrompt: string;
   skipPlanning: boolean;
+  /** The name `createProject` derived from the prompt, or `null` when the user chose one. */
+  provisionalName?: string | null;
 }) {
   if (input.skipPlanning) {
     await startInitialGeneration({
@@ -329,7 +375,7 @@ export async function applyCreateProjectPlanFlow(input: {
       userId: input.userId,
       promptContext: input.initialPrompt,
     });
-    return { plan: null };
+    return { plan: null, name: null as string | null };
   }
   const plan = await generatePlan(
     input.projectId,
@@ -337,7 +383,12 @@ export async function applyCreateProjectPlanFlow(input: {
     'initial',
     input.initialPrompt,
   );
-  return { plan };
+  const name = await renameFromPlan({
+    projectId: input.projectId,
+    provisionalName: input.provisionalName,
+    content: plan.content,
+  });
+  return { plan, name };
 }
 
 export async function generatePlan(
@@ -551,6 +602,56 @@ export async function refinePlan(projectId: string, feedback: string) {
   return { ok: true as const, data: plan };
 }
 
+/**
+ * Writes the user's manual edits onto a PENDING plan row. Unlike `refinePlan` this does
+ * not call the AI provider: the person edited the plan in place, so saving those edits is
+ * a direct content write, not another billed re-plan. Owner/ADMIN only, PENDING only —
+ * an APPROVED plan is already the build's input and must not change under it, and a
+ * stale row is refused rather than silently overwritten.
+ */
+export async function updatePlanContent(
+  projectId: string,
+  input: { planId: string; content: PlanContent },
+) {
+  const { user, err } = await requireActor();
+  if (!user) return err;
+
+  const parsed = parseWithZod(updatePlanContentSchema, input);
+  if (!parsed.ok) return parsed;
+
+  const project = await prisma.project.findFirst({
+    where: { id: projectId, deletedAt: null },
+    select: { id: true, ownerId: true },
+  });
+  if (!project) return notFound();
+  if (!canMutate(user, project.ownerId)) return forbidden();
+
+  const plan = await prisma.projectPlan.findFirst({
+    where: { id: parsed.data.planId, projectId, status: 'PENDING' },
+    select: { id: true },
+  });
+  if (!plan) {
+    return { ok: false as const, error: 'This plan is no longer pending', status: 409 };
+  }
+
+  await prisma.projectPlan.update({
+    where: { id: plan.id },
+    data: { content: parsed.data.content },
+  });
+
+  await writeAudit({
+    actorId: user.id,
+    actorEmail: user.email,
+    action: 'project.plan_edit',
+    targetType: 'project',
+    targetId: projectId,
+    after: { planId: plan.id },
+  });
+
+  const updated = await prisma.projectPlan.findUnique({ where: { id: plan.id } });
+  return { ok: true as const, data: updated };
+}
+
 export async function requestFollowUpPlan(projectId: string, message: string) {
   const { user, err } = await requireActor();
   if (!user) return err;
@@ -727,8 +828,8 @@ export async function approvePlan(
     await startFollowUpGeneration({ projectId, userId: user.id, promptContext });
   }
 
-  // TODO: set phase COMPLETE when generation reports a clean completion
-  // signal. persistProjectGeneration maps generationStatus "ready" → COMPLETE.
+  // COMPLETE is set by settleStreamedGeneration when the BUILD job finishes
+  // with files — not here, where no code has been generated yet (F-665).
 
   return { ok: true, data: { plan: approved, phase: 'BUILDING' } };
 }

@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
   Check,
+  Download,
   FileText,
   Github,
   History,
@@ -45,7 +46,7 @@ import { useDisclosurePopover } from '@/hooks/useDisclosurePopover';
 import { type Checkpoint, type SaveStatus, type WorkspacePage, type WorkspaceView } from './types';
 import PresenceAvatars from './PresenceAvatars';
 import type { PresenceViewer } from './useProjectPresence';
-import { VersionPills, WORKSPACE_MENU_ITEM, WorkspaceViewSwitch } from './WorkspaceViewControls';
+import { VersionMenu, WORKSPACE_MENU_ITEM, WorkspaceViewSwitch } from './WorkspaceViewControls';
 
 const ICON_BTN =
   'studio-icon-hit inline-flex items-center justify-center rounded-full text-[var(--studio-muted)] transition-colors hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)] disabled:cursor-not-allowed disabled:opacity-40';
@@ -85,11 +86,28 @@ function NavroopMark() {
   );
 }
 
-function saveLabel(saveState: SaveStatus, updatedAt: string | null) {
+export function saveLabel(
+  saveState: SaveStatus,
+  updatedAt: string | null,
+  hasStoredFiles: boolean,
+  filesKnown: boolean,
+) {
   if (saveState === 'saving') return 'Saving…';
   if (saveState === 'saved') return 'All changes saved';
   if (saveState === 'signin') return 'Sign in to save';
-  if (updatedAt) return `Last saved ${formatRelativeTime(updatedAt)}`;
+  // `updatedAt` is `Project.updatedAt`, which moves on any write to the row —
+  // a phase change, a lock, a job abandoned at server restart — not just a
+  // save. Without `hasStoredFiles` this claimed "Last saved" for a project
+  // that had never saved anything (F-brief Task 3).
+  //
+  // `hasStoredFiles` alone isn't enough either: it starts `false` before the
+  // files fetch resolves and stays `false` forever if that fetch fails, so
+  // gating on it directly would hide the label for projects that genuinely
+  // have content, for as long as the fetch is pending or errors. `filesKnown`
+  // (true only once the files fetch has resolved successfully) tells us
+  // whether `hasStoredFiles` is trustworthy; while it's false, fall back to
+  // the pre-Task-3 behaviour of trusting `updatedAt` alone.
+  if (updatedAt && (hasStoredFiles || !filesKnown)) return `Last saved ${formatRelativeTime(updatedAt)}`;
   return null;
 }
 
@@ -97,6 +115,8 @@ export default function WorkspaceTopBar({
   projectName,
   saveState,
   updatedAt,
+  hasStoredFiles,
+  filesKnown,
   onRename,
   view,
   onViewChange,
@@ -126,6 +146,10 @@ export default function WorkspaceTopBar({
   projectName: string;
   saveState: SaveStatus;
   updatedAt: string | null;
+  /** Whether the project has any stored files — see `ProjectWorkspace`'s `hasStoredFiles`. */
+  hasStoredFiles: boolean;
+  /** Whether `hasStoredFiles` is trustworthy yet — false while the files fetch is loading or has errored. */
+  filesKnown: boolean;
   onRename: (name: string) => void;
   view: WorkspaceView;
   onViewChange: (view: WorkspaceView) => void;
@@ -162,20 +186,12 @@ export default function WorkspaceTopBar({
   const [pushSuccess, setPushSuccess] = useState(false);
   const [pushError, setPushError] = useState<string | null>(null);
   const [repoUrl, setRepoUrl] = useState(githubRepoUrl);
-  const [previewOpen, setPreviewOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportHint, setExportHint] = useState<string | null>(null);
   const [compactPreview, setCompactPreview] = useState(false);
   const [compactActions, setCompactActions] = useState(false);
-  /**
-   * The pills are the widest thing in the middle group, and the header runs out of
-   * room before `compactPreview` (1180) admits it: with five pills the bar overflows
-   * by ~23px at 1280. Measured, not guessed — below this the History button is still
-   * there, and it opens the whole list.
-   */
-  const [roomForVersions, setRoomForVersions] = useState(false);
   const headerRef = useRef<HTMLElement>(null);
   /**
    * A paragraph plus one link, not a command list, so this is a disclosure rather
@@ -202,7 +218,6 @@ export default function WorkspaceTopBar({
     const observer = new ResizeObserver(([entry]) => {
       setCompactPreview(entry.contentRect.width < 1180);
       setCompactActions(entry.contentRect.width < 900);
-      setRoomForVersions(entry.contentRect.width >= 1360);
     });
     observer.observe(node);
     return () => observer.disconnect();
@@ -223,7 +238,7 @@ export default function WorkspaceTopBar({
     if (next !== projectName) onRename(next);
   };
 
-  const status = saveLabel(saveState, updatedAt);
+  const status = saveLabel(saveState, updatedAt, hasStoredFiles, filesKnown);
 
   return (
     <>
@@ -304,14 +319,8 @@ export default function WorkspaceTopBar({
 
         <div className="flex shrink-0 items-center gap-6">
           <WorkspaceViewSwitch view={view} onViewChange={onViewChange} />
-          {/*
-           * Version pills are a shortcut to the newest few checkpoints, not a second
-           * history: `onOpenHistory` above still opens VersionHistoryPanel with the full
-           * list, and both go through the same preview call. `roomForVersions` is what
-           * keeps them from pushing Share and Publish off a 1280-wide header.
-           */}
-          {onPreviewVersion && roomForVersions ? (
-            <VersionPills
+          {onPreviewVersion ? (
+            <VersionMenu
               checkpoints={checkpoints}
               activeId={activeVersionId}
               onPreview={onPreviewVersion}
@@ -391,58 +400,15 @@ export default function WorkspaceTopBar({
                 type="button"
                 disabled={!previewUrl || !previewOriginConfigured}
                 title={previewOriginConfigured ? undefined : PREVIEW_NEW_TAB_REQUIRES_ORIGIN}
-                onClick={() => previewUrl && openPreviewWindow(previewUrl)}
+                onClick={() =>
+                  previewUrl && projectId && openPreviewWindow(previewUrl, projectId)
+                }
                 aria-label="Open in new tab"
                 className={ICON_BTN}
               >
                 <ExternalLink className="size-15" />
               </button>
             </Hint>
-            {/* A real command list, so Radix owns the menu keyboard contract: the
-                hand-rolled `role="menu"` div announced arrow keys and roving focus
-                and implemented neither, and Escape dropped focus on `<body>`
-                instead of returning it to this trigger (N-016). */}
-            <DropdownMenu open={previewOpen} onOpenChange={setPreviewOpen}>
-              <DropdownMenuTrigger asChild>
-                <button
-                  type="button"
-                  disabled={!previewUrl || !previewOriginConfigured}
-                  title={previewOriginConfigured ? undefined : PREVIEW_NEW_TAB_REQUIRES_ORIGIN}
-                  aria-label="Open preview options"
-                  className={cn(ICON_BTN, 'size-24')}
-                >
-                  <ChevronDown className="size-12" />
-                </button>
-              </DropdownMenuTrigger>
-              {previewUrl && previewOriginConfigured ? (
-                <DropdownMenuContent
-                  align="end"
-                  sideOffset={6}
-                  collisionPadding={8}
-                  aria-label="Preview options"
-                  className="studio-portal z-40 w-[168px] rounded-12 border-[var(--studio-line)] bg-[var(--studio-surface)] p-4 text-[var(--studio-fg)] shadow-sm"
-                >
-                  <DropdownMenuItem
-                    className={WORKSPACE_MENU_ITEM}
-                    onSelect={() => openPreviewWindow(previewUrl)}
-                  >
-                    Full size
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    className={WORKSPACE_MENU_ITEM}
-                    onSelect={() => {
-                      const mobile = getPreviewDevice('mobile');
-                      openPreviewWindow(previewUrl, {
-                        width: mobile.width ?? 390,
-                        height: mobile.height ?? 844,
-                      });
-                    }}
-                  >
-                    Mobile view
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              ) : null}
-            </DropdownMenu>
           </div>
           <div
             className="relative flex flex-col items-end"
@@ -577,25 +543,6 @@ export default function WorkspaceTopBar({
                 >
                   Save as template
                 </DropdownMenuItem>
-                <DropdownMenuItem
-                  className={cn(WORKSPACE_MENU_ITEM, 'justify-between')}
-                  disabled={exporting}
-                  onSelect={() => {
-                    if (exporting) return;
-                    setExporting(true);
-                    setExportHint(null);
-                    void downloadProjectZip(projectId).then((result) => {
-                      setExporting(false);
-                      setExportHint(result.ok ? formatExportBytes(result.bytes) : result.error);
-                    });
-                  }}
-                >
-                  <span>Download code</span>
-                  {exporting ? <Loader2 className="size-14 animate-spin" /> : null}
-                </DropdownMenuItem>
-                {exportHint ? (
-                  <p className="px-10 pb-6 text-[11px] text-[var(--studio-faint)]">{exportHint}</p>
-                ) : null}
                 {/* Below 900px the Share button beside this menu is hidden, so without
                     this item Share has no keyboard or pointer route at all. */}
                 {compactActions ? (
@@ -610,6 +557,28 @@ export default function WorkspaceTopBar({
             </DropdownMenu>
           ) : null}
           <BarDivider />
+          <Hint label={exporting ? 'Downloading…' : 'Download code'}>
+            <button
+              type="button"
+              disabled={exporting || !projectId}
+              onClick={() => {
+                if (!projectId || exporting) return;
+                setExporting(true);
+                setExportHint(null);
+                void downloadProjectZip(projectId).then((result) => {
+                  setExporting(false);
+                  setExportHint(result.ok ? formatExportBytes(result.bytes) : result.error);
+                });
+              }}
+              aria-label="Download code"
+              className={ICON_BTN}
+            >
+              {exporting ? <Loader2 className="size-15 animate-spin" /> : <Download className="size-15" />}
+            </button>
+          </Hint>
+          {exportHint ? (
+            <span className="text-[11px] text-[var(--studio-faint)]">{exportHint}</span>
+          ) : null}
           {!compactActions ? (
             <button
               type="button"

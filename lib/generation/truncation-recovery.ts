@@ -155,3 +155,15 @@ export function truncationRecoveryOutcome(
     errorMessage: truncationRecoveryFailureMessage(error, provider),
   };
 }
+
+/**
+ * Recorded on the job when detection fired and recovery is disabled.
+ *
+ * With recovery off, these warnings rode only the `complete` frame — which the
+ * client dropped — so a cut-off build left no trace anywhere an operator looks.
+ * This step is what makes it visible in /admin/jobs even though nothing was
+ * re-asked.
+ */
+export function truncationDetectedStepError(warnings: readonly string[]): string {
+  return `${TRUNCATION_INCOMPLETE_KEPT} (${warnings.join(' ')})`;
+}

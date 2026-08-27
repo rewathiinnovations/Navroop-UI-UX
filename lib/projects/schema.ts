@@ -39,6 +39,30 @@ export const followUpPlanSchema = z.object({
   message: z.string().trim().min(1, 'message is required').max(2000),
 });
 
+/**
+ * The editable-plan contract for `PATCH /api/projects/[id]/plan`. Same shape the
+ * AI plan generator returns (`planContentSchema` in lib/projects/plan.ts), so a
+ * user's manual edits and a regenerated plan stay interchangeable — both feed
+ * `approvePlan` and the build prompt. Keyed by `planId` so the PATCH can only
+ * touch the exact row the card rendered, never whatever is newest.
+ */
+export const updatePlanContentSchema = z.object({
+  planId: z.string().trim().min(1),
+  content: z.object({
+    summary: z.string().trim().min(1).max(4000),
+    pages: z
+      .array(
+        z.object({
+          name: z.string().trim().min(1).max(200),
+          description: z.string().trim().min(1).max(2000),
+        }),
+      )
+      .min(1)
+      .max(50),
+    keyFeatures: z.array(z.string().trim().min(1).max(1000)).min(1).max(100),
+  }),
+});
+
 export const updateProjectSchema = z
   .object({
     name: optionalName,
@@ -107,11 +131,13 @@ export function isProductStatus(value: unknown): value is ProjectStatus {
   return typeof value === 'string' && PROJECT_STATUSES.includes(value as ProjectStatus);
 }
 
-export function nameFromPrompt(prompt: string) {
-  const cleaned = prompt.replace(/\s+/g, ' ').trim();
-  if (!cleaned) return 'Untitled project';
-  return cleaned.length > 40 ? cleaned.slice(0, 40) : cleaned;
-}
+/**
+ * Re-exported, not re-implemented. This file used to carry its own 40-character hard slice
+ * next to a 48-character ellipsis version in `lib/projects/prompt.ts`; the two disagreed, only
+ * this one reached the database, and it is what published a site on
+ * `build-a-landing-page-for-chai-point-a.navroop.app`. One binding, one number.
+ */
+export { nameFromPrompt } from '@/lib/projects/prompt';
 
 export function parseWithZod<T>(schema: z.ZodType<T>, data: unknown) {
   const parsed = schema.safeParse(data);

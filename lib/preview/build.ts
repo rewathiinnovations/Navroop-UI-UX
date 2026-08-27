@@ -56,7 +56,7 @@ export async function buildStaticPreview(
     mode: 'STATIC',
   });
 
-  const built = await buildStaticSite(deps.stack, deps.files);
+  const built = await buildStaticSite(deps.stack, deps.files, deps.designDirection);
   if (!built.ok) {
     return fail(deps, created.id, 'Preview could not be built', { buildLog: built.error });
   }

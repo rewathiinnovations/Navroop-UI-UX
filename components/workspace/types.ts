@@ -38,6 +38,23 @@ export function shouldRequestFollowUpPlan(mode: ChatMode | string | undefined) {
  * died just after the first `{path=…}` opener would otherwise send the retry as
  * an edit ("DO NOT regenerate App.jsx") at a project that still has nothing.
  */
+/**
+ * appliedCode is a same-project fallback (URL import, the turn before files
+ * land). /project/[id] keeps this component mounted across sidebar switches,
+ * so leftover entries from the previous project must not mark a new empty
+ * Approve as an edit.
+ */
+export function appliedCodeForSend<T>(input: {
+  appliedCode: readonly T[];
+  sourceProjectId: string | null | undefined;
+  projectId: string | null | undefined;
+}): readonly T[] {
+  if (!input.projectId || !input.sourceProjectId || input.sourceProjectId !== input.projectId) {
+    return [];
+  }
+  return input.appliedCode;
+}
+
 export function hasExistingSite(input: {
   projectFiles: Record<string, string>;
   streamedFiles: readonly { path: string; completed?: boolean }[];

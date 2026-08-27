@@ -6,7 +6,6 @@ export interface ConversationMessage {
   content: string;
   timestamp: number;
   metadata?: {
-    editedFiles?: string[]; // Files edited in this interaction
     addedPackages?: string[]; // Packages added in this interaction
     editType?: string; // Type of edit performed
   };

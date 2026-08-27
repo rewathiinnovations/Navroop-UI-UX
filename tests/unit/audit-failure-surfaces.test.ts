@@ -13,6 +13,19 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  * `error` from `lastError` instead of unconditionally clearing it — that is a
  * straight passthrough, so the decision logic tested here IS the hook's
  * behaviour.
+ *
+ * Fix round 1 (Task 4 finding 3): `getLatestCodeAudit`/`getLatestSeoAudit` also
+ * call `auditFilesReadiness` -> `projectHasPublishableFiles` (Task 4's has-files
+ * guard) on every poll tick while not scanning. This suite's `prisma` mock has no
+ * `checkpoint` model and, until this fix round, did not mock `@/lib/publish/files`
+ * either, so that call fell all the way into `collectPublishFiles` and threw. A
+ * bare `catch {}` in `auditFilesReadiness` silently turned that real breakage into
+ * a normal-looking `{ hasFiles: false, filesHint: <unavailable> }` result, so this
+ * suite passed 8/8 while exercising a code path that was entirely broken. The
+ * catch now logs (`console.warn`) instead of swallowing silently, and
+ * `@/lib/publish/files` is mocked directly below so this suite's assertions about
+ * `lastError` are not coupled to `collectPublishFiles`'s own dependencies (which
+ * is what broke).
  */
 
 const prisma = vi.hoisted(() => ({
@@ -22,6 +35,9 @@ const prisma = vi.hoisted(() => ({
   job: { findFirst: vi.fn() },
 }));
 const auth = vi.hoisted(() => ({ getSessionUser: vi.fn() }));
+const publishFiles = vi.hoisted(() => ({
+  projectHasPublishableFiles: vi.fn(),
+}));
 
 vi.mock('@/lib/db', () => ({ prisma }));
 vi.mock('@/lib/auth', () => ({ getSessionUser: auth.getSessionUser }));
@@ -34,6 +50,7 @@ vi.mock('@/lib/signals/collect', () => ({
   recordCodeAuditSignals: vi.fn(),
   recordSeoScore: vi.fn(),
 }));
+vi.mock('@/lib/publish/files', () => publishFiles);
 vi.mock('@/lib/projects/lock', () => ({ holdProjectLock: vi.fn() }));
 vi.mock('@/lib/plans/limits', () => ({ checkCredits: vi.fn() }));
 vi.mock('@/lib/audit/scan', () => ({ runCodeScan: vi.fn() }));
@@ -64,6 +81,7 @@ beforeEach(() => {
   prisma.job.findFirst.mockResolvedValue(null);
   prisma.codeAudit.findFirst.mockResolvedValue(null);
   prisma.seoAudit.findFirst.mockResolvedValue(null);
+  publishFiles.projectHasPublishableFiles.mockResolvedValue({ status: 'ready' });
 });
 
 describe('auditRunFailureMessage', () => {
@@ -178,5 +196,39 @@ describe('getLatestSeoAudit', () => {
         where: expect.objectContaining({ currentStep: SEO_AUDIT_STEP }),
       }),
     );
+  });
+});
+
+/**
+ * Task 4 fix round 1, finding 3: before `@/lib/publish/files` was mocked above,
+ * `auditFilesReadiness`'s `projectHasPublishableFiles` call fell through to
+ * `collectPublishFiles`, which used `prisma.checkpoint` — a model this suite's
+ * `prisma` mock never stubbed — and threw. A bare `catch {}` turned that into a
+ * normal-looking `'unavailable'` result, so the two tests below failed before the
+ * mock was added: `hasFiles`/`filesHint` came back as the swallowed-error
+ * fallback instead of the real answer, and the (until-now silent) catch logged a
+ * warning this suite never expected.
+ */
+describe('getLatestCodeAudit / getLatestSeoAudit readiness path exercises the real dependency', () => {
+  it('derives hasFiles/filesHint from a real projectHasPublishableFiles answer, not the swallowed-error fallback', async () => {
+    publishFiles.projectHasPublishableFiles.mockResolvedValue({ status: 'empty' });
+
+    const result = await getLatestCodeAudit('p1');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.data.hasFiles).toBe(false);
+    expect(result.data.filesHint).toBe('Generate the project first');
+  });
+
+  it('does not warn about a swallowed error when the dependency answers normally', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    publishFiles.projectHasPublishableFiles.mockResolvedValue({ status: 'ready' });
+
+    await getLatestCodeAudit('p1');
+    await getLatestSeoAudit('p1');
+
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 });

@@ -22,7 +22,15 @@ async function getFiles(params: Promise<{ id: string }>) {
   const { id } = await params;
   const project = await prisma.project.findFirst({
     where: { id, deletedAt: null },
-    select: { id: true, stack: true, lastCode: true, contentVersion: true },
+    select: {
+      id: true,
+      stack: true,
+      lastCode: true,
+      contentVersion: true,
+      // The in-browser preview needs it: it decides which token block the
+      // starter stylesheet carries, and the files alone do not say.
+      designDirection: true,
+    },
   });
   if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
 
@@ -50,6 +58,7 @@ async function getFiles(params: Promise<{ id: string }>) {
   return NextResponse.json({
     success: true,
     stack: project.stack,
+    designDirection: project.designDirection,
     contentVersion: project.contentVersion,
     previewing: served.previewing,
     files,

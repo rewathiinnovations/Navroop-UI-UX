@@ -1,6 +1,14 @@
 'use client';
 
-import { createContext, useCallback, useContext, useMemo, type ReactNode } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  type ReactNode,
+} from 'react';
 import { signOut, useSession } from 'next-auth/react';
 
 export type AuthUser = {
@@ -49,12 +57,54 @@ function fromSession(
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const { data: session, status, update } = useSession();
-  const user = fromSession(session?.user);
   const ready = status !== 'loading';
 
-  const refresh = useCallback(async () => {
-    await update();
+  /**
+   * Memoised on the fields, never on `session.user`.
+   *
+   * Every session refetch calls `setSession` with a freshly parsed object, so
+   * the object identity changes even when the user did not — and NextAuth's own
+   * context value is `useMemo(…, [session, loading])`, which hands `update` a
+   * new identity on the same tick. `fromSession(session?.user)` built a new
+   * `AuthUser` on every one of those renders, the memo below listed it as a
+   * dependency, and the context value therefore changed identity on every
+   * render. That re-rendered every `useAuth()` consumer in the tree on a poll
+   * that had told us nothing new. The scalars below are what `fromSession`
+   * actually reads, so an unchanged session now produces the identical object.
+   */
+  const sessionUser = session?.user;
+  const userId = sessionUser?.id;
+  const userEmail = sessionUser?.email ?? null;
+  const userName = sessionUser?.name ?? null;
+  const userRole = sessionUser?.role;
+  const userAvatarUrl = sessionUser?.avatarUrl ?? sessionUser?.image ?? null;
+
+  const user = useMemo(
+    () =>
+      fromSession({
+        id: userId,
+        email: userEmail,
+        name: userName,
+        role: userRole,
+        avatarUrl: userAvatarUrl,
+      }),
+    [userId, userEmail, userName, userRole, userAvatarUrl],
+  );
+
+  /**
+   * `update` is re-created by NextAuth on every session change, so keying
+   * `refresh` on it put the same churn back into the context value that
+   * memoising `user` had just taken out. The ref is written in an effect, never
+   * during render.
+   */
+  const updateRef = useRef(update);
+  useEffect(() => {
+    updateRef.current = update;
   }, [update]);
+
+  const refresh = useCallback(async () => {
+    await updateRef.current();
+  }, []);
 
   const signOutUser = useCallback(async () => {
     await signOut({ redirect: false });

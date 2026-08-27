@@ -45,6 +45,26 @@ export const COMPLETION_RULES = `OUTPUT FORMAT:
 - Escape apostrophes; straight quotes only.
 - Showing code as content? Put it in a template literal and escape backticks and \${ — never paste raw JSX/HTML into text.`;
 
+/**
+ * The output contract when the model writes through tools instead of fences.
+ *
+ * Deliberately short: there is no text format left to defend. The fenced
+ * contract above spends eleven lines guarding a protocol against truncation,
+ * bare fences and paths written as prose, because each of those was a real
+ * silent failure — a reply that parses to zero files looks exactly like a reply
+ * that answered a question. A tool call has none of those failure modes, so the
+ * only rules left are where code may go and what to say around it.
+ */
+export const TOOL_OUTPUT_RULES = `OUTPUT FORMAT:
+- Say in one or two sentences what you are about to do, then call the tools.
+- Every file you create or change goes through write_file with the COMPLETE file contents.
+- Never put code in your reply text. Code reaches the project only through a tool call.
+- Never list file paths as prose. The tool call is the record.
+- Read a file before editing it, and use edit_file for a small change to a large file.
+- Use search_files to find a component or symbol instead of guessing a path.
+- Need a package? Call add_dependency first. Never write an import for a package you have not added.
+- After the tool calls, close with one or two sentences on what changed and where to look in the preview.`;
+
 export function buildVolatilePromptSuffix(ctx?: StackPromptContext | null): string {
   if (!ctx) return '';
   const parts: string[] = [];

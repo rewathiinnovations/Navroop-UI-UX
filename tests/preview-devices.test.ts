@@ -8,7 +8,6 @@ import {
   formatPreviewSize,
   isMobilePreviewFinding,
   parseStoredPreviewDevice,
-  popupFeaturesForDevice,
   previewScale,
   rotateDeviceSize,
 } from '../lib/preview/devices.ts';
@@ -94,11 +93,6 @@ assert(
   'generic finding is not mobile',
 );
 
-const features = popupFeaturesForDevice(390, 844);
-assert(
-  features.includes('width=390') && features.includes('height=844'),
-  'popup features use device pixels',
-);
 
 if (failed > 0) {
   console.error(`\n${failed} failed, ${passed} passed`);

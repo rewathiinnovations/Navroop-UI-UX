@@ -174,7 +174,7 @@ describe('openPreviewWindow', () => {
     expect(open).not.toHaveBeenCalled();
   });
 
-  it('opens a preview on a distinct origin, full size and as a device popup', () => {
+  it('opens a preview on a distinct origin in a plain new tab', () => {
     const open = stubWindow();
     openPreviewWindow('https://preview-static.zone.example/proj-1/?token=t');
     expect(open).toHaveBeenCalledWith(
@@ -182,14 +182,16 @@ describe('openPreviewWindow', () => {
       '_blank',
       'noopener,noreferrer',
     );
-    openPreviewWindow('https://preview-static.zone.example/proj-1/?token=t', {
-      width: 390,
-      height: 844,
-    });
-    expect(open).toHaveBeenCalledWith(
-      'https://preview-static.zone.example/proj-1/?token=t',
-      'navroop-preview-device',
-      'width=390,height=844,noopener,noreferrer',
-    );
+    // There is no sized-popup variant to assert any more: the "Mobile view" item
+    // that opened one was deleted with the header's preview-options dropdown, and
+    // the device sizes now live on `/project/[id]/preview`, which iframes the
+    // build instead of resizing a browser window.
+    expect(open).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends a project to the in-app preview page rather than the served origin', () => {
+    const open = stubWindow();
+    openPreviewWindow('https://preview-static.zone.example/proj-1/?token=t', 'proj 1');
+    expect(open).toHaveBeenCalledWith('/project/proj%201/preview', '_blank', 'noopener,noreferrer');
   });
 });

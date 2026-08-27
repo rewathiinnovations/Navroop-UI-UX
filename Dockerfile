@@ -2,6 +2,14 @@
 # Build: prisma generate + Next.js standalone.
 # Start: pre-migrate (backup + destructive gate), then prisma migrate deploy, then server.
 
+# The Chromium the Quality tab's accessibility pass and Lighthouse run drive
+# (lib/audit/headless-browser.ts). Global so the builder can assert it against the
+# lockfile and the runner can install exactly it: a browser build only works with the
+# playwright-core revision that expects it, so a pin that drifts from `package.json`
+# would silently ship a browser the app cannot launch. Keep the two in step — the
+# builder fails the build when they part.
+ARG PLAYWRIGHT_VERSION=1.62.1
+
 FROM node:20-bookworm-slim AS base
 # Pin the Node major used in production. Bump deliberately.
 RUN apt-get update \
@@ -59,6 +67,14 @@ RUN node -e "if(!(process.env.NEXT_PUBLIC_APP_URL||'').trim()){console.error('NE
 # Direct binary, never `pnpm exec`: .cursor/lessons-learned.md bans combining pnpm with a
 # tool that owns locked native engines, and lib/verify/orchestrator.ts already calls it this way.
 RUN node ./node_modules/prisma/build/index.js generate
+# The runner installs the browser from a pinned `playwright@$PLAYWRIGHT_VERSION` rather
+# than from this tree, because `.next/standalone` traces the library and not its CLI. That
+# pin is only correct while it names the version the lockfile actually resolved: a browser
+# build is matched to one playwright-core revision, and a mismatch surfaces at runtime as
+# a launch failure on every scan, not at build time. String concatenation and
+# `process.env`, never `${...}`, for the reason given above the pnpm assertion.
+ARG PLAYWRIGHT_VERSION
+RUN node -e "const want=process.env.PLAYWRIGHT_VERSION;const got=require('playwright/package.json').version;if(got!==want){console.error('playwright '+got+' is installed but the Dockerfile pins PLAYWRIGHT_VERSION='+want+' for the runtime browser; update the ARG to match package.json');process.exit(1)}console.log('playwright '+got)"
 RUN pnpm build
 
 FROM base AS runner
@@ -73,7 +89,39 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends postgresql-client \
   && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g prisma@6.19.3 tsx \
+# A real Chromium, because without one the Quality tab's two most valuable checks cannot
+# run at all in production: `pnpm install --ignore-scripts` above deliberately skips
+# Playwright's postinstall download (supply-chain posture, kept), and nothing else here
+# fetched a browser — so `chromium.launch()` threw "Executable does not exist" on every
+# axe pass and every Lighthouse run. With no build runner in this deployment, the axe pass
+# is the only check in the code audit that actually inspects the rendered site, so the
+# alternative is a Scan button that can never do its main job.
+#
+# The cost is real and paid here on purpose: roughly 400 MB (a chromium build plus the
+# ~100 apt packages `--with-deps` pulls in) and a couple of minutes of build time. It buys
+# nothing on a deployment with no preview origin configured, because `auditPreviewUrl`
+# mints no URL there and neither check is reached — but the failure it removes is the one
+# that files a permanent tool failure against every project of a deployment that *is*
+# configured. Automatic post-build scans no longer touch the browser at all
+# (`runAutoCodeAudit` / `runAutoSeoAudit` run the static half), so this serves the Scan
+# button only, one browser at a time, bounded and always closed by `withHeadlessBrowser`.
+#
+# It rides the same `npm install -g` the runtime already uses for prisma and tsx rather
+# than a second pattern: a pinned global CLI this stage needs, next to the other two.
+# `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD` stops that install's postinstall fetching firefox and
+# webkit as well — about a gigabyte for two engines nothing here launches — and
+# `install --with-deps chromium` then fetches the one that is used, along with its system
+# libraries. `chmod a+rX` because the download runs as root and the app runs as `nextjs`.
+# An operator who does not want a browser in this image can drop the `playwright@…`
+# argument and the two `playwright install` / `chmod` clauses: `isBrowserUnavailableError`
+# (lib/audit/a11y.ts) then reports both checks as unavailable on this deployment instead
+# of as a defect in the user's site.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+ARG PLAYWRIGHT_VERSION
+RUN PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install -g prisma@6.19.3 tsx playwright@${PLAYWRIGHT_VERSION} \
+  && playwright install --with-deps chromium \
+  && chmod -R a+rX /ms-playwright \
+  && rm -rf /var/lib/apt/lists/* \
   && groupadd --system --gid 1001 nodejs \
   && useradd --system --uid 1001 --gid nodejs nextjs \
   && mkdir -p /data/config /data/cache /data/tmp \

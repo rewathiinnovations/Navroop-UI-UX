@@ -148,10 +148,16 @@ export async function createProject(input: {
     importMode: parsed.data.importMode,
   });
   const skipPlanning = flow.skipPlanning;
-  const name =
+  // A prompt-derived name is provisional: `applyCreateProjectPlanFlow` replaces it with the
+  // plan's subject when the plan lands, because at this point no plan exists yet and the raw
+  // prompt is all there is. A name the user typed is not provisional — it is passed as `null`
+  // so the rename has nothing to match on and can never overwrite it.
+  const explicitName =
     typeof parsed.data.name === 'string' && parsed.data.name.trim()
       ? parsed.data.name.trim()
-      : nameFromPrompt(parsed.data.initialPrompt);
+      : null;
+  const name = explicitName ?? nameFromPrompt(parsed.data.initialPrompt);
+  const provisionalName = explicitName ? null : name;
   // The ceiling is enforced at the insert, not before it (F-307): `checkLimit` counted and
   // returned, and the `create` was a separate statement, so two concurrent creates at the
   // project ceiling both counted `limit - 1` and both inserted. `withLimit` re-counts
@@ -202,6 +208,14 @@ export async function createProject(input: {
   }
 
   let plan;
+  // The name the plan settled on, when it landed inside this call. Null on the deferred path,
+  // where the rename happens after the response has already been sent: the browser is in the
+  // workspace by then, so the settled name is delivered through `nameAwaitingPlan` on
+  // `getProject` instead — see the note on that flag. It used to say "the workspace's own poll
+  // picks it up", which was not true of any poll that existed: the workspace read the row once
+  // on mount and never again, so the header wore the truncated prompt slice for the whole
+  // session while the dashboard and the database showed the plan's name.
+  let planName: string | null = null;
   const deferPlanning = parsed.data.deferPlanning === true && !flow.isUrlImport && !skipPlanning;
   if (deferPlanning) {
     // The row exists; the browser can land in the workspace now. The plan
@@ -217,16 +231,20 @@ export async function createProject(input: {
         userId: user.id,
         initialPrompt: parsed.data.initialPrompt,
         skipPlanning,
+        provisionalName,
       }),
     );
   } else {
     try {
-      ({ plan } = await applyCreateProjectPlanFlow({
+      const planned = await applyCreateProjectPlanFlow({
         projectId: project.id,
         userId: user.id,
         initialPrompt: parsed.data.initialPrompt,
         skipPlanning,
-      }));
+        provisionalName,
+      });
+      plan = planned.plan;
+      planName = planned.name;
     } catch (error) {
       // The caller never reached the workspace, so there is no recovery panel to carry
       // this: the row has no plan, no job the user can see, and no way back to it except
@@ -255,13 +273,18 @@ export async function createProject(input: {
     }
   }
 
+  // `project` is the row as inserted, so its `name` is the provisional one even when the plan
+  // has already renamed it in the database. Serving that stale value would show the dashboard
+  // and the audit row a name that no longer exists.
+  const named = planName ? { ...project, name: planName } : project;
+
   await writeAudit({
     actorId: user.id,
     actorEmail: user.email,
     action: 'project.create',
     targetType: 'project',
     targetId: project.id,
-    after: { name: project.name, stack: project.stack },
+    after: { name: named.name, stack: project.stack },
   });
 
   return {
@@ -269,14 +292,14 @@ export async function createProject(input: {
     data: {
       id: project.id,
       initialPrompt: project.initialPrompt,
-      name: project.name,
+      name: named.name,
       phase: project.phase,
       stack: project.stack,
       designDirection: project.designDirection,
       urlImport: flow.isUrlImport,
       importMode: flow.isUrlImport ? flow.importMode : undefined,
       plan,
-      project,
+      project: named,
     },
   };
 }
@@ -471,6 +494,11 @@ async function listProjectsFromSql(query: ListProjectsQuery) {
 const projectDetailSelect = {
   id: true,
   name: true,
+  // Read, never returned. `nameAwaitingPlan` below has to ask whether the row is still
+  // wearing the name the prompt produced, and that question cannot be answered without the
+  // prompt. It is stripped from the payload before it leaves `getProject`, because this list
+  // is curated (F-809) and no client renders the prompt from here.
+  initialPrompt: true,
   status: true,
   phase: true,
   stack: true,
@@ -496,6 +524,31 @@ export async function getProject(id: string) {
 
   if (!project) return { ok: true as const, data: null };
 
+  const { initialPrompt, ...detail } = project;
+
+  /**
+   * True while this row is still wearing the provisional prompt-derived name and the plan
+   * that would replace it has not landed yet.
+   *
+   * `deferPlanning` — what the dashboard sends — answers the create before any plan exists,
+   * so the browser opens the workspace, reads this row once, and gets the raw prompt slice
+   * (`Build a landing page for "Chai Point", a`). `renameFromPlan` writes `Chai Point` onto
+   * the row seconds later, after that read. This flag is how the open workspace knows the
+   * name it is showing is not final, so it can read once more instead of showing the slice
+   * for the rest of the session.
+   *
+   * All three conditions matter. `PLANNING` is the only phase in which a first plan is still
+   * in flight, so a URL import (inserted BUILDING) and a skip-planning create never arm it.
+   * No `lastCode` separates a first plan from a follow-up plan on a finished site, which
+   * `renameFromPlan` is never called for. And comparing against `nameFromPrompt` is what
+   * keeps a name the *user* typed out of this: an explicit name is passed to the plan flow as
+   * `null` and can never be overwritten, so it must never be reported as provisional either.
+   */
+  const nameAwaitingPlan =
+    project.phase === 'PLANNING' &&
+    !project.lastCode &&
+    project.name === nameFromPrompt(initialPrompt);
+
   // The workspace seeds its model state from this row and then sends that value as
   // `model` on every generation, where a requested model is pushed to the FRONT of the
   // provider chain. So a row holding an id the product no longer offers — a legacy
@@ -508,7 +561,7 @@ export async function getProject(id: string) {
   if (project.model && !model) {
     log.warn('project.model_no_longer_offered', { projectId: project.id, stored: project.model });
   }
-  return { ok: true as const, data: { ...project, model } };
+  return { ok: true as const, data: { ...detail, model, nameAwaitingPlan } };
 }
 
 export async function updateProject(id: string, input: { name?: string; status?: string }) {

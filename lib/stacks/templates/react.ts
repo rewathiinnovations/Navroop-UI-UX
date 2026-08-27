@@ -1,4 +1,6 @@
+import type { DirectionTokens } from '@/lib/design/directions';
 import type { ScaffoldFile } from './shared';
+import { REACT_STARTER_LAYOUT, STARTER_DEPENDENCIES, starterKitFiles } from './starter-kit';
 
 /**
  * The Vite/React project scaffold.
@@ -8,7 +10,7 @@ import type { ScaffoldFile } from './shared';
  * pushed React project an actual runnable repo rather than a folder of
  * components.
  */
-export function reactScaffold(devCommand: string): ScaffoldFile[] {
+export function reactScaffold(devCommand: string, tokens: DirectionTokens): ScaffoldFile[] {
   return [
     {
       path: 'package.json',
@@ -26,6 +28,7 @@ export function reactScaffold(devCommand: string): ScaffoldFile[] {
           dependencies: {
             react: '^19.0.0',
             'react-dom': '^19.0.0',
+            ...STARTER_DEPENDENCIES,
           },
           devDependencies: {
             // tsconfig sets strict: true, so the React type packages are not
@@ -46,11 +49,20 @@ export function reactScaffold(devCommand: string): ScaffoldFile[] {
     },
     {
       path: 'vite.config.js',
-      content: `import { defineConfig } from 'vite';
+      // The `@` alias is not optional now that the starter components import
+      // `@/lib/utils`: the in-browser preview resolves `@/` itself, but a real
+      // `vite build` in the exported repo has only this.
+      content: `import { fileURLToPath } from 'node:url';
+import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   plugins: [react()],
+  resolve: {
+    alias: {
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
+    },
+  },
 });
 `,
     },
@@ -84,23 +96,10 @@ createRoot(document.getElementById('root')!).render(
 );
 `,
     },
-    {
-      path: 'src/index.css',
-      content: `@tailwind base;
-@tailwind components;
-@tailwind utilities;
-`,
-    },
-    {
-      path: 'tailwind.config.js',
-      content: `/** @type {import('tailwindcss').Config} */
-export default {
-  content: ['./index.html', './src/**/*.{js,jsx,ts,tsx}'],
-  theme: { extend: {} },
-  plugins: [],
-};
-`,
-    },
+    // `src/index.css`, `tailwind.config.js`, `src/lib/utils.ts` and
+    // `src/components/ui/*` all come from the starter kit, so NEXTJS and REACT
+    // cannot drift apart on the token names or the primitives.
+    ...starterKitFiles(REACT_STARTER_LAYOUT, tokens),
     {
       path: 'postcss.config.js',
       content: `export default {
@@ -124,6 +123,10 @@ export default {
             allowImportingTsExtensions: true,
             resolveJsonModule: true,
             isolatedModules: true,
+            // Without these the starter components' `@/lib/utils` import fails
+            // `tsc` in the exported repo, even though Vite resolves it.
+            baseUrl: '.',
+            paths: { '@/*': ['./src/*'] },
           },
           include: ['src'],
         },

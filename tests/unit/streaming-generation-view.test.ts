@@ -60,6 +60,31 @@ describe('StreamingCodePanel', () => {
     expect(writing).toContain('app/hero.tsx');
   });
 
+  it('shows a blinking cursor when a file is still being written', () => {
+    const markup = renderToStaticMarkup(
+      createElement(StreamingCodePanel, {
+        files: [file('app/page.tsx', false)],
+        activePath: 'app/page.tsx',
+      }),
+    );
+
+    // The cursor is an animated span with the pulse animation
+    expect(markup).toContain('animate-pulse');
+    expect(markup).toContain('bg-emerald-400');
+  });
+
+  it('hides the cursor when the file is completed', () => {
+    const markup = renderToStaticMarkup(
+      createElement(StreamingCodePanel, {
+        files: [file('app/page.tsx', true)],
+        activePath: 'app/page.tsx',
+      }),
+    );
+
+    // Completed files should not have the cursor
+    expect(markup).not.toContain('animate-pulse bg-emerald-400');
+  });
+
   it('reports paths the parser refused instead of dropping them silently', () => {
     const markup = renderToStaticMarkup(
       createElement(StreamingCodePanel, {

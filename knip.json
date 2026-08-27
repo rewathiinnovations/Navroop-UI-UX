@@ -9,6 +9,7 @@
     "scripts/backup-db.ts",
     "scripts/check-destructive-migrations.ts",
     "scripts/check-public-routes.ts",
+    "scripts/generate-ui-ux-profiles.ts",
     "scripts/pre-migrate.ts",
     "scripts/reconcile-jobs.ts",
     "scripts/restore-db.ts",

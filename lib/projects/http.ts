@@ -77,6 +77,19 @@ export function readGenerationInput(body: Record<string, unknown>): GenerationIn
   }
   if (body.thumbnailUrl !== undefined) candidate.thumbnailUrl = body.thumbnailUrl;
   else if (body.screenshot !== undefined) candidate.thumbnailUrl = body.screenshot;
+  // `generationStatus` has exactly one legitimate HTTP sender: `setJobStatus` in
+  // lib/generation/generation-runtime.ts, once, when a run ends. It is kept because
+  // `persistProjectGeneration` keys the after-generation work off `'ready'` — the
+  // `contentVersion` bump, `createCheckpointAfterGeneration` and
+  // `capturePreviewAfterGeneration`, which nothing else calls — so refusing it here
+  // would leave every finished build with no checkpoint and no preview.
+  //
+  // `progressMessage` above has no HTTP sender left at all: the same runtime used to
+  // repeat it every four seconds through this parser and no longer sends it (T4), the
+  // URL-import job reaches `persistProjectGeneration` by direct call rather than through
+  // this route (lib/import/run.ts), and nothing renders the column. Treat a request that
+  // carries it as a client that has grown a second writer of progress, not as a caller
+  // to accommodate.
   if (body.generationStatus !== undefined) candidate.generationStatus = body.generationStatus;
   else if (legacyStatus !== undefined) candidate.generationStatus = legacyStatus;
 

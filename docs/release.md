@@ -121,25 +121,28 @@ What to know without a number in front of you:
 
 ### The test suite may not write the repository
 
-A test once stamped a fixture Sentry project id over the dev server's live `.data/config/observability.json`, and `/api/health` then reported the file as disagreeing with the CONNECTED Integration row — a convincing incident manufactured entirely by the suite. `tests/setup/data-dir-guard.ts` closes that route by repointing `DATA_DIR` at a temp directory, but local object storage still falls back to `public/uploads` and backups to `tmp/backups`.
+A test once stamped a fixture Sentry project id over the dev server's live `.data/config/observability.json`, and `/api/health` then reported the file as disagreeing with the CONNECTED Integration row — a convincing incident manufactured entirely by the suite. `tests/setup/data-dir-guard.ts` closes that route by repointing `DATA_DIR` at a temp directory, and `tests/setup/storage-dir-guard.ts` closes the object-storage one the same way by repointing `STORAGE_LOCAL_DIR`. Backups still fall back to `tmp/backups`, which nothing redirects.
 
 `tests/setup/repo-write-guard.global.ts` runs as `globalSetup`: it walks the tree before and after the whole suite (about 2,500 files, roughly 5 seconds a pass) and fails the run if anything changed that the suite does not own. **`git status` is useless for this** — all four paths are gitignored, which is exactly why the pollution went unnoticed. Skipped directories: `node_modules`, `.git`, `.next`, `coverage`, `.turbo`, `generated`, `playwright-report`, `test-results`, `dist`, `build`, `out`, `.vercel`.
 
-Three rules, because several agents may be editing the checkout while the suite runs:
+Four rules, because several agents may be editing the checkout while the suite runs and the dev server is writing it:
 
-| What changed        | Where                                                                                                      | Verdict |
-| ------------------- | ---------------------------------------------------------------------------------------------------------- | ------- |
-| Modified or removed | state paths only (`.data`, `public/uploads`, `tmp/backups`, and `DATA_DIR` when it points inside the repo) | fail    |
-| Added               | state paths                                                                                                | fail    |
-| Added               | anywhere else, and git ignores it                                                                          | fail    |
-| Added               | anywhere else, and git can see it                                                                          | ignored |
-| Modified            | anywhere else                                                                                              | ignored |
+| What changed | Where                                                                                          | Verdict |
+| ------------ | ---------------------------------------------------------------------------------------------- | ------- |
+| Anything     | a **fenced** state path (`public/uploads` while `STORAGE_LOCAL_DIR` points outside the repo)   | ignored |
+| Modified or removed | state paths only (`.data`, `tmp/backups`, and `DATA_DIR` when it points inside the repo) | fail    |
+| Added        | state paths                                                                                    | fail    |
+| Added        | anywhere else, and git ignores it                                                              | fail    |
+| Added        | anywhere else, and git can see it                                                              | ignored |
+| Modified     | anywhere else                                                                                  | ignored |
+
+The first row is attribution, not tolerance, and it is the only row that is _earned_ rather than assumed. A before/after tree diff cannot say **who** wrote a file, and a dev server runs from this checkout by design: on 2026-08-27 it wrote a preview build and a checkpoint snapshot into `public/uploads` nine seconds into a run in which all 4,421 tests passed, and the guard reported them as the suite's pollution. Allowlisting the path would have deleted the check. Instead `storage-dir-guard.ts` points every process that could be the suite — the `globalSetup` process before the pool forks, and each worker again after `env.ts` has loaded `.env.local` — at a throwaway directory, so a write under `public/uploads` is provably somebody else's. Nothing is subtracted that the fence does not already prevent, and `resolveFencedPrefixes` returns nothing at all if the storage root is ever back inside the repository, which restores every verdict above.
 
 The last two rows are what keeps it usable in a live checkout. A source edit changes a file that **already exists**, so a repo-wide content comparison would fail on somebody else's save; and a new _visible_ file is somebody adding source, which `git status` already shows — the guard's first real run failed on precisely that, another agent creating `tests/integration/publish-compensate-resume.test.ts` mid-suite. Git is used only to **classify** a candidate path, never to detect the change; detection is the mtime and size comparison, because git cannot see the paths that matter. When git cannot answer (no repository, no binary) the guard says so on stderr and checks the state paths only, rather than silently narrowing.
 
-`globalSetup` runs in its own process, so it cannot see the temp `DATA_DIR` the worker processes get from `data-dir-guard.ts`, and does not need to — the point is to notice writes that land in the repository.
+`globalSetup` runs in its own process, so it cannot see the temp `DATA_DIR` the worker processes get from `data-dir-guard.ts`, and does not need to — the point is to notice writes that land in the repository. `STORAGE_LOCAL_DIR` is the exception, and it is why the fence is applied from `globalSetup` as well: env set there **is** inherited by the worker pool, so this one variable holds the same value on both sides and the guard can read it to decide what it is still entitled to accuse.
 
-The guard is itself tested (`tests/setup/repo-write-guard.test.ts`, reached because `tests/setup/**/*.test.ts` is in `include`): a guard nobody exercises is indistinguishable from one that cannot fail. Proven end to end both ways — a throwaway suite writing `tmp/backups/` fails the run with every test passing, and a throwaway suite creating a normal source file does not.
+The guard is itself tested (`tests/setup/repo-write-guard.test.ts`, reached because `tests/setup/**/*.test.ts` is in `include`): a guard nobody exercises is indistinguishable from one that cannot fail. Proven end to end both ways — a throwaway suite writing `tmp/backups/` fails the run with every test passing, and a throwaway suite creating a normal source file does not. The fence has its own worker-side proof in `tests/unit/storage-fence.test.ts`, which fails if the redirect stops reaching the code under test; without it, dropping the import would silently leave `lib/storage` on its `public/uploads` fallback **and** stop the guard watching that directory, which is worse than either half alone.
 
 If a path is genuinely the harness's own output, add it to `DEFAULT_ALLOWLIST` in `tests/setup/repo-write-guard.ts` **with the reason**. A test being observed to leave something behind is the finding, not grounds for an exception.
 

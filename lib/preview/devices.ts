@@ -73,10 +73,6 @@ export function isMobilePreviewFinding(finding: {
   return /\b390px\b|\bmobile\b|\bsmartphone\b/i.test(text);
 }
 
-export function popupFeaturesForDevice(width: number, height: number): string {
-  return `width=${Math.round(width)},height=${Math.round(height)},noopener,noreferrer`;
-}
-
 export function requestPreviewDevice(key: PreviewDeviceKey) {
   if (typeof window === 'undefined') return;
   window.dispatchEvent(new CustomEvent(PREVIEW_DEVICE_EVENT, { detail: { key } }));
@@ -86,20 +82,30 @@ export function requestPreviewDevice(key: PreviewDeviceKey) {
 export const PREVIEW_NEW_TAB_REQUIRES_ORIGIN =
   'Connect a preview domain in Admin → Configuration to open previews in a new tab';
 
-export function openPreviewWindow(url: string, size?: { width: number; height: number } | null) {
+/**
+ * There is no sized-popup variant. This function used to take a `{ width, height }`
+ * and open a `window.open(url, name, 'width=…,height=…')` for the header's
+ * "Mobile view" item; that item was deleted when the device sizes moved onto the
+ * `/project/[id]/preview` page, which sizes a real iframe instead. The branch
+ * survived the deletion with `size = null` at its only call site — dead code kept
+ * alive by a doc line, which is how a preview affordance nobody can reach still
+ * reads as shipped.
+ */
+export function openPreviewWindow(url: string, projectId?: string | null) {
   if (!url) return;
   // A preview is model-authored JavaScript. Opened top-level on this app's own
-  // origin it would run with the viewer's session (F-140), so a same-origin or
-  // relative URL is never opened — the sandboxed in-app iframe is the only
-  // place such content may render.
+  // origin it would run with the viewer's session (F-140). When a project id is
+  // given the preview opens in a dedicated page that iframes the served build and
+  // adds the device toolbar; otherwise the served URL is opened as-is, which stays
+  // the path for links handed out elsewhere.
+  if (projectId) {
+    window.open(`/project/${encodeURIComponent(projectId)}/preview`, '_blank', 'noopener,noreferrer');
+    return;
+  }
   try {
     if (new URL(url, window.location.href).origin === window.location.origin) return;
   } catch {
     return;
   }
-  if (!size?.width || !size.height) {
-    window.open(url, '_blank', 'noopener,noreferrer');
-    return;
-  }
-  window.open(url, 'navroop-preview-device', popupFeaturesForDevice(size.width, size.height));
+  window.open(url, '_blank', 'noopener,noreferrer');
 }

@@ -39,11 +39,50 @@ function sourceFiles() {
   return out;
 }
 
+/**
+ * The file's own code, with the contents of every template literal blanked.
+ *
+ * The two scans below are text scans, and since the locked stack landed this
+ * repo carries *generated-project source* as template literals —
+ * `lib/stacks/templates/starter-kit.ts` holds the shadcn/ui primitives a
+ * generated app ships, and every one of them imports `cn` from its own
+ * `@/lib/utils`. That is a different program: the whole point of the starter
+ * kit's `cn` is that it is upstream's `twMerge(clsx())`, deliberately not this
+ * app's `extendTailwindMerge` over a private type ramp.
+ *
+ * Blanking template contents is what keeps the guard honest rather than
+ * excluding a file from it: a real host import can never sit inside a template
+ * literal, and embedded source always does. Nesting is tracked because a
+ * template can hold `${…}` that opens another one.
+ */
+function hostCode(text: string): string {
+  let out = '';
+  let template = 0;
+  let index = 0;
+  while (index < text.length) {
+    const char = text[index];
+    if (char === '\\' && template > 0) {
+      index += 2;
+      continue;
+    }
+    if (char === '`') {
+      template += template > 0 ? -1 : 1;
+      out += char;
+      index += 1;
+      continue;
+    }
+    // Newlines are kept so a blanked template does not merge the lines around it.
+    out += template > 0 && char !== '\n' ? ' ' : char;
+    index += 1;
+  }
+  return out;
+}
+
 describe('cn is the single class helper', () => {
   it('nothing imports a second cn implementation', () => {
     const offenders = sourceFiles().filter((file) =>
       /import\s*\{[^}]*\bcn\b[^}]*\}\s*from\s*['"](?!@\/utils\/cn)[^'"]*['"]/.test(
-        readFileSync(file, 'utf8'),
+        hostCode(readFileSync(file, 'utf8')),
       ),
     );
     expect(offenders).toEqual([]);
@@ -53,9 +92,31 @@ describe('cn is the single class helper', () => {
     const offenders = sourceFiles().filter(
       (file) =>
         file !== join('utils', 'cn.ts') &&
-        /export\s+(?:function\s+cn\b|const\s+cn\b)/.test(readFileSync(file, 'utf8')),
+        /export\s+(?:function\s+cn\b|const\s+cn\b)/.test(hostCode(readFileSync(file, 'utf8'))),
     );
     expect(offenders).toEqual([]);
+  });
+
+  // The two scans above pass vacuously if `hostCode` blanks too much, so the
+  // stripper is exercised directly: a real import must survive it, and embedded
+  // generated-project source must not.
+  it('the template-literal stripper hides embedded source but not real code', () => {
+    const offending = `import { cn } from '@/lib/utils';\n`;
+    expect(hostCode(offending)).toContain("import { cn } from '@/lib/utils'");
+
+    const embedded = ['const SOURCE = `', "import { cn } from '@/lib/utils';", '`;'].join('\n');
+    expect(hostCode(embedded)).not.toContain('import {');
+    // Line structure survives, so a later scan still reports usable positions.
+    expect(hostCode(embedded).split('\n')).toHaveLength(3);
+
+    // An exported cn outside a template is still visible; inside one is not.
+    expect(hostCode('export function cn() {}')).toContain('export function cn');
+    expect(hostCode('const S = `export function cn() {}`;')).not.toContain('function cn');
+
+    // The file this whole exception exists for is a real case of the second form.
+    const starter = readFileSync(join('lib', 'stacks', 'templates', 'starter-kit.ts'), 'utf8');
+    expect(starter).toContain("import { cn } from '@/lib/utils'");
+    expect(hostCode(starter)).not.toContain("import { cn } from '@/lib/utils'");
   });
 });
 

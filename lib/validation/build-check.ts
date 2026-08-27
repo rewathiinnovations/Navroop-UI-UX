@@ -183,8 +183,13 @@ export function buildErrorSignature(errors: BuildError[]): string | null {
 export async function checkBuild(input: {
   stack: StackId;
   files: Record<string, string>;
+  /**
+   * Decides the starter kit's token block, so the compile sees the same global
+   * stylesheet the preview and the exported repo do.
+   */
+  designDirection?: string | null;
 }): Promise<BuildCheckResult> {
-  const { stack, files } = input;
+  const { stack, files, designDirection } = input;
 
   // STATIC_HTML has no compile step — there is nothing that can fail to build.
   if (stack === 'STATIC_HTML') {
@@ -208,7 +213,7 @@ export async function checkBuild(input: {
     };
   }
 
-  const built = await buildStaticSite(stack, files);
+  const built = await buildStaticSite(stack, files, designDirection);
   if (built.ok) {
     return { status: 'passed', stack, errors: [], missingPackages: [], signature: null };
   }

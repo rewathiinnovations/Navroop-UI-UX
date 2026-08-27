@@ -55,6 +55,15 @@ export type SegmentPageInput = {
   capture: PageCapture;
   /** Acting user — credential resolution must match the generation call (F-073). */
   userId?: string | null;
+  /**
+   * The project the import is building, when the caller knows it.
+   *
+   * Only used for accounting: with it, segmentation's provider call gets a GenerationEvent
+   * row on /admin/usage; without it the spend is still accrued onto the workspace ceiling
+   * but no row names the project. `lib/import/pipeline.ts` has the id in hand and does not
+   * pass it yet.
+   */
+  projectId?: string | null;
   complete?: (input: { image: Buffer; text: string }) => Promise<ImportSection[]>;
 };
 
@@ -68,6 +77,7 @@ export async function segmentPage(input: SegmentPageInput): Promise<ImportSectio
         image: input.capture.desktopPng,
         text: input.capture.firecrawlText,
         userId: input.userId ?? null,
+        projectId: input.projectId ?? null,
       });
   if (!Array.isArray(raw) || raw.length === 0) {
     throw new Error('Segmentation returned no sections');
@@ -79,10 +89,16 @@ async function defaultSegmentComplete(input: {
   image: Buffer;
   text: string;
   userId: string | null;
+  projectId: string | null;
 }): Promise<ImportSection[]> {
   const { generateObject } = await import('ai');
   const { z } = await import('zod');
   const { getProviderForModel } = await import('../ai/provider-manager.ts');
+  const { chatModelForProvider } = await import('../ai/client-for-entry.ts');
+  // Dynamically, like every other dependency of this function: the module graph of
+  // `segment.ts` itself stays free of Prisma and the AI SDK.
+  const { RunUsage } = await import('../consumption/run-usage.ts');
+  const { recordHelperCallUsage } = await import('../usage-costs.ts');
 
   const schema = z.object({
     sections: z
@@ -99,25 +115,48 @@ async function defaultSegmentComplete(input: {
   });
 
   const { client, actualModel } = await getProviderForModel(null, input.userId);
-  const result = await generateObject({
-    model: client(actualModel),
-    schema,
-    messages: [
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'text',
-            text: `Segment this landing page into ordered visual sections (hero, nav, features, footer, …).
+  const instruction = `Segment this landing page into ordered visual sections (hero, nav, features, footer, …).
 Return 1–12 sections. Each needs id (slug), label, purpose, contentSummary, approximateYRange [yStart, yEnd] in CSS pixels on the desktop screenshot.
 
 PAGE TEXT:
-${wrapUntrustedWebsiteContent(input.text, 6000)}`,
-          },
-          { type: 'image', image: input.image },
-        ],
-      },
-    ],
-  });
-  return result.object.sections;
+${wrapUntrustedWebsiteContent(input.text, 6000)}`;
+  // The most expensive of the three unrecorded helper calls: it carries a full-page
+  // screenshot as an image part, and it ran once per URL import with nothing pricing it,
+  // nothing accruing it and no row on /admin/usage.
+  const spent = new RunUsage();
+  spent.willSend(instruction);
+  try {
+    const result = await generateObject({
+      model: chatModelForProvider(client, actualModel),
+      schema,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: instruction },
+            { type: 'image', image: input.image },
+          ],
+        },
+      ],
+    });
+    spent.settle(result.usage, JSON.stringify(result.object));
+    return result.object.sections;
+  } finally {
+    // The provider's own count is used whenever it answers. The fallback estimate on a
+    // failed call is measured from the instruction text only — the screenshot's tokens are
+    // not in it — so a failure here is charged low rather than not at all.
+    const totals = spent.claim();
+    if (totals) {
+      await recordHelperCallUsage({
+        kind: 'import_segment',
+        projectId: input.projectId,
+        userId: input.userId,
+        tokensIn: totals.tokensIn,
+        tokensOut: totals.tokensOut,
+        calls: totals.calls,
+        estimatedCalls: totals.estimatedCalls,
+        model: actualModel,
+      });
+    }
+  }
 }

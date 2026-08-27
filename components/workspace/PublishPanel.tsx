@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, ChevronDown, Copy, ExternalLink, Loader2, X } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Check, Copy, ExternalLink, Loader2, X } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import Hint from './Hint';
 import ConfirmAction from '@/components/admin/ConfirmAction';
@@ -51,7 +51,6 @@ export default function PublishPanel({
   projectId?: string | null;
   canPublishHint?: string;
 }) {
-  const [openMenu, setOpenMenu] = useState(false);
   const [sheetKind, setSheetKind] = useState<'PREVIEW' | 'LIVE' | null>(null);
   const [state, setState] = useState<PublishState | null>(null);
   const [busy, setBusy] = useState(false);
@@ -60,7 +59,6 @@ export default function PublishPanel({
   const [password, setPassword] = useState('');
   const [copied, setCopied] = useState(false);
   const [limitError, setLimitError] = useState<string | null>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
 
   const deployment = useMemo(
     () => state?.deployments.find((row) => row.kind === sheetKind) ?? null,
@@ -81,15 +79,6 @@ export default function PublishPanel({
   useEffect(() => {
     void load();
   }, [projectId]);
-
-  useEffect(() => {
-    if (!openMenu) return;
-    const onPointer = (event: MouseEvent) => {
-      if (!menuRef.current?.contains(event.target as Node)) setOpenMenu(false);
-    };
-    document.addEventListener('mousedown', onPointer);
-    return () => document.removeEventListener('mousedown', onPointer);
-  }, [openMenu]);
 
   useEffect(() => {
     if (!sheetKind || !projectId) return;
@@ -160,7 +149,6 @@ export default function PublishPanel({
   ) => {
     if (!projectId || !canPublish) return;
     setSheetKind(kind);
-    setOpenMenu(false);
     setBusy(true);
     setStartedAt(Date.now());
     setElapsed(0);
@@ -249,36 +237,18 @@ export default function PublishPanel({
 
   return (
     <>
-      <div className="relative" ref={menuRef} data-tour="publish">
+      <div className="relative" data-tour="publish">
         <Hint label={canPublish ? 'Publish' : publishHint}>
           <button
             type="button"
-            disabled={!canPublish}
-            onClick={() => setOpenMenu((value) => !value)}
+            disabled={!canPublish || busy}
+            onClick={() => void start('LIVE')}
             className="inline-flex h-32 items-center gap-4 rounded-full [background-image:var(--studio-cta-gradient)] px-14 text-[13px] font-medium text-white transition-[filter] duration-200 hover:brightness-[1.07] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:brightness-100"
           >
+            {busy ? <Loader2 className="size-14 animate-spin" /> : null}
             Publish
-            <ChevronDown className="size-14" />
           </button>
         </Hint>
-        {openMenu && (
-          <div className="absolute right-0 z-40 mt-8 w-[220px] overflow-hidden rounded-12 border border-[var(--studio-line)] bg-[var(--studio-surface)] shadow-sm">
-            <button
-              type="button"
-              className="flex w-full px-14 py-12 text-left text-[13px] text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)]"
-              onClick={() => void start('PREVIEW')}
-            >
-              Create preview link
-            </button>
-            <button
-              type="button"
-              className="flex w-full px-14 py-12 text-left text-[13px] text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)]"
-              onClick={() => void start('LIVE')}
-            >
-              Go live
-            </button>
-          </div>
-        )}
       </div>
 
       {sheetKind && (

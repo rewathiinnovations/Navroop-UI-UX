@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { checkGeneratedImports } from '@/lib/validation/import-check';
 import { checkBuild } from '@/lib/validation/build-check';
 import { runBuildValidation } from '@/lib/validation/run-build-validation';
+import { invalidateSettingsCache } from '@/lib/settings/resolve';
 
 /**
  * Validation used to be unreachable in two ways at once: `runBuildValidation`
@@ -18,11 +19,20 @@ import { runBuildValidation } from '@/lib/validation/run-build-validation';
 const autoFixSetting = { value: null as string | null };
 const recordJobStepFailure = vi.fn(async () => undefined);
 
+/**
+ * The toggle resolves through `lib/settings/resolve.ts` now, so the stored row is
+ * the registry's shape — key `setting:<registry key>`, value a JSON envelope —
+ * and not the bare `buildAutoFixEnabled` row this file used to fake. The bare row
+ * was the defect: nothing could write it, because /admin/config only ever writes
+ * through the registry.
+ */
 vi.mock('@/lib/db', () => ({
   prisma: {
     appSetting: {
       findUnique: async () =>
-        autoFixSetting.value === null ? null : { value: autoFixSetting.value },
+        autoFixSetting.value === null
+          ? null
+          : { value: JSON.stringify({ value: autoFixSetting.value, encrypted: false }) },
     },
   },
 }));
@@ -107,6 +117,9 @@ beforeEach(() => {
   autoFixSetting.value = null;
   bundleCheck.mode = 'real';
   recordJobStepFailure.mockClear();
+  // The resolver caches for 30 s, so without this every case after the first
+  // would read the previous case's answer.
+  invalidateSettingsCache();
 });
 
 describe('checkGeneratedImports', () => {

@@ -1,6 +1,7 @@
 import * as esbuild from 'esbuild';
 import { assemblePreview } from './assemble';
 import { buildPreviewSrcdoc } from './html';
+import { resolveBareSpecifier } from './resolve-bare';
 
 /**
  * Server-side twin of the in-browser preview bundler.
@@ -17,8 +18,9 @@ export type StaticBuildResult =
 export async function buildStaticSite(
   stack: string,
   projectFiles: Record<string, string>,
+  directionId?: string | null,
 ): Promise<StaticBuildResult> {
-  const assembly = assemblePreview(stack, projectFiles);
+  const assembly = assemblePreview(stack, projectFiles, directionId);
 
   if (assembly.kind === 'empty') {
     return { ok: false, error: assembly.reason };
@@ -30,6 +32,11 @@ export async function buildStaticSite(
     // one through sanitizeGenerationPath before it becomes a storage key.
     return { ok: true, files: { ...projectFiles, 'index.html': assembly.html } };
   }
+
+  // Carried on the assembly, so the server-side bundle resolves against exactly
+  // the map the browser preview did — a bundle built against a wider set than the
+  // served document's import map compiles and then fails to load.
+  const deps = assembly.deps;
 
   try {
     const result = await esbuild.build({
@@ -45,7 +52,7 @@ export async function buildStaticSite(
       logLevel: 'silent',
       legalComments: 'none',
       define: { 'process.env.NODE_ENV': '"production"' },
-      plugins: [virtualFsPlugin(assembly.files, assembly.aliases)],
+      plugins: [virtualFsPlugin(assembly.files, assembly.aliases, deps)],
     });
 
     const code = joinOutputs(result.outputFiles, '.js');
@@ -53,7 +60,9 @@ export async function buildStaticSite(
     return {
       ok: true,
       files: {
-        'index.html': buildPreviewSrcdoc({ code, css }),
+        // The same `deps` the bundle was resolved against, so the served
+        // document's import map cannot disagree with what compiled.
+        'index.html': buildPreviewSrcdoc({ code, css, deps }),
       },
     };
   } catch (error) {
@@ -64,6 +73,7 @@ export async function buildStaticSite(
 function virtualFsPlugin(
   files: Record<string, string>,
   aliases: Record<string, string>,
+  deps: Record<string, string>,
 ): esbuild.Plugin {
   return {
     name: 'navroop-virtual-fs',
@@ -75,7 +85,14 @@ function virtualFsPlugin(
           const entry = resolveVirtual(args.path, undefined, files);
           if (entry) return { path: entry, namespace: 'vfs' };
         }
-        if (isBare(args.path)) return { path: args.path, external: true };
+        // Only the bare specifiers the import map actually serves. An unknown
+        // package used to be marked external here too, so `checkBuild` reported
+        // `passed` on a build whose import cannot load — see resolveBareSpecifier.
+        if (isBare(args.path)) {
+          const resolution = resolveBareSpecifier(args.path, deps);
+          if ('external' in resolution) return { path: args.path, external: true };
+          return { errors: [{ text: resolution.error }] };
+        }
         const resolved = resolveVirtual(args.path, args.importer, files);
         if (!resolved) {
           return {

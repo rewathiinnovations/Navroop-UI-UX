@@ -16,14 +16,22 @@ export type RepoFiles = Record<string, string>;
 export function buildRepoFiles(
   stack: string,
   generated: Record<string, string>,
-  options: { projectName?: string } = {},
+  options: {
+    projectName?: string;
+    /**
+     * The project's design direction. Decides the token block in the scaffold's
+     * global stylesheet, so a pushed or exported repo carries the same palette
+     * the preview showed. Omitted, every export would silently be `minimal`.
+     */
+    designDirection?: string | null;
+  } = {},
 ): RepoFiles {
   const definition = getStack(stack);
   const files: RepoFiles = {};
 
   // Scaffold first so a generated file of the same path always wins: the model
   // may legitimately replace the entry point or the Tailwind config.
-  for (const file of getStackScaffold(definition.id)) {
+  for (const file of getStackScaffold(definition.id, options.designDirection)) {
     files[normalize(file.path)] = file.content;
   }
   for (const [path, content] of Object.entries(generated)) {

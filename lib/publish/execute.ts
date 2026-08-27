@@ -288,12 +288,17 @@ export async function runPublishJob(jobId: string, deps: PublishDeps = livePubli
   const resourceIds: JobResourceIds = { ...(job.resourceIds ?? {}) };
 
   const heartbeat = beginJobHeartbeat(jobId);
-  let project: { id: string; name: string; stack: string } | null;
+  let project: {
+    id: string;
+    name: string;
+    stack: string;
+    designDirection: string | null;
+  } | null;
   try {
     await markJobRunning(jobId, { chargeCredits: false, acquireProjectLock: false });
     project = await prisma.project.findFirst({
       where: { id: job.projectId, deletedAt: null },
-      select: { id: true, name: true, stack: true },
+      select: { id: true, name: true, stack: true, designDirection: true },
     });
   } catch (error) {
     heartbeat.stop();
@@ -383,7 +388,10 @@ export async function runPublishJob(jobId: string, deps: PublishDeps = livePubli
     // reaches the deploy repo — it lives on the Coolify application as PREVIEW_PASSWORD.
     const collectForPublish = async (): Promise<Record<string, PushFileEntry>> => {
       const generated = await deps.collectFiles(job.projectId);
-      const repoFiles = buildRepoFiles(stack.id, generated, { projectName: project.name });
+      const repoFiles = buildRepoFiles(stack.id, generated, {
+        projectName: project.name,
+        designDirection: project.designDirection,
+      });
       const text =
         kind === 'PREVIEW'
           ? injectPreviewFiles(repoFiles, {

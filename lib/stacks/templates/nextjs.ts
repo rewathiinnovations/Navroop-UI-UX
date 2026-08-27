@@ -1,6 +1,8 @@
+import type { DirectionTokens } from '@/lib/design/directions';
 import type { ScaffoldFile } from './shared';
+import { NEXTJS_STARTER_LAYOUT, STARTER_DEPENDENCIES, starterKitFiles } from './starter-kit';
 
-export function nextjsScaffold(devCommand: string): ScaffoldFile[] {
+export function nextjsScaffold(devCommand: string, tokens: DirectionTokens): ScaffoldFile[] {
   return [
     {
       path: 'package.json',
@@ -19,10 +21,16 @@ export function nextjsScaffold(devCommand: string): ScaffoldFile[] {
           // lib/preview/deps.ts). A Next 14 / React 18 pin here meant generated
           // React-19 code passed the in-process esbuild check and then failed
           // `next build` in the user's own repo.
+          //
+          // The starter-kit entries carry the same versions the preview import
+          // map pins, for the same reason pointed the other way: a caret range
+          // that drifts is how a preview and a deployed site become different
+          // sites without anything reporting it.
           dependencies: {
             next: '^16.0.0',
             react: '^19.0.0',
             'react-dom': '^19.0.0',
+            ...STARTER_DEPENDENCIES,
           },
           devDependencies: {
             '@types/node': '^20.0.0',
@@ -80,19 +88,6 @@ export default nextConfig;
 `,
     },
     {
-      path: 'tailwind.config.js',
-      content: `/** @type {import('tailwindcss').Config} */
-module.exports = {
-  content: [
-    './app/**/*.{js,ts,jsx,tsx}',
-    './components/**/*.{js,ts,jsx,tsx}',
-  ],
-  theme: { extend: {} },
-  plugins: [],
-};
-`,
-    },
-    {
       path: 'postcss.config.js',
       content: `module.exports = {
   plugins: {
@@ -102,17 +97,12 @@ module.exports = {
 };
 `,
     },
-    {
-      path: 'app/globals.css',
-      content: `@tailwind base;
-@tailwind components;
-@tailwind utilities;
-
-body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-}
-`,
-    },
+    // `app/globals.css` and `tailwind.config.js` come from the starter kit: the
+    // stylesheet carries this direction's token block and the config maps the
+    // semantic classes onto it. The old scaffold's bare `body { font-family }`
+    // rule is deliberately gone — type comes from the direction prompt, and a
+    // system-font rule in the scaffold silently overrode it.
+    ...starterKitFiles(NEXTJS_STARTER_LAYOUT, tokens),
     {
       path: 'app/layout.tsx',
       content: `import './globals.css';
@@ -134,8 +124,8 @@ export default function RootLayout({
       path: 'app/page.tsx',
       content: `export default function HomePage() {
   return (
-    <main className="min-h-screen bg-gray-900 text-white flex items-center justify-center p-4">
-      <p className="text-lg text-gray-400">
+    <main className="flex min-h-screen items-center justify-center bg-background p-4 text-foreground">
+      <p className="text-lg text-muted-foreground">
         Your new Next.js App Router site — edit app/page.tsx.
       </p>
     </main>

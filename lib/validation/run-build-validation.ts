@@ -1,8 +1,9 @@
 import { recordJobStepFailure } from '@/lib/jobs/step-failure';
 import { PREVIEW_DEPS } from '@/lib/preview/deps';
 import type { StackId } from '@/lib/stacks';
+import { withStarterFiles } from '@/lib/stacks/starter';
 import { checkBuild, type BuildCheckResult } from './build-check';
-import { decideAutoFix, type AutoFixDecision } from './autofix-policy';
+import { MAX_AUTOFIX_ATTEMPTS, decideAutoFix, type AutoFixDecision } from './autofix-policy';
 import { describeBuildFailure } from './fix-prompt';
 import { checkGeneratedImports, type ImportCheckOutcome } from './import-check';
 import { getBuildAutoFixEnabled } from './settings';
@@ -53,12 +54,23 @@ export async function runBuildValidation(input: {
    * pre-existing and must not fail this build.
    */
   changedPaths?: string[];
+  /**
+   * Decides the starter kit's token block. Without it the *static* scan reports
+   * `@/lib/utils` as an unresolved import and spends a repair generation
+   * rewriting correct code — the false-positive class docs/build-autofix.md
+   * names as the failure mode that matters.
+   */
+  designDirection?: string | null;
   jobId?: string | null;
   attempt: number;
   previousSignature: string | null;
   notify: (message: string, level: NotifyLevel) => void | Promise<void>;
 }): Promise<BuildValidationOutcome> {
-  const { stack, files, changedPaths, jobId, attempt, previousSignature, notify } = input;
+  const { stack, changedPaths, designDirection, jobId, attempt, previousSignature, notify } = input;
+  // The starter kit is part of the project as far as both checks are concerned:
+  // it is what the preview, the published site and the exported repo compile
+  // against, so a scan that cannot see it is scanning a different project.
+  const files = withStarterFiles(stack, input.files, designDirection);
 
   // Read once: the setting decides whether a failure earns a repair generation,
   // not whether the code gets checked. Checking is free and its absence is what
@@ -103,7 +115,7 @@ export async function runBuildValidation(input: {
     });
   }
 
-  const result = await runBundleCheck({ stack, files, jobId, notify });
+  const result = await runBundleCheck({ stack, files, designDirection, jobId, notify });
 
   if (result.status === 'skipped') {
     // STATIC_HTML and an empty file set are quiet on purpose — there is nothing
@@ -140,12 +152,13 @@ export async function runBuildValidation(input: {
 async function runBundleCheck(input: {
   stack: StackId;
   files: Record<string, string>;
+  designDirection?: string | null;
   jobId?: string | null;
   notify: (message: string, level: NotifyLevel) => void | Promise<void>;
 }): Promise<BuildCheckResult> {
-  const { stack, files, jobId, notify } = input;
+  const { stack, files, designDirection, jobId, notify } = input;
   try {
-    const result = await checkBuild({ stack, files });
+    const result = await checkBuild({ stack, files, designDirection });
     if (result.skipReason !== 'checker-unavailable') return result;
     return reportUnchecked({ stack, jobId, notify, detail: 'the bundler is unavailable' });
   } catch (error) {
@@ -193,6 +206,18 @@ async function reportUnchecked(input: {
  * Everything a failed check owes the user and the job record: a chat message in
  * plain English, a `validate-build` job step, and a retry payload only when the
  * policy allows one. Shared by both checks so neither can grow a quieter path.
+ *
+ * A returned `retry` is not advice: the workspace turns it straight into another
+ * POST to /api/generate-ai-code-stream, which charges a credit unconditionally.
+ * So the ceiling below is applied here, over *every* branch that can produce one,
+ * rather than left to `decideAutoFix` — which tests `attempt >= MAX_AUTOFIX_ATTEMPTS`
+ * only after its missing-package branch has already returned. A reply whose errors
+ * are all unresolvable packages therefore earned an `install` retry at any attempt
+ * number, and the sole thing that ended the client's recursion was the model
+ * happening to emit a byte-identical failure signature twice. One user message
+ * could bill generations for as long as the model kept naming a different missing
+ * package. A bound has to be arithmetic on a counter the server owns; the model
+ * changing its mind is not a bound.
  */
 async function settleFailure(input: {
   result: BuildCheckResult;
@@ -214,13 +239,29 @@ async function settleFailure(input: {
     error: summary,
   });
 
+  if (
+    (decision.action === 'install' || decision.action === 'reprompt') &&
+    attempt >= MAX_AUTOFIX_ATTEMPTS
+  ) {
+    const exhausted: AutoFixDecision = {
+      action: 'stop',
+      reason: 'attempts-exhausted',
+      detail: `The build still fails after ${MAX_AUTOFIX_ATTEMPTS} automatic fix attempts, so no further generation was spent on it.`,
+    };
+    await notify(`${summary} ${exhausted.detail}`, 'warning');
+    return { result, decision: exhausted, retry: null };
+  }
+
   if (decision.action === 'install') {
     // Nothing to install into: preview dependencies are resolved from esm.sh at
     // runtime, so an unknown import is code the model has to change rather than
     // a package we can add.
     const supported = Object.keys(PREVIEW_DEPS).join(', ');
+    // Says what it costs. This branch spends a generation exactly like the
+    // re-prompt below, and describing it as merely "asking for a version" is how
+    // a second and third billed run went unattributed in the transcript.
     await notify(
-      `The build used packages that are not available: ${decision.packages.join(', ')}. Asking for a version that uses only the supported ones.`,
+      `The build used packages that are not available: ${decision.packages.join(', ')}. Asking for a version that uses only the supported ones — automatic fix ${attempt + 1} of ${MAX_AUTOFIX_ATTEMPTS}, which runs as its own generation and is charged like any other message.`,
       'warning',
     );
     return {
@@ -235,7 +276,13 @@ async function settleFailure(input: {
   }
 
   if (decision.action === 'reprompt') {
-    await notify(`${summary} — attempting an automatic fix (${decision.attempt}/2).`, 'warning');
+    // The `/2` here was a literal while the ceiling lived in a constant, so the
+    // two could disagree without anything failing. It also never said that the
+    // attempt costs money.
+    await notify(
+      `${summary} — automatic fix ${decision.attempt} of ${MAX_AUTOFIX_ATTEMPTS}, which runs as its own generation and is charged like any other message.`,
+      'warning',
+    );
     return {
       result,
       decision,

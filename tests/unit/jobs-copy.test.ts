@@ -88,7 +88,7 @@ describe('applyOutcome', () => {
 
   it('keeps preview and package notices out of the file-failure count', () => {
     expect(applyOutcome({ filesCreated: ['a.ts'], errors: ['Preview timed out'] })).toEqual({
-      message: 'Successfully applied 1 files',
+      message: 'Successfully applied 1 file',
       warning: null,
     });
   });

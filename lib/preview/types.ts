@@ -52,6 +52,8 @@ export type BuildStaticPreviewDeps = {
   stack: string;
   /** The project's source files, keyed by repo-relative path. */
   files: Record<string, string>;
+  /** Decides the starter kit's token block, so the served build matches the tab's. */
+  designDirection?: string | null;
   store: PreviewBuildStore;
   storage: PreviewStorage;
 };

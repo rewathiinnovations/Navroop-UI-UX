@@ -58,6 +58,7 @@ export default function PreviewPanel({
   sending,
   phase,
   planTrigger,
+  planApproved = false,
   previewing = false,
   previewingLabel = null,
   onExitPreview,
@@ -82,6 +83,8 @@ export default function PreviewPanel({
   sending?: boolean;
   phase?: ProjectPhase | null;
   planTrigger?: PlanTrigger | null;
+  /** The active plan's status is `APPROVED` — the reader has nothing left to approve. */
+  planApproved?: boolean;
   previewing?: boolean;
   /** `v3`, when the version being previewed is known. Names it in the banner (F-102). */
   previewingLabel?: string | null;
@@ -257,6 +260,7 @@ export default function PreviewPanel({
             view === 'assets' ||
             view === 'brain' ||
             view === 'domains' ||
+            view === 'code' ||
             !showEmptyPlan ? (
               pane === 'empty' ? (
                 <EmptyPreview />
@@ -309,8 +313,9 @@ export default function PreviewPanel({
                       Something cool is on the way
                     </p>
                     <p className="mt-6 text-[13px] leading-6 text-[var(--studio-muted)]">
-                      Your plan is taking shape in the chat. Approve it and this panel becomes your
-                      live site.
+                      {planApproved
+                        ? 'Your plan is approved. Look for Try again in the chat to pick the build back up.'
+                        : 'Your plan is taking shape in the chat. Approve it and this panel becomes your live site.'}
                     </p>
                   </div>
                 )}

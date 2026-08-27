@@ -1,4 +1,4 @@
-import { prisma } from '@/lib/db';
+import { getSetting } from '@/lib/settings/resolve';
 
 /**
  * Admin toggle for the post-generation auto-fix loop.
@@ -11,42 +11,47 @@ import { prisma } from '@/lib/db';
  * same hole with a different cause.
  *
  * What this setting decides is whether a failure earns another generation, which
- * costs credits and wall-clock time. With it off the user is still told exactly
- * what is broken and the job still records the failure — see
- * `decideAutoFix({ enabled: false })`.
+ * is a fresh POST to /api/generate-ai-code-stream and therefore a fresh credit
+ * charge. With it off the user is still told exactly what is broken and the job
+ * still records the failure — see `decideAutoFix({ enabled: false })`.
  *
- * Follows lib/memory/settings.ts: an AppSetting row read defensively, never
- * throwing into the generation path.
+ * It resolves through `lib/settings/resolve.ts` — the same DB → env → fallback
+ * path every other operator-facing value uses — rather than reading a bare
+ * `AppSetting` row of its own. The bare row was the bug: this file owned both a
+ * reader and a writer for the key `buildAutoFixEnabled`, the writer had no caller
+ * anywhere in `app/`, `lib/`, `components/` or `scripts/`, and the key was absent
+ * from `lib/settings/registry.ts`, so /admin/config could not see it either. An
+ * unbounded, billed repair loop defaulted to on with no switch an operator could
+ * reach. Going through the registry is what makes /admin/config the writer, and
+ * the write lands on the row this read looks at because both name the same
+ * registry key.
  */
 
-export const BUILD_AUTOFIX_SETTING_KEY = 'buildAutoFixEnabled';
+/**
+ * Registry key, so the row this reads is the row /admin/config writes. Renaming
+ * it without renaming the registry entry silently reinstates the split that made
+ * the toggle unreachable.
+ */
+export const BUILD_AUTOFIX_SETTING_KEY = 'generation.buildAutoFix';
 
-function parseEnabled(value: string | null | undefined) {
+/**
+ * Anything but an explicit "off" means on. The registry writes `on` / `off`, but
+ * an operator who typed `false` or `0` into the row by hand meant the same thing,
+ * and reading that as "on" would spend credits they were trying to stop.
+ */
+export function parseBuildAutoFixEnabled(value: string | null | undefined) {
   if (value == null) return true;
   const normalized = value.trim().toLowerCase();
-  if (normalized === 'false' || normalized === '0' || normalized === 'off') return false;
-  return true;
+  if (!normalized) return true;
+  return !['off', 'false', '0', 'no', 'disabled'].includes(normalized);
 }
 
 export async function getBuildAutoFixEnabled() {
   try {
-    const row = await prisma.appSetting.findUnique({
-      where: { key: BUILD_AUTOFIX_SETTING_KEY },
-      select: { value: true },
-    });
-    return parseEnabled(row?.value);
+    return parseBuildAutoFixEnabled(await getSetting(BUILD_AUTOFIX_SETTING_KEY));
   } catch (error) {
     // A settings read must never break an apply. Fall back to the default.
     console.warn('[validation] failed to read build auto-fix setting', error);
     return true;
   }
-}
-
-export async function setBuildAutoFixEnabled(enabled: boolean) {
-  await prisma.appSetting.upsert({
-    where: { key: BUILD_AUTOFIX_SETTING_KEY },
-    create: { key: BUILD_AUTOFIX_SETTING_KEY, value: enabled ? 'true' : 'false' },
-    update: { value: enabled ? 'true' : 'false' },
-  });
-  return enabled;
 }

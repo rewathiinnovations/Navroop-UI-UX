@@ -84,6 +84,10 @@ export type JobErrorCode =
   | 'queue_timeout'
   | 'client_disconnected'
   | 'no_files_generated'
+  // A code scan that could not run any check at all — no a11y scan, no build, no AI
+  // review, because none is configured on this deployment. Distinct from a scan that ran
+  // and found nothing: the remedy is an operator enabling a check, not another attempt.
+  | 'no_checks_available'
   | 'tool_call_validation_failed'
   | 'credits_exhausted'
   // Distinct from `credits_exhausted` on purpose: the workspace may still have thousands

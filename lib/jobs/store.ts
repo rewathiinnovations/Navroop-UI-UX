@@ -125,6 +125,69 @@ export async function getLatestJobByKind(
   return rows[0] ? mapJob(rows[0]) : null;
 }
 
+/**
+ * The newest job on a project among a set of kinds — one statement, whatever the set size.
+ *
+ * The kind test has to be *inside* the lookup. `getLatestJob` picks the newest row of any
+ * kind and a filter applied to its result filters a row that has already been chosen, which
+ * is how a settled AUDIT row (the auto quality scans file one after every successful build,
+ * back-dated to the scan's `startedAt`) started answering for the chat surface.
+ *
+ * Fanning `getLatestJobByKind` out over the set answers the same question and was what
+ * `getLatestChatJob` did, but at one round trip per kind — four, on the endpoint the
+ * workspace polls every 2s per viewer, where a single extra `project.findFirst` had already
+ * been measured as a third to a half of the request's database work (F-643). `ANY($2)` over
+ * `kind::text` is the same shape `findRecentlySucceededBuild` uses, and it costs one.
+ */
+export async function getLatestJobOfKinds(
+  projectId: string,
+  kinds: readonly JobKind[],
+): Promise<GenerationJobRow | null> {
+  const rows = await selectJobs(
+    `WHERE "projectId" = $1
+       AND kind::text = ANY($2::text[])
+     ORDER BY "createdAt" DESC
+     LIMIT 1`,
+    projectId,
+    [...kinds],
+  );
+  return rows[0] ? mapJob(rows[0]) : null;
+}
+
+/**
+ * The live job on a project, but only if it is one of these kinds.
+ *
+ * WIRED TO NOTHING. This has no production caller — only
+ * `tests/unit/job-store-claims-and-lookups.test.ts` names it, and
+ * `tests/unit/job-store-claim-docs-match-callers.test.ts` fails if one appears without this
+ * paragraph being rewritten. The question it answers stopped being asked when the quality
+ * scans stopped holding a live row at all: they run detached and file a settled AUDIT row
+ * from `recordScanRun` when they are done, so there is no live scan for anyone to find.
+ *
+ * `getActiveJob` is kind-blind, which is right for `one_active_job_per_project` — the
+ * partial unique index covers every kind, so there is at most one row to find — and wrong
+ * for a caller asking "is a scan of *this* flavour already running?": it answers yes about
+ * the user's own live BUILD, PUBLISH or the other scan. Same rule as the lookup above, for
+ * the same reason: the kind filter belongs in the statement, not in a test applied to the
+ * row it returned. That is why this shape is kept rather than deleted — the next caller that
+ * needs a kind-scoped liveness test must not reach for `getActiveJob` and filter its answer.
+ */
+export async function getActiveJobOfKinds(
+  projectId: string,
+  kinds: readonly JobKind[],
+): Promise<GenerationJobRow | null> {
+  const rows = await selectJobs(
+    `WHERE "projectId" = $1
+       AND status IN ('QUEUED', 'RUNNING')
+       AND kind::text = ANY($2::text[])
+     ORDER BY "createdAt" DESC
+     LIMIT 1`,
+    projectId,
+    [...kinds],
+  );
+  return rows[0] ? mapJob(rows[0]) : null;
+}
+
 export async function getLatestJob(projectId: string): Promise<GenerationJobRow | null> {
   const rows = await selectJobs(
     `WHERE "projectId" = $1
@@ -221,6 +284,207 @@ export async function insertJobRaw(input: {
   const created = await getJob(id);
   if (!created) throw new Error('Failed to create generation job');
   return created;
+}
+
+/**
+ * Insert a job row that is already over.
+ *
+ * `one_active_job_per_project` — UNIQUE ("projectId") WHERE status IN ('QUEUED','RUNNING'),
+ * see the schema note on `model Job` — means a project has exactly one live job row, and
+ * `createOrReuseJob` hands the next caller whatever is holding it. So anything that wants
+ * to *record* work without competing for that slot cannot insert QUEUED and settle later:
+ * that window is a window in which the user's next message is refused. It has to be
+ * terminal from its first statement, which is what this writes.
+ *
+ * The detached quality scans are the caller. They run against no row at all — a scan that
+ * held the slot answered "A build is already running on this project" to a build that had
+ * finished — and file what happened here when they are done, so /admin/jobs and the
+ * Quality panel still see a scan that failed.
+ *
+ * `heartbeatAt` stays NULL on purpose: the reaper only reads QUEUED/RUNNING rows, and a
+ * row that was never alive has no heartbeat to explain. `attempt`/`maxAttempts` are 1/1
+ * because nothing retries these — the next build kicks the next scan.
+ */
+export async function insertSettledJob(input: {
+  projectId: string;
+  workspaceId?: string;
+  userId: string;
+  kind: JobKind;
+  status: 'SUCCEEDED' | 'FAILED';
+  startedAt: Date;
+  finishedAt?: Date;
+  currentStep?: string | null;
+  steps?: JobStep[] | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+}): Promise<GenerationJobRow> {
+  const id = nanoid();
+  const workspaceId = input.workspaceId ?? WORKSPACE_ROW_ID;
+  const finishedAt = input.finishedAt ?? new Date();
+  await prisma.$executeRaw`
+    INSERT INTO "GenerationJob" (
+      id, "projectId", "workspaceId", "userId", kind, status, "ownerInstance",
+      attempt, "maxAttempts", "startedAt", "finishedAt",
+      "errorCode", "errorMessage", steps, "currentStep",
+      "filesWritten", "createdAt", "updatedAt"
+    ) VALUES (
+      ${id}, ${input.projectId}, ${workspaceId}, ${input.userId},
+      ${input.kind}::"JobKind", ${input.status}::"JobStatus", ${getInstanceId()},
+      1, 1, ${input.startedAt}, ${finishedAt},
+      ${input.errorCode ?? null}, ${input.errorMessage ?? null},
+      ${JSON.stringify(input.steps ?? [])}::jsonb, ${input.currentStep ?? null},
+      0, ${input.startedAt}, NOW()
+    )
+  `;
+  const created = await getJob(id);
+  if (!created) throw new Error('Failed to record a settled job');
+  return created;
+}
+
+/**
+ * The placeholder an in-flight scan attempt carries until it reports its outcome.
+ *
+ * ABANDONED with `server_restarted` is what the row honestly means if nothing ever
+ * overwrites it: an attempt began and the process that owned it went away. The code is an
+ * existing `JobErrorCode` on purpose — `CAUSE_LINES` in `./copy` is keyed by that union, so
+ * inventing one here would be a row whose cause renders blank. Nothing offers recovery for
+ * it either way: `showsChatRecovery('AUDIT')` is false.
+ */
+const SCAN_ATTEMPT_PLACEHOLDER = {
+  status: 'ABANDONED',
+  errorCode: 'server_restarted',
+  errorMessage: 'The scan did not report back',
+} as const;
+
+/**
+ * Reserve the one scan a project owes for a step, before a provider is called.
+ *
+ * WIRED TO NOTHING. This has no production caller: `tests/unit/job-store-claims-and-lookups.test.ts`
+ * is the only file in the tree that names it, and `tests/unit/job-store-claim-docs-match-callers.test.ts`
+ * fails if that stops being true without this paragraph being rewritten. An earlier revision
+ * of this comment described the reservation below as the shipped bound, which it never was;
+ * read the two paragraphs after this one as a design for a claim, not as a description of
+ * what runs.
+ *
+ * What actually bounds the unmetered scans today is three things, none of them this:
+ * `findRecentlySucceededBuild` refusing a warrant that is not a real finished build inside
+ * `AUTO_SCAN_WARRANT_MS`; a module-local `Map` in each of `lib/audit/actions.ts` and
+ * `lib/seo/actions.ts`; and `codeScanAttemptedSince` / `seoScanAttemptedSince` reading for an
+ * AUDIT row that `recordScanRun` writes only *after* the scan returns. The last of those
+ * bounds replays that arrive after a run has finished, not two runs in flight at once —
+ * between the eligibility read and that insert the only exclusion is the Map, which a second
+ * app instance does not share and a restart forgets. It costs nothing today because the
+ * automatic path runs at depth `'static'` and calls no provider: a double run is two snapshot
+ * reads and a duplicate AUDIT row. Restore the AI review to that path and it is money.
+ *
+ * Wiring this in is a change to files this comment does not own. Each action would call it
+ * in place of its `…ScanAttemptedSince` read — `claimScanAttempt({ projectId, userId, step:
+ * CODE_AUDIT_STEP, since: build.finishedAt })`, returning early when it answers `null` —
+ * hold the returned id, and settle it through `applyJobFields` where `recordScanRun` now
+ * calls `insertSettledJob`. Until every one of those lands, this stays an unused primitive
+ * with an honest comment.
+ *
+ * The design, for whoever does that: the row goes in first and the caller settles it
+ * afterwards. It is inserted terminal for the reason `insertSettledJob` explains —
+ * `one_active_job_per_project` is kind-blind, and a live scan row answers "a build is already
+ * running" to the user's next message. `createdAt` is the attempt's start, which is what the
+ * `…ScanAttemptedSince` reads compare against the build's `finishedAt`, so the two shapes
+ * agree on what an attempt record looks like.
+ *
+ * The lock and the read are separate statements inside one transaction because they have to
+ * be. `INSERT … WHERE NOT EXISTS` as a single statement is not exclusive under READ
+ * COMMITTED: both instances take their snapshot before either inserts, so both see no
+ * attempt and both insert. Holding a transaction-scoped advisory lock keyed on
+ * (projectId, step) and *then* reading gives the second instance a snapshot taken after the
+ * first committed, so it sees the row and declines. The lock is held for three cheap
+ * statements — never across the provider call.
+ */
+export async function claimScanAttempt(input: {
+  projectId: string;
+  workspaceId?: string;
+  userId: string;
+  step: string;
+  /** Only an attempt at or after this instant counts — normally the build's `finishedAt`. */
+  since: Date;
+  startedAt?: Date;
+}): Promise<string | null> {
+  const id = nanoid();
+  const workspaceId = input.workspaceId ?? WORKSPACE_ROW_ID;
+  const startedAt = input.startedAt ?? new Date();
+  const lockKey = `scan-attempt:${input.projectId}:${input.step}`;
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey})::bigint)`;
+    const existing = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT id FROM "GenerationJob"
+      WHERE "projectId" = ${input.projectId}
+        AND kind = 'AUDIT'::"JobKind"
+        AND "currentStep" = ${input.step}
+        AND "createdAt" >= ${input.since}
+      LIMIT 1
+    `;
+    if (existing.length > 0) return null;
+    await tx.$executeRaw`
+      INSERT INTO "GenerationJob" (
+        id, "projectId", "workspaceId", "userId", kind, status, "ownerInstance",
+        attempt, "maxAttempts", "startedAt", "finishedAt",
+        "errorCode", "errorMessage", steps, "currentStep",
+        "filesWritten", "createdAt", "updatedAt"
+      ) VALUES (
+        ${id}, ${input.projectId}, ${workspaceId}, ${input.userId},
+        'AUDIT'::"JobKind", ${SCAN_ATTEMPT_PLACEHOLDER.status}::"JobStatus", ${getInstanceId()},
+        1, 1, ${startedAt}, ${startedAt},
+        ${SCAN_ATTEMPT_PLACEHOLDER.errorCode}, ${SCAN_ATTEMPT_PLACEHOLDER.errorMessage},
+        '[]'::jsonb, ${input.step},
+        0, ${startedAt}, NOW()
+      )
+    `;
+    return id;
+  });
+}
+
+/**
+ * The build kinds that owe a quality scan when they settle.
+ *
+ * `settleStreamedGeneration` is the only kicker and the generate route creates
+ * `isEdit ? 'FOLLOWUP' : 'BUILD'`, so this is the whole set. A PLAN produces no site to
+ * scan and an IMPORT settles down a different path.
+ */
+const SCAN_KICKING_JOB_KINDS: readonly JobKind[] = ['BUILD', 'FOLLOWUP'];
+
+/**
+ * The build a detached, unmetered follow-up may name as its warrant.
+ *
+ * The auto-kicked scans are `'use server'` exports, which Next registers as endpoints
+ * reachable by anyone who can post to the app — the same reason `isCodeScanInFlight` had
+ * to grow a session gate (N-005). An unmetered scan behind an unproven entry point is a
+ * free-scan button: the caller pays nothing and the AI review still runs. So the entry
+ * point has to be handed a build that actually finished, and this is the lookup that
+ * refuses everything else. Paired with "no scan row newer than `finishedAt`" at the call
+ * site, a caller can obtain exactly the one scan the settle would have run anyway.
+ *
+ * `finishedAfter` bounds how long a warrant lasts, so an old job id cannot be replayed
+ * forever.
+ */
+export async function findRecentlySucceededBuild(
+  projectId: string,
+  jobId: string,
+  finishedAfter: Date,
+): Promise<GenerationJobRow | null> {
+  if (!jobId) return null;
+  const rows = await selectJobs(
+    `WHERE id = $1
+       AND "projectId" = $2
+       AND status = 'SUCCEEDED'
+       AND kind::text = ANY($3::text[])
+       AND "finishedAt" IS NOT NULL
+       AND "finishedAt" >= $4
+     LIMIT 1`,
+    jobId,
+    projectId,
+    [...SCAN_KICKING_JOB_KINDS],
+    finishedAfter,
+  );
+  return rows[0] ? mapJob(rows[0]) : null;
 }
 
 export async function setProjectActiveJob(projectId: string, jobId: string | null) {
@@ -407,6 +671,66 @@ export async function releaseJobCreditCharge(id: string, at: Date): Promise<void
     WHERE id = ${id}
       AND "creditsChargedAt" = ${at}
   `;
+}
+
+/**
+ * Take an AUDIT row for one flavour of quality scan, by stamping the step that owns it.
+ *
+ * WIRED TO NOTHING. This has no production caller: the two quality scans stopped taking a
+ * live AUDIT row — `one_active_job_per_project` made one the project's build slot, so a scan
+ * holding it answered "a build is already running" to the user's next message — and now file
+ * a settled row from `recordScanRun` instead. `tests/unit/job-store-claims-and-lookups.test.ts`
+ * exercises it and `tests/unit/quality-scan-*.test.ts` still mock it on the store module;
+ * `tests/unit/job-store-claim-docs-match-callers.test.ts` fails if a real caller appears
+ * without this paragraph being rewritten. Everything below is the history of the race this
+ * closed while it was wired, kept because the row shape and the index have not changed and
+ * whoever reintroduces a live AUDIT row will meet all of it again.
+ *
+ * `createOrReuseJob` inserts with `currentStep` NULL and resolves contention through the
+ * kind-blind `getActiveJob`, so "is this row mine?" used to be answered off that NULL — and
+ * answered yes to both scans. Between the insert and the stamp the caller awaited
+ * `markJobRunning`, a real round trip, and a person pressing Scan on Quality→Code and
+ * Quality→SEO inside that window was stopped by nothing: the two callers keep separate
+ * in-process maps and the project lock is re-entrant for one user. The second scan reused
+ * the first's row and replaced its `steps` and `currentStep`, so a code scan that then
+ * failed was reported by `getLatestSeoAudit` as an SEO failure while `getLatestCodeAudit`
+ * — which filters on the marker — found nothing at all.
+ *
+ * Claiming and stamping are therefore one statement, and the question is never asked about
+ * a row in an indeterminate state: the loser reads a `currentStep` already set to the
+ * winner's step. The win is the returned row count, never a re-read — two callers both
+ * reading "still NULL" before either writes is precisely the race this closes.
+ *
+ * What makes it a claim rather than a flavour test is `"currentStep" IS NULL` on its own.
+ * The predicate used to end `OR "currentStep" = ${step}`, which excluded the *other* scan
+ * and welcomed a second instance of the same one: two `runCodeAudit` calls landing on
+ * different app instances (each with its own empty in-process map) both matched a row
+ * already stamped `code-audit` and were both told it was theirs. Both then drove
+ * `updateJobFields` and `beginJobHeartbeat` on it and both settled it, and because
+ * `updateJobIfActive` makes the second settle a silent no-op, a scan that failed after the
+ * other had succeeded left /admin/jobs reporting success for a run that errored. Nothing
+ * re-enters: each of the two call sites claims once per invocation, and the next scan meets
+ * a fresh row because a settled one is excluded by the status guard below — so refusing an
+ * already-stamped row costs no legitimate caller anything.
+ *
+ * That exclusivity is Postgres's, not the process's: the conditional UPDATE takes the row
+ * lock, so exactly one statement anywhere can observe the NULL and overwrite it. It does
+ * not rest on this product effectively running one container.
+ *
+ * A settled row is not claimable. `markJobRunning` would throw on one anyway, and adopting
+ * it would have `succeedJob` re-settle a job that is already over.
+ */
+export async function claimAuditJobStep(jobId: string, step: string): Promise<boolean> {
+  const rows = await prisma.$queryRaw<Array<{ id: string }>>`
+    UPDATE "GenerationJob"
+    SET "currentStep" = ${step}, "updatedAt" = NOW()
+    WHERE id = ${jobId}
+      AND kind = 'AUDIT'::"JobKind"
+      AND status IN ('QUEUED', 'RUNNING')
+      AND "currentStep" IS NULL
+    RETURNING id
+  `;
+  return rows.length > 0;
 }
 
 /**

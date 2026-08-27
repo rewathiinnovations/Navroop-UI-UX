@@ -89,6 +89,7 @@ export const ACTION_AUTHZ: ModuleAuthz[] = [
     exports: {
       isCodeScanInFlight: { gate: 'owner' },
       runCodeAudit: { gate: 'owner' },
+      runAutoCodeAudit: { gate: 'owner' },
       getLatestCodeAudit: {
         gate: 'session',
         why: 'workspace-wide read: the audit panel is visible to any member of the single workspace, and the row holds no secret. The ownership answer is owed by the mutations and by the in-flight probe, which have it.',
@@ -275,6 +276,7 @@ export const ACTION_AUTHZ: ModuleAuthz[] = [
     exports: {
       isSeoScanInFlight: { gate: 'owner' },
       runSeoAudit: { gate: 'owner' },
+      runAutoSeoAudit: { gate: 'owner' },
       getLatestSeoAudit: {
         gate: 'session',
         why: 'workspace-wide read; the twin of getLatestCodeAudit and the same argument applies',

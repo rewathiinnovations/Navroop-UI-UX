@@ -1,3 +1,5 @@
+import { availablePackagesRule, lockedStackRule, starterFilesRule } from './locked-stack';
+
 /**
  * Vite/React SPA prompt. Opening lines must stay recognizable for stack-guard checks.
  *
@@ -19,9 +21,15 @@ STACK (REACT + VITE SPA):
 - Check App.tsx before adding files. Nav lives in Header.tsx when one exists.
 - Edits: 1 file for style/text; 2 files max for a new component. Never recreate the app.
 
+${lockedStackRule('src/')}
+
+${availablePackagesRule()}
+
+${starterFilesRule('REACT')}
+
 FILES (at least three — never one monolith):
 - src/App.tsx composes Header, the page sections, and Footer.
 - src/components/*.tsx for each section.
-- src/index.css holds the Tailwind directives.
-Use TypeScript (.tsx/.ts) and relative imports.`;
+- src/index.css already holds the Tailwind directives and the colour tokens.
+Use TypeScript (.tsx/.ts) and the @/ alias for project imports (@/components/ui/button, @/lib/utils).`;
 }

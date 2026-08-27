@@ -1,5 +1,7 @@
 import type * as ESBuild from 'esbuild-wasm';
+import { PREVIEW_DEPS } from './deps';
 import { isLocalPreviewSpecifier, stripPreviewScheme } from './labels';
+import { resolveBareSpecifier } from './resolve-bare';
 
 /**
  * In-browser bundler for generated apps.
@@ -56,14 +58,19 @@ export function ensureEsbuild(): Promise<void> {
 /**
  * @param files virtual filesystem, keys are repo-relative paths
  * @param entry entry module path within `files`
+ * @param options.deps the import map this build resolves bare specifiers against;
+ *   defaults to the always-available set. Part of the cache key, because two
+ *   builds of the same files against different dependency sets are two different
+ *   builds — one compiles and one reports a missing package.
  */
 export async function bundlePreview(
   files: Record<string, string>,
   entry: string,
-  options: { aliases?: Record<string, string> } = {},
+  options: { aliases?: Record<string, string>; deps?: Record<string, string> } = {},
 ): Promise<BundleResult> {
   const aliases = options.aliases ?? {};
-  const cacheKey = stableKey(files, entry, aliases);
+  const deps = options.deps ?? PREVIEW_DEPS;
+  const cacheKey = stableKey(files, entry, aliases, deps);
   const cached = readCache(cacheKey);
   if (cached) {
     return { ok: true, code: cached.code, css: cached.css, durationMs: 0, cacheHit: true };
@@ -85,7 +92,7 @@ export async function bundlePreview(
       logLevel: 'silent',
       legalComments: 'none',
       define: { 'process.env.NODE_ENV': '"production"' },
-      plugins: [virtualFs(files, aliases)],
+      plugins: [virtualFs(files, aliases, deps)],
     });
     const code = joinOutputs(result.outputFiles, '.js');
     const css = joinOutputs(result.outputFiles, '.css');
@@ -101,7 +108,11 @@ export async function bundlePreview(
   }
 }
 
-function virtualFs(files: Record<string, string>, aliases: Record<string, string>): ESBuild.Plugin {
+function virtualFs(
+  files: Record<string, string>,
+  aliases: Record<string, string>,
+  deps: Record<string, string>,
+): ESBuild.Plugin {
   return {
     name: 'navroop-virtual-fs',
     setup(build) {
@@ -123,8 +134,14 @@ function virtualFs(files: Record<string, string>, aliases: Record<string, string
         // map at runtime rather than bundled: esm.sh ships them pre-built and
         // keeping them external is what makes the wasm bundle fast enough to
         // run on every keystroke.
+        //
+        // Only the ones the map actually serves. An unknown package used to be
+        // marked external too, so the build passed, the user was told it
+        // succeeded, and the import died in the iframe — see resolveBareSpecifier.
         if (isBareSpecifier(args.path)) {
-          return { path: args.path, external: true };
+          const resolution = resolveBareSpecifier(args.path, deps);
+          if ('external' in resolution) return { path: args.path, external: true };
+          return { errors: [{ text: resolution.error }] };
         }
         const resolved = resolveVirtual(args.path, args.importer, files);
         if (!resolved) {
@@ -247,12 +264,22 @@ function formatEsbuildError(error: unknown): string {
   return stripPreviewScheme(error instanceof Error ? error.message : String(error));
 }
 
-function stableKey(files: Record<string, string>, entry: string, aliases: Record<string, string>) {
+function stableKey(
+  files: Record<string, string>,
+  entry: string,
+  aliases: Record<string, string>,
+  deps: Record<string, string>,
+) {
   return JSON.stringify({
     entry,
     aliases: Object.keys(aliases)
       .sort()
       .map((key) => [key, aliases[key]]),
+    // The dependency set decides whether a bare import resolves, so a project
+    // that just gained `zod` must not read a cached build that refused it.
+    deps: Object.keys(deps)
+      .sort()
+      .map((key) => [key, deps[key]]),
     files: Object.keys(files)
       .sort()
       .map((path) => [path, files[path]]),

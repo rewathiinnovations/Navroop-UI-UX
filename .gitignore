@@ -99,3 +99,20 @@ public/preview-vendor/esbuild.wasm
 
 # Local git worktrees for isolated agent workspaces
 /.worktrees/
+
+# Superpowers visual-companion sessions (session keys live in state/)
+/.superpowers/
+
+# Agent scratch: throwaway monitors, probes and one-off scripts. Untracked and
+# unignored, it was read by `eslint .` and failed the gate on scratch nobody
+# intended to ship. Nothing under here is source; it is deleted, not reviewed.
+/tmp/
+
+# Freestyle preview runner scratch: a `project-id` marker plus per-preview stdout
+# and stderr logs. Untracked and unignored it showed as `??` beside real work, and
+# the stderr log alone reached 34.7 MB — a `git add -A` in this checkout staged it.
+/.freebuff/
+
+# Playwright MCP scratch: browser console logs and page accessibility snapshots,
+# written per navigation while an agent drives the app. Same story as .freebuff/.
+/.playwright-mcp/

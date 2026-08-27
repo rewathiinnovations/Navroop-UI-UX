@@ -253,22 +253,43 @@ const skipped = await extractMemoriesAfterGeneration(
 );
 assert(skipped.inserted === 0, 'disabled extraction does not run');
 
-const swallowed = await extractMemoriesAfterGeneration(
-  'p1',
-  { sourceMessage: 'prefer dark UI' },
-  {
-    isEnabled: async () => true,
-    listActiveContents: async () => [],
-    complete: async () => {
-      throw new Error('model down');
+/**
+ * "Does not fail the build hook" means the call resolves — `detachAfterGeneration` in
+ * `lib/projects/actions.ts` discards the value, so nothing here can break a generation
+ * that has already succeeded. It does **not** mean the result claims success. This asserted
+ * `ok === true` until the helper-accounting repair split the two outcomes, and that is the
+ * shape the bug hid in: a provider that took the prompt, billed for it and refused returned
+ * the identical `{ ok: true, inserted: 0 }` as a run that honestly found nothing durable, so
+ * a dead extraction read as a quiet one and survived two rounds of fixes.
+ * `tests/unit/helper-calls-are-accounted.test.ts` pins the same contract from the spend side.
+ */
+let swallowed: Awaited<ReturnType<typeof extractMemoriesAfterGeneration>> | null = null;
+let swallowedThrew = false;
+try {
+  swallowed = await extractMemoriesAfterGeneration(
+    'p1',
+    { sourceMessage: 'prefer dark UI' },
+    {
+      isEnabled: async () => true,
+      listActiveContents: async () => [],
+      complete: async () => {
+        throw new Error('model down');
+      },
+      insertPending: async () => {
+        throw new Error('must not insert after throw');
+      },
     },
-    insertPending: async () => {
-      throw new Error('must not insert after throw');
-    },
-  },
+  );
+} catch {
+  swallowedThrew = true;
+}
+assert(swallowedThrew === false, 'extraction failure does not fail the build hook');
+assert(swallowed?.inserted === 0, 'extraction failure is swallowed');
+assert(swallowed?.ok === false, 'extraction failure is reported, not disguised as an empty run');
+assert(
+  swallowed?.ok === false && swallowed.error.includes('model down'),
+  'extraction failure carries the provider error',
 );
-assert(swallowed.inserted === 0, 'extraction failure is swallowed');
-assert(swallowed.ok === true, 'extraction failure does not fail the build hook');
 
 const inserted = await extractMemoriesAfterGeneration(
   'p1',

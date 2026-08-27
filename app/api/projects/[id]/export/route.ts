@@ -44,6 +44,7 @@ async function exportProject(request: NextRequest, params: Promise<{ id: string 
       id: true,
       name: true,
       stack: true,
+      designDirection: true,
       checkpoints: {
         where: { snapshotPruned: false },
         orderBy: { createdAt: 'desc' },
@@ -78,7 +79,7 @@ async function exportProject(request: NextRequest, params: Promise<{ id: string 
   const repoFiles = buildRepoFiles(
     project.stack,
     Object.fromEntries(files.map((file) => [file.path, file.content])),
-    { projectName: project.name },
+    { projectName: project.name, designDirection: project.designDirection },
   );
   const exportFiles = Object.entries(repoFiles).map(([path, content]) => ({ path, content }));
 

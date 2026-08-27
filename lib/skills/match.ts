@@ -1,8 +1,11 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { generateObject } from 'ai';
 import { z } from 'zod';
+import { chatModelForProvider } from '@/lib/ai/client-for-entry';
 import { getProviderForModel } from '@/lib/ai/provider-manager';
+import { RunUsage } from '@/lib/consumption/run-usage';
 import { log } from '@/lib/logger';
+import { recordHelperCallUsage } from '@/lib/usage-costs';
 
 export type SkillMatchCandidate = {
   id: string;
@@ -143,10 +146,7 @@ export const defaultSkillRanker: SkillRanker = async ({
   const catalog = skills
     .map((skill) => `- id: ${skill.id}\n  name: ${skill.name}\n  description: ${skill.description}`)
     .join('\n');
-  const result = await generateObject({
-    model: client(actualModel),
-    schema: rankSchema,
-    prompt: `Pick which workspace skills apply to this user request.
+  const prompt = `Pick which workspace skills apply to this user request.
 Return at most 2 matches. Only include skills that clearly apply. Return an empty matches array if none apply.
 You are given name and description only — never invent or request full skill content.
 
@@ -157,9 +157,39 @@ User message:
 ${userMessage}
 
 Project context:
-${projectContext || '(none)'}`,
-  });
-  return result.object.matches;
+${projectContext || '(none)'}`;
+  // One of these runs per chat message and per plan, on top of the generation itself, and
+  // it holds no Job row of its own — selection happens while the prompt is being assembled,
+  // before any job exists. Unrecorded, a workspace's chat traffic multiplied the provider
+  // invoice while `Workspace.spendUsd` stood still and the auto-pause never saw it.
+  const spent = new RunUsage();
+  spent.willSend(prompt);
+  try {
+    const result = await generateObject({
+      model: chatModelForProvider(client, actualModel),
+      schema: rankSchema,
+      prompt,
+    });
+    spent.settle(result.usage, JSON.stringify(result.object));
+    return result.object.matches;
+  } finally {
+    // A ranker call that threw was still uploaded and still billed; `claim` charges it from
+    // the prompt. `projectId` is not in `SkillRanker`'s input — nothing threads it this far
+    // — so the spend lands on the workspace ceiling and says so in the log rather than
+    // silently belonging to no one.
+    const totals = spent.claim();
+    if (totals) {
+      await recordHelperCallUsage({
+        kind: 'skill_match',
+        userId,
+        tokensIn: totals.tokensIn,
+        tokensOut: totals.tokensOut,
+        calls: totals.calls,
+        estimatedCalls: totals.estimatedCalls,
+        model: actualModel,
+      });
+    }
+  }
 };
 
 export async function selectSkills(

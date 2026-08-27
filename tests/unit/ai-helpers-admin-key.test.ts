@@ -69,19 +69,47 @@ vi.mock('@/lib/db', () => ({
   },
 }));
 
-vi.mock('@/lib/ai/client-for-entry', () => ({
-  clientForEntry: (_entry: unknown, env: Record<string, string | undefined>) => {
-    const client = (modelId: string) => ({ modelId });
-    fake.clients.push({ source: fake.sourceOf(env.DEEPSEEK_API_KEY), client });
-    return client;
-  },
-}));
+// Partial, not wholesale. Every helper below reaches its model through
+// `chatModelForProvider`, and a factory that returns only `clientForEntry`
+// makes each of them throw "No 'chatModelForProvider' export is defined on the
+// mock" — which the audit review degrades into a `tool:ai-review` finding and
+// memory extraction swallows entirely, so the six tests fail on the mock rather
+// than on the credential they exist to check. Keeping the real one also keeps
+// the wire format under test: `chatModelForProvider` is `client.chat(model)`,
+// never `client(model)` (the callable provider targets /responses, which
+// DeepSeek does not serve — see `tests/unit/no-callable-provider.test.ts`), so
+// the stub answers on `.chat` and nothing else. Only `clientForEntry` is
+// swapped, which is what keeps the credential's source observable without ever
+// building a network client.
+vi.mock('@/lib/ai/client-for-entry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/ai/client-for-entry')>();
+  return {
+    ...actual,
+    clientForEntry: (_entry: unknown, env: Record<string, string | undefined>) => {
+      const client = { chat: (modelId: string) => ({ modelId }) };
+      fake.clients.push({ source: fake.sourceOf(env.DEEPSEEK_API_KEY), client });
+      return client;
+    },
+  };
+});
 
 const ai = vi.hoisted(() => ({ generateObject: vi.fn(), generateText: vi.fn() }));
 vi.mock('ai', () => ai);
 
-/** The import fallback also books usage; the credential is what is under test. */
-vi.mock('@/lib/usage-costs', () => ({ logGenerationEvent: vi.fn(async () => undefined) }));
+/**
+ * The import fallback books usage through `logGenerationEvent`, and the three helper
+ * calls with no Job row of their own — memory extraction, skill matching, import
+ * segmentation — book theirs through `recordHelperCallUsage`. Both have to be on this
+ * mock: a factory missing one makes the helper that uses it throw "No export is defined
+ * on the mock" from inside its own `finally`, which turns "did the credential resolve"
+ * into "did the mock have the export". What each of them records is pinned in
+ * tests/unit/helper-calls-are-accounted.test.ts; the credential is what is under test here.
+ */
+const usageCosts = vi.hoisted(() => ({
+  logGenerationEvent: vi.fn(async () => undefined),
+  recordHelperCallUsage: vi.fn(async () => ({ usd: 0, eventId: null })),
+}));
+vi.mock('@/lib/usage-costs', () => usageCosts);
 
 // Dynamic, not static: every `vi.mock` above has to be registered before the
 // modules under test evaluate their own imports.
@@ -261,9 +289,10 @@ describe('AI helpers run on the key saved in Admin → Configuration', () => {
       },
     );
 
-    expect(result.inserted).toBe(0);
-    // Extraction swallows its own failures, so the built client is the only
-    // evidence that it reached the provider at all.
+    // `inserted: 0` alone proves nothing — it is also what a refused call returns. `ok`
+    // is the half that separates them, and without this assertion the case passed while
+    // extraction threw on a missing mock export and swallowed it.
+    expect(result).toEqual({ ok: true, inserted: 0 });
     expect(keySourceOfLastClient()).toBe('admin-config');
     expect(lastModelId()).toBe(ADMIN_MODEL);
   });
@@ -271,7 +300,7 @@ describe('AI helpers run on the key saved in Admin → Configuration', () => {
   it('reviews an audit', async () => {
     ai.generateText.mockResolvedValue({ text: '{"findings":[]}' });
 
-    const findings = await runAiReview({
+    const review = await runAiReview({
       stack: 'NEXTJS',
       files: [{ path: 'app/page.tsx', content: 'export default function Page() { return null; }' }],
       staticFindings: [],
@@ -279,9 +308,16 @@ describe('AI helpers run on the key saved in Admin → Configuration', () => {
     });
 
     // A resolution failure would come back as a `tool:ai-review` finding.
-    expect(findings).toEqual([]);
+    expect(review.findings).toEqual([]);
     expect(keySourceOfLastClient()).toBe('admin-config');
     expect(lastModelId()).toBe(ADMIN_MODEL);
+    // The review answers `{ findings, usage }` so the caller can meter it, and the
+    // usage has to name the same model the credential was resolved for. Nothing
+    // recorded this call at all until round 5 — the tokens were on the operator's
+    // provider invoice and in no row of the product — so a review that runs on the
+    // admin key and reports its spend against some other model is the same hole
+    // with a nicer shape.
+    expect(review.usage).toMatchObject({ model: ADMIN_MODEL, calls: 1 });
   });
 });
 
