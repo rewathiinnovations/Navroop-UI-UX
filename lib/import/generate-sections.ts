@@ -1,7 +1,8 @@
 import sharp from 'sharp';
 import { generateText } from 'ai';
-import { chatModelForProvider } from '@/lib/ai/client-for-entry';
-import { getProviderForModel } from '@/lib/ai/provider-manager';
+import { chatModelForEntry } from '@/lib/ai/client-for-entry';
+import { EmptyCompletionError } from '@/lib/ai/empty-completion';
+import { completeWithProviderFailover } from '@/lib/ai/plan-complete';
 import { RunUsage } from '@/lib/consumption/run-usage';
 import { buildCachedMessages } from '@/lib/generation/prompt-cache';
 import { recordJobStepFailure } from '@/lib/jobs/step-failure';
@@ -124,7 +125,6 @@ async function completeXml(input: {
   projectId: string;
   userId: string;
 }) {
-  const { client, actualModel } = await getProviderForModel(null, input.userId);
   const cached = buildCachedMessages({
     stablePrefix: input.stablePrefix,
     volatileUser: input.volatileUser,
@@ -145,13 +145,26 @@ async function completeXml(input: {
   const promptText = `${input.stablePrefix}\n${input.volatileUser}`;
   const spent = new RunUsage();
   spent.willSend(promptText);
+  let actualModel = '';
   try {
-    const result = await generateText({
-      model: chatModelForProvider(client, actualModel),
-      messages,
+    const failover = await completeWithProviderFailover({
+      userId: input.userId,
+      run: async (entry, ctx) => {
+        actualModel = entry.model;
+        const result = await generateText({
+          model: chatModelForEntry(entry, ctx.env, entry.model),
+          messages,
+          abortSignal: ctx.signal,
+        });
+        if (!result.text.trim()) {
+          throw new EmptyCompletionError(entry.provider, entry.model);
+        }
+        return result;
+      },
     });
-    spent.settle(result.usage, result.text);
-    return { text: result.text, inputTokens: spent.totals.tokensIn };
+    actualModel = failover.model;
+    spent.settle(failover.result.usage, failover.result.text);
+    return { text: failover.result.text, inputTokens: spent.totals.tokensIn };
   } finally {
     // Two holes closed in one place. A section whose call threw is caught by the loop in
     // `generateImportedSections` and turned into a warning — it used to log no event at
@@ -195,6 +208,8 @@ export async function generateImportedSections(input: {
   assets: RehostedAsset[];
   /** ACTIVE workspace + project Brain memory, inside the cacheable prefix. */
   memoryBlock?: string | null;
+  /** Matched skills, AFTER the cacheable prefix (volatile user), never inside it. */
+  skillBlock?: string | null;
   onProgress?: (message: string) => void;
   jobId?: string;
   complete?: ImportCompleteXml;
@@ -205,6 +220,8 @@ export async function generateImportedSections(input: {
     input.designDirection,
     input.memoryBlock,
   );
+  const withSkills = (volatile: string) =>
+    input.skillBlock?.trim() ? `${input.skillBlock.trim()}\n\n${volatile}` : volatile;
   const tokens = formatDesignTokens(input.capture.tokens);
   const files: string[] = [];
   const paths: { path: string; label: string }[] = [];
@@ -218,14 +235,16 @@ export async function generateImportedSections(input: {
     const crop = await cropSection(input.capture.desktopPng, section.approximateYRange).catch(
       () => input.capture.desktopPng,
     );
-    const volatile = `${buildSectionVolatilePrompt({
-      mode: input.mode,
-      tokens,
-      section,
-      firecrawlText: input.capture.firecrawlText,
-      assets: assetsForSection(section, input.assets),
-      designDirection: input.designDirection,
-    })}\n\nWrite the component to <file path="${path}">.`;
+    const volatile = withSkills(
+      `${buildSectionVolatilePrompt({
+        mode: input.mode,
+        tokens,
+        section,
+        firecrawlText: input.capture.firecrawlText,
+        assets: assetsForSection(section, input.assets),
+        designDirection: input.designDirection,
+      })}\n\nWrite the component to <file path="${path}">.`,
+    );
     try {
       const result = await complete({
         stablePrefix,
@@ -261,12 +280,14 @@ export async function generateImportedSections(input: {
   try {
     const composition = await complete({
       stablePrefix,
-      volatileUser: `${buildCompositionVolatilePrompt({
-        mode: input.mode,
-        tokens,
-        sectionFiles: paths,
-        designDirection: input.designDirection,
-      })}\n\n${compositionHint(input.stack)}`,
+      volatileUser: withSkills(
+        `${buildCompositionVolatilePrompt({
+          mode: input.mode,
+          tokens,
+          sectionFiles: paths,
+          designDirection: input.designDirection,
+        })}\n\n${compositionHint(input.stack)}`,
+      ),
       image: input.capture.desktopPng,
       projectId: input.projectId,
       userId: input.userId,
@@ -299,6 +320,8 @@ export async function generateImportFallback(input: {
   assets: RehostedAsset[];
   /** ACTIVE workspace + project Brain memory, inside the cacheable prefix. */
   memoryBlock?: string | null;
+  /** Matched skills, AFTER the cacheable prefix (volatile user), never inside it. */
+  skillBlock?: string | null;
   complete?: ImportCompleteXml;
 }): Promise<GenerateSectionsResult> {
   const complete = input.complete ?? completeXml;
@@ -307,16 +330,17 @@ export async function generateImportFallback(input: {
     input.designDirection,
     input.memoryBlock,
   );
+  const skillPrefix = input.skillBlock?.trim() ? `${input.skillBlock.trim()}\n\n` : '';
   const result = await complete({
     stablePrefix,
-    volatileUser: buildFallbackVolatilePrompt({
+    volatileUser: `${skillPrefix}${buildFallbackVolatilePrompt({
       mode: input.mode,
       tokens: formatDesignTokens(input.capture.tokens),
       firecrawlText: input.capture.firecrawlText,
       assets: input.assets,
       designDirection: input.designDirection,
       sourceUrl: input.capture.sourceUrl,
-    }),
+    })}`,
     image: input.capture.desktopPng,
     projectId: input.projectId,
     userId: input.userId,

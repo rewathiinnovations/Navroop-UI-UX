@@ -12,7 +12,8 @@ import {
 } from '@/lib/preview/devices';
 
 /**
- * Standalone preview for the header's "Open in new tab". The served build is
+ * Signed-in in-app preview. "Open in new tab" now targets the public
+ * `/preview-view` shell; this page stays for in-app use. The served build is
  * model-authored JavaScript, so it renders inside a sandboxed iframe here rather
  * than running top-level on the app origin with the viewer's session (F-140).
  * The device toolbar is the same control the workspace Preview tab uses.

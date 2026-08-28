@@ -877,7 +877,7 @@ async function generateAiCodeStream(request: NextRequest) {
           try {
             memoryBlock = (await buildMemoryBlock(memoryProjectId)).block;
           } catch (error) {
-            console.warn('[memory] build block failed', error);
+            logError('generation.memory_block_failed', error, { projectId: memoryProjectId });
           }
         }
         // Whether this run writes files through tools or through parsed fences.
@@ -2184,10 +2184,7 @@ Provide the complete file content without any truncation. Include all necessary 
         // step is the only trace detection leaves where an operator looks. With recovery
         // on, the truncation-recovery step above already records the outcome, and a full
         // repair clears the warnings entirely.
-        if (
-          truncationWarnings.length > 0 &&
-          !appConfig.codeApplication.enableTruncationRecovery
-        ) {
+        if (truncationWarnings.length > 0 && !appConfig.codeApplication.enableTruncationRecovery) {
           await recordJobStepFailure(generationJob?.id, {
             key: 'truncation-detected',
             label: 'Check the reply for cut-off files',
@@ -2235,12 +2232,14 @@ Provide the complete file content without any truncation. Include all necessary 
         // A departed client never got the corrective ask, so a reply that owed files
         // cannot discharge the debt here: counting the ask as spent classifies it as the
         // no-files failure it is, instead of settling success over an unchanged site.
+        const hasSite = Object.keys(backendFiles).length > 0;
         const replyOutcome = classifyReplyOutcome({
           fileCount: files.length + toolDeletions,
           reply: generatedCode,
           askedAgain: askedForFilesAgain || clientDisconnected,
+          hasSite: hasSite,
         });
-        const chatAnswer = replyOutcome === 'answer';
+        const chatAnswer = replyOutcome === 'answer' && hasSite;
         const hadNoChanges = replyOutcome === 'no_files';
         const noChangeReason = hadNoChanges
           ? describeNoChanges({

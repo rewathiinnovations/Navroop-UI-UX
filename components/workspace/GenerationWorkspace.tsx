@@ -28,10 +28,18 @@ import { decidePendingPromptAction } from '@/lib/projects/pending-prompt';
 import { projectDisplayName } from '@/lib/projects/prompt';
 import { takeProjectArm } from '@/lib/projects/start-from-prompt';
 import { streamProjectImport } from '@/lib/import/client';
+import { importRecreationProgress, importRecreationSuccess } from '@/lib/import/copy';
 import { retryProjectPlan } from '@/lib/projects/plan-client';
+import { DEFAULT_STACK, getStack } from '@/lib/stacks';
 import { DEFAULT_IMPORT_MODE, resolveImportMode, type ImportMode } from '@/lib/import/mode';
 import { useGeneration } from '@/components/app/generation/GenerationProvider';
 import { applyPageCopy, shouldAddApplyChat } from '@/lib/generation/apply-page-copy';
+import {
+  hasUserTurn,
+  loadHydratedChat,
+  shouldPersistChat,
+  writePersistedChat,
+} from '@/lib/generation/chat-history';
 import { getGenerationState, surfacePreviewNotice } from '@/lib/generation/generation-runtime';
 import { appliedPathsFromReply } from '@/lib/generation/parse-blocks';
 import { screenshotErrorMessage } from '@/lib/generation/screenshot-error';
@@ -43,11 +51,11 @@ import {
   // this one, and the values it typed all come from the provider, which is typed with the
   // shared interface — so the shadow could drift out of step with the thing it described
   // without a single type error (F-097).
+  isActiveGenerationStatus,
   type SandboxData,
 } from '@/lib/generation/types';
 import { streamingFilesLabel } from './BuildingIndicator';
 import { toMessage } from '@/lib/notify';
-
 /**
  * Stays local, unlike `ChatMessage` and `SandboxData`: there is no shared counterpart to
  * import (F-097). It describes the shape this component hands to its own conversation
@@ -271,6 +279,21 @@ function AISandboxPage({
   const appliedCodeProjectIdRef = useRef<string | null>(null);
   /** Project whose generationProgress.files this tab is showing. */
   const progressProjectIdRef = useRef<string | null>(null);
+  /** Drop a hydrate that finished after the reader moved to another project. */
+  const hydrateTargetRef = useRef<string | null>(null);
+
+  const hydrateChatForProject = async (id: string) => {
+    hydrateTargetRef.current = id;
+    const next = await loadHydratedChat(id, getGenerationState().messages);
+    if (hydrateTargetRef.current !== id) return;
+    const live = getGenerationState();
+    if (hasUserTurn(live.messages) && live.projectId === id) {
+      writePersistedChat(id, live.messages);
+      return;
+    }
+    setChatMessages(next);
+    if (shouldPersistChat(next)) writePersistedChat(id, next);
+  };
 
   // Declared before the effects that write it — the React Compiler lint refuses
   // an access that textually precedes the declaration.
@@ -292,7 +315,7 @@ function AISandboxPage({
   // reopening a finished project showed an empty tree. Load the persisted site
   // once on mount; later applies refresh it through fetchSandboxFiles.
   useEffect(() => {
-    const id = projectId ?? projectIdFromPath;
+    const id = projectIdFromPath ?? projectId;
     if (!id) return;
     // Switching projects in the sidebar navigates to /project/{id} — the same
     // route segment — so React keeps this component and its state. The sticky
@@ -309,11 +332,15 @@ function AISandboxPage({
       setSandboxFiles({});
       setFileStructure('');
       setGenerationProgress((prev) => (prev.isGenerating ? prev : { ...prev, files: [] }));
-      // The conversation is per project, so a real project switch must not carry
-      // the previous project's chat into the new one. `attachToProject` clears
-      // `messages` only on the mount path (state.projectId was null); this effect
-      // is what runs on a client-side navigation where React keeps the component.
-      setChatMessages([]);
+      // Persist the project we are leaving, then reload this one's thread.
+      // Clearing without a hydrate is what made chat vanish on a sidebar
+      // switch and on refresh (in-memory only).
+      writePersistedChat(previousId, getGenerationState().messages);
+      const live = attachToProject(id);
+      if (!isActiveGenerationStatus(live.status) || live.projectId === id) {
+        setProjectId(id);
+        void hydrateChatForProject(id);
+      }
       appliedCodeProjectIdRef.current = null;
       setConversationContext((prev) => ({ ...prev, appliedCode: [] }));
     }
@@ -367,6 +394,12 @@ function AISandboxPage({
     };
   }, [projectId, projectIdFromPath]);
 
+  useEffect(() => {
+    const id = getGenerationState().projectId ?? projectIdFromPath ?? projectId;
+    if (!id || !shouldPersistChat(chatMessages)) return;
+    writePersistedChat(id, chatMessages);
+  }, [chatMessages, projectId, projectIdFromPath]);
+
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
 
@@ -374,6 +407,7 @@ function AISandboxPage({
   const [shouldAutoGenerate, setShouldAutoGenerate] = useState(false);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
   const [importMode, setImportMode] = useState<ImportMode>(DEFAULT_IMPORT_MODE);
+  const [projectStack, setProjectStack] = useState(DEFAULT_STACK);
   const [projectTitle, setProjectTitle] = useState('Untitled project');
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'signin'>('idle');
   const [projectUpdatedAt, setProjectUpdatedAt] = useState<string | null>(null);
@@ -560,13 +594,6 @@ function AISandboxPage({
         return;
       }
 
-      if (getGenerationState().messages.length === 0) {
-        addChatMessage(
-          'Welcome! Describe the site you want and I will build it — I can see every file in this project, so you can ask for changes to any of them.\n\nThe preview compiles in your browser as soon as the code lands, so there is nothing to install or start.',
-          'system',
-        );
-      }
-
       if (projectIdParam) {
         setProjectId(projectIdParam);
         setHasInitialSubmission(true);
@@ -586,6 +613,9 @@ function AISandboxPage({
             setHomeContextInput(project.style || '');
             setSelectedStyle(project.style || null);
             if (project.model) setAiModel(project.model);
+            if (typeof project.stack === 'string' && project.stack) {
+              setProjectStack(project.stack);
+            }
             if (project.lastCode) {
               pendingRestoreCodeRef.current = project.lastCode;
               setConversationContext((prev) => ({
@@ -601,13 +631,13 @@ function AISandboxPage({
                 setShouldAutoGenerate(true);
               }
             }
-            // No "previous generation stopped" heuristic here. It read the stale
-            // `generationStatus` column and pasted `progressMessage` after it, which
-            // produced "Previous generation stopped: Generation complete!" on a run
-            // that had finished — a row left active by a client that died before its
-            // terminal PATCH. Interruptions are the job row's story, and RecoveryPanel
-            // tells it from `Job.status` with a Keep/Retry/Start over choice.
-            addChatMessage(`Opened saved project: ${loadedTitle}`, 'system');
+            // Reload this project's thread. Chat used to live only in the
+            // GenerationProvider singleton, so a refresh left the panel empty
+            // except for the two system lines below.
+            await hydrateChatForProject(projectIdParam);
+            if (isMounted && !hasUserTurn(getGenerationState().messages)) {
+              addChatMessage(`Opened saved project: ${loadedTitle}`, 'system');
+            }
           } else if (projectRes.status === 401) {
             router.push(`/?auth=login&next=/project/${projectIdParam}`);
             return;
@@ -623,14 +653,20 @@ function AISandboxPage({
         }
       }
 
+      if (isMounted && getGenerationState().messages.length === 0) {
+        addChatMessage(
+          'Welcome! Describe the site you want and I will build it — I can see every file in this project, so you can ask for changes to any of them.\n\nThe preview compiles in your browser as soon as the code lands, so there is nothing to install or start.',
+          'system',
+        );
+      }
+
       if (storedUrl) {
-        // Arrived as `?url=` (with optional `?template=` / `?details=`): treat it as an
-        // initial submission and start on it. The style-name lookup and the model/
-        // instruction fallbacks that used to live here only ever read the global
-        // sessionStorage keys, which are gone — a URL import created from the dashboard
-        // carries its own `ImportSource` row instead, and is resumed from it above.
+        // Arrived as `?url=`: show the URL. Do not auto-start a billed import — the
+        // person still has to click Import. An ImportSource resume above may still
+        // arm shouldAutoGenerate when the row exists and lastCode is empty.
         setHasInitialSubmission(true);
         setHomeUrlInput(storedUrl);
+        setSourceUrl(storedUrl);
         setSelectedStyle(storedStyle || 'modern');
         if (detailsParam) {
           setHomeContextInput(detailsParam);
@@ -639,9 +675,6 @@ function AISandboxPage({
         // Skip the home screen and go directly to builder
         setShowHomeScreen(false);
         setHomeScreenFading(false);
-
-        // Set flag to auto-trigger generation after component updates
-        setShouldAutoGenerate(true);
       }
 
       // Trim this workspace's own remembered conversation. The store is keyed per
@@ -730,7 +763,7 @@ function AISandboxPage({
       // deliberately outlives this page, so a timer left armed after the person navigated
       // away started a paid generation nobody was watching.
       const timer = setTimeout(() => {
-        console.log('[generation] Auto-triggering generation from URL params');
+        // ImportSource resume (empty lastCode) may still arm this flag. `?url=` does not.
         // eslint-disable-next-line react-hooks/immutability -- declared later in this component
         startGeneration();
       }, 1000);
@@ -1060,9 +1093,7 @@ function AISandboxPage({
     // "Code appears here as each file is written" instead of a bare spinner.
     if (
       activeTab === 'generation' &&
-      (generationProgress.isGenerating ||
-        generationProgress.files.length > 0 ||
-        isJobActive)
+      (generationProgress.isGenerating || generationProgress.files.length > 0 || isJobActive)
     ) {
       return <GenerationCodeView progress={generationProgress} />;
     } else if (activeTab === 'preview') {
@@ -1566,8 +1597,8 @@ function AISandboxPage({
     setIsStartingNewGeneration(true);
     setLoadingStage('gathering');
 
-    // Immediately switch to preview tab to show loading
-    setActiveTab('preview');
+    // Code tab during import/build work — not Preview, then Code 1.5s later.
+    setActiveTab('generation');
 
     // Set loading background to ensure proper visual feedback
     setShowLoadingBackground(true);
@@ -1595,8 +1626,8 @@ function AISandboxPage({
 
     // Set loading stage immediately before hiding home screen
     setLoadingStage('gathering');
-    // Also ensure we're on preview tab to show the loading overlay
-    setActiveTab('preview');
+    // Stay on Code while scrape + import stream.
+    setActiveTab('generation');
 
     // Always capture screenshot for new URLs, even if sandbox exists
     // This ensures the loading screen shows properly
@@ -1704,23 +1735,20 @@ function AISandboxPage({
         setUrlStatus(
           brandExtensionMode
             ? ['Brand styles extracted!', 'Building your component...']
-            : ['Website scraped successfully!', 'Generating React app...'],
+            : [
+                'Website scraped successfully!',
+                importRecreationProgress(getStack(projectStack).label),
+              ],
         );
 
-        // Clear preparing design state and switch to generation tab
+        // Clear preparing design state; already on Code
         setIsPreparingDesign(false);
         setIsScreenshotLoaded(false); // Reset loaded state
         setUrlScreenshot(null); // Clear screenshot when starting generation
         setTargetUrl(''); // Clear target URL
 
-        // Update loading stage to planning
-        setLoadingStage('planning');
-
-        // Brief pause before switching to generation tab
-        setTimeout(() => {
-          setLoadingStage('generating');
-          setActiveTab('generation');
-        }, 1500);
+        setLoadingStage('generating');
+        setActiveTab('generation');
 
         // Build the appropriate prompt based on mode
         let prompt;
@@ -1983,7 +2011,7 @@ Focus on the key sections and content, making it clean and modern. Follow the st
           addChatMessage(
             brandExtensionMode
               ? `Successfully built your custom component using ${cleanUrl}'s brand guidelines! You can now ask me to modify it or add more features.`
-              : `Successfully recreated ${url} as a modern React app${homeContextInput ? ` with your requested context: "${homeContextInput}"` : ''}! The scraped content is now in my context, so you can ask me to modify specific sections or add features based on the original site.`,
+              : `${importRecreationSuccess(url, getStack(projectStack).label)}${homeContextInput ? ` with your requested context: "${homeContextInput}"` : ''} You can ask me to modify specific sections or add features based on the original site.`,
             'ai',
             {
               scrapedUrl: url,
@@ -2057,13 +2085,6 @@ Focus on the key sections and content, making it clean and modern. Follow the st
 
   const workspaceView: WorkspaceView = activeTab === 'generation' ? 'code' : activeTab;
 
-  const refreshPreview = () => {
-    if (!iframeRef.current || !sandboxData?.url) return;
-    const base = sandboxData.url.replace(/\/$/, '');
-    const path = selectedPage === '/' ? '' : selectedPage;
-    iframeRef.current.src = `${base}${path}?t=${Date.now()}`;
-  };
-
   const renameProject = async (nextTitle: string) => {
     setProjectTitle(nextTitle);
     // Before the PATCH, not after it: the plan-derived rename watch may already have a read in
@@ -2110,19 +2131,13 @@ Focus on the key sections and content, making it clean and modern. Follow the st
       sending={isJobActive || generationProgress.isGenerating || loading}
       pages={workspacePages}
       selectedPage={selectedPage}
-      onSelectPage={(path) => {
-        setSelectedPage(path);
-        if (iframeRef.current && sandboxData?.url) {
-          const base = sandboxData.url.replace(/\/$/, '');
-          iframeRef.current.src = path === '/' ? sandboxData.url : `${base}${path}`;
-        }
-      }}
+      onSelectPage={setSelectedPage}
       view={workspaceView}
       onViewChange={(next) => {
         if (next === 'code') setActiveTab('generation');
         else setActiveTab(next);
       }}
-      onRefresh={refreshPreview}
+      onRefresh={() => undefined}
       sandboxUrl={sandboxData?.url}
       chatHeader={
         <>

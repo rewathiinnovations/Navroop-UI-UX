@@ -23,12 +23,17 @@ import type * as UrlGuardModule from '@/lib/security/url-guard';
 const db = vi.hoisted(() => ({
   projectUpdate: vi.fn(async () => ({})),
   projectFindFirst: vi.fn(),
+  projectFindUnique: vi.fn(),
   executeRaw: vi.fn(async () => 1),
 }));
 
 vi.mock('@/lib/db', () => ({
   prisma: {
-    project: { update: db.projectUpdate, findFirst: db.projectFindFirst },
+    project: {
+      update: db.projectUpdate,
+      findFirst: db.projectFindFirst,
+      findUnique: db.projectFindUnique,
+    },
     $executeRaw: db.executeRaw,
   },
 }));
@@ -84,6 +89,29 @@ vi.mock('@/lib/import/run', () => run);
 const fulfill = vi.hoisted(() => ({ fulfillNeedImages: vi.fn() }));
 vi.mock('@/lib/assets/fulfill', () => fulfill);
 
+const afterPersist = vi.hoisted(() => ({
+  createCheckpointAfterGeneration: vi.fn(),
+  capturePreviewAfterGeneration: vi.fn(),
+  buildPreviewForProject: vi.fn(),
+  writeMergedSite: vi.fn(),
+}));
+vi.mock('@/lib/checkpoints/actions', () => ({
+  createCheckpointAfterGeneration: afterPersist.createCheckpointAfterGeneration,
+}));
+vi.mock('@/lib/preview/after-generation', () => ({
+  capturePreviewAfterGeneration: afterPersist.capturePreviewAfterGeneration,
+}));
+vi.mock('@/lib/preview/production', () => ({
+  buildPreviewForProject: afterPersist.buildPreviewForProject,
+}));
+vi.mock('@/lib/jobs/settle-generation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/jobs/settle-generation')>();
+  return {
+    ...actual,
+    writeMergedSite: afterPersist.writeMergedSite,
+  };
+});
+
 // Dynamic, not static: every `vi.mock` above has to be registered before the
 // module graph under test is evaluated.
 const { persistImportedSite } = await import('@/lib/import/persist');
@@ -122,18 +150,39 @@ beforeEach(() => {
   plans.checkCredits.mockResolvedValue({ ok: true });
   guard.assertSafeUrl.mockResolvedValue(undefined);
   auth.getSessionUser.mockResolvedValue({ id: OWNER, role: 'MEMBER' });
-  db.projectFindFirst.mockResolvedValue({
+  fulfill.fulfillNeedImages.mockImplementation(async ({ files }) =>
+    Object.assign([...files], { unfulfilled: [] }),
+  );
+  afterPersist.createCheckpointAfterGeneration.mockResolvedValue({
+    id: 'ckpt_import_1',
+    createdAt: new Date('2026-08-28T00:00:00.000Z'),
+  });
+  afterPersist.capturePreviewAfterGeneration.mockResolvedValue({ notice: null });
+  afterPersist.buildPreviewForProject.mockResolvedValue({ ok: true });
+  afterPersist.writeMergedSite.mockImplementation(async (_id, files) => {
+    db.projectUpdate({
+      where: { id: PROJECT },
+      data: {
+        lastCode: Object.entries(files)
+          .map(([path, content]) => `<file path="${path}">\n${content}\n</file>`)
+          .join('\n'),
+        phase: 'COMPLETE',
+      },
+    });
+  });
+  const projectRow = {
     id: PROJECT,
     ownerId: OWNER,
-    phase: 'PLANNING',
+    phase: 'PLANNING' as const,
     stack: 'NEXTJS',
     designDirection: null,
     initialPrompt: SOURCE_URL,
     importSource: null,
-  });
-  fulfill.fulfillNeedImages.mockImplementation(async ({ files }) =>
-    Object.assign([...files], { unfulfilled: [] }),
-  );
+    lastCode: null,
+    contentVersion: 0,
+  };
+  db.projectFindFirst.mockResolvedValue(projectRow);
+  db.projectFindUnique.mockResolvedValue(projectRow);
 });
 
 describe('persistImportedSite', () => {
@@ -154,8 +203,31 @@ describe('persistImportedSite', () => {
       'src/App.tsx': 'export default function App() { return <Hero /> }',
       'src/components/Hero.tsx': 'export const Hero = () => <h1>Hi</h1>',
     });
-    // Without the bump, open tabs keep serving the pre-import content version.
-    expect(db.executeRaw).toHaveBeenCalledTimes(1);
+    // CAS + increment live in writeMergedSite, not a separate bump after an
+    // unconditional update (F-044).
+    expect(afterPersist.writeMergedSite).toHaveBeenCalledTimes(1);
+    expect(afterPersist.writeMergedSite.mock.calls[0]?.[2]).toMatchObject({
+      contentVersion: 0,
+    });
+  });
+
+  it('writes a checkpoint and captures preview in-process after the site lands', async () => {
+    await persistImportedSite({
+      projectId: PROJECT,
+      filesXml: '<file path="src/App.tsx">export default function App() { return null }</file>',
+    });
+
+    expect(afterPersist.writeMergedSite).toHaveBeenCalled();
+    expect(afterPersist.createCheckpointAfterGeneration).toHaveBeenCalledWith(
+      PROJECT,
+      expect.objectContaining({ previousPhase: 'PLANNING' }),
+    );
+    expect(afterPersist.capturePreviewAfterGeneration).toHaveBeenCalled();
+    const captureWork = afterPersist.capturePreviewAfterGeneration.mock.calls[0]?.[0] as
+      (() => Promise<unknown>) | undefined;
+    expect(typeof captureWork).toBe('function');
+    await captureWork?.();
+    expect(afterPersist.buildPreviewForProject).toHaveBeenCalledWith(PROJECT, 'ckpt_import_1');
   });
 
   it('survives the chunk shapes the import composer actually produces', async () => {

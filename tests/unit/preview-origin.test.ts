@@ -22,6 +22,7 @@ import { handlePreviewRequest } from '../../lib/preview/serve';
 import { signPreviewToken } from '../../lib/preview/token';
 import { previewStaticBaseUrl, signedPreviewUrl } from '../../lib/preview/url';
 import { openPreviewWindow } from '../../lib/preview/devices';
+import { publicPreviewViewHref } from '../../lib/preview/public-view';
 
 const APP_ORIGIN = 'https://navroop.example';
 
@@ -174,24 +175,30 @@ describe('openPreviewWindow', () => {
     expect(open).not.toHaveBeenCalled();
   });
 
-  it('opens a preview on a distinct origin in a plain new tab', () => {
+  it('opens the public token-gated shell, not the served origin and not /project/[id]/preview', () => {
     const open = stubWindow();
-    openPreviewWindow('https://preview-static.zone.example/proj-1/?token=t');
+    const signed = 'https://preview-static.zone.example/proj-1/?token=t';
+    openPreviewWindow(signed);
     expect(open).toHaveBeenCalledWith(
-      'https://preview-static.zone.example/proj-1/?token=t',
+      publicPreviewViewHref(signed),
       '_blank',
       'noopener,noreferrer',
     );
-    // There is no sized-popup variant to assert any more: the "Mobile view" item
-    // that opened one was deleted with the header's preview-options dropdown, and
-    // the device sizes now live on `/project/[id]/preview`, which iframes the
-    // build instead of resizing a browser window.
+    // There is no sized-popup variant: the device toolbar lives on the public
+    // shell (and the signed-in /project/[id]/preview page). Generated JS never
+    // runs top-level on the app origin (F-140).
     expect(open).toHaveBeenCalledTimes(1);
   });
 
-  it('sends a project to the in-app preview page rather than the served origin', () => {
+  it('still uses the public shell when a project id is given', () => {
     const open = stubWindow();
-    openPreviewWindow('https://preview-static.zone.example/proj-1/?token=t', 'proj 1');
-    expect(open).toHaveBeenCalledWith('/project/proj%201/preview', '_blank', 'noopener,noreferrer');
+    const signed = 'https://preview-static.zone.example/proj-1/?token=t';
+    openPreviewWindow(signed, 'proj 1');
+    expect(open).toHaveBeenCalledWith(
+      publicPreviewViewHref(signed),
+      '_blank',
+      'noopener,noreferrer',
+    );
+    expect(open.mock.calls[0][0]).not.toContain('/project/');
   });
 });

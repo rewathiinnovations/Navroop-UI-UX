@@ -1,5 +1,6 @@
 import { buildMemoryBlock } from '@/lib/memory/build-context';
 import { persistProjectGeneration } from '@/lib/projects/actions';
+import { injectMatchedSkills } from '@/lib/skills/inject';
 import type { ImportMode } from './mode.ts';
 import { runUrlImportPipeline } from './pipeline.ts';
 import { upsertImportSource } from './persist.ts';
@@ -25,6 +26,9 @@ export async function runProjectUrlImport(input: {
   } catch (error) {
     console.warn('[import] memory block failed', error);
   }
+  // Skills are conditional and sit AFTER the cacheable prefix, never inside it.
+  // Loaded once per import (same as memory) so every section sees the same pair.
+  const injected = await injectMatchedSkills(input.sourceUrl, input.mode, input.userId);
   return runUrlImportPipeline({
     projectId: input.projectId,
     sourceUrl: input.sourceUrl,
@@ -33,6 +37,7 @@ export async function runProjectUrlImport(input: {
     designDirection: input.designDirection,
     userId: input.userId,
     memoryBlock,
+    skillBlock: injected.block,
     jobId: input.jobId,
     persistSource: async ({ capture, sections }) => {
       await upsertImportSource({

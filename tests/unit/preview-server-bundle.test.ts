@@ -50,6 +50,20 @@ export default function Home() { return <div><h1>Home {usePathname()}</h1><Link 
     expect(result.files['index.html']).toContain('About');
   });
 
+  it('compiles an async product page through the router boundary (React #482)', async () => {
+    const result = await buildStaticSite('NEXTJS', {
+      'app/page.tsx': `export default function Home() { return <h1>Home</h1>; }`,
+      'app/product/[slug]/page.tsx': `export default async function ProductPage({ params }: { params: Promise<{ slug: string }> }) {
+  const { slug } = await params;
+  return <h1>{slug}</h1>;
+}`,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.files['index.html']).toContain('Home');
+  });
+
   it('compiles an async layout through the boundary the assembler adds (F-153)', async () => {
     // The layout used to be dropped for being async, so the published build lost
     // its nav. Proof the appended boundary is valid TSX and reaches the bundle.

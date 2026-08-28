@@ -155,6 +155,29 @@ export async function getLatestJobOfKinds(
 }
 
 /**
+ * Chat jobs for a project, oldest first — the workspace hydrate path, not the 2s poll.
+ *
+ * `GET /api/projects/[id]/job?history=1` is the only caller. The poll stays on
+ * `getActiveJob` / `getLatestJobOfKinds` and must not start shipping this list.
+ */
+export async function listChatJobs(
+  projectId: string,
+  kinds: readonly JobKind[],
+  limit = 40,
+): Promise<GenerationJobRow[]> {
+  const rows = await selectJobs(
+    `WHERE "projectId" = $1
+       AND kind::text = ANY($2::text[])
+     ORDER BY "createdAt" ASC
+     LIMIT $3`,
+    projectId,
+    [...kinds],
+    limit,
+  );
+  return rows.map(mapJob);
+}
+
+/**
  * The live job on a project, but only if it is one of these kinds.
  *
  * WIRED TO NOTHING. This has no production caller — only

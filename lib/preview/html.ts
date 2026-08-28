@@ -1,4 +1,3 @@
-import { INSPECTOR_SCRIPT, INSPECTOR_SCRIPT_ID } from '@/lib/visual-edits/inspector';
 import {
   buildImportMap,
   PREVIEW_DEPS,
@@ -13,10 +12,7 @@ import {
  * whole world the generated app sees: import map, Tailwind, the bundle, an
  * error bridge that posts failures back to the parent (a sandboxed frame
  * cannot be inspected from outside, so uncaught errors would otherwise vanish),
- * and the Visual Edits inspector, for the same reason — the frame's origin is
- * opaque, so nothing outside can put a script into it after the fact. The
- * inspector idles until the workspace posts it a `navroop:inspector-active`
- * message (F-143).
+ * a capture-phase link interceptor, and `<base href="about:srcdoc">`.
  */
 
 export const PREVIEW_MESSAGE_SOURCE = 'navroop-preview';
@@ -84,24 +80,20 @@ const ERROR_BRIDGE = `
  * parent document's URL (the app origin). A plain `<a href="#reserve">` therefore
  * navigates the frame out to `http://<app>/project/<id>#reserve` — past the app
  * auth gate and off the preview — instead of scrolling to the in-frame section.
- * The Next router's click handler only intercepts `/`-prefixed links, so hash
- * anchors fall through to that escape. This document-level handler catches them
- * for every stack and scrolls inside the frame.
+ * An `<a href="/shop">` aims at `http://<app>/shop` and either escapes or is
+ * silently blocked by the opaque-origin sandbox, so the link looks dead (F-145).
+ *
+ * This capture-phase handler runs for every stack, before React or the Next
+ * entry listener can preventDefault without routing. `/` paths go through
+ * `window.__previewNavigate` (the next/navigation shim); `#` hashes scroll
+ * inside the frame. The workspace page picker posts `{ type: "navigate" }`.
  */
-const HASH_LINK_INTERCEPTOR = `
+const PREVIEW_LINK_INTERCEPTOR = `
 (function () {
-  document.addEventListener("click", function (event) {
-    if (event.defaultPrevented || event.button !== 0) return;
-    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    var anchor = event.target && event.target.closest ? event.target.closest("a") : null;
-    if (!anchor) return;
-    var href = anchor.getAttribute("href");
-    if (href == null || href[0] !== "#") return;
-    // Always swallow the click: a hash link must never leave the preview document.
-    event.preventDefault();
-      var id = href.slice(1);
+  function scrollHash(hash) {
+    var id = hash && hash[0] === "#" ? hash.slice(1) : "";
     if (id) {
-      try { id = decodeURIComponent(id); } catch {}
+      try { id = decodeURIComponent(id); } catch (e) {}
       var target = document.getElementById(id);
       if (target) {
         target.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -109,6 +101,58 @@ const HASH_LINK_INTERCEPTOR = `
       }
     }
     window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function routeInFrame(href) {
+    if (typeof window.__previewNavigate === "function") {
+      window.__previewNavigate(href);
+    }
+    var hashAt = href.indexOf("#");
+    if (hashAt !== -1) scrollHash(href.slice(hashAt));
+  }
+
+  function inSitePath(pathname) {
+    return pathname.indexOf("/project/") !== 0
+      && pathname.indexOf("/api/") !== 0
+      && pathname.indexOf("/admin") !== 0
+      && pathname.indexOf("/preview-static/") !== 0;
+  }
+
+  document.addEventListener("click", function (event) {
+    if (event.defaultPrevented || event.button !== 0) return;
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    var node = event.target;
+    if (node && node.nodeType === 3) node = node.parentElement;
+    var anchor = node && node.closest ? node.closest("a") : null;
+    if (!anchor) return;
+    var href = anchor.getAttribute("href");
+    if (href == null || href === "") return;
+    var target = anchor.getAttribute("target");
+    if (target && target !== "_self") return;
+    if (href[0] === "#") {
+      event.preventDefault();
+      scrollHash(href);
+      return;
+    }
+    if (href[0] === "/") {
+      event.preventDefault();
+      routeInFrame(href);
+      return;
+    }
+    try {
+      var abs = new URL(href, "http://preview.invalid/");
+      if ((abs.protocol === "http:" || abs.protocol === "https:") && inSitePath(abs.pathname)) {
+        event.preventDefault();
+        if (abs.host === "preview.invalid") return;
+        routeInFrame(abs.pathname + abs.search + abs.hash);
+      }
+    } catch (e) {}
+  }, true);
+
+  window.addEventListener("message", function (event) {
+    var data = event.data;
+    if (!data || data.source !== "${PREVIEW_MESSAGE_SOURCE}" || data.type !== "navigate") return;
+    if (typeof data.path === "string") routeInFrame(data.path);
   });
 })();
 `;
@@ -128,13 +172,6 @@ const HASH_LINK_INTERCEPTOR = `
  * installed before this now, and this cannot throw in the first place.
  */
 const TAILWIND_CONFIG_SCRIPT = `if (typeof tailwind !== "undefined") tailwind.config = ${TAILWIND_PREVIEW_CONFIG};`;
-
-/**
- * The inspector, ready to be turned on. It installs a `message` listener and
- * nothing else until the workspace activates it, so an unused Visual Edits
- * toolbar costs the frame one idle listener.
- */
-const INSPECTOR_TAG = `<script id="${INSPECTOR_SCRIPT_ID}">${escapeClosingScript(INSPECTOR_SCRIPT)}</script>`;
 
 export function buildPreviewSrcdoc(options: {
   code: string;
@@ -166,7 +203,8 @@ setTimeout(function () {
      the bridge, or the frame has no way to report it. -->
 <script>${NODE_GLOBALS_SHIM}</script>
 <script>${ERROR_BRIDGE}</script>
-<script>${HASH_LINK_INTERCEPTOR}</script>
+<script>${PREVIEW_LINK_INTERCEPTOR}</script>
+<base href="about:srcdoc">
 <script src="${TAILWIND_BROWSER_URL}"></script>
 <!-- The Play CDN's documented configuration API: a second script that assigns
      tailwind.config. This is what makes bg-background / text-foreground resolve
@@ -191,7 +229,6 @@ document.getElementById("__preview-app").addEventListener("error", function () {
   }
 });
 </script>
-${INSPECTOR_TAG}
 </body>
 </html>`;
 }
@@ -213,13 +250,11 @@ ${INSPECTOR_TAG}
 function injectBridgeIntoHtml(html: string) {
   // Shim first, then the bridge: a static page can carry a script that touches
   // `process` just as a bundled one can, and the shim is worthless if it lands
-  // after the code that needed it. The hash interceptor is the third script: it
-  // keeps `#section` links inside the frame, exactly as in the bundled preview.
-  const bridge = `<script>${NODE_GLOBALS_SHIM}</script><script>${ERROR_BRIDGE}</script><script>${HASH_LINK_INTERCEPTOR}</script>`;
-  // The inspector rides with the ready signal, on the same "must be placed
-  // explicitly, never dropped by a no-match" rule: Visual Edits has to work on a
-  // static-HTML project too, and its only way in is this document.
-  const ready = `<script>setTimeout(function(){ if (window.__previewPost) window.__previewPost({ type: "ready" }); }, 0);</script>${INSPECTOR_TAG}`;
+  // after the code that needed it. The link interceptor is the third script: it
+  // keeps `#section` and `/page` links inside the frame, exactly as in the
+  // bundled preview. `<base>` stops leftover hrefs resolving against the app.
+  const bridge = `<script>${NODE_GLOBALS_SHIM}</script><script>${ERROR_BRIDGE}</script><script>${PREVIEW_LINK_INTERCEPTOR}</script><base href="about:srcdoc">`;
+  const ready = `<script>setTimeout(function(){ if (window.__previewPost) window.__previewPost({ type: "ready" }); }, 0);</script>`;
 
   const headOpen = /<head[^>]*>/i.exec(html);
   let withBridge: string;

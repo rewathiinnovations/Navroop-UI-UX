@@ -23,7 +23,10 @@ export function startingGenerationFields(input: { isEdit: boolean; hasCompletedF
     return {
       status: STARTING_EDIT_STATUS,
       isStreaming: false,
-      isThinking: true,
+      // Same as first build: the reasoning card waits for a real `thinking` SSE
+      // frame. Starting true stuck the card when admin thinking was off, because
+      // `thinking_complete` never arrived and a `status` frame did not clear it.
+      isThinking: false,
       thinkingText: STARTING_EDIT_THINKING,
     };
   }

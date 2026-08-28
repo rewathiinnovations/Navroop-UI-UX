@@ -13,6 +13,8 @@
  * Brain memory — documented as always-on and inside the cacheable prefix — was absent
  * from every section generation and from the single-pass fallback of a URL import.
  */
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import {
   UNTRUSTED_FENCE_BEGIN,
@@ -280,5 +282,51 @@ describe('the URL-import path injects Brain memory (F-107)', () => {
 
     expect(prefixes).toHaveLength(1);
     expect(prefixes[0]).toContain(memoryBlock);
+  });
+});
+
+describe('the URL-import path injects skills after the cacheable prefix', () => {
+  const memoryBlock = '## Brain memory\n### This project\n#### design\n- always use Inter';
+  const skillBlock = '## Active workspace skills\n### Landing\nUse a wide hero.';
+
+  it('does not put the skill block inside the cacheable prefix', () => {
+    const prefix = buildImportStablePrefix('NEXTJS', 'minimal', memoryBlock);
+    expect(prefix).not.toContain('Active workspace skills');
+    expect(prefix).not.toContain(skillBlock);
+  });
+
+  it('sends the skill block on every section and composition call, after the prefix', async () => {
+    const seen: Array<{ stablePrefix: string; volatileUser: string }> = [];
+    await generateImportedSections({
+      projectId: 'proj_1',
+      userId: 'user_1',
+      stack: 'NEXTJS',
+      designDirection: 'minimal',
+      mode: 'reimagine',
+      capture: capture(),
+      sections: [section()],
+      assets: [],
+      memoryBlock,
+      skillBlock,
+      complete: async ({ stablePrefix, volatileUser }) => {
+        seen.push({ stablePrefix, volatileUser });
+        return { text: '<file path="ok.tsx">ok</file>', inputTokens: 1 };
+      },
+    });
+
+    expect(seen.length).toBeGreaterThanOrEqual(2);
+    expect(seen.every((call) => call.stablePrefix.includes(memoryBlock))).toBe(true);
+    expect(seen.every((call) => !call.stablePrefix.includes('Active workspace skills'))).toBe(true);
+    expect(seen.every((call) => call.volatileUser.includes(skillBlock))).toBe(true);
+  });
+
+  it('the import runner loads skills once and threads them after the prefix', () => {
+    const source = readFileSync(
+      fileURLToPath(new URL('../../lib/import/run.ts', import.meta.url)),
+      'utf8',
+    );
+    expect(source).toMatch(/injectMatchedSkills\(/);
+    expect(source).toMatch(/skillBlock/);
+    expect(source).not.toMatch(/buildImportStablePrefix\([^)]*skill/);
   });
 });

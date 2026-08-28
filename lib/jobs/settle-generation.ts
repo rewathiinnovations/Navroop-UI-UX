@@ -239,9 +239,8 @@ async function countReplyOnlyImageRequests(input: {
 }): Promise<number> {
   if (!input.replyText.includes('NEED_IMAGE:')) return 0;
   try {
-    const { needImageKey, parseNeedImageDirectives: parse } = await import(
-      '@/lib/assets/need-image'
-    );
+    const { needImageKey, parseNeedImageDirectives: parse } =
+      await import('@/lib/assets/need-image');
     const handled = new Set(parse(input.inFileContents.join('\n')).map(needImageKey));
     const described = parse(input.replyText, 'prose').filter(
       (directive) => !handled.has(needImageKey(directive)),
@@ -428,10 +427,15 @@ export async function writeMergedSite(
    * the first attempt's map would silently come back.
    */
   deletedPaths: readonly string[] = [],
+  /**
+   * Import writes the whole site, not a delta. Merge would keep pre-import
+   * files that the import is supposed to replace.
+   */
+  mode: 'merge' | 'replace' = 'merge',
 ): Promise<void> {
   let base = seen;
   for (let attempt = 0; attempt < MAX_SITE_WRITE_ATTEMPTS; attempt += 1) {
-    const existing = getCurrentProjectFiles({ lastCode: base.lastCode });
+    const existing = mode === 'replace' ? {} : getCurrentProjectFiles({ lastCode: base.lastCode });
     const merged = withoutRawImageTokens({ ...existing, ...files });
     for (const path of deletedPaths) delete merged[path];
     const { count } = await prisma.project.updateMany({

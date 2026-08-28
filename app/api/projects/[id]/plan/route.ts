@@ -35,7 +35,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   if (!prompt.ok) {
     return NextResponse.json({ error: prompt.message }, { status: 400 });
   }
-  const result = await retryFailedPlan(id, prompt.prompt);
+  const result = await retryFailedPlan(id, prompt.prompt, request.signal);
   if (!result.ok) return actionError(result);
   return NextResponse.json({ plan: result.data });
 }

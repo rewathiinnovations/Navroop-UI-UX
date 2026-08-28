@@ -63,6 +63,7 @@ export type PlanCompleter = (input: {
   promptContext: string;
   systemPrompt: string;
   stablePrefix?: string;
+  abortSignal?: AbortSignal;
 }) => Promise<PlanContent>;
 
 const planContentSchema = z.object({
@@ -172,6 +173,7 @@ async function defaultCompletePlan(input: {
   promptContext: string;
   systemPrompt: string;
   stablePrefix?: string;
+  abortSignal?: AbortSignal;
 }): Promise<{
   content: PlanContent;
   provider: string;
@@ -186,6 +188,7 @@ async function defaultCompletePlan(input: {
   // store it selected from back as `ctx.env` (F-083).
   const failover = await completeWithProviderFailover({
     userId: peekActor()?.id ?? null,
+    signal: input.abortSignal,
     run: async (entry, ctx) => {
       const model = chatModelForEntry(entry, ctx.env, entry.model);
       const cached = input.stablePrefix
@@ -244,10 +247,15 @@ async function defaultCompletePlan(input: {
   };
 }
 
-async function completePlan(promptContext: string, systemPrompt: string, stablePrefix?: string) {
+async function completePlan(
+  promptContext: string,
+  systemPrompt: string,
+  stablePrefix?: string,
+  abortSignal?: AbortSignal,
+) {
   const override = planCompleterStore.getStore();
   if (override) {
-    const content = await override({ promptContext, systemPrompt, stablePrefix });
+    const content = await override({ promptContext, systemPrompt, stablePrefix, abortSignal });
     return {
       content,
       provider: null as string | null,
@@ -255,7 +263,7 @@ async function completePlan(promptContext: string, systemPrompt: string, stableP
       attempts: [] as ProviderAttempt[],
     };
   }
-  return defaultCompletePlan({ promptContext, systemPrompt, stablePrefix });
+  return defaultCompletePlan({ promptContext, systemPrompt, stablePrefix, abortSignal });
 }
 
 export function combineBuildContext(initialPrompt: string, content: PlanContent) {
@@ -396,6 +404,7 @@ export async function generatePlan(
   promptContext: string,
   trigger: PlanTrigger,
   sourceMessage: string,
+  signal?: AbortSignal,
 ) {
   const project = await prisma.project.findFirst({
     where: { id: projectId, deletedAt: null },
@@ -417,7 +426,16 @@ export async function generatePlan(
   if (planJob.status === 'QUEUED') {
     await markJobRunning(planJob.id, { chargeCredits: false, acquireProjectLock: false });
   }
-  const planHeartbeat = beginJobHeartbeat(planJob.id);
+  const planCancelled = new AbortController();
+  if (signal?.aborted) {
+    planCancelled.abort(signal.reason);
+  } else {
+    signal?.addEventListener('abort', () => planCancelled.abort(signal.reason), { once: true });
+  }
+  const planHeartbeat = beginJobHeartbeat(planJob.id, {
+    signal: signal,
+    onInactive: () => planCancelled.abort(new Error('The plan was cancelled')),
+  });
   // Anything that throws after this point still has to stop the interval and settle
   // the job, or the PLAN job stays RUNNING with a fresh heartbeat (so the stale
   // reaper never sees it) until the 20-minute hard timeout.
@@ -445,7 +463,12 @@ export async function generatePlan(
     }
     let content;
     try {
-      const completed = await completePlan(promptContext, systemPrompt, stablePrefix);
+      const completed = await completePlan(
+        promptContext,
+        systemPrompt,
+        stablePrefix,
+        planCancelled.signal,
+      );
       content = completed.content;
       if (completed.provider) {
         const { getJob, updateJobFields } = await import('@/lib/jobs/store');
@@ -570,7 +593,7 @@ export async function getLatestPlan(projectId: string) {
   return { ok: true as const, data: plan };
 }
 
-export async function refinePlan(projectId: string, feedback: string) {
+export async function refinePlan(projectId: string, feedback: string, signal?: AbortSignal) {
   const { user, err } = await requireActor();
   if (!user) return err;
 
@@ -598,7 +621,7 @@ export async function refinePlan(projectId: string, feedback: string) {
 
   const trigger: PlanTrigger = previous?.trigger === 'followup' ? 'followup' : 'initial';
   const sourceMessage = previous?.sourceMessage ?? project.initialPrompt;
-  const plan = await generatePlan(projectId, promptContext, trigger, sourceMessage);
+  const plan = await generatePlan(projectId, promptContext, trigger, sourceMessage, signal);
   return { ok: true as const, data: plan };
 }
 
@@ -652,7 +675,11 @@ export async function updatePlanContent(
   return { ok: true as const, data: updated };
 }
 
-export async function requestFollowUpPlan(projectId: string, message: string) {
+export async function requestFollowUpPlan(
+  projectId: string,
+  message: string,
+  signal?: AbortSignal,
+) {
   const { user, err } = await requireActor();
   if (!user) return err;
 
@@ -686,7 +713,13 @@ export async function requestFollowUpPlan(projectId: string, message: string) {
     project.lastCode,
   );
   try {
-    const plan = await generatePlan(projectId, promptContext, 'followup', parsed.data.message);
+    const plan = await generatePlan(
+      projectId,
+      promptContext,
+      'followup',
+      parsed.data.message,
+      signal,
+    );
     return { ok: true as const, data: plan };
   } catch (error) {
     // The phase was moved to PLANNING before the plan existed. Without this rollback
@@ -838,7 +871,7 @@ export async function approvePlan(
  * Retry a failed PLAN using the recorded prompt. Reuses generatePlan (first
  * plan) or requestFollowUpPlan (a live site). Does not start a build.
  */
-export async function retryFailedPlan(projectId: string, prompt: string) {
+export async function retryFailedPlan(projectId: string, prompt: string, signal?: AbortSignal) {
   const { user, err } = await requireActor();
   if (!user) return err;
 
@@ -859,10 +892,10 @@ export async function retryFailedPlan(projectId: string, prompt: string) {
     return { ok: false as const, error: 'A build is already in progress', status: 409 };
   }
   if (kind === 'followup') {
-    return requestFollowUpPlan(projectId, source);
+    return requestFollowUpPlan(projectId, source, signal);
   }
 
-  const plan = await generatePlan(projectId, source, 'initial', source);
+  const plan = await generatePlan(projectId, source, 'initial', source, signal);
   return { ok: true as const, data: plan };
 }
 

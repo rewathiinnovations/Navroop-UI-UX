@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSessionUser } from '@/lib/auth';
 import { jsonError } from '@/lib/api/error-response';
 import { withRequest } from '@/lib/api/with-request';
-import { getLatestChatJob } from '@/lib/jobs/recovery';
-import { getActiveJob } from '@/lib/jobs/store';
+import { CHAT_JOB_KINDS, getLatestChatJob } from '@/lib/jobs/recovery';
+import { getActiveJob, listChatJobs } from '@/lib/jobs/store';
 import { toPublicJob } from '@/lib/jobs/types';
 
 export const dynamic = 'force-dynamic';
@@ -51,10 +51,17 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
      * on every tick. Only the reattach loop in `lib/generation/stream-resume.ts` asks.
      */
     const withFiles = request.nextUrl.searchParams.get('files') === '1';
+    /**
+     * Opt-in history for chat hydrate after refresh / project switch. The 2s poll
+     * never sends this flag — it must stay one row.
+     */
+    const withHistory = request.nextUrl.searchParams.get('history') === '1';
+    const history = withHistory ? await listChatJobs(id, CHAT_JOB_KINDS) : null;
     return NextResponse.json({
       job: latest ? toPublicJob(latest) : null,
       filesWritten: latest?.filesWritten ?? 0,
       ...(withFiles ? { partialFiles: latest?.partialFiles ?? [] } : {}),
+      ...(history ? { jobs: history.map(toPublicJob) } : {}),
     });
   });
 }

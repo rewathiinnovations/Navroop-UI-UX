@@ -4,11 +4,11 @@ import {
   replaceNeedImageTokens,
   sweepNeedImageTokens,
 } from '@/lib/assets/need-image';
+import { createCheckpointAfterGeneration } from '@/lib/checkpoints/actions';
 import { parseGeneratedFilesLenient } from '@/lib/generation/parse-files';
-import { safeGeneratedFiles } from '@/lib/jobs/settle-generation';
-import { log } from '@/lib/logger';
-import { toLastCode } from '@/lib/projects/last-code';
-import { bumpContentVersion } from '@/lib/projects/lock';
+import { safeGeneratedFiles, writeMergedSite } from '@/lib/jobs/settle-generation';
+import { log, logError } from '@/lib/logger';
+import { capturePreviewAfterGeneration } from '@/lib/preview/after-generation';
 import { IMPORT_NO_FILES_MESSAGE } from './copy.ts';
 import type { ImportMode } from './mode.ts';
 import type { DesignTokens, ImportSection } from './types.ts';
@@ -104,13 +104,69 @@ export async function persistImportedSite(input: {
   });
   const swept = withoutRawImageTokens(resolved);
 
-  await prisma.project.update({
+  const existing = await prisma.project.findUnique({
     where: { id: input.projectId },
-    // Unconditional COMPLETE, unlike settle's `phase !== 'COMPLETE'` guard: the
-    // end state is identical and this path has no prior phase read to reuse.
-    data: { lastCode: toLastCode(swept), phase: 'COMPLETE' },
+    select: { lastCode: true, contentVersion: true, phase: true },
   });
-  await bumpContentVersion(input.projectId);
+  if (!existing) {
+    throw new Error(`Project ${input.projectId} vanished while saving the imported site`);
+  }
+
+  // Same CAS as settle (F-044): write + contentVersion increment in one guarded
+  // statement. Replace, not merge — an import is "make this project be that site".
+  await writeMergedSite(
+    input.projectId,
+    swept,
+    { lastCode: existing.lastCode, contentVersion: existing.contentVersion },
+    [],
+    'replace',
+  );
+
+  try {
+    const previousPhase =
+      existing.phase === 'PLANNING' ||
+      existing.phase === 'BUILDING' ||
+      existing.phase === 'COMPLETE'
+        ? existing.phase
+        : 'PLANNING';
+    const checkpoint = await createCheckpointAfterGeneration(input.projectId, {
+      previousPhase,
+      sourceMessage: 'URL import',
+    });
+    if (checkpoint?.id) {
+      const captured = await capturePreviewAfterGeneration(
+        async () => {
+          const { buildPreviewForProject } = await import('@/lib/preview/production');
+          return buildPreviewForProject(input.projectId, checkpoint.id);
+        },
+        {
+          projectId: input.projectId,
+          checkpointId: checkpoint.id,
+          checkpointCreatedAt: checkpoint.createdAt,
+          findExisting: async () => {
+            const { previewBuildTable } = await import('@/lib/preview/db');
+            return previewBuildTable().findFirst({
+              where: {
+                projectId: input.projectId,
+                checkpointId: checkpoint.id,
+                status: { in: ['READY', 'BUILDING'] },
+              },
+              orderBy: { createdAt: 'desc' },
+            });
+          },
+        },
+      );
+      if (captured.error) {
+        logError('import.preview_after_generation_failed', captured.error, {
+          projectId: input.projectId,
+        });
+      }
+    }
+  } catch (error) {
+    // The site is in lastCode. A snapshot miss must not unwind a finished import.
+    logError('import.checkpoint_after_generation_failed', error, { projectId: input.projectId });
+  }
+
   return { fileCount };
 }
 

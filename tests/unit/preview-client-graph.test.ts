@@ -597,7 +597,7 @@ describe('the preview bundle carries no prompt text', () => {
    * The assembler is where the prompt text arrived, but it is not what the browser
    * loads. `components/workspace/BrowserPreview.tsx` is the `'use client'` entry Next
    * compiles for the tab, and it reaches thirty-odd first-party modules of its own —
-   * `lib/generation/**`, `lib/jobs/**`, `lib/preview/**`, `lib/visual-edits/**`. A
+   * `lib/generation/**`, `lib/jobs/**`, `lib/preview/**`. A
    * prompt import landing on any of those, or on the component itself, ships to every
    * visitor and appears in no bundle of `lib/preview/assemble.ts`. This is the case that
    * covers them. The assembler case above stays because it is the sharper answer — when

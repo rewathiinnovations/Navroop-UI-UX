@@ -1,3 +1,5 @@
+import { publicPreviewViewHref } from './public-view';
+
 export const PREVIEW_DEVICES = [
   { key: 'mobile', label: 'Mobile', width: 390, height: 844, icon: 'smartphone' },
   { key: 'tablet', label: 'Tablet', width: 820, height: 1180, icon: 'tablet' },
@@ -86,26 +88,20 @@ export const PREVIEW_NEW_TAB_REQUIRES_ORIGIN =
  * There is no sized-popup variant. This function used to take a `{ width, height }`
  * and open a `window.open(url, name, 'width=…,height=…')` for the header's
  * "Mobile view" item; that item was deleted when the device sizes moved onto the
- * `/project/[id]/preview` page, which sizes a real iframe instead. The branch
- * survived the deletion with `size = null` at its only call site — dead code kept
- * alive by a doc line, which is how a preview affordance nobody can reach still
- * reads as shipped.
+ * preview pages, which size a real iframe instead.
  */
-export function openPreviewWindow(url: string, projectId?: string | null) {
+export function openPreviewWindow(url: string, _projectId?: string | null) {
   if (!url) return;
   // A preview is model-authored JavaScript. Opened top-level on this app's own
-  // origin it would run with the viewer's session (F-140). When a project id is
-  // given the preview opens in a dedicated page that iframes the served build and
-  // adds the device toolbar; otherwise the served URL is opened as-is, which stays
-  // the path for links handed out elsewhere.
-  if (projectId) {
-    window.open(`/project/${encodeURIComponent(projectId)}/preview`, '_blank', 'noopener,noreferrer');
-    return;
-  }
+  // origin it would run with the viewer's session (F-140). The public shell
+  // (`/preview-view`) is chrome-only; the signed destination must already be
+  // on the distinct preview origin or we refuse rather than iframe localhost.
+  let absolute: URL;
   try {
-    if (new URL(url, window.location.href).origin === window.location.origin) return;
+    absolute = new URL(url, window.location.href);
   } catch {
     return;
   }
-  window.open(url, '_blank', 'noopener,noreferrer');
+  if (absolute.origin === window.location.origin) return;
+  window.open(publicPreviewViewHref(absolute.toString()), '_blank', 'noopener,noreferrer');
 }

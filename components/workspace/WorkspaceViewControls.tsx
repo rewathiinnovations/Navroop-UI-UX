@@ -99,7 +99,7 @@ export function WorkspaceToolMenu({
           type="button"
           aria-label={activeTool ? `${activeTool.label} — more views` : 'More views'}
           className={cn(
-            'inline-flex min-h-[44px] items-center gap-4 rounded-full px-10 text-[12px] font-medium transition-colors',
+            'inline-flex min-h-[44px] shrink-0 items-center gap-4 whitespace-nowrap rounded-full px-10 text-[12px] font-medium transition-colors duration-150',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]',
             activeTool
               ? 'bg-[var(--studio-surface)] text-[var(--studio-fg)] shadow-sm'
@@ -147,9 +147,11 @@ export function WorkspaceToolMenu({
 }
 
 /**
- * Preview/Code as the primary switch. Those two are what a reader touches every few
- * seconds; the other four used to sit beside them as an icon row, so six controls
- * competed for the same attention and neither pair read as primary.
+ * Preview/Code as the primary switch — icons only, named by `aria-label` / `title`.
+ * Quality/Assets/Brain/Domains live in `WorkspaceToolMenu`, rendered after the
+ * page/device/version cluster in the top bar so this pair stays the first control.
+ * The selected tab uses the flame CTA gradient (`--studio-cta-gradient`) and
+ * `--studio-cta-fg`, not a raw orange or the rose text accent.
  */
 export function WorkspaceViewSwitch({
   view,
@@ -158,47 +160,38 @@ export function WorkspaceViewSwitch({
   view: WorkspaceView;
   onViewChange: (view: WorkspaceView) => void;
 }) {
-  const [toolsOpen, setToolsOpen] = useState(false);
-
   return (
-    <div className="flex items-center gap-6">
-      <div
-        role="tablist"
-        aria-label="Workspace view"
-        data-primary-switch
-        className="inline-flex min-h-[44px] items-center rounded-full border border-[var(--studio-line-strong)] bg-[var(--studio-bg)] p-3 shadow-sm"
-      >
-        {WORKSPACE_PRIMARY_TABS.map((tab) => {
-          const Icon = VIEW_ICONS[tab.id];
-          const selected = view === tab.id;
-          return (
-            <button
-              key={tab.id}
-              type="button"
-              role="tab"
-              aria-selected={selected}
-              data-view={tab.id}
-              onClick={() => onViewChange(tab.id)}
-              className={cn(
-                'inline-flex min-h-[36px] items-center gap-6 rounded-full px-16 text-[13px] font-semibold transition-colors',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]',
-                selected
-                  ? 'bg-[var(--studio-surface)] text-[var(--studio-fg)] shadow-sm'
-                  : 'text-[var(--studio-muted)] hover:text-[var(--studio-fg)]',
-              )}
-            >
-              <Icon className="size-14" aria-hidden />
-              {tab.label}
-            </button>
-          );
-        })}
-      </div>
-      <WorkspaceToolMenu
-        view={view}
-        onViewChange={onViewChange}
-        open={toolsOpen}
-        onOpenChange={setToolsOpen}
-      />
+    <div
+      role="tablist"
+      aria-label="Workspace view"
+      data-primary-switch
+      className="inline-flex shrink-0 items-center rounded-full border border-[var(--studio-line-strong)] bg-[var(--studio-bg)] p-3 shadow-sm"
+    >
+      {WORKSPACE_PRIMARY_TABS.map((tab) => {
+        const Icon = VIEW_ICONS[tab.id];
+        const selected = view === tab.id;
+        return (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            aria-label={tab.label}
+            title={tab.label}
+            aria-selected={selected}
+            data-view={tab.id}
+            onClick={() => onViewChange(tab.id)}
+            className={cn(
+              'inline-flex size-44 shrink-0 items-center justify-center rounded-full transition-[color,filter] duration-150',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]',
+              selected
+                ? '[background-image:var(--studio-cta-gradient)] text-[var(--studio-cta-fg)] shadow-sm hover:brightness-[1.07]'
+                : 'text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)]',
+            )}
+          >
+            <Icon className="size-14" aria-hidden />
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -305,7 +298,7 @@ export function VersionMenu({
           type="button"
           aria-label="Project versions"
           className={cn(
-            'inline-flex min-h-[44px] items-center gap-4 rounded-full border border-[var(--studio-line)] px-10 text-[12px] font-medium tabular-nums transition-colors',
+            'inline-flex min-h-[44px] shrink-0 items-center gap-4 whitespace-nowrap rounded-full border border-[var(--studio-line)] px-10 text-[12px] font-medium tabular-nums transition-colors duration-150',
             'text-[var(--studio-muted)] hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)]',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]',
           )}

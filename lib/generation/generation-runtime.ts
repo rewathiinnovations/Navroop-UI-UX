@@ -996,7 +996,11 @@ async function runGenerateStream(input: StartGenerationInput): Promise<GenerateR
             return next;
           });
         } else if (data.type === 'status') {
-          setGenerationProgressState((prev) => ({ ...prev, status: data.message }));
+          setGenerationProgressState((prev) => ({
+            ...prev,
+            status: data.message,
+            isThinking: false,
+          }));
         } else if (data.type === 'thinking') {
           setGenerationProgressState((prev) => ({
             ...prev,

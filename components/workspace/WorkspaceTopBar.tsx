@@ -46,10 +46,15 @@ import { useDisclosurePopover } from '@/hooks/useDisclosurePopover';
 import { type Checkpoint, type SaveStatus, type WorkspacePage, type WorkspaceView } from './types';
 import PresenceAvatars from './PresenceAvatars';
 import type { PresenceViewer } from './useProjectPresence';
-import { VersionMenu, WORKSPACE_MENU_ITEM, WorkspaceViewSwitch } from './WorkspaceViewControls';
+import {
+  VersionMenu,
+  WORKSPACE_MENU_ITEM,
+  WorkspaceToolMenu,
+  WorkspaceViewSwitch,
+} from './WorkspaceViewControls';
 
 const ICON_BTN =
-  'studio-icon-hit inline-flex items-center justify-center rounded-full text-[var(--studio-muted)] transition-colors hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)] disabled:cursor-not-allowed disabled:opacity-40';
+  'studio-icon-hit inline-flex shrink-0 items-center justify-center rounded-full text-[var(--studio-muted)] transition-colors duration-150 hover:bg-[var(--studio-surface-hover)] hover:text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)] disabled:cursor-not-allowed disabled:opacity-40';
 
 function BarDivider() {
   return <span className="mx-2 h-16 w-px shrink-0 bg-[var(--studio-line)]" aria-hidden />;
@@ -107,7 +112,8 @@ export function saveLabel(
   // (true only once the files fetch has resolved successfully) tells us
   // whether `hasStoredFiles` is trustworthy; while it's false, fall back to
   // the pre-Task-3 behaviour of trusting `updatedAt` alone.
-  if (updatedAt && (hasStoredFiles || !filesKnown)) return `Last saved ${formatRelativeTime(updatedAt)}`;
+  if (updatedAt && (hasStoredFiles || !filesKnown))
+    return `Last saved ${formatRelativeTime(updatedAt)}`;
   return null;
 }
 
@@ -192,6 +198,7 @@ export default function WorkspaceTopBar({
   const [exportHint, setExportHint] = useState<string | null>(null);
   const [compactPreview, setCompactPreview] = useState(false);
   const [compactActions, setCompactActions] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
   const headerRef = useRef<HTMLElement>(null);
   /**
    * A paragraph plus one link, not a command list, so this is a disclosure rather
@@ -246,7 +253,7 @@ export default function WorkspaceTopBar({
         ref={headerRef}
         className="relative z-30 flex min-h-56 shrink-0 flex-wrap items-center gap-8 overflow-visible border-b border-[var(--studio-line)] bg-[var(--studio-header-bg)] px-10 py-4 backdrop-blur-xl"
       >
-        <div className="flex min-w-0 flex-1 items-center gap-6">
+        <div className="flex shrink-0 items-center gap-6">
           <NavroopMark />
           <div className="flex min-w-0 flex-col justify-center">
             <input
@@ -317,17 +324,14 @@ export default function WorkspaceTopBar({
           </Hint>
         </div>
 
-        <div className="flex shrink-0 items-center gap-6">
+        {/* Primary cluster order: Preview|Code → page switcher → device → version → more views. Each control is shrink-0; the header wraps the cluster instead of letting icons overlap. */}
+        <div className="flex max-w-full shrink-0 flex-wrap items-center gap-6">
           <WorkspaceViewSwitch view={view} onViewChange={onViewChange} />
-          {onPreviewVersion ? (
-            <VersionMenu
-              checkpoints={checkpoints}
-              activeId={activeVersionId}
-              onPreview={onPreviewVersion}
-            />
-          ) : null}
           <div
-            className={cn('relative items-center', compactPreview && projectId ? 'hidden' : 'flex')}
+            className={cn(
+              'relative shrink-0 items-center',
+              compactPreview && projectId ? 'hidden' : 'flex',
+            )}
           >
             <FileText
               className="pointer-events-none absolute left-10 size-13 text-[var(--studio-muted)]"
@@ -340,7 +344,7 @@ export default function WorkspaceTopBar({
               id="workspace-page"
               value={selectedPage}
               onChange={(event) => onSelectPage(event.target.value)}
-              className="h-32 max-w-[148px] appearance-none rounded-full border border-[var(--studio-line)] bg-[var(--studio-surface)] py-0 pr-28 pl-28 text-[12px] font-medium text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
+              className="h-44 max-w-[148px] shrink-0 appearance-none rounded-full border border-[var(--studio-line)] bg-[var(--studio-surface)] py-0 pr-28 pl-28 text-[12px] font-medium text-[var(--studio-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
             >
               {pages.map((page) => (
                 <option key={page.path} value={page.path}>
@@ -353,20 +357,7 @@ export default function WorkspaceTopBar({
               aria-hidden
             />
           </div>
-        </div>
-
-        <div className="flex min-w-0 flex-1 items-center justify-end gap-4">
-          <PresenceAvatars viewers={presenceViewers} />
-          {/*
-           * There was a "Live mode" switch here. Live mode died with the sandbox
-           * subsystem (migration 20260819010000_drop_sandbox_columns) and
-           * `useLivePreviewMode` is now an inert predicate that reports
-           * `enabled: false` unconditionally, so the switch had nothing to turn
-           * on: ProjectWorkspace (the only render site of this bar) never passed
-           * `onToggleLiveMode`, which the switch was gated on, so it could not
-           * render either. Do not re-add it — there is no live preview to reach.
-           */}
-          {view === 'preview' && onPreviewDeviceChange && onTogglePreviewRotate && !compactActions ? (
+          {view === 'preview' && onPreviewDeviceChange && onTogglePreviewRotate ? (
             <PreviewDeviceToolbar
               device={previewDevice}
               rotated={previewRotated}
@@ -382,6 +373,32 @@ export default function WorkspaceTopBar({
               onToggleRotate={onTogglePreviewRotate}
             />
           ) : null}
+          {onPreviewVersion ? (
+            <VersionMenu
+              checkpoints={checkpoints}
+              activeId={activeVersionId}
+              onPreview={onPreviewVersion}
+            />
+          ) : null}
+          <WorkspaceToolMenu
+            view={view}
+            onViewChange={onViewChange}
+            open={toolsOpen}
+            onOpenChange={setToolsOpen}
+          />
+        </div>
+
+        <div className="ml-auto flex max-w-full shrink-0 flex-wrap items-center justify-end gap-6">
+          <PresenceAvatars viewers={presenceViewers} />
+          {/*
+           * There was a "Live mode" switch here. Live mode died with the sandbox
+           * subsystem (migration 20260819010000_drop_sandbox_columns) and
+           * `useLivePreviewMode` is now an inert predicate that reports
+           * `enabled: false` unconditionally, so the switch had nothing to turn
+           * on: ProjectWorkspace (the only render site of this bar) never passed
+           * `onToggleLiveMode`, which the switch was gated on, so it could not
+           * render either. Do not re-add it — there is no live preview to reach.
+           */}
           <Hint label="Refresh preview">
             <button
               type="button"
@@ -400,9 +417,7 @@ export default function WorkspaceTopBar({
                 type="button"
                 disabled={!previewUrl || !previewOriginConfigured}
                 title={previewOriginConfigured ? undefined : PREVIEW_NEW_TAB_REQUIRES_ORIGIN}
-                onClick={() =>
-                  previewUrl && projectId && openPreviewWindow(previewUrl, projectId)
-                }
+                onClick={() => previewUrl && projectId && openPreviewWindow(previewUrl, projectId)}
                 aria-label="Open in new tab"
                 className={ICON_BTN}
               >
@@ -573,7 +588,11 @@ export default function WorkspaceTopBar({
               aria-label="Download code"
               className={ICON_BTN}
             >
-              {exporting ? <Loader2 className="size-15 animate-spin" /> : <Download className="size-15" />}
+              {exporting ? (
+                <Loader2 className="size-15 animate-spin" />
+              ) : (
+                <Download className="size-15" />
+              )}
             </button>
           </Hint>
           {exportHint ? (
@@ -583,7 +602,7 @@ export default function WorkspaceTopBar({
             <button
               type="button"
               onClick={onShare}
-              className="inline-flex h-44 items-center rounded-full border border-[var(--studio-line-strong)] px-14 text-[13px] font-medium text-[var(--studio-fg)] hover:bg-[var(--studio-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
+              className="inline-flex h-44 shrink-0 items-center whitespace-nowrap rounded-full border border-[var(--studio-line-strong)] px-14 text-[13px] font-medium text-[var(--studio-fg)] transition-colors duration-150 hover:bg-[var(--studio-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--studio-ring)]"
             >
               Share
             </button>

@@ -3,11 +3,11 @@ import type { NextRequest } from 'next/server';
 import { getToken } from 'next-auth/jwt';
 import { checkRequestOrigin, csrfMechanismFor, isStateChangingMethod } from '@/lib/auth/csrf';
 import { loginModalHref, signupModalHref } from '@/lib/auth/public-login';
+import { isPublicPage } from '@/lib/auth/public-pages';
 import { isGuardedApiPath, matchPublicRoute } from '@/lib/auth/public-routes';
 import { createRequestId, REQUEST_ID_HEADER } from '@/lib/request-id';
 
 const AUTH_PAGES = new Set(['/login', '/signup']);
-const PUBLIC_PAGES = new Set(['/', '/login', '/signup']);
 
 /**
  * Auth.js writes one of these depending on the cookie prefix it chose at
@@ -188,7 +188,7 @@ export async function proxy(request: NextRequest) {
     return withRequestId(request, NextResponse.redirect(new URL('/dashboard', request.url)));
   }
 
-  if (!session && !PUBLIC_PAGES.has(pathname)) {
+  if (!session && !isPublicPage(pathname)) {
     const next = pathname === '/' ? null : pathname;
     return withRequestId(
       request,

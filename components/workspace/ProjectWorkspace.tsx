@@ -23,6 +23,7 @@ import { useStaticPreview } from './useStaticPreview';
 import { useLivePreviewMode } from './useLivePreviewMode';
 import { useProjectPlan } from './useProjectPlan';
 import { PREVIEW_DEVICE_EVENT } from '@/lib/preview/devices';
+import { postNavigateToPreviewFrame } from '@/lib/preview/display';
 import { previewRepairInstruction } from '@/lib/preview/labels';
 import { usePreviewDevice } from './usePreviewDevice';
 import type {
@@ -39,6 +40,7 @@ import PanelErrorBoundary from '@/components/errors/PanelErrorBoundary';
 import LockBar from './LockBar';
 import StaleViewBanner from './StaleViewBanner';
 import { useProjectPresence } from './useProjectPresence';
+import { chatPaneClassName, previewPaneClassName } from './chat-layout';
 import { isJobInFlight, showsChatRecovery } from '@/lib/jobs/chat-ui';
 import { offersRecoveryKeep, recoveryNextStepLine } from '@/lib/jobs/copy';
 import { dispatchRecoveryRetry, recoveryRetryIntent } from '@/lib/jobs/recovery-retry';
@@ -145,33 +147,24 @@ export default function ProjectWorkspace({
   const [chatCollapsed, setChatCollapsed] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   /**
-   * The iframe `BrowserPreview` renders, and whether a document is in it.
+   * The iframe `BrowserPreview` renders.
    *
    * This is the only preview a reader ever sees. The workspace used to hand
    * `useStaticPreview` a ref that belonged to a sandbox-era iframe rendered only
    * when `sandboxData.url` was truthy — a value nothing has assigned since the
    * VMs were deleted — so the served build's URL was written to `null.src` on
-   * every poll and the inspector had no frame to talk to (F-142/F-143).
+   * every poll (F-142).
    */
   const previewFrameRef = useRef<HTMLIFrameElement | null>(null);
-  const [browserFrameMounted, setBrowserFrameMounted] = useState(false);
   const previewDevice = usePreviewDevice();
-  const {
-    phase,
-    plan,
-    refining,
-    approving,
-    refine,
-    approve,
-    updatePlan,
-    watchForPlan,
-  } = useProjectPlan({
-    projectId,
-    initialPhase,
-    initialPlan,
-    isJobActive,
-    generationStatus,
-  });
+  const { phase, plan, refining, approving, refine, approve, updatePlan, watchForPlan } =
+    useProjectPlan({
+      projectId,
+      initialPhase,
+      initialPlan,
+      isJobActive,
+      generationStatus,
+    });
   const [editingPlan, setEditingPlan] = useState(false);
   const [savingPlan, setSavingPlan] = useState(false);
   /**
@@ -252,10 +245,6 @@ export default function ProjectWorkspace({
   const filesKnown = !projectFiles.loading && !projectFiles.error;
   const hasFinishedStreamedFile = streamFiles?.some((file) => file.completed) ?? false;
   const nothingRenderableYet = !hasStoredFiles && !hasFinishedStreamedFile;
-  // The frame only counts while this component is the one rendering it: the
-  // streaming code panel takes the pane on a first build, and the other views
-  // replace it entirely.
-  const previewFrameRendered = view === 'preview' && !nothingRenderableYet && browserFrameMounted;
 
   const handleSend = (text: string, options: SendMessageOptions) => {
     if (phase === 'PLANNING') {
@@ -443,11 +432,20 @@ export default function ProjectWorkspace({
         onViewChange={onViewChange}
         pages={pages}
         selectedPage={selectedPage}
-        onSelectPage={onSelectPage}
+        onSelectPage={(path) => {
+          onSelectPage(path);
+          // This is the frame the picker must talk to. GenerationWorkspace's
+          // iframeRef is only attached to the deleted sandbox iframe and is
+          // always null — posting there is a silent no-op (same class as F-142).
+          postNavigateToPreviewFrame(previewFrameRef.current, path);
+        }}
         chatCollapsed={chatCollapsed}
         onToggleChat={() => setChatCollapsed((value) => !value)}
         onOpenHistory={() => setHistoryOpen(true)}
-        onRefresh={onRefresh}
+        onRefresh={() => {
+          postNavigateToPreviewFrame(previewFrameRef.current, selectedPage);
+          onRefresh();
+        }}
         onShare={share}
         previewUrl={previewUrl}
         previewOriginConfigured={staticPreview.originConfigured}
@@ -484,9 +482,7 @@ export default function ProjectWorkspace({
           data-tour="chat"
           className={cn(
             'flex h-full shrink-0 flex-col border-r border-[var(--studio-line)] bg-[var(--studio-surface)] transition-[width,opacity] duration-200',
-            chatCollapsed
-              ? 'w-0 overflow-hidden opacity-0'
-              : 'w-[380px] max-lg:w-full opacity-100',
+            chatPaneClassName(chatCollapsed),
           )}
           aria-hidden={chatCollapsed}
         >
@@ -578,102 +574,97 @@ export default function ProjectWorkspace({
           </PanelErrorBoundary>
         </section>
 
-        <div className={cn('flex min-h-0 min-w-0 flex-1 flex-col', !chatCollapsed && 'max-lg:hidden')}>
-        <PanelErrorBoundary label="Preview">
-          <PreviewPanel
-            iframeRef={previewFrameRef}
-            frameRendered={previewFrameRendered}
-            sandboxUrl={previewUrl}
-            // Streamed files count too, not just persisted ones, and so does a build
-            // that has not written one yet. `hasFiles` decides `previewPaneKind`, and
-            // 'empty' short-circuits this panel's children — so on a first build the
-            // pane stayed on "Nothing to preview yet" and the preview below was never
-            // mounted at all, no matter what it was handed. `isJobActive` covers the
-            // first seconds, when Code owes the reader the streaming panel's own
-            // "code appears here as it is written" state rather than EmptyPreview.
-            hasFiles={isJobActive || hasStoredFiles || hasFinishedStreamedFile}
-            expanded={chatCollapsed}
-            previewDevice={previewDevice.device}
-            previewRotated={previewDevice.rotated}
-            view={view}
-            onSend={handleSend}
-            sending={sending}
-            phase={phase}
-            planTrigger={plan?.trigger}
-            planApproved={plan?.status === 'APPROVED'}
-            previewing={previewing}
-            previewingLabel={versionLabelFor(checkpoints, previewingId)}
-            onExitPreview={() => {
-              void exitPreview().then((result) => {
-                if (!result.ok && !('locked' in result && result.locked)) {
-                  onThreadMessage?.(result.error, 'system');
-                }
-              });
-            }}
-            previewKind={livePreview.enabled ? 'live' : 'static'}
-            preparingPreview={staticPreview.preparing && !livePreview.enabled}
-            previewBuildFailed={staticPreview.status === 'FAILED'}
-            previewBuildLog={staticPreview.buildLog}
-            onRetryPreview={() => {
-              void staticPreview.retry();
-            }}
-          >
-            {view === 'seo' && projectId ? (
-              <QualityPanel
-                projectId={projectId}
-                projectUpdatedAt={updatedAt}
-                onSend={handleSend}
-                sending={sending}
-              />
-            ) : view === 'assets' && projectId ? (
-              <AssetsPanel projectId={projectId} />
-            ) : view === 'brain' && projectId ? (
-              <BrainPanel projectId={projectId} />
-            ) : view === 'domains' && projectId ? (
-              <DomainsPanel projectId={projectId} />
-            ) : view === 'preview' && projectId ? (
-              // Two things can occupy the preview pane during a build.
-              //
-              // If there is anything renderable — stored files from an earlier build,
-              // or a file this stream has already finished — the compiled preview
-              // stays up. It only layers `completed: true` files, so a half-written
-              // module never reaches esbuild, and a failed intermediate compile keeps
-              // the last good frame rather than blanking a working page.
-              //
-              // If there is nothing renderable yet — a first build, minutes before the
-              // model closes its first fence — the pane shows the code as it arrives
-              // instead of a spinner. It used to sit on "Waiting for the first files…"
-              // while the only view that could show the work was one tab away, which
-              // reads as a hang. Watching the file being typed is the point; the
-              // compiled page takes over the moment there is a page to compile.
-              nothingRenderableYet ? (
-                <StreamingCodePanel
-                  files={streamFiles ?? EMPTY_STREAM_FILES}
-                  status={streamPaneStatus(streamStatus)}
-                  streamedText={streamedText}
-                  className="h-full"
+        <div className={previewPaneClassName(chatCollapsed)}>
+          <PanelErrorBoundary label="Preview">
+            <PreviewPanel
+              sandboxUrl={previewUrl}
+              // Streamed files count too, not just persisted ones, and so does a build
+              // that has not written one yet. `hasFiles` decides `previewPaneKind`, and
+              // 'empty' short-circuits this panel's children — so on a first build the
+              // pane stayed on "Nothing to preview yet" and the preview below was never
+              // mounted at all, no matter what it was handed. `isJobActive` covers the
+              // first seconds, when Code owes the reader the streaming panel's own
+              // "code appears here as it is written" state rather than EmptyPreview.
+              hasFiles={isJobActive || hasStoredFiles || hasFinishedStreamedFile}
+              expanded={chatCollapsed}
+              previewDevice={previewDevice.device}
+              previewRotated={previewDevice.rotated}
+              view={view}
+              phase={phase}
+              planTrigger={plan?.trigger}
+              planApproved={plan?.status === 'APPROVED'}
+              previewing={previewing}
+              previewingLabel={versionLabelFor(checkpoints, previewingId)}
+              onExitPreview={() => {
+                void exitPreview().then((result) => {
+                  if (!result.ok && !('locked' in result && result.locked)) {
+                    onThreadMessage?.(result.error, 'system');
+                  }
+                });
+              }}
+              previewKind={livePreview.enabled ? 'live' : 'static'}
+              preparingPreview={staticPreview.preparing && !livePreview.enabled}
+              previewBuildFailed={staticPreview.status === 'FAILED'}
+              previewBuildLog={staticPreview.buildLog}
+              onRetryPreview={() => {
+                void staticPreview.retry();
+              }}
+            >
+              {view === 'seo' && projectId ? (
+                <QualityPanel
+                  projectId={projectId}
+                  projectUpdatedAt={updatedAt}
+                  onSend={handleSend}
+                  sending={sending}
                 />
+              ) : view === 'assets' && projectId ? (
+                <AssetsPanel projectId={projectId} />
+              ) : view === 'brain' && projectId ? (
+                <BrainPanel projectId={projectId} />
+              ) : view === 'domains' && projectId ? (
+                <DomainsPanel projectId={projectId} />
+              ) : view === 'preview' && projectId ? (
+                // Two things can occupy the preview pane during a build.
+                //
+                // If there is anything renderable — stored files from an earlier build,
+                // or a file this stream has already finished — the compiled preview
+                // stays up. It only layers `completed: true` files, so a half-written
+                // module never reaches esbuild, and a failed intermediate compile keeps
+                // the last good frame rather than blanking a working page.
+                //
+                // If there is nothing renderable yet — a first build, minutes before the
+                // model closes its first fence — the pane shows the code as it arrives
+                // instead of a spinner. It used to sit on "Waiting for the first files…"
+                // while the only view that could show the work was one tab away, which
+                // reads as a hang. Watching the file being typed is the point; the
+                // compiled page takes over the moment there is a page to compile.
+                nothingRenderableYet ? (
+                  <StreamingCodePanel
+                    files={streamFiles ?? EMPTY_STREAM_FILES}
+                    status={streamPaneStatus(streamStatus)}
+                    streamedText={streamedText}
+                    className="h-full"
+                  />
+                ) : (
+                  <BrowserPreview
+                    stack={projectFiles.stack}
+                    files={projectFiles.files}
+                    designDirection={projectFiles.designDirection}
+                    stream={previewStream}
+                    frameRef={previewFrameRef}
+                    // Handing the failure back beats a recompile that can only
+                    // fail identically. The wording has to match the class: the
+                    // first attempt said "fails to compile" about a runtime crash,
+                    // so the model went looking for a build error that did not
+                    // exist and its edit did not fix anything.
+                    onFixError={handleFixError}
+                  />
+                )
               ) : (
-                <BrowserPreview
-                  stack={projectFiles.stack}
-                  files={projectFiles.files}
-                  designDirection={projectFiles.designDirection}
-                  stream={previewStream}
-                  frameRef={previewFrameRef}
-                  onFrameMounted={setBrowserFrameMounted}
-                  // Handing the failure back beats a recompile that can only
-                  // fail identically. The wording has to match the class: the
-                  // first attempt said "fails to compile" about a runtime crash,
-                  // so the model went looking for a build error that did not
-                  // exist and its edit did not fix anything.
-                  onFixError={handleFixError}
-                />
-              )
-            ) : (
-              preview
-            )}
-          </PreviewPanel>
-        </PanelErrorBoundary>
+                preview
+              )}
+            </PreviewPanel>
+          </PanelErrorBoundary>
         </div>
 
         <ProductTour />

@@ -296,8 +296,6 @@ export function approvedBuildPrompt(plan: WorkspacePlan) {
   return `${plan.sourceMessage}\n\nApproved plan:\n${JSON.stringify(plan.content)}`;
 }
 
-export type VisualEditTool = 'select' | 'text' | 'instruct' | 'comment';
-
 /** The primary Preview/Code switch in the top bar. */
 export const WORKSPACE_PRIMARY_TABS = [
   { id: 'preview', label: 'Preview' },

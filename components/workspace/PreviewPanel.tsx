@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { cn } from '@/utils/cn';
 import {
   formatPreviewScale,
@@ -8,21 +8,9 @@ import {
   previewScale,
   rotateDeviceSize,
 } from '@/lib/preview/devices';
-import { setInspectorActive } from '@/lib/visual-edits/inspector';
-import ElementEditPopover from './ElementEditPopover';
-import { useElementSelection } from './useElementSelection';
-import VisualEditsToolbar from './VisualEditsToolbar';
-import type { InstructionMode } from '@/lib/visual-edits/format-instruction';
 import type { PreviewDeviceKey } from '@/lib/preview/devices';
-import type {
-  PlanTrigger,
-  ProjectPhase,
-  SendMessageOptions,
-  VisualEditTool,
-  WorkspaceView,
-} from './types';
+import type { PlanTrigger, ProjectPhase, WorkspaceView } from './types';
 import { previewPaneKind } from '@/lib/preview/after-generation';
-import { previewToolsState } from '@/lib/preview/display';
 import { EmptyState } from '@/components/shared/ui/empty-state';
 import {
   LIVE_SANDBOX_LABEL,
@@ -33,29 +21,18 @@ import {
   STATIC_PREVIEW_LABEL,
 } from '@/lib/preview/labels';
 
-function popoverMode(tool: VisualEditTool | null, hasEditableText: boolean): InstructionMode {
-  if (tool === 'instruct' || tool === 'comment') return 'instruction';
-  return hasEditableText ? 'text-edit' : 'instruction';
-}
-
 /**
- * Chrome around the preview: the device frame, the pane's empty/preparing
- * states and the Visual Edits toolbar. The frame itself belongs to the child —
- * `iframeRef` is the iframe that child rendered, handed here so the inspector
- * can be driven on the document the reader is actually looking at.
+ * Chrome around the preview: the device frame and the pane's empty/preparing
+ * states. The frame itself belongs to the child.
  */
 export default function PreviewPanel({
   children,
-  iframeRef,
-  frameRendered = false,
   sandboxUrl,
   hasFiles = false,
   expanded = false,
   previewDevice = 'desktop',
   previewRotated = false,
   view = 'preview',
-  onSend,
-  sending,
   phase,
   planTrigger,
   planApproved = false,
@@ -69,9 +46,6 @@ export default function PreviewPanel({
   onRetryPreview,
 }: {
   children: ReactNode;
-  iframeRef?: RefObject<HTMLIFrameElement | null>;
-  /** A preview document is mounted in `iframeRef` right now. */
-  frameRendered?: boolean;
   sandboxUrl?: string | null;
   /** The project has code to render. Decides whether the pane is ready. */
   hasFiles?: boolean;
@@ -79,8 +53,6 @@ export default function PreviewPanel({
   previewDevice?: PreviewDeviceKey;
   previewRotated?: boolean;
   view?: WorkspaceView;
-  onSend?: (text: string, options: SendMessageOptions) => void;
-  sending?: boolean;
   phase?: ProjectPhase | null;
   planTrigger?: PlanTrigger | null;
   /** The active plan's status is `APPROVED` — the reader has nothing left to approve. */
@@ -95,9 +67,6 @@ export default function PreviewPanel({
   previewBuildLog?: string | null;
   onRetryPreview?: () => void;
 }) {
-  const [tool, setTool] = useState<VisualEditTool | null>(null);
-  const device = previewDevice;
-  const rotated = previewRotated;
   const shellRef = useRef<HTMLDivElement>(null);
   const [available, setAvailable] = useState({ width: 0, height: 0 });
 
@@ -109,35 +78,6 @@ export default function PreviewPanel({
     preparing: preparingPreview,
     previewBuildFailed,
   });
-  const { showTools, inspectEnabled } = previewToolsState({ view, pane, frameRendered, tool });
-  const { selection, clearSelection } = useElementSelection({
-    iframeRef,
-    enabled: inspectEnabled,
-  });
-
-  useEffect(() => {
-    if (view === 'preview') return;
-    setTool(null);
-  }, [view]);
-
-  useEffect(() => {
-    const iframe = iframeRef?.current;
-    if (!iframe) return;
-
-    // postMessage only. The frame is a `srcdoc` sandboxed without
-    // allow-same-origin, so nothing out here can touch its document — the
-    // inspector is part of the document (`lib/preview/html.ts`) and this only
-    // toggles it. `frameRendered` is in the deps because a ref settling is not
-    // a render: without it the first document to mount was never synced.
-    const sync = () => setInspectorActive(iframe, inspectEnabled);
-
-    iframe.addEventListener('load', sync);
-    sync();
-    return () => {
-      iframe.removeEventListener('load', sync);
-      setInspectorActive(iframe, false);
-    };
-  }, [frameRendered, iframeRef, inspectEnabled]);
 
   useEffect(() => {
     const node = shellRef.current;
@@ -149,10 +89,10 @@ export default function PreviewPanel({
     return () => observer.disconnect();
   }, []);
 
-  const spec = getPreviewDevice(device);
+  const spec = getPreviewDevice(previewDevice);
   const frame =
     view === 'preview' && spec.width != null && spec.height != null
-      ? rotated
+      ? previewRotated
         ? rotateDeviceSize(spec.width, spec.height)
         : { width: spec.width, height: spec.height }
       : null;
@@ -166,8 +106,6 @@ export default function PreviewPanel({
   const scaleLabel = formatPreviewScale(scale);
 
   const showEmptyPlan = pane === 'planning';
-  const mode = popoverMode(tool, Boolean(selection?.payload.hasEditableText));
-  const source = tool === 'comment' ? 'comment' : 'visual-edit';
 
   return (
     <div
@@ -320,28 +258,6 @@ export default function PreviewPanel({
                   </div>
                 )}
               </div>
-            )}
-            {showTools && (
-              <VisualEditsToolbar
-                activeTool={tool}
-                onChange={(next) => {
-                  setTool(next);
-                  clearSelection();
-                }}
-              />
-            )}
-            {inspectEnabled && selection && (
-              <ElementEditPopover
-                mode={mode}
-                payload={selection.payload}
-                pageRect={selection.pageRect}
-                sending={sending}
-                onCancel={clearSelection}
-                onSubmit={(instruction) => {
-                  onSend?.(instruction, { mode: 'build', source });
-                  clearSelection();
-                }}
-              />
             )}
           </div>
         </div>

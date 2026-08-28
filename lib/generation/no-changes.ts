@@ -66,12 +66,23 @@ export function classifyReplyOutcome(input: {
   reply: string;
   /** True once the single corrective ask has been spent — it is never repeated. */
   askedAgain: boolean;
+  /**
+   * Whether the project already has a site. A fileless "I'll create…" on a first
+   * build is not an answer — it is a missed build and must fail `no_files_generated`.
+   * Omitted means "assume a site" so follow-up classifiers stay source-compatible.
+   */
+  hasSite?: boolean;
 }): ReplyOutcome {
   if (input.fileCount > 0) return 'files';
   // A silent stream is a provider that produced nothing, not an answer. That path already
   // fails over to the next provider and reports honestly, and it stays as it was.
   if (!input.reply.trim()) return 'no_files';
-  if (!claimsFilesItDidNotSend(input.reply)) return 'answer';
+  if (!claimsFilesItDidNotSend(input.reply)) {
+    // Follow-up "hello" on a finished site is an answer. The same prose on an empty
+    // project is a first build that produced nothing — settle must see `no_files`.
+    if (input.hasSite === false) return 'no_files';
+    return 'answer';
+  }
   return input.askedAgain ? 'no_files' : 'ask_again';
 }
 
@@ -309,7 +320,11 @@ export function unplacedImagesNotice(input: { count: number; asked: boolean }): 
   const described = one
     ? 'The AI described an image in words instead of putting it on the page'
     : `The AI described ${input.count} images in words instead of putting them on the page`;
-  const retried = input.asked ? (one ? ', and did not place it when asked again' : ', and did not place them when asked again') : '';
+  const retried = input.asked
+    ? one
+      ? ', and did not place it when asked again'
+      : ', and did not place them when asked again'
+    : '';
   const result = one
     ? ', so the page has no photograph there.'
     : ', so the page has no photographs where they belong.';

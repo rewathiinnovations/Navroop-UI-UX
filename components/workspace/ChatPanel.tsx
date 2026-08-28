@@ -574,20 +574,6 @@ export default function ChatPanel({
                           'bg-[var(--studio-bg)] text-[var(--studio-muted)]',
                       )}
                     >
-                      {message.type === 'user' &&
-                        (message.metadata?.source === 'visual-edit' ||
-                          message.metadata?.source === 'comment') && (
-                          <span
-                            className={cn(
-                              'mb-6 inline-flex rounded-full px-8 py-2 text-[10px] font-medium uppercase tracking-wide',
-                              message.type === 'user'
-                                ? 'bg-[var(--studio-bg)]/15 text-[var(--studio-bg)]'
-                                : 'bg-[var(--studio-accent-soft)] text-[var(--studio-accent)]',
-                            )}
-                          >
-                            {message.metadata.source === 'comment' ? 'Comment' : 'Visual edit'}
-                          </span>
-                        )}
                       {message.metadata?.skillNames && message.metadata.skillNames.length > 0 && (
                         <div className="mb-6 flex flex-wrap gap-6">
                           {message.metadata.skillNames.map((name) => (

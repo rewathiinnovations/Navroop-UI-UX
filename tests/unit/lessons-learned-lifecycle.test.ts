@@ -36,7 +36,8 @@ const ORIGINAL_BULLETS = ['**What happened:**', '**Root cause:**', '**Rule going
  * meaning — the `sandbox` attribute on the browser preview iframe — so that phrase is stripped
  * before matching. Any other use of the word refers to the VM subsystem.
  */
-const DEAD_SUBJECT = /\bsandbox|\bE2B\b|\bDaytona\b|\bModal\b/i;
+const DEAD_SUBJECT =
+  /\bsandbox|\bE2B\b|\bDaytona\b|\bModal\b|visual-edit|INSPECTOR_SCRIPT|lib\/visual-edits/i;
 const LIVE_SANDBOX_MEANING = /sandboxed iframe/gi;
 
 const MARKER = /^- \*\*(Superseded|Obsolete) \[(\d{4}-\d{2}-\d{2})\]:\*\* (.{40,})$/m;
@@ -70,6 +71,14 @@ describe('lessons-learned lifecycle markers', () => {
         driver,
       );
     }
+  });
+
+  it('the visual-edits subsystem the markers call dead is still dead', () => {
+    expect(existsSync(join(ROOT, 'lib', 'visual-edits'))).toBe(false);
+    expect(existsSync(join(ROOT, 'components', 'workspace', 'VisualEditInspector.tsx'))).toBe(
+      false,
+    );
+    expect(existsSync(join(ROOT, 'components', 'workspace', 'VisualEditsToolbar.tsx'))).toBe(false);
   });
 
   it('documents the marker convention in its own header', () => {

@@ -13,7 +13,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   if (!feedback.ok) {
     return NextResponse.json({ error: feedback.message }, { status: 400 });
   }
-  const result = await refinePlan(id, feedback.prompt);
+  const result = await refinePlan(id, feedback.prompt, request.signal);
   if (!result.ok) return actionError(result);
   return NextResponse.json({ plan: result.data });
 }

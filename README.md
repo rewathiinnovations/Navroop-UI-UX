@@ -192,7 +192,7 @@ curl -X POST https://YOUR_HOST/api/cron/sweep-tmp \
   -H "Authorization: Bearer $CRON_SECRET"
 ```
 
-`CHECKPOINT_RETENTION_DAYS` defaults to 7. `PURGE_DELETED_DAYS` defaults to 30. Static previews are served at `/preview-static/{projectId}` (signed token). In production add a DNS record for `preview-static.{your-cloudflare-zone}` pointing at the app.
+`CHECKPOINT_RETENTION_DAYS` defaults to 7. `PURGE_DELETED_DAYS` defaults to 30. Static previews are served at `/preview-static/{projectId}` (signed token) from a distinct preview origin. Open in new tab uses the public `/preview-view` shell (no login; iframe from that origin until the token expires — not Coolify). In production add a DNS record for `preview-static.{your-cloudflare-zone}` pointing at the app.
 
 ### Rollback the app
 

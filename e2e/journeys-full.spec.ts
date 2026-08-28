@@ -70,7 +70,8 @@ test.describe('journey 8 — a gated page asks a stranger to sign in, then deliv
   }) => {
     await page.goto('/templates');
 
-    // `PUBLIC_PAGES` in `proxy.ts` is `/`, `/login` and `/signup`, so /templates is
+    // `PUBLIC_PAGES` (`lib/auth/public-pages.ts`) is `/`, `/login`, `/signup`
+    // and `/preview-view`, so /templates is
     // gated and a stranger is redirected to `/?auth=login&next=/templates`. That
     // redirect answers 200 with a real title, which is exactly why the assertion
     // this test used to make — `response.status() > 0` — was true of being turned

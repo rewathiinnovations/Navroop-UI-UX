@@ -279,7 +279,8 @@ function parseOrigin(raw: string | null | undefined): string | null {
     return null;
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
-  if (!parsed.hostname || parsed.hostname === 'undefined' || parsed.hostname === 'null') return null;
+  if (!parsed.hostname || parsed.hostname === 'undefined' || parsed.hostname === 'null')
+    return null;
   return parsed.origin;
 }
 
@@ -386,12 +387,18 @@ function flattenTailwindLayers(css: string): string {
 
 export type NextRoute = { path: string; file: string };
 
+export type NextRouteMatch = {
+  route: NextRoute;
+  params: Record<string, string>;
+};
+
 /**
- * The statically-enumerable App Router pages, most general path first
- * (`/` before its children), then alphabetical. Route groups (`(marketing)`)
- * are stripped from the URL as Next strips them; dynamic segments (`[slug]`)
- * are skipped because their concrete URLs are not known ahead of a request —
- * rendering them is the scoped follow-up.
+ * The App Router pages, most general path first (`/` before its children),
+ * then alphabetical. Route groups (`(marketing)`) are stripped from the URL
+ * as Next strips them. Single dynamic segments (`[slug]`, `[id]`) stay in
+ * the table as patterns so `#/product/foo` can resolve to
+ * `app/product/[slug]/page.tsx`. Catch-alls (`[...slug]`) and parallel
+ * slots (`@modal`) are still skipped — they need a different matcher.
  */
 export function nextPageRoutes(rawFiles: Record<string, string>): NextRoute[] {
   const files = normalizeFiles(rawFiles);
@@ -401,7 +408,7 @@ export function nextPageRoutes(rawFiles: Record<string, string>): NextRoute[] {
     if (!match) continue;
     const dir = match[1] ?? '';
     const segments = dir.split('/').filter((segment) => segment && !/^\(.*\)$/.test(segment));
-    if (segments.some((segment) => segment.includes('[') || segment.includes(']'))) continue;
+    if (segments.some((segment) => segment.startsWith('@') || segment.includes('...'))) continue;
     routes.push({ path: `/${segments.join('/')}`.replace(/\/$/, '') || '/', file });
   }
   return routes.sort((left, right) => {
@@ -409,6 +416,59 @@ export function nextPageRoutes(rawFiles: Record<string, string>): NextRoute[] {
     if (right.path === '/') return 1;
     return left.path.localeCompare(right.path);
   });
+}
+
+/** Pathname only: drop hash, query, and a trailing slash (except `/`). */
+export function previewPathname(href: string): string {
+  const withoutHash = href.split('#')[0] ?? href;
+  const withoutQuery = withoutHash.split('?')[0] ?? withoutHash;
+  if (withoutQuery.length > 1 && withoutQuery.endsWith('/')) return withoutQuery.slice(0, -1);
+  return withoutQuery || '/';
+}
+
+function matchRoutePattern(pattern: string, pathname: string): Record<string, string> | null {
+  const patternParts = pattern.split('/').filter(Boolean);
+  const pathParts = pathname.split('/').filter(Boolean);
+  if (patternParts.length !== pathParts.length) return null;
+  const params: Record<string, string> = {};
+  for (let i = 0; i < patternParts.length; i += 1) {
+    const part = patternParts[i];
+    const value = pathParts[i];
+    if (part.startsWith('[') && part.endsWith(']') && !part.includes('...')) {
+      try {
+        params[part.slice(1, -1)] = decodeURIComponent(value);
+      } catch {
+        params[part.slice(1, -1)] = value;
+      }
+    } else if (part !== value) {
+      return null;
+    }
+  }
+  return params;
+}
+
+/**
+ * Resolve a concrete URL (`/product/northwind-mug`, `/shop?discount=50`) to
+ * an enumerated App Router page. Static paths win over a competing `[slug]`
+ * on the same prefix (`/product/new` beats `/product/[slug]`).
+ */
+export function matchNextRoute(pathname: string, routes: NextRoute[]): NextRouteMatch | null {
+  const clean = previewPathname(pathname);
+  const staticMatch = routes.find((route) => route.path === clean && !route.path.includes('['));
+  if (staticMatch) return { route: staticMatch, params: {} };
+
+  let best: NextRouteMatch | null = null;
+  let bestScore = -1;
+  for (const route of routes) {
+    if (!route.path.includes('[')) continue;
+    const params = matchRoutePattern(route.path, clean);
+    if (!params) continue;
+    if (route.path.length > bestScore) {
+      best = { route, params };
+      bestScore = route.path.length;
+    }
+  }
+  return best;
 }
 
 function buildEntryModule(root: string, globalCss: string | null, layout: string | null) {
@@ -437,6 +497,8 @@ function buildEntryModule(root: string, globalCss: string | null, layout: string
  * click routes in the frame instead of navigating the preview origin out to the
  * parent app (F-145). The router state lives in the `next/navigation` shim, so
  * `useRouter().push` and a plain `<a href>` move the same current path.
+ * Async page defaults (`await params`) are wrapped before createElement so
+ * client React 19.2 does not throw #482 — layouts already had that boundary.
  */
 function buildNextRouterEntry(
   routes: NextRoute[],
@@ -455,7 +517,7 @@ function buildNextRouterEntry(
     `import { createRoot } from 'react-dom/client';`,
     globalCss ? `import '${importPath(globalCss)}';` : null,
     layout ? `import Layout from '${importPath(layout)}';` : null,
-    `import { __setRoutes, __currentPath, __subscribe, __navigate } from '/__preview/next-navigation';`,
+    `import { __setRoutes, __currentPath, __subscribe, __navigate, __matchRoute } from '/__preview/next-navigation';`,
     ...imports,
     ``,
     `const routes = [`,
@@ -463,14 +525,44 @@ function buildNextRouterEntry(
     `];`,
     `__setRoutes(routes.map(function (route) { return { path: route.path }; }));`,
     ``,
+    // React 19.2 #482: an async function rendered as a client component throws
+    // "An unknown Component is an async Client Component." App Router pages
+    // that `await params` are `export default async function` — valid server
+    // components, a crash here. Layouts already get a client boundary (F-153);
+    // pages go through this router, so the wrap lives here. Identity is cached
+    // so a new wrapper type is not created every render.
+    `const __previewPageCache = new WeakMap();`,
+    `function __previewPage(Component) {`,
+    `  if (typeof Component !== 'function' || Component.constructor.name !== 'AsyncFunction') {`,
+    `    return Component;`,
+    `  }`,
+    `  const cached = __previewPageCache.get(Component);`,
+    `  if (cached) return cached;`,
+    `  function PreviewAsyncPage(props) {`,
+    `    const params = props ? props.params : undefined;`,
+    `    const paramsKey = params && typeof params === 'object' ? JSON.stringify(params) : '';`,
+    `    const [resolved, setResolved] = React.useState(null);`,
+    `    React.useEffect(function () {`,
+    `      let alive = true;`,
+    `      Promise.resolve()`,
+    `        .then(function () { return Component(props); })`,
+    `        .then(function (node) { if (alive) setResolved(node); })`,
+    `        .catch(function () { if (alive) setResolved(null); });`,
+    `      return function () { alive = false; };`,
+    `    }, [paramsKey]);`,
+    `    return resolved;`,
+    `  }`,
+    `  __previewPageCache.set(Component, PreviewAsyncPage);`,
+    `  return PreviewAsyncPage;`,
+    `}`,
+    ``,
     `function PreviewRouter() {`,
     `  const [path, setPath] = React.useState(__currentPath());`,
     `  React.useEffect(function () { return __subscribe(setPath); }, []);`,
-    `  const match = routes.find(function (route) { return route.path === path; })`,
-    `    || routes.find(function (route) { return route.path === '/'; })`,
-    `    || routes[0];`,
+    `  const found = __matchRoute(path);`,
+    `  const match = found && routes.find(function (route) { return route.path === found.path; });`,
     `  return match`,
-    `    ? React.createElement(match.Component)`,
+    `    ? React.createElement(__previewPage(match.Component), { params: found.params, key: path })`,
     `    : React.createElement('div', null, 'Page not found');`,
     `}`,
     ``,
@@ -789,22 +881,82 @@ export default function Image({ src, alt, fill, priority, quality, loader, place
 // constant '/', so a multi-page site could not move between its pages and every
 // link either dead-ended or escaped the preview (F-145). State lives here so the
 // entry's click interceptor, useRouter().push and usePathname all read one path.
+// Dynamic [slug] / [id] patterns are matched here too — a hash of
+// #/product/foo has to resolve to app/product/[slug]/page.tsx, not 404.
 type Listener = (path: string) => void;
 const listeners = new Set<Listener>();
 let routes: Array<{ path: string }> = [];
 let navigated = false;
+let currentSearch = '';
+
+function cleanPathname(href: string): string {
+  const withoutHash = href.split('#')[0] || href;
+  const withoutQuery = withoutHash.split('?')[0] || withoutHash;
+  if (withoutQuery.length > 1 && withoutQuery.charAt(withoutQuery.length - 1) === '/') {
+    return withoutQuery.slice(0, -1);
+  }
+  return withoutQuery || '/';
+}
+
+function matchPattern(pattern: string, pathname: string): Record<string, string> | null {
+  const patternParts = pattern.split('/').filter(Boolean);
+  const pathParts = pathname.split('/').filter(Boolean);
+  if (patternParts.length !== pathParts.length) return null;
+  const params: Record<string, string> = {};
+  for (let i = 0; i < patternParts.length; i += 1) {
+    const part = patternParts[i];
+    const value = pathParts[i];
+    if (part.charAt(0) === '[' && part.charAt(part.length - 1) === ']' && part.indexOf('...') === -1) {
+      try {
+        params[part.slice(1, -1)] = decodeURIComponent(value);
+      } catch {
+        params[part.slice(1, -1)] = value;
+      }
+    } else if (part !== value) {
+      return null;
+    }
+  }
+  return params;
+}
+
+export function __matchRoute(pathname: string): { path: string; params: Record<string, string> } | null {
+  const clean = cleanPathname(pathname);
+  for (const route of routes) {
+    if (route.path === clean && route.path.indexOf('[') === -1) return { path: route.path, params: {} };
+  }
+  let best: { path: string; params: Record<string, string> } | null = null;
+  let bestScore = -1;
+  for (const route of routes) {
+    if (route.path.indexOf('[') === -1) continue;
+    const params = matchPattern(route.path, clean);
+    if (!params) continue;
+    if (route.path.length > bestScore) {
+      best = { path: route.path, params };
+      bestScore = route.path.length;
+    }
+  }
+  return best;
+}
 
 function fromLocation(): string {
+  const hash = (typeof location !== 'undefined' && location.hash) || '';
+  if (hash[1] === '/') {
+    const rest = hash.slice(1);
+    const q = rest.indexOf('?');
+    const fromHash = q === -1 ? rest : rest.slice(0, q);
+    currentSearch = q === -1 ? '' : rest.slice(q + 1);
+    if (__matchRoute(fromHash)) return fromHash;
+  }
   const pathname = (typeof location !== 'undefined' && location.pathname) || '/';
-  for (const route of routes) if (route.path === pathname) return route.path;
-  // The served build sits under an unknown /<projectId> mount prefix, so match
-  // the longest known route the pathname ends with; the srcdoc frame has no
-  // meaningful pathname and falls through to '/'.
+  if (__matchRoute(pathname) && pathname.indexOf('[') === -1) return cleanPathname(pathname);
+  // The served build sits under an unknown /<projectId> mount prefix, so try
+  // each suffix of the pathname against the route table — static /shop and
+  // dynamic /product/foo both have to survive /preview-static/{id}/….
+  const parts = pathname.split('/').filter(Boolean);
   let best = '/';
-  for (const route of routes) {
-    if (route.path !== '/' && pathname.endsWith(route.path) && route.path.length > best.length) {
-      best = route.path;
-    }
+  for (let i = 0; i < parts.length; i += 1) {
+    const suffix = '/' + parts.slice(i).join('/');
+    if (__matchRoute(suffix) && suffix.length > best.length) best = suffix;
   }
   return best;
 }
@@ -825,16 +977,23 @@ export function __subscribe(listener: Listener): () => void {
   };
 }
 export function __navigate(path: string): void {
-  const clean = path[0] === '/' ? path.split('#')[0].split('?')[0] : '/' + path;
+  const raw = path[0] === '/' ? path.split('#')[0] : '/' + path;
+  const q = raw.indexOf('?');
+  const clean = q === -1 ? raw : raw.slice(0, q);
+  currentSearch = q === -1 ? '' : raw.slice(q + 1);
   navigated = true;
   current = clean;
+  // Hash-only history: pushState('/shop') on a srcdoc whose location is the
+  // parent app URL becomes a real navigation to http://<app>/shop and unloads
+  // the preview. Stay on about:srcdoc.
   try {
-    history.pushState({}, '', path);
+    history.pushState({}, '', '#' + clean + (currentSearch ? '?' + currentSearch : ''));
   } catch {}
   listeners.forEach((listener) => listener(clean));
 }
 
 if (typeof window !== 'undefined') {
+  window.__previewNavigate = __navigate;
   window.addEventListener('popstate', () => {
     current = fromLocation();
     listeners.forEach((listener) => listener(current));
@@ -860,8 +1019,17 @@ export function usePathname(): string {
   React.useEffect(() => __subscribe(setPath), []);
   return path;
 }
-export function useSearchParams() { return new URLSearchParams(); }
-export function useParams() { return {}; }
+export function useSearchParams() {
+  const [path, setPath] = React.useState(__currentPath());
+  React.useEffect(() => __subscribe(setPath), []);
+  return new URLSearchParams(currentSearch);
+}
+export function useParams() {
+  const [path, setPath] = React.useState(__currentPath());
+  React.useEffect(() => __subscribe(setPath), []);
+  const match = __matchRoute(path);
+  return match ? match.params : {};
+}
 export function redirect(path: string) { __navigate(path); }
 export function notFound() {}
 `;

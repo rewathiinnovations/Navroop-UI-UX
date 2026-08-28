@@ -21,6 +21,7 @@ const store = vi.hoisted(() => ({
   getActiveJob: vi.fn(),
   getLatestJobByKind: vi.fn(),
   getLatestJobOfKinds: vi.fn(),
+  listChatJobs: vi.fn(),
 }));
 
 vi.mock('@/lib/auth', () => ({ getSessionUser: auth.getSessionUser }));
@@ -29,6 +30,7 @@ vi.mock('@/lib/jobs/store', () => ({
   getActiveJob: store.getActiveJob,
   getLatestJobByKind: store.getLatestJobByKind,
   getLatestJobOfKinds: store.getLatestJobOfKinds,
+  listChatJobs: store.listChatJobs,
 }));
 
 const RUNNING_JOB = {

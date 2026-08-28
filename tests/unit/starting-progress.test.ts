@@ -48,6 +48,11 @@ describe('startingGenerationFields', () => {
     const fields = startingGenerationFields({ isEdit: true, hasCompletedFiles: true });
     expect(fields.status).toBe('Starting AI generation...');
     expect(fields.thinkingText).toBe('Analyzing your request...');
+    // Contract change: do not start isThinking true. When admin thinking is off,
+    // thinking_complete never arrives, and a status frame used not to clear the
+    // flag — so the reasoning card stuck for the whole follow-up. Wait for a
+    // real `thinking` SSE frame, same as first build.
+    expect(fields.isThinking).toBe(false);
   });
 });
 
@@ -70,5 +75,13 @@ describe('the client starting state is the wait helper, not hardcoded edit copy'
     expect(runtime).toContain('startingGenerationFields');
     expect(workspace).not.toContain("thinkingText: 'Analyzing your request...'");
     expect(runtime).not.toContain("thinkingText: input.isEdit ? 'Analyzing your request...'");
+  });
+
+  it('clears a stuck thinking card on the first status frame', () => {
+    const runtime = readFileSync(RUNTIME, 'utf8');
+    const statusAt = runtime.indexOf("data.type === 'status'");
+    expect(statusAt).toBeGreaterThan(0);
+    const statusBlock = runtime.slice(statusAt, statusAt + 280);
+    expect(statusBlock).toMatch(/isThinking:\s*false/);
   });
 });

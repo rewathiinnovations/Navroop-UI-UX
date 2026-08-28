@@ -56,6 +56,7 @@ const {
   getActiveJobOfKinds,
   getLatestJobOfKinds,
   getLatestJobByKind,
+  listChatJobs,
 } = await import('@/lib/jobs/store');
 
 /** Whitespace-insensitive, so an indent change in the source is not a failure. */
@@ -125,6 +126,17 @@ describe('getLatestJobOfKinds', () => {
     const job = await getLatestJobOfKinds('proj-1', ['BUILD']);
 
     expect(job).toMatchObject({ id: 'job-1', status: 'SUCCEEDED', estimatedCostUsd: 0.25 });
+  });
+});
+
+describe('listChatJobs', () => {
+  it('asks for the kind set oldest-first with a bound limit, not the poll LIMIT 1', async () => {
+    await listChatJobs('proj-1', ['PLAN', 'BUILD', 'FOLLOWUP', 'IMPORT'], 40);
+
+    expect(calls.list).toHaveLength(1);
+    expect(lastSql()).toContain('kind::text = ANY($2::text[])');
+    expect(lastSql()).toContain('ORDER BY "createdAt" ASC LIMIT $3');
+    expect(calls.list[0].values).toEqual(['proj-1', ['PLAN', 'BUILD', 'FOLLOWUP', 'IMPORT'], 40]);
   });
 });
 

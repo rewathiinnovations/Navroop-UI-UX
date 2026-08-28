@@ -39,6 +39,11 @@ export type UrlImportDeps = {
    * every section generation, so the prefix stays byte-identical and cacheable (F-107).
    */
   memoryBlock?: string | null;
+  /**
+   * Matched workspace skills. Loaded once by the caller and injected AFTER the
+   * cacheable prefix (never inside it), same as chat and plan.
+   */
+  skillBlock?: string | null;
   capture?: () => Promise<PageCapture>;
   rehost?: (capture: PageCapture) => Promise<RehostResult>;
   segment?: (capture: PageCapture) => Promise<ImportSection[]>;
@@ -118,6 +123,7 @@ export async function runUrlImportPipeline(input: UrlImportDeps): Promise<UrlImp
           sections,
           assets: rehosted.assets,
           memoryBlock: input.memoryBlock,
+          skillBlock: input.skillBlock,
           onProgress,
           jobId: input.jobId,
         }));
@@ -136,6 +142,7 @@ export async function runUrlImportPipeline(input: UrlImportDeps): Promise<UrlImp
           capture,
           assets: rehosted.assets,
           memoryBlock: input.memoryBlock,
+          skillBlock: input.skillBlock,
         }));
   }
 

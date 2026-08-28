@@ -12,7 +12,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   if (!message.ok) {
     return NextResponse.json({ error: message.message }, { status: 400 });
   }
-  const result = await requestFollowUpPlan(id, message.prompt);
+  const result = await requestFollowUpPlan(id, message.prompt, request.signal);
   if (!result.ok) return actionError(result);
   return NextResponse.json({ plan: result.data });
 }

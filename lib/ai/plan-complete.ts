@@ -19,6 +19,8 @@ export async function completeWithProviderFailover<T>(opts: {
   requestedModel?: string;
   timeoutMs?: number;
   circuit?: CircuitBreaker;
+  /** External abort (request.signal / job onInactive). Forwarded into each attempt. */
+  signal?: AbortSignal;
   run: (
     entry: ProviderEntry,
     ctx: { signal: AbortSignal; env: Record<string, string | undefined> },
@@ -35,5 +37,6 @@ export async function completeWithProviderFailover<T>(opts: {
   return executeWithFailover(chain, (entry, ctx) => opts.run(entry, { ...ctx, env }), {
     circuit: opts.circuit ?? getDefaultCircuit(),
     timeoutMs: opts.timeoutMs,
+    signal: opts.signal,
   });
 }

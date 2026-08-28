@@ -14,3 +14,13 @@ export function sectionGenerateFailureMessage(label: string, detail: string) {
 export function sectionGenerationSeverity(input: { succeeded: number; failed: number }) {
   return input.succeeded > 0 ? 'compose' : 'fallback';
 }
+
+/** Progress after scrape — names this project's stack, never a hard-coded "React app". */
+export function importRecreationProgress(stackLabel: string) {
+  return `Website scraped successfully! Building ${stackLabel} site...`;
+}
+
+/** Chat success after a URL import persisted the site. */
+export function importRecreationSuccess(url: string, stackLabel: string) {
+  return `Successfully recreated ${url} as a ${stackLabel} site!`;
+}

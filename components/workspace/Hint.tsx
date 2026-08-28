@@ -11,7 +11,7 @@ export default function Hint({
   className?: string;
 }) {
   return (
-    <span className={cn('relative inline-flex group/hint', className)}>
+    <span className={cn('relative inline-flex shrink-0 group/hint', className)}>
       {children}
       <span
         role="tooltip"

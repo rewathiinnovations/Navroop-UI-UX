@@ -75,6 +75,27 @@ describe('a conversational reply ends the turn instead of failing it', () => {
     expect(source).not.toMatch(/chargeJobCreditsOnce\(/);
     expect(startAt).toBeLessThan(source.indexOf('executeWithCompletionFailover('));
   });
+
+  it('does not succeed-and-skip-settle a first-build fileless reply', () => {
+    // chatAnswer used to be `replyOutcome === 'answer'` alone. A no-site first build
+    // that said "I'll create…" then succeedJob'd and never reached settleStreamedGeneration.
+    const source = routeSource();
+    const classifyAt = source.indexOf('const replyOutcome = classifyReplyOutcome({');
+    expect(classifyAt).toBeGreaterThan(0);
+    const classifyBlock = source.slice(
+      classifyAt,
+      source.indexOf('const chatAnswer', classifyAt) + 200,
+    );
+    expect(classifyBlock).toMatch(/hasSite:/);
+    expect(classifyBlock).toMatch(/chatAnswer\s*=\s*replyOutcome\s*===\s*'answer'\s*&&\s*hasSite/);
+    const firstAnswerAt = source.indexOf('if (chatAnswer) {');
+    const settleAt = source.indexOf('streamSettle = await settleStreamedGeneration({');
+    expect(settleAt).toBeGreaterThan(firstAnswerAt);
+    // The settle call sits in the else of the first chatAnswer branch, so a
+    // no-site fileless turn reaches persist / no_files_generated instead of
+    // succeedJob + return. The later `if (chatAnswer)` is only the complete frame.
+    expect(source.slice(firstAnswerAt, settleAt)).toMatch(/\} else \{/);
+  });
 });
 
 describe('the corrective ask for owed files is bounded and visible', () => {

@@ -158,6 +158,40 @@ describe('classifyReplyOutcome', () => {
     expect(classifyReplyOutcome({ fileCount: 0, reply: '', askedAgain: false })).toBe('no_files');
     expect(classifyReplyOutcome({ fileCount: 0, reply: '  ', askedAgain: true })).toBe('no_files');
   });
+
+  it('does not treat a first-build / no-site fileless future-tense reply as an answer', () => {
+    // "I'll create…" is prose, so without a site gate it used to classify as `answer`,
+    // and the route then succeedJob'd and skipped settle — credits spent, phase still
+    // PLANNING, Approve 409, no recovery. A first build that shipped no files is a miss.
+    const futureTense = "I'll create a landing page for your cafe with a menu and booking form.";
+    expect(
+      classifyReplyOutcome({
+        fileCount: 0,
+        reply: futureTense,
+        askedAgain: false,
+        hasSite: false,
+      }),
+    ).toBe('no_files');
+    expect(
+      classifyReplyOutcome({
+        fileCount: 0,
+        reply: CONVERSATIONAL_ANSWER,
+        askedAgain: false,
+        hasSite: false,
+      }),
+    ).toBe('no_files');
+  });
+
+  it('still treats follow-up hello on a finished site as an answer', () => {
+    expect(
+      classifyReplyOutcome({
+        fileCount: 0,
+        reply: 'hello',
+        askedAgain: false,
+        hasSite: true,
+      }),
+    ).toBe('answer');
+  });
 });
 
 describe('MISSING_FILES_CORRECTION', () => {

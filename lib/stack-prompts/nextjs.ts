@@ -19,6 +19,6 @@ ${starterFilesRule('NEXTJS')}
 
 FILES (at least three — never one monolith):
 - app/layout.tsx for root html/body and font loading. The colour tokens are already in app/globals.css.
-- app/page.tsx for the home route, one page.tsx per extra route.
+- app/page.tsx for the home route, one page.tsx per extra route. Every in-app Link or <a href="/..."> must have a matching app/**/page.tsx (app/product/[slug]/page.tsx for /product/:slug). Do not link to a route you did not emit.
 - components/*.tsx for each section.`;
 }

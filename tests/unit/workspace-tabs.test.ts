@@ -18,13 +18,72 @@ import {
   VERSION_PILL_LIMIT,
   VersionMenu,
   WorkspaceToolMenu,
+  WorkspaceViewSwitch,
   versionPillList,
 } from '@/components/workspace/WorkspaceViewControls';
 import { useCheckpoints } from '@/components/workspace/useCheckpoints';
 
 describe('workspace top bar tabs', () => {
-  it('keeps Preview and Code as the only labeled primary tabs', () => {
+  it('keeps Preview and Code as the only primary tabs', () => {
     expect(WORKSPACE_PRIMARY_TABS.map((tab) => tab.id)).toEqual(['preview', 'code']);
+  });
+
+  /**
+   * The switch is icon-only. The names stay on `aria-label` / `title` so a
+   * `getByRole('tab', { name: 'Preview' })` still finds them; the visible
+   * "Preview" / "Code" labels must not come back.
+   */
+  it('renders the primary switch as named icon-only tabs', () => {
+    const html = renderToStaticMarkup(
+      createElement(WorkspaceViewSwitch, {
+        view: 'preview',
+        onViewChange: () => {},
+      }),
+    );
+
+    expect(html).toContain('aria-label="Preview"');
+    expect(html).toContain('aria-label="Code"');
+    expect(html).toContain('title="Preview"');
+    expect(html).toContain('title="Code"');
+    expect(html).toMatch(/aria-label="Preview"[^>]*aria-selected="true"/);
+    expect(html).toMatch(/aria-label="Code"[^>]*aria-selected="false"/);
+    // Visible text would sit between tags as `>Preview<` / `>Code<`. Attribute
+    // values still carry the English names above.
+    const withoutSvg = html.replace(/<svg[\s\S]*?<\/svg>/g, '');
+    expect(withoutSvg).not.toContain('>Preview<');
+    expect(withoutSvg).not.toContain('>Code<');
+    // More views is a sibling in the top-bar cluster, not glued to this pair.
+    expect(html).not.toContain('More views');
+  });
+
+  it('paints the selected Preview/Code tab with the flame CTA tokens', () => {
+    const preview = renderToStaticMarkup(
+      createElement(WorkspaceViewSwitch, {
+        view: 'preview',
+        onViewChange: () => {},
+      }),
+    );
+    const code = renderToStaticMarkup(
+      createElement(WorkspaceViewSwitch, {
+        view: 'code',
+        onViewChange: () => {},
+      }),
+    );
+
+    expect(preview).toMatch(
+      /aria-label="Preview"[^>]*\[background-image:var\(--studio-cta-gradient\)\]/,
+    );
+    expect(preview).toMatch(/aria-label="Preview"[^>]*text-\[var\(--studio-cta-fg\)\]/);
+    expect(preview).toMatch(/aria-label="Code"[^>]*text-\[var\(--studio-muted\)\]/);
+    expect(preview).not.toMatch(
+      /aria-label="Code"[^>]*\[background-image:var\(--studio-cta-gradient\)\]/,
+    );
+
+    expect(code).toMatch(/aria-label="Code"[^>]*\[background-image:var\(--studio-cta-gradient\)\]/);
+    expect(code).toMatch(/aria-label="Code"[^>]*text-\[var\(--studio-cta-fg\)\]/);
+    expect(code).not.toMatch(
+      /aria-label="Preview"[^>]*\[background-image:var\(--studio-cta-gradient\)\]/,
+    );
   });
 
   it('keeps Quality, Assets, Brain, and Domains as the overflow views', () => {
@@ -172,6 +231,61 @@ describe('the workspace header declares no menu role it does not implement', () 
 });
 
 /**
+ * The header used to put Version + page picker beside Preview/Code while the
+ * device dropdown lived on the far right, which is how the icons stacked on
+ * each other around 1024. Order is asserted on the source (WorkspaceTopBar
+ * imports a `'use server'` action) so a reorder that fights the wrap cannot
+ * land quietly.
+ */
+describe('the primary cluster order never stacks controls', () => {
+  const source = readFileSync(
+    resolve(process.cwd(), 'components/workspace/WorkspaceTopBar.tsx'),
+    'utf8',
+  );
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+
+  it('keeps Preview|Code → page → device → version → more views', () => {
+    const switchAt = code.indexOf('<WorkspaceViewSwitch');
+    const pageAt = code.indexOf('id="workspace-page"');
+    const deviceAt = code.indexOf('<PreviewDeviceToolbar');
+    const versionAt = code.indexOf('<VersionMenu');
+    const moreAt = code.indexOf('<WorkspaceToolMenu');
+
+    expect(switchAt).toBeGreaterThan(-1);
+    expect(pageAt).toBeGreaterThan(switchAt);
+    expect(deviceAt).toBeGreaterThan(pageAt);
+    expect(versionAt).toBeGreaterThan(deviceAt);
+    expect(moreAt).toBeGreaterThan(versionAt);
+  });
+
+  it('documents that order and refuses a squeezed flex-1 cluster', () => {
+    expect(source).toContain(
+      'Primary cluster order: Preview|Code → page switcher → device → version → more views',
+    );
+    const clusterOpen = code.indexOf('<WorkspaceViewSwitch');
+    const clusterWrap = code.lastIndexOf(
+      'className="flex max-w-full shrink-0 flex-wrap items-center gap-6"',
+      clusterOpen,
+    );
+    expect(clusterWrap).toBeGreaterThan(-1);
+    expect(code.slice(clusterWrap, clusterOpen)).not.toContain('flex-1');
+    // Icon chrome keeps a 44px box that cannot collapse under a neighbour.
+    expect(source).toMatch(/const ICON_BTN =\s*'studio-icon-hit inline-flex shrink-0 /);
+    expect(code).toContain(
+      'ml-auto flex max-w-full shrink-0 flex-wrap items-center justify-end gap-6',
+    );
+  });
+
+  it('keeps remaining actions after the More views overflow', () => {
+    const moreAt = code.indexOf('<WorkspaceToolMenu');
+    const refreshAt = code.indexOf('aria-label="Refresh preview"');
+    const downloadAt = code.indexOf('aria-label="Download code"');
+    expect(refreshAt).toBeGreaterThan(moreAt);
+    expect(downloadAt).toBeGreaterThan(refreshAt);
+  });
+});
+
+/**
  * Below 900px `compactActions` hides the standalone Share button, so the overflow
  * menu is the only route Share has left — with no item there, Share is unreachable
  * by pointer and by keyboard alike on a tablet. `main` found that hole while the
@@ -287,7 +401,6 @@ describe('the version window', () => {
     expect(versionPillList(history(2)).map((pill) => pill.label)).toEqual(['v1', 'v2']);
     expect(versionPillList([])).toEqual([]);
   });
-
 });
 
 /**
@@ -352,13 +465,7 @@ describe('the header version menu', () => {
     );
 
     expect(items).toHaveLength(VERSION_PILL_LIMIT);
-    expect(items.map((item) => item.props.value)).toEqual([
-      'cp-3',
-      'cp-4',
-      'cp-5',
-      'cp-6',
-      'cp-7',
-    ]);
+    expect(items.map((item) => item.props.value)).toEqual(['cp-3', 'cp-4', 'cp-5', 'cp-6', 'cp-7']);
   });
 
   it('disables a thinned version rather than offering a click the server will reject', () => {

@@ -10,7 +10,6 @@ import { shouldExcludeExportPath } from '@/lib/export/files';
 import { sanitizeGenerationPath } from '@/lib/generation/parse-files';
 import { log } from '@/lib/logger';
 import { buildStaticSite } from './server-bundle';
-import { injectInspectorIntoHtml } from './inject';
 import { contentTypeForPath, shouldGzipPreviewPath } from './mime';
 import { PREVIEW_TOO_LARGE } from './labels';
 import type { BuildStaticPreviewDeps, BuildStaticPreviewResult } from './types';
@@ -76,10 +75,7 @@ export async function buildStaticPreview(
     }
     files.push({
       relative: safe.path,
-      body: Buffer.from(
-        /\.html?$/i.test(safe.path) ? injectInspectorIntoHtml(content) : content,
-        'utf8',
-      ),
+      body: Buffer.from(content, 'utf8'),
     });
   }
   if (rejected.length > 0) {

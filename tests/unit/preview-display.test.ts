@@ -1,10 +1,9 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { isMessageFromPreviewFrame, previewToolsState } from '@/lib/preview/display';
-import { buildPreviewSrcdoc } from '@/lib/preview/html';
+import { isMessageFromPreviewFrame, postNavigateToPreviewFrame } from '@/lib/preview/display';
+import { buildPreviewSrcdoc, PREVIEW_MESSAGE_SOURCE } from '@/lib/preview/html';
 import { buildStaticSite } from '@/lib/preview/server-bundle';
-import { ELEMENT_SELECTED_TYPE, INSPECTOR_SCRIPT_ID } from '@/lib/visual-edits/inspector';
 import { useStaticPreview, type StaticPreviewState } from '@/components/workspace/useStaticPreview';
 
 const notices = vi.hoisted(() => ({ error: vi.fn() }));
@@ -24,9 +23,9 @@ afterEach(() => {
  * `BrowserPreview` compiles the project in this tab and renders it into a
  * sandboxed `srcdoc` iframe — the only preview a user ever sees. The
  * `PreviewBuild` is the *served* copy of that same document, and everything
- * pointed at it (`useStaticPreview.applyUrl`, the Visual Edits gate) was
- * pointed at an iframe that is never mounted and at a URL that is null unless
- * a distinct preview origin is configured (F-140).
+ * pointed at it (`useStaticPreview.applyUrl`) was pointed at an iframe that is
+ * never mounted and at a URL that is null unless a distinct preview origin is
+ * configured (F-140).
  */
 describe('the served build is the same document the frame renders', () => {
   it('publishes exactly what buildPreviewSrcdoc produces, so it is not a second thing to display', async () => {
@@ -49,30 +48,24 @@ describe('the served build is the same document the frame renders', () => {
   });
 });
 
-describe('the inspector ships inside the document it inspects', () => {
-  it('embeds the inspector in the bundled srcdoc', () => {
+describe('preview HTML has no visual-edit inspector', () => {
+  it('does not embed an inspector script in the bundled srcdoc', () => {
     const srcdoc = buildPreviewSrcdoc({ code: 'void 0;', css: 'body{}' });
-
-    // Injecting from outside can never work: the frame is sandboxed without
-    // allow-same-origin, so `contentDocument` is null and the Function-in-frame
-    // fallback is unreachable too. The script has to be part of the document.
-    expect(srcdoc).toContain(INSPECTOR_SCRIPT_ID);
-    expect(srcdoc).toContain(ELEMENT_SELECTED_TYPE);
+    expect(srcdoc).not.toContain('navroop-visual-edits');
+    expect(srcdoc).not.toContain('__navroopVisualEdits');
+    expect(srcdoc).toContain('__previewNavigate');
+    expect(srcdoc).toContain('about:srcdoc');
   });
 
-  it('embeds the inspector in a raw-HTML project too', () => {
+  it('does not embed an inspector in a raw-HTML project either', () => {
     const srcdoc = buildPreviewSrcdoc({
       code: '',
       rawHtml: '<html><head></head><body><h1>Plain</h1></body></html>',
     });
 
-    expect(srcdoc).toContain(INSPECTOR_SCRIPT_ID);
+    expect(srcdoc).not.toContain('navroop-visual-edits');
     expect(srcdoc).toContain('<h1>Plain</h1>');
-  });
-
-  it('keeps the inspector inside the body, ahead of the closing tag', () => {
-    const srcdoc = buildPreviewSrcdoc({ code: 'void 0;' });
-    expect(srcdoc.indexOf(INSPECTOR_SCRIPT_ID)).toBeLessThan(srcdoc.indexOf('</body>'));
+    expect(srcdoc).toContain('__previewNavigate');
   });
 });
 
@@ -97,39 +90,32 @@ describe('isMessageFromPreviewFrame', () => {
   });
 });
 
-describe('previewToolsState', () => {
-  const ready = { view: 'preview', pane: 'ready' as const, frameRendered: true, tool: null };
+describe('postNavigateToPreviewFrame', () => {
+  /**
+   * The page picker used to post at GenerationWorkspace's `iframeRef`, which
+   * is only attached to the deleted sandbox iframe. That ref is always null,
+   * so `contentWindow?.postMessage` was a silent no-op and Shop/Home did
+   * nothing. The helper must talk to whatever frame is actually mounted
+   * (BrowserPreview / previewFrameRef) and must no-op without throwing when
+   * that frame is not on screen yet.
+   */
+  it('posts { source, type: navigate, path } at the frame with targetOrigin *', () => {
+    const postMessage = vi.fn();
+    const posted = postNavigateToPreviewFrame({ contentWindow: { postMessage } }, '/shop');
 
-  it('offers Visual Edits over a rendered frame with no preview origin configured', () => {
-    // The defect: the gate was `Boolean(sandboxUrl)`, the *served* build's signed
-    // URL. That is null in every installation without a preview host, which is
-    // exactly where the in-browser frame is the only preview there is.
-    expect(previewToolsState(ready).showTools).toBe(true);
-  });
-
-  it('does not offer tools over a frame that is not on screen', () => {
-    expect(previewToolsState({ ...ready, frameRendered: false }).showTools).toBe(false);
-  });
-
-  it('stays out of the Code, SEO and Assets views', () => {
-    for (const view of ['code', 'seo', 'assets', 'brain', 'domains']) {
-      expect(previewToolsState({ ...ready, view }).showTools).toBe(false);
-    }
-  });
-
-  it('stays out of the planning pane', () => {
-    expect(previewToolsState({ ...ready, pane: 'planning' }).showTools).toBe(false);
-  });
-
-  it('inspects only once a tool is picked', () => {
-    expect(previewToolsState(ready).inspectEnabled).toBe(false);
-    expect(previewToolsState({ ...ready, tool: 'edit' }).inspectEnabled).toBe(true);
-  });
-
-  it('never inspects when the toolbar itself is not offered', () => {
-    expect(previewToolsState({ ...ready, tool: 'edit', frameRendered: false }).inspectEnabled).toBe(
-      false,
+    expect(posted).toBe(true);
+    expect(postMessage).toHaveBeenCalledTimes(1);
+    expect(postMessage).toHaveBeenCalledWith(
+      { source: PREVIEW_MESSAGE_SOURCE, type: 'navigate', path: '/shop' },
+      '*',
     );
+  });
+
+  it('returns false and posts nothing when the frame has no contentWindow', () => {
+    const postMessage = vi.fn();
+    expect(postNavigateToPreviewFrame(null, '/shop')).toBe(false);
+    expect(postNavigateToPreviewFrame({ contentWindow: null }, '/cart')).toBe(false);
+    expect(postMessage).not.toHaveBeenCalled();
   });
 });
 
