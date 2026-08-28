@@ -83,13 +83,20 @@ vi.mock('@/lib/db', () => ({
 // building a network client.
 vi.mock('@/lib/ai/client-for-entry', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/ai/client-for-entry')>();
+  const clientForEntry = (_entry: unknown, env: Record<string, string | undefined>) => {
+    const client = { chat: (modelId: string) => ({ modelId }) };
+    fake.clients.push({ source: fake.sourceOf(env.DEEPSEEK_API_KEY), client });
+    return client;
+  };
   return {
     ...actual,
-    clientForEntry: (_entry: unknown, env: Record<string, string | undefined>) => {
-      const client = { chat: (modelId: string) => ({ modelId }) };
-      fake.clients.push({ source: fake.sourceOf(env.DEEPSEEK_API_KEY), client });
-      return client;
-    },
+    clientForEntry,
+    // generate-sections uses this export; the original closes over the real clientForEntry.
+    chatModelForEntry: (
+      entry: Parameters<typeof actual.chatModelForEntry>[0],
+      env: Record<string, string | undefined>,
+      modelId: string,
+    ) => actual.chatModelForProvider(clientForEntry(entry, env), modelId),
   };
 });
 

@@ -35,6 +35,25 @@ const provider = vi.hoisted(() => ({ getProviderForModel: vi.fn() }));
 vi.mock('@/lib/ai/provider-manager', () => provider);
 vi.mock('@/lib/ai/client-for-entry', () => ({
   chatModelForProvider: vi.fn((_client: unknown, modelId: string) => ({ modelId })),
+  chatModelForEntry: vi.fn((_entry: unknown, _env: unknown, modelId: string) => ({ modelId })),
+}));
+
+// Import sections now complete through the shared failover helper, not getProviderForModel.
+vi.mock('@/lib/ai/plan-complete', () => ({
+  completeWithProviderFailover: async ({
+    run,
+  }: {
+    run: (
+      entry: { provider: string; model: string },
+      ctx: { signal: AbortSignal; env: Record<string, string | undefined> },
+    ) => Promise<unknown>;
+  }) => {
+    const result = await run(
+      { provider: 'deepseek', model: MODEL },
+      { signal: new AbortController().signal, env: {} },
+    );
+    return { result, model: MODEL, provider: 'deepseek' };
+  },
 }));
 
 const db = vi.hoisted(() => ({

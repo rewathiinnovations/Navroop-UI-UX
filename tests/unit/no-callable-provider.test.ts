@@ -240,7 +240,6 @@ describe('no callable @ai-sdk/openai provider', () => {
       expect.arrayContaining([
         'lib/audit/ai-review.ts',
         'lib/generation/analyze-edit-intent.ts',
-        'lib/import/generate-sections.ts',
         'lib/import/segment.ts',
         'lib/memory/extract.ts',
         'lib/skills/match.ts',
