@@ -197,11 +197,12 @@ test.describe('journey 2 — create project from a prompt', () => {
 
     // The prompt is what the project was created from, so it has to be on the row
     // the workspace is showing — a workspace that opened some *other* project
-    // would satisfy every assertion above.
-    const response = await page.request.get(`/api/projects/${createdProjectId}`);
-    expect(response.ok()).toBeTruthy();
-    const body = (await response.json()) as { project?: { initialPrompt?: string } };
-    expect(body.project?.initialPrompt).toBe(prompt);
+    // would satisfy every assertion above. The detail API deliberately stopped
+    // returning initialPrompt (getProject destructures it away), so the proof
+    // is the row-derived name the workspace loaded: a deferred-planning create
+    // names the row from the prompt itself (nameFromPrompt), and no other
+    // project row can produce this fragment.
+    await expect(nameField).toHaveValue(/neighbourhood bike repair/i, { timeout: 15_000 });
   });
 });
 
