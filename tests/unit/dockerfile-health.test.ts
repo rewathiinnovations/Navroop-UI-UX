@@ -5,7 +5,10 @@ import { describe, expect, it } from 'vitest';
 describe('production image', () => {
   it('stays multi-stage, non-root, and health-checks /api/health', () => {
     const docker = readFileSync(join(process.cwd(), 'Dockerfile'), 'utf8');
-    expect(docker).toMatch(/FROM node:20/);
+    // 22 is the floor, not a ceiling pin: the declared pnpm (11.21) needs Node >= 22.13
+    // (`node:sqlite`), and CI runs the gate on Node 22 — a node:20 image crashed every
+    // pnpm invocation at startup (deploy 2026-08-29).
+    expect(docker).toMatch(/FROM node:22/);
     expect(docker).toMatch(/USER nextjs/);
     expect(docker).toMatch(/HEALTHCHECK/);
     expect(docker).toMatch(/\/api\/health/);

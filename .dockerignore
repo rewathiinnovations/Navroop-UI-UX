@@ -29,7 +29,14 @@
 
 # Not needed by `prisma generate` or `next build`.
 tests
+# The spec files stay out, but `next build` type-checks every file in the context and
+# two of them import from e2e/support (`playwright.config.ts` → ./e2e/support/paths,
+# `scripts/seed-e2e-account.ts` → ../e2e/support/seed-account) — with the whole tree
+# excluded, the production build failed on TS2307 (deploy 2026-08-29). The helpers are
+# a few small files importing only lib/, generated/ and @playwright/test, all present
+# in the builder.
 e2e
+!e2e/support/**
 playwright-report
 test-results
 examples

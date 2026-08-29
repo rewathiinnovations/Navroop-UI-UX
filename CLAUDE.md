@@ -84,12 +84,14 @@ Use **pnpm**, never npm — keep `pnpm-lock.yaml`, never create `package-lock.js
 pnpm run verify
 ```
 
-The pre-push gate. **Its step list is single-sourced in `docs/release.md`, section “`verify` order”** —
+The full local gate. **Its step list is single-sourced in `docs/release.md`, section “`verify` order”** —
 fourteen steps, each named by its `VERIFY_STEPS` id (`lib/verify/orchestrator.ts`). Read it there;
 this file used to carry eight of them and stopped at the Playwright `critical` project, which
 silently dropped the fatal `playwright-authenticated` step, `depcheck`, `knip` and the fatal
 dependency `audit`. `pnpm run verify:full` runs every Playwright project instead of the two
-per-project steps.
+per-project steps. `.husky/pre-push` runs `verify:light` (~2 min): the fast fatal steps locally,
+with the slow half deferred to `.github/workflows/verify.yml`, which runs the complete `verify`
+on the same push — the release.md section marks the deferred rows.
 
 Read the **Verify / release** section of `AGENTS.md` before running it. In particular it
 explains why you must not run `pnpm exec <tool>` in an agent shell (pnpm's dependency-status

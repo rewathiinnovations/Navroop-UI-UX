@@ -101,6 +101,32 @@ export default function AuthModal({
     setInfo(resetSuccess ? 'Password updated — sign in' : '');
   }, [open, mode, initialForgot, resetSuccess]);
 
+  /**
+   * One credentials attempt, with the failure Auth.js hides made visible.
+   *
+   * `signIn(..., { redirect: false })` resolves with no `error` field when the
+   * server rejects the POST for CSRF — the rejection only appears as an
+   * `error=` parameter inside `result.url`. This modal used to read that shape
+   * as success: it toasted "Signed in.", closed, pushed /dashboard, and the
+   * proxy bounced the still-anonymous visitor straight back. The mismatch is a
+   * startup race — the landing page's parallel auth fetches can rotate the
+   * CSRF cookie after signIn has captured its token — so one retry, which runs
+   * against the settled cookie, is the fix rather than an error message.
+   */
+  const attemptCredentialsSignIn = async (
+    payload: Record<string, string>,
+  ): Promise<'ok' | 'credentials' | 'csrf'> => {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const result = await signIn('credentials', { ...payload, redirect: false });
+      if (result?.error) return 'credentials';
+      const embedded = /[?&]error=([^&]+)/.exec(result?.url ?? '');
+      if (!embedded) return 'ok';
+      if (decodeURIComponent(embedded[1]) !== 'MissingCSRF') return 'credentials';
+      // Retry once against the settled CSRF cookie.
+    }
+    return 'csrf';
+  };
+
   const finishAuthenticated = async (welcome: string) => {
     // Toasted rather than shown in the dialog: the dialog is about to close and
     // the user lands on a different page.
@@ -167,13 +193,11 @@ export default function AuthModal({
 
     setLoading(true);
     try {
-      const result = await signIn('credentials', {
-        email: trimmedEmail,
-        password,
-        redirect: false,
-      });
-      if (result?.error) {
-        setError('Invalid email or password');
+      const outcome = await attemptCredentialsSignIn({ email: trimmedEmail, password });
+      if (outcome !== 'ok') {
+        setError(
+          outcome === 'csrf' ? 'Could not sign in — please try again' : 'Invalid email or password',
+        );
         return;
       }
       await finishAuthenticated('Signed in.');
@@ -224,11 +248,8 @@ export default function AuthModal({
     setQuickRole(role);
     setLoading(true);
     try {
-      const result = await signIn('credentials', {
-        devRole: role,
-        redirect: false,
-      });
-      if (result?.error) {
+      const outcome = await attemptCredentialsSignIn({ devRole: role });
+      if (outcome !== 'ok') {
         setError('Could not sign in');
         return;
       }

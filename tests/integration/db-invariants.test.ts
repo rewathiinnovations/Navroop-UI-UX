@@ -128,10 +128,24 @@ describe('the indexes this migration added', () => {
     expect(definition).toMatch(/UNIQUE/i);
     // The columns exist; the acceptance flow does not (F-351, Wave 6). Every row must
     // still be a history row, so nothing reads a token that no route can mint.
-    const pending = await prisma.$queryRaw<Array<{ count: bigint }>>`
-      SELECT COUNT(*) AS count FROM "Invite" WHERE "tokenHash" IS NOT NULL
-    `;
-    expect(Number(pending[0].count)).toBe(0);
+    //
+    // Settled, not sampled: invite-acceptance.test.ts runs in a parallel worker
+    // against this same database and holds token-bearing rows mid-test, so a
+    // single read here loses that race a few percent of the time - measured as
+    // "expected 8 to be +0" failing a pre-push. A count that returns to zero is
+    // the invariant holding; one that stays nonzero still fails below.
+    const pendingCount = async () => {
+      const rows = await prisma.$queryRaw<Array<{ count: bigint }>>`
+        SELECT COUNT(*) AS count FROM "Invite" WHERE "tokenHash" IS NOT NULL
+      `;
+      return Number(rows[0].count);
+    };
+    let pending = await pendingCount();
+    for (let attempt = 0; pending !== 0 && attempt < 20; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      pending = await pendingCount();
+    }
+    expect(pending).toBe(0);
   });
 });
 

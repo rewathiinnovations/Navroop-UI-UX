@@ -99,8 +99,18 @@ describe('.dockerignore excludes at every depth', () => {
     'scripts/pre-migrate.ts',
     'public/file.svg',
     'README.md',
+    // Re-included from the excluded e2e tree: `next build` type-checks the whole
+    // context, and playwright.config.ts / scripts/seed-e2e-account.ts import these
+    // helpers - excluding them failed the production build on TS2307 (2026-08-29).
+    'e2e/support/paths.ts',
+    'e2e/support/seed-account.ts',
   ])('still ships %s, which the build needs', (path) => {
     expect(isExcluded(path)).toBe(false);
+  });
+
+  it('keeps the spec files out even though e2e/support is re-included', () => {
+    expect(isExcluded('e2e/journeys-critical.spec.ts')).toBe(true);
+    expect(isExcluded('e2e/journeys-authenticated.spec.ts')).toBe(true);
   });
 
   it('anchors every credential and install pattern at any depth', () => {
@@ -121,20 +131,27 @@ describe('.dockerignore excludes at every depth', () => {
 
 describe('Dockerfile pnpm', () => {
   it('does not pin a pnpm version beside package.json packageManager', () => {
-    // `corepack prepare pnpm@<version>` is a second source of truth that drifted once already.
-    expect(dockerfile).not.toMatch(/corepack prepare/);
-    expect(dockerfile).toMatch(/corepack enable/);
+    // `corepack prepare pnpm@<version>` was a second source of truth that drifted once
+    // already - and corepack itself is gone now: three deploys died to three different
+    // corepack failures on the then-node:20 image (pre-rotation signing keys, @latest
+    // refusing Node 20, 0.31.0 crashing with ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING),
+    // and a fourth exposed the real constraint - pnpm 11.21 needs Node >= 22.13, which
+    // is why the base image is node:22 now (see dockerfile-health.test.ts). The
+    // declared pnpm is installed through npm, with the version read from package.json at
+    // build time, so there is still exactly one place the number lives.
+    expect(dockerfile).not.toMatch(/corepack/);
+    const pinned = dockerfile.match(/pnpm@(\d+\.\d+\.\d+)/g) ?? [];
+    expect(pinned).toEqual([]);
   });
 
   it('installs the packageManager version and asserts it before installing dependencies', () => {
-    expect(dockerfile).toMatch(/corepack install/);
-    // The assertion has to read package.json, not repeat the version.
+    // The install reads package.json rather than repeating the version, and the check
+    // beside it fails the build if the installed pnpm is not the declared one.
+    expect(dockerfile).toMatch(
+      /npm install -g pnpm@"\$\(node -p "require\('\.\/package\.json'\)\.packageManager\.split\('@'\)\[1\]"\)"/,
+    );
     expect(dockerfile).toMatch(/packageManager/);
     expect(packageJson.packageManager).toMatch(/^pnpm@\d+\.\d+\.\d+$/);
-    const pinned = dockerfile.match(/pnpm@(\d+\.\d+\.\d+)/g) ?? [];
-    for (const occurrence of pinned) {
-      expect(occurrence).toBe(packageJson.packageManager);
-    }
   });
 
   it('calls the prisma CLI directly rather than through pnpm exec', () => {

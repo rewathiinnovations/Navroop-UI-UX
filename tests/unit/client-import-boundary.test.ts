@@ -346,9 +346,18 @@ describe('client import boundary', () => {
     expect(entries).toContain('lib/notify.ts');
   });
 
-  it('keeps every use-client graph off Node builtins, Prisma, and the logger', () => {
-    expect(findClientImportBoundaryHits()).toEqual([]);
-  });
+  // Three minutes, not the 60s default: this bundles every use-client graph
+  // through esbuild, which takes ~5s on an idle machine and over 60s when the
+  // full coverage run's worker pool is competing for the same cores — it timed
+  // out twice in five pre-push gates while passing solo every time. The
+  // assertion is unchanged; only load-starvation stops failing it.
+  it(
+    'keeps every use-client graph off Node builtins, Prisma, and the logger',
+    { timeout: 180_000 },
+    () => {
+      expect(findClientImportBoundaryHits()).toEqual([]);
+    },
+  );
 
   it('names the Node builtin when a client file imports one', () => {
     const dir = mkdtempSync(join(tmpdir(), 'navroop-client-boundary-'));

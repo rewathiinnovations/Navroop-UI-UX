@@ -173,17 +173,15 @@ test.describe('journey 7 — admin team invite', () => {
 
       await dialog.locator('#invite-email').fill(email);
       await dialog.locator('#invite-name').fill('Invited Journey Member');
-      await dialog.getByRole('button', { name: 'Create invite' }).click();
+      await dialog.getByRole('button', { name: 'Send invite' }).click();
 
-      // Invite-only means the temporary password is the entire handover, and it
-      // is shown exactly once — so an empty or missing one strands the invitee.
-      await expect(dialog.getByRole('heading', { name: 'Member created' })).toBeVisible({
+      // The handover is now a single-use emailed link, not a shown-once
+      // temporary password: the invitee chooses their own password, so the
+      // dialog's job is to say the link is on its way and to whom.
+      await expect(dialog.getByRole('heading', { name: 'Invite sent' })).toBeVisible({
         timeout: 30_000,
       });
-      const password = await dialog.locator('code').innerText();
-      expect(password.trim().length, 'the temporary password must be shown once').toBeGreaterThan(
-        4,
-      );
+      await expect(dialog.getByText(email)).toBeVisible();
 
       await dialog.getByRole('button', { name: 'Done' }).click();
 
