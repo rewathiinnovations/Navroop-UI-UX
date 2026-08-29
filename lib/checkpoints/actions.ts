@@ -14,6 +14,7 @@ import {
   type SnapshotRecord,
 } from './snapshot';
 import { recordRevertRate } from '@/lib/signals/collect';
+import { findLastWorkingCheckpoint } from './restore-working';
 import { adjustStorageBytes, WORKSPACE_ROW_ID } from '@/lib/storage/usage';
 import { deleteObject } from '@/lib/storage';
 import { checkLimit } from '@/lib/plans/limits';
@@ -505,4 +506,33 @@ export async function toggleCheckpointBookmark(projectId: string, checkpointId: 
     data: { isBookmarked: !checkpoint.isBookmarked },
   });
   return { ok: true as const, data: toPublic(updated) };
+}
+
+/**
+ * Rescue a project the auto-fix loop left broken, by restoring the last version that works.
+ *
+ * Called when the repair loop has spent its attempts and the site still does not validate.
+ * The decision is deliberately narrow — see `findLastWorkingCheckpoint` — and it does nothing
+ * at all when the current state is fine or when no earlier version can be proven good, so a
+ * caller can invoke it without first deciding whether it should.
+ *
+ * Auth, the project lock and the "before restoring" checkpoint all come from
+ * `restoreCheckpoint`, which this delegates to rather than reimplements.
+ */
+export async function restoreLastWorkingCheckpoint(projectId: string) {
+  const { user, err } = await requireActor();
+  if (!user) return err;
+
+  const found = await findLastWorkingCheckpoint(projectId);
+  if (!found.found) {
+    return { ok: true as const, restored: null, reason: found.reason };
+  }
+
+  const restored = await restoreCheckpoint(projectId, found.checkpointId);
+  if (!restored || !('ok' in restored) || !restored.ok) return restored;
+  return {
+    ok: true as const,
+    restored: { checkpointId: found.checkpointId, label: found.label, createdAt: found.createdAt },
+    reason: null,
+  };
 }

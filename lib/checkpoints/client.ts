@@ -141,3 +141,23 @@ export async function restoreCheckpoint(projectId: string, checkpointId: string)
   );
   return data?.checkpoint ? toCheckpoint(data.checkpoint) : null;
 }
+
+/**
+ * Ask the server to go back to the last version that still works.
+ *
+ * Only called after the auto-fix loop has given up on a site that does not validate. Returns
+ * what happened rather than throwing on "nothing to restore": no earlier working version is a
+ * normal outcome on a first build, and it is a sentence to show the user, not an error.
+ */
+export async function restoreLastWorkingCheckpoint(projectId: string) {
+  const response = await fetch(`/api/projects/${projectId}/checkpoints/restore-working`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  const data = (await response.json().catch(() => null)) as {
+    restored?: { checkpointId: string; label: string } | null;
+    reason?: string | null;
+  } | null;
+  if (!response.ok) return { restored: null, reason: 'request-failed' as const };
+  return { restored: data?.restored ?? null, reason: data?.reason ?? null };
+}
