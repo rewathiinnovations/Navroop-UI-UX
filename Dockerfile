@@ -51,6 +51,22 @@ RUN npm install -g pnpm@"$(node -p "require('./package.json').packageManager.spl
   && node -e "const want=require('./package.json').packageManager.split('@')[1];const got=require('node:child_process').execSync('pnpm --version').toString().trim();if(got!==want){console.error('pnpm '+got+' is not the declared packageManager '+want);process.exit(1)}console.log('pnpm '+got)"
 RUN pnpm install --frozen-lockfile --ignore-scripts
 
+# The runner's boot scripts (pre-migrate, seed, reconcile) run under the global tsx
+# from /app, so they resolve packages from /app/node_modules — and the standalone
+# trace only holds what the *server* graph imports. `dotenv` (scripts/pre-migrate.ts)
+# was not in that trace and the 2026-08-29 deploy crash-looped on
+# ERR_MODULE_NOT_FOUND before migrate ever ran. This stage builds the full declared
+# production set with a hoisted (real-directory, npm-style) layout, so overlaying it
+# on the standalone tree is a plain directory merge with no pnpm symlinks to break.
+# A fresh stage from base, not FROM deps: pnpm refuses to re-link an existing
+# node_modules without a TTY confirm (ABORTED_REMOVE_MODULES_DIR_NO_TTY).
+FROM base AS prod-deps
+WORKDIR /app
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+# Same declared-version install as deps; see the comment there.
+RUN npm install -g pnpm@"$(node -p "require('./package.json').packageManager.split('@')[1]")"
+RUN pnpm install --prod --frozen-lockfile --ignore-scripts --config.node-linker=hoisted
+
 # FROM deps, not base: the builder then inherits both node_modules and the corepack-installed
 # pnpm, so `pnpm build` cannot resolve a different version than the one deps asserted.
 FROM deps AS builder
@@ -145,6 +161,11 @@ ENV OBSERVABILITY_CONFIG_PATH=/data/config/observability.json
 
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+# Over the standalone tree's pruned node_modules: the full declared production set
+# (hoisted, real directories — see the prod-deps stage). The server keeps working —
+# the trace is a subset of these packages — and the tsx boot scripts stop depending
+# on which packages the server graph happened to pull in.
+COPY --from=prod-deps --chown=nextjs:nodejs /app/node_modules ./node_modules
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
 COPY --from=builder --chown=nextjs:nodejs /app/generated ./generated
