@@ -28,6 +28,25 @@ import type { BuildError } from './build-check';
  *    whatever the host happens to have is a check that passes on one machine and fails on
  *    another. They are ambient `any` modules here. That costs the ability to check *inside*
  *    those libraries, which is not this stage's job — the props of the code we generate are.
+ *
+ * WHAT THIS COSTS, MEASURED RATHER THAN ESTIMATED.
+ *
+ * `ts.createProgram` is synchronous, so it blocks the event loop, and jobs run in the request
+ * process here — the block is felt by whoever else is being served at that moment, not by the
+ * generation itself. First implementation: 2.8s per call, and no better on the second call,
+ * because every program re-read and re-parsed `lib.dom.d.ts` and React's declarations. With
+ * those cached (`declarationCache` below) it is ~1s warm. Vitest's own worker was the thing
+ * that noticed: at 2.8s its RPC timed out and the run exited non-zero with every test passing.
+ *
+ * ~1s of blocking is still blocking, and this file is the first thing in the repository to do
+ * it — `checkBuild` runs esbuild in a child process and the audit drives Chromium out of
+ * process, both deliberately. It ships this way because a generation already takes 30-60s,
+ * this runs once per generation, and the alternative — a worker thread — means shipping a
+ * separate entry file through Next's standalone output tracing, which is the exact packaging
+ * class that has broken production here before.
+ *
+ * The trigger for revisiting is concurrency: the moment two generations regularly overlap, or
+ * anyone notices the app stalling while a build validates, this belongs on another thread.
  */
 
 /** `react` is real: JSX needs its types, and `@types/react` is a dependency of this app. */
@@ -193,6 +212,20 @@ export function typecheckGenerated(input: {
 }
 
 /**
+ * The lib and `@types/react` declaration files, parsed once for the life of the process.
+ *
+ * They are the whole cost of this stage. Measured before the cache: 2.8 seconds per call and
+ * no improvement across calls, because every `createProgram` re-read and re-parsed
+ * `lib.dom.d.ts` and React's types from scratch. They are also immutable — the app's own
+ * installed declarations, identical on every run — so parsing them once is not an
+ * optimisation with a correctness cost, it is the same answer computed less often.
+ *
+ * Only files the project does *not* own are cached. A generated file changes every run and
+ * must never be served from here.
+ */
+const declarationCache = new Map<string, ts.SourceFile | undefined>();
+
+/**
  * A CompilerHost over a Map, with `react` and the TypeScript lib files read from this app's
  * own installation — the only two things the generated code needs that a declaration cannot
  * stand in for.
@@ -208,7 +241,11 @@ function inMemoryHost(contents: Map<string, string>): ts.CompilerHost {
       if (own !== undefined) {
         return ts.createSourceFile(fileName, own, languageVersion, true);
       }
-      return base.getSourceFile(fileName, languageVersion, onError, shouldCreate);
+      const cached = declarationCache.get(fileName);
+      if (cached !== undefined || declarationCache.has(fileName)) return cached;
+      const parsed = base.getSourceFile(fileName, languageVersion, onError, shouldCreate);
+      declarationCache.set(fileName, parsed);
+      return parsed;
     },
     writeFile: () => {
       // noEmit is set, and a validator that wrote to disk is the defect this file's header
