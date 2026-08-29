@@ -28,9 +28,12 @@ ENV PATH="${PNPM_HOME}:${PATH}"
 # The image's bundled corepack predates npm's 2025 signing-key rotation, so
 # `corepack install` for a current pnpm fails signature verification with a
 # bare exit 1 ("Cannot find matching keyid") - which took the production
-# deploy down at the dependency step. Upgrading corepack first keeps the
+# deploy down at the dependency step. Pinned to 0.31.0, not @latest: it is the
+# first line with the rotated keys, and later majors require Node >= 22.13
+# while this image is node:20 - @latest installed fine and then refused to
+# run, which failed the very same step one deploy later. The pin keeps the
 # integrity check real instead of disabling it via COREPACK_INTEGRITY_KEYS=0.
-RUN npm install -g corepack@latest && corepack enable
+RUN npm install -g corepack@0.31.0 && corepack enable
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
 FROM base AS deps
