@@ -161,16 +161,23 @@ ENV OBSERVABILITY_CONFIG_PATH=/data/config/observability.json
 
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-# The full declared production set as a RESOLUTION FALLBACK at /node_modules —
-# one directory above /app — so Node's lookup walk finds it for anything the
-# standalone trace does not carry (dotenv for scripts/pre-migrate.ts, bcryptjs
-# for the seed). /app/node_modules itself is deliberately untouched: merging
-# over it fails on the pnpm symlinks ("cannot copy to non-directory") and
-# replacing it deletes the hash-named external aliases Turbopack writes into
-# the trace (require-in-the-middle-<hash> — the 2026-08-29 instrumentation
-# crash), so the server keeps resolving from its own tree first and the boot
-# scripts fall through to this one.
-COPY --from=prod-deps --chown=nextjs:nodejs /app/node_modules /node_modules
+# The standalone trace cannot be trusted as the server's node_modules: three
+# deploys on 2026-08-29 found three holes in it — dotenv and bcryptjs absent for
+# the tsx boot scripts, and @swc/helpers traced *partially* (its esm/ interop
+# files missing), which killed `next start` inside the instrumentation hook. So
+# the full declared production set (hoisted, real directories — see prod-deps)
+# becomes /app/node_modules outright. One thing in the traced tree is
+# irreplaceable and is carried over first: the hash-named external aliases
+# Turbopack writes for the instrumentation graph (require-in-the-middle-<hash>) —
+# deleting those crashed the server too. `cp -rL` dereferences the pnpm symlinks
+# so the rescued aliases survive the tree they pointed into being removed.
+RUN set -eu; mkdir -p /tmp/turbopack-aliases; \
+  cd node_modules && for d in $(ls | grep -E -- '-[0-9a-f]{12,}$' || true); do \
+    cp -rL "$d" /tmp/turbopack-aliases/; \
+  done
+RUN rm -rf ./node_modules
+COPY --from=prod-deps --chown=nextjs:nodejs /app/node_modules ./node_modules
+RUN cp -r /tmp/turbopack-aliases/. ./node_modules/ 2>/dev/null || true; rm -rf /tmp/turbopack-aliases
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
 COPY --from=builder --chown=nextjs:nodejs /app/generated ./generated
