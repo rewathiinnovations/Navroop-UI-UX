@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { generateObject, generateText } from 'ai';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
+import { SECTION_REGISTRY_NAMES } from '@/lib/stacks/section-registry';
 import { getSessionUser, type SessionUser } from '@/lib/auth';
 import { chatModelForEntry } from '@/lib/ai/client-for-entry';
 import { completeWithProviderFailover } from '@/lib/ai/plan-complete';
@@ -90,6 +91,15 @@ const planContentSchema = z.object({
         name: z.string().min(1),
         route: z.string().min(1).optional(),
         description: z.string().min(1),
+        /**
+         * Catalogue sections this page is built from, in order.
+         *
+         * Deliberately `string`, not an enum over the registry. A plan that fails to parse
+         * costs the user a whole planning round, and this field arrives from a model on a
+         * schema older stored plans predate — the same reason `route` is optional. Unknown
+         * names are dropped where the list is read, not rejected here.
+         */
+        sections: z.array(z.string().min(1)).max(12).optional(),
       }),
     )
     .min(1),
@@ -209,6 +219,7 @@ ROUTES
 
 EACH PAGE
 \`description\` names the sections that page holds, in order, and what each one contains — real subject matter drawn from the user's brief, never "a hero section" on its own. One or two sentences.
+\`sections\` lists the catalogue sections that page uses, in the order they appear, from: ${SECTION_REGISTRY_NAMES.join(', ')}. List only what the page genuinely has; omit the field for a page whose layout none of them expresses. This is a commitment the build is checked against, so do not pad it.
 
 KEY FEATURES
 Concrete, checkable capabilities: what a visitor can do and what the page proves. Not styling adjectives, and not a restatement of the section list.
@@ -220,7 +231,7 @@ Return JSON only, matching:
 {
   "summary": string,
   "designVision": string,
-  "pages": [{ "name": string, "route": string, "description": string }],
+  "pages": [{ "name": string, "route": string, "description": string, "sections": string[] }],
   "keyFeatures": string[]
 }`;
 
@@ -998,6 +1009,33 @@ export async function retryFailedPlan(projectId: string, prompt: string, signal?
  * unparseable one, and a failed read all mean. Failing a generation because a
  * lookup for extra assurance failed would be strictly worse than not checking.
  */
+export type ApprovedPlanContract = {
+  routes: string[];
+  pages: Array<{ route?: string; sections?: string[] }>;
+};
+
+export async function getApprovedPlanContract(projectId: string): Promise<ApprovedPlanContract> {
+  const empty: ApprovedPlanContract = { routes: [], pages: [] };
+  try {
+    const plan = await prisma.projectPlan.findFirst({
+      where: { projectId, status: 'APPROVED' },
+      orderBy: { version: 'desc' },
+      select: { content: true },
+    });
+    if (!plan) return empty;
+    const parsed = planContentSchema.safeParse(plan.content);
+    if (!parsed.success) return empty;
+    return {
+      routes: parsed.data.pages
+        .map((page) => page.route?.trim())
+        .filter((route): route is string => Boolean(route)),
+      pages: parsed.data.pages.map((page) => ({ route: page.route, sections: page.sections })),
+    };
+  } catch {
+    return empty;
+  }
+}
+
 export async function getApprovedPlanRoutes(projectId: string): Promise<string[]> {
   try {
     const plan = await prisma.projectPlan.findFirst({

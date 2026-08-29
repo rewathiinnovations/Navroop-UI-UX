@@ -426,3 +426,104 @@ describe('routes the approved plan promised', () => {
     expect(result.blocking).toHaveLength(1);
   });
 });
+
+/**
+ * The page that was written thin.
+ *
+ * `missing-planned-route` catches a page nobody wrote. This catches the one that exists and
+ * stops after the hero: every other gate passes — the imports resolve, the bundle compiles,
+ * the route is there — and the user gets a third of the page they approved while the
+ * pipeline reports success.
+ */
+describe('sections the approved plan promised', () => {
+  const uses = (...names: string[]) =>
+    page(`<main>${names.map((n) => `<X${n} />`).join('')}</main>`).replace(
+      'export default',
+      `${names.map((n) => `import { X${n} } from '@/components/sections/${n}';`).join('\n')}\nexport default`,
+    );
+
+  it('reports a promised section the page does not use', () => {
+    const result = checkGeneratedQuality({
+      stack: 'NEXTJS',
+      files: { 'app/page.tsx': uses('hero') },
+      changedPaths: ['app/page.tsx'],
+      plannedPages: [{ route: '/', sections: ['hero', 'pricing-tiers', 'faq'] }],
+    });
+
+    expect(result.blocking.map((f) => f.kind)).toEqual(['missing-section']);
+    expect(result.blocking[0].message).toContain('pricing-tiers');
+    expect(result.blocking[0].message).toContain('faq');
+    expect(result.blocking[0].message).not.toContain('hero');
+  });
+
+  it('accepts a page that uses every section it promised', () => {
+    const result = checkGeneratedQuality({
+      stack: 'NEXTJS',
+      files: { 'app/page.tsx': uses('hero', 'faq') },
+      changedPaths: ['app/page.tsx'],
+      plannedPages: [{ route: '/', sections: ['hero', 'faq'] }],
+    });
+    expect(result.blocking).toEqual([]);
+  });
+
+  it('does not mind extra sections the plan never mentioned', () => {
+    const result = checkGeneratedQuality({
+      stack: 'NEXTJS',
+      files: { 'app/page.tsx': uses('hero', 'faq', 'cta-band') },
+      changedPaths: ['app/page.tsx'],
+      plannedPages: [{ route: '/', sections: ['hero'] }],
+    });
+    expect(result.blocking).toEqual([]);
+  });
+
+  it('ignores a section name the catalogue does not have', () => {
+    // The plan field is free text a model wrote; an invented name must not bill a repair.
+    const result = checkGeneratedQuality({
+      stack: 'NEXTJS',
+      files: { 'app/page.tsx': uses('hero') },
+      changedPaths: ['app/page.tsx'],
+      plannedPages: [{ route: '/', sections: ['hero', 'carousel', 'parallax-thing'] }],
+    });
+    expect(result.blocking).toEqual([]);
+  });
+
+  it('stays quiet about a page that does not exist, which is the other finding', () => {
+    const result = checkGeneratedQuality({
+      stack: 'NEXTJS',
+      files: { 'app/page.tsx': uses('hero') },
+      changedPaths: ['app/page.tsx'],
+      plannedPages: [{ route: '/pricing', sections: ['pricing-tiers'] }],
+    });
+    expect(result.blocking.map((f) => f.kind)).not.toContain('missing-section');
+  });
+
+  it('matches a dynamic route whatever the model named the parameter', () => {
+    const result = checkGeneratedQuality({
+      stack: 'NEXTJS',
+      files: { 'app/product/[id]/page.tsx': uses('hero') },
+      changedPaths: ['app/product/[id]/page.tsx'],
+      plannedPages: [{ route: '/product/[slug]', sections: ['hero', 'faq'] }],
+    });
+    expect(result.blocking.map((f) => f.kind)).toEqual(['missing-section']);
+  });
+
+  it('checks nothing when the plan named no sections', () => {
+    const result = checkGeneratedQuality({
+      stack: 'NEXTJS',
+      files: { 'app/page.tsx': uses('hero') },
+      changedPaths: ['app/page.tsx'],
+      plannedPages: [{ route: '/' }],
+    });
+    expect(result.blocking).toEqual([]);
+  });
+
+  it('stays out of stacks with no app/ route convention', () => {
+    const result = checkGeneratedQuality({
+      stack: 'REACT',
+      files: { 'src/App.tsx': uses('hero') },
+      changedPaths: ['src/App.tsx'],
+      plannedPages: [{ route: '/', sections: ['hero', 'faq'] }],
+    });
+    expect(result.blocking.map((f) => f.kind)).not.toContain('missing-section');
+  });
+});

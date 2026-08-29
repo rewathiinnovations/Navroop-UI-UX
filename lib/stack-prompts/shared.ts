@@ -62,6 +62,10 @@ export const TOOL_OUTPUT_RULES = `OUTPUT FORMAT:
 - Never list file paths as prose. The tool call is the record.
 - Read a file before editing it, and use edit_file for a small change to a large file.
 - Use search_files to find a component or symbol instead of guessing a path.
+- Building a section — hero, features, pricing, testimonials, FAQ, footer? Call use_section first.
+  It validates your content against the real component and returns the imports and JSX to paste,
+  so the prop names are right the first time. Hand-write a <section> only for something the
+  catalogue cannot express.
 - Need a package? Call add_dependency first. Never write an import for a package you have not added.
 - After the tool calls, close with one or two sentences on what changed and where to look in the preview.`;
 

@@ -1,4 +1,5 @@
 import type { StackId } from '@/lib/stacks';
+import { SECTION_COMPONENT_NAMES } from '@/lib/stacks/templates/sections';
 
 /**
  * Defects a compiler cannot see.
@@ -27,6 +28,7 @@ import type { StackId } from '@/lib/stacks';
 export type QualityFindingKind =
   | 'missing-route'
   | 'missing-planned-route'
+  | 'missing-section'
   | 'placeholder-link'
   | 'invisible-control'
   | 'raw-img'
@@ -34,6 +36,12 @@ export type QualityFindingKind =
   | 'emoji'
   | 'no-motion'
   | 'flat-rhythm';
+
+/** The slice of an approved plan page this module checks against. */
+export type PlannedPage = {
+  route?: string;
+  sections?: readonly string[];
+};
 
 export type QualityFinding = {
   kind: QualityFindingKind;
@@ -54,6 +62,13 @@ export type QualityCheckOutcome = {
 
 /** A dozen problems is readable; forty is a wall the model will skim. */
 const MAX_FINDINGS = 10;
+
+/**
+ * The catalogue's names, so a plan naming a section that does not exist is ignored rather
+ * than reported. Imported as a name list only: this module is pure, synchronous and
+ * dependency-free because it runs inside the generation route on every build.
+ */
+const KNOWN_SECTION_NAMES = new Set<string>(SECTION_COMPONENT_NAMES);
 
 const CODE_FILE = /\.(tsx|jsx)$/;
 
@@ -147,6 +162,71 @@ function checkPlannedRoutes(
       kind: 'missing-planned-route',
       file,
       message: `The approved plan promised the route ${route}, and no page renders it. Create ${file} with the page the plan describes. Do not satisfy this by deleting the route from the site.`,
+    });
+  }
+}
+
+/** `app/pricing/page.tsx` -> `/pricing`, matching `routesOf`'s own derivation. */
+function routeOfPagePath(path: string): string | null {
+  const match = /^app\/(.*\/)?page\.(tsx|jsx)$/.exec(path);
+  if (!match) return null;
+  const segments = (match[1] ?? '')
+    .split('/')
+    .filter(Boolean)
+    .filter((segment) => !/^[(@]/.test(segment));
+  return `/${segments.join('/')}`.replace(/\/$/, '') || '/';
+}
+
+/** Sections a file imports from the catalogue, by their registry name. */
+function importedSections(source: string): Set<string> {
+  const found = new Set<string>();
+  const pattern = /from\s+['"]@\/components\/sections\/([a-z0-9-]+)['"]/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(source)) !== null) found.add(match[1]);
+  return found;
+}
+
+/**
+ * Sections the approved plan promised a page, that the page does not import.
+ *
+ * `missing-planned-route` catches a page that was never written at all; this catches the
+ * page that was written thin. A generation that produces a hero and then stops satisfies
+ * every other gate — the imports resolve, the bundle compiles, the route exists — and the
+ * user gets a third of the page they approved, with the pipeline reporting success.
+ *
+ * Import-based rather than usage-based on purpose. A regex over JSX would have to decide
+ * what counts as rendering a component and would be wrong in both directions; an import of
+ * a catalogue section that is never used is dead code the model does not write, and if it
+ * ever did, `knip` is the check that owns it.
+ */
+function checkPlannedSections(
+  pages: readonly PlannedPage[],
+  files: Record<string, string>,
+  findings: QualityFinding[],
+): void {
+  const byRoute = new Map<string, { path: string; sections: Set<string> }>();
+  for (const [path, raw] of Object.entries(files)) {
+    if (typeof raw !== 'string') continue;
+    const route = routeOfPagePath(path);
+    if (route) byRoute.set(routeShape(route), { path, sections: importedSections(raw) });
+  }
+
+  for (const page of pages) {
+    if (!page.sections?.length) continue;
+    const route = page.route ? normalizePlannedRoute(page.route) : null;
+    if (!route) continue;
+    const built = byRoute.get(routeShape(route));
+    // No page file at all is `missing-planned-route`'s finding, not a second report here.
+    if (!built) continue;
+
+    const promised = [...new Set(page.sections)].filter((name) => KNOWN_SECTION_NAMES.has(name));
+    const absent = promised.filter((name) => !built.sections.has(name));
+    if (absent.length === 0) continue;
+
+    findings.push({
+      kind: 'missing-section',
+      file: built.path,
+      message: `${built.path}: the approved plan gives ${route} the ${absent.join(', ')} section${absent.length === 1 ? '' : 's'}, and the page does not use ${absent.length === 1 ? 'it' : 'them'}. Call use_section for each and add ${absent.length === 1 ? 'it' : 'them'} in the order the plan lists.`,
     });
   }
 }
@@ -344,6 +424,11 @@ export function checkGeneratedQuality(input: {
    * would spend a repair generation reconstructing pages nobody asked about.
    */
   plannedRoutes?: readonly string[];
+  /**
+   * The approved plan's pages, for the section half of the same contract. Passed on a first
+   * build only, for the reason `plannedRoutes` gives.
+   */
+  plannedPages?: readonly PlannedPage[];
 }): QualityCheckOutcome {
   const { stack, files } = input;
   const scope = input.changedPaths ? new Set(input.changedPaths) : null;
@@ -358,6 +443,9 @@ export function checkGeneratedQuality(input: {
   // have, so anywhere else every planned route would report as missing.
   if (stack === 'NEXTJS' && input.plannedRoutes?.length) {
     checkPlannedRoutes(input.plannedRoutes, routes, blocking);
+  }
+  if (stack === 'NEXTJS' && input.plannedPages?.length) {
+    checkPlannedSections(input.plannedPages, files, blocking);
   }
 
   for (const [path, raw] of Object.entries(files)) {

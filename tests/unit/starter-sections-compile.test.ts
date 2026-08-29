@@ -27,7 +27,6 @@ import { Faq } from '@/components/sections/faq';
 import { CtaBand } from '@/components/sections/cta-band';
 import { ContactForm } from '@/components/sections/contact-form';
 import { SiteFooter } from '@/components/sections/site-footer';
-import { Button } from '@/components/ui/button';
 
 export default function Page() {
   return (
@@ -36,8 +35,8 @@ export default function Page() {
         eyebrow="Ferry bookings"
         title="Every crossing, one timetable"
         lede="Compare sailings across nine operators and book in a single step."
-        primaryAction={<Button variant="premium">Find a sailing</Button>}
-        secondaryAction={<Button variant="outline">See routes</Button>}
+        primaryCta={{ label: 'Find a sailing', href: '/search' }}
+        secondaryCta={{ label: 'See routes' }}
       />
       <LogoCloud label="Operators on board" items={['Caledonian', 'NorthLink']} />
       <FeatureGrid
@@ -54,7 +53,8 @@ export default function Page() {
             period: 'per month',
             features: ['Live berths'],
             featured: true,
-            action: <Button className="w-full">Choose Crew</Button>,
+            actionLabel: 'Choose Crew',
+            actionHref: '/signup',
           },
         ]}
       />
@@ -70,11 +70,11 @@ export default function Page() {
           { name: 'message', label: 'Message', multiline: true },
         ]}
       />
-      <CtaBand title="Start free" action={<Button variant="hero">Create an account</Button>} />
+      <CtaBand title="Start free" cta={{ label: 'Create an account', href: '/signup' }} />
       <SiteFooter
         brand="Crossings"
         blurb="Ferry bookings without the phone calls."
-        columns={[{ title: 'Product', links: [<a key="routes" href="/routes">Routes</a>] }]}
+        columns={[{ title: 'Product', links: [{ label: 'Routes', href: '/routes' }] }]}
         legal="© 2026 Crossings"
       />
     </main>
@@ -161,9 +161,16 @@ describe('the prompt is generated from the same list', () => {
     }
   });
 
-  it('tells the model sections take rendered elements rather than URLs', () => {
-    // The slot design only works if the prompt explains it; otherwise the model
-    // passes `primaryAction="/signup"` and renders a string into the layout.
-    expect(lockedStackRule('')).toMatch(/slots, not URLs/i);
+  it('tells the model section content is data, not elements', () => {
+    // The contract only works if the prompt states it: a model that thinks a CTA is an
+    // element writes `primaryCta={<Button>…</Button>}` and hands a component a node where
+    // it destructures `.label`, which renders nothing and throws nothing.
+    const rule = lockedStackRule('');
+    expect(rule).toMatch(/content is DATA, not elements/i);
+    expect(rule).toContain('{label, href}');
+  });
+
+  it('carries the catalogue, so the model knows what it may ask use_section for', () => {
+    expect(lockedStackRule('')).toContain('The catalogue, and what each one is for');
   });
 });

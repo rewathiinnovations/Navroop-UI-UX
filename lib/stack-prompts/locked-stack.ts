@@ -1,4 +1,5 @@
 import { OPTIONAL_PREVIEW_DEPS, PREVIEW_DEPS } from '@/lib/preview/deps';
+import { sectionCatalogueRule } from '@/lib/stacks/section-registry';
 import { starterFilePaths } from '@/lib/stacks/starter';
 import { SECTION_COMPONENT_NAMES, UI_COMPONENT_NAMES } from '@/lib/stacks/templates/starter-kit';
 
@@ -24,7 +25,11 @@ export function lockedStackRule(srcPrefix: string): string {
 - ${ui}/section-header.tsx exports SectionHeader: <SectionHeader eyebrow="…" title="…" lede="…" align="center|left" /> opens every content section, so eyebrow/title/lede stay consistent. Omit the eyebrow where the design direction forbids decorative markers.
 - tailwind.config.js and the global stylesheet exist and define the palette, the gradients and the shadows. Do not recreate either; to add a colour, add the CSS variable to the token block in the global stylesheet (HSL triplet, no wrapper) and extend the config.
 - ${srcPrefix}components/sections/ holds the section shapes a page is built from: ${SECTION_COMPONENT_NAMES.join(', ')}. Import them as @/components/sections/<name>. They take content as props and already handle the section rhythm, the <Reveal> entrance and the alternating surface, so compose them instead of hand-writing a <section> — reach for raw markup only for a section none of them expresses.
-- Sections take slots, not URLs: pass a rendered element for a button, a link or an image (<HeroSection primaryAction={<Button asChild variant="premium"><Link href="/signup">Start free</Link></Button>} media={<Image … />} />). That is what keeps next/image and next/link at the page, where they belong.
+- Section content is DATA, not elements: a call to action is {label, href}, footer links are
+  {label, href}, and the section renders the Button or the anchor itself. The one exception is
+  the hero's media prop, which stays an element because only the page knows how to load an image.
+- The catalogue, and what each one is for:
+${sectionCatalogueRule()}
 - Icons come from lucide-react. Never inline an SVG icon set.
 - Do not create package.json, tsconfig.json, postcss.config.js or the Tailwind config — they exist.`;
 }

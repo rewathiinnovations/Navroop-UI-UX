@@ -1,6 +1,11 @@
 import { tool, type ToolSet } from 'ai';
 import { z } from 'zod';
 import { OPTIONAL_PREVIEW_DEPS, PREVIEW_DEPS } from '@/lib/preview/deps';
+import {
+  SECTION_REGISTRY_NAMES,
+  renderSectionUsage,
+  sectionEntry,
+} from '@/lib/stacks/section-registry';
 import { getStackScaffold } from '@/lib/stacks/templates';
 import { ParseFilesError } from '../parse-files';
 import type { GenerationFileStore } from './file-store';
@@ -428,6 +433,64 @@ export function buildGenerationTools(deps: GenerationToolDeps): ToolSet {
           notify({ phase: 'result', tool: 'rename_file', path: to, ok: false, detail });
           return detail;
         }
+      },
+    }),
+
+    use_section: tool({
+      description:
+        'Get a ready-to-paste section from the locked kit, with your content already filled in. Returns the import lines and the JSX. Prefer this over hand-writing a <section>: it validates your content against the component and comes back with the section rhythm, the entrance motion and the surface already handled.',
+      inputSchema: z.object({
+        name: z.string().min(1).max(60),
+        /**
+         * The section's content. Validated against the registry, so a misspelt or invented
+         * field is a refusal the model reads on the same step — not a wrong prop that
+         * bundles clean and fails `next build` in the client's repository weeks later.
+         */
+        content: z.record(z.string(), z.unknown()).optional(),
+        /** Optional slots to include, e.g. `media` on the hero. */
+        slots: z.array(z.string().min(1).max(40)).max(6).optional(),
+      }),
+      execute: async ({ name, content, slots }) => {
+        notify({ phase: 'call', tool: 'use_section', path: name });
+        const entry = sectionEntry(name);
+        if (!entry) {
+          const detail = `There is no section called ${name}.`;
+          notify({ phase: 'result', tool: 'use_section', path: name, ok: false, detail });
+          // The full catalogue, so the next step is a choice rather than a guess — the
+          // same contract `add_dependency` uses when it refuses a package.
+          return [detail, `Available sections: ${SECTION_REGISTRY_NAMES.join(', ')}.`].join('\n');
+        }
+
+        const parsed = entry.props.safeParse(content ?? {});
+        if (!parsed.success) {
+          // Named field by field. "Invalid input" tells the model nothing it can act on,
+          // and a retry that guesses again costs another step from the budget.
+          const problems = parsed.error.issues
+            .slice(0, 8)
+            .map((issue) => `- ${issue.path.join('.') || '(root)'}: ${issue.message}`);
+          const detail = `The content does not match ${name}.`;
+          notify({ phase: 'result', tool: 'use_section', path: name, ok: false, detail });
+          return [detail, ...problems].join('\n');
+        }
+
+        const usage = renderSectionUsage(name, parsed.data, { includeOptionalSlots: slots });
+        const unknownSlots = (slots ?? []).filter(
+          (slot) => !entry.slots.some((known) => known.name === slot),
+        );
+        const detail = `Rendered ${name}.`;
+        notify({ phase: 'result', tool: 'use_section', path: name, ok: true, detail });
+        return [
+          `${usage.imports.join('\n')}`,
+          '',
+          usage.jsx,
+          '',
+          unknownSlots.length > 0
+            ? `Ignored unknown slot(s): ${unknownSlots.join(', ')}. ${name} accepts ${entry.slots.map((slot) => slot.name).join(', ') || 'no slots'}.`
+            : '',
+          'Paste the JSX into the page and add the imports at the top. Edit the copy; keep the prop names.',
+        ]
+          .filter(Boolean)
+          .join('\n');
       },
     }),
 

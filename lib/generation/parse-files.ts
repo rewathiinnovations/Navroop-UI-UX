@@ -9,7 +9,8 @@ export type ParseFilesErrorCode =
   | 'invalid_path'
   | 'too_large'
   | 'binary'
-  | 'invalid_json';
+  | 'invalid_json'
+  | 'unknown_section';
 
 export class ParseFilesError extends Error {
   code: ParseFilesErrorCode;

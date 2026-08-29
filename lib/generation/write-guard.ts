@@ -5,6 +5,7 @@ import {
   sanitizeGenerationPath,
   type ParsedGenerationFile,
 } from './parse-files';
+import { SECTION_COMPONENT_NAMES } from '@/lib/stacks/templates/sections';
 
 function isPackageJsonPath(path: string) {
   return path === 'package.json' || path.endsWith('/package.json');
@@ -49,5 +50,38 @@ export function assertWritableGenerationFile(file: {
       );
     }
   }
+  const invented = inventedSectionImport(content);
+  if (invented) {
+    throw new ParseFilesError(
+      'unknown_section',
+      `${safe.path} imports @/components/sections/${invented}, which does not exist. The catalogue is: ${SECTION_COMPONENT_NAMES.join(', ')}. Call use_section to get one, or write the markup inline.`,
+      safe.path,
+    );
+  }
   return { path: safe.path, content };
 }
+
+/**
+ * The first import of a section the kit does not ship, if there is one.
+ *
+ * A model that wants a carousel writes `@/components/sections/carousel` and moves on. The
+ * import is a real module specifier, so `resolveBareSpecifier` never sees it — it looks
+ * like a project file, and the failure surfaces as "No matching export" from the bundler
+ * with the model already several steps past the mistake. Refusing at the write is the
+ * earliest anything can know, and the refusal carries the catalogue so the next step is a
+ * choice rather than another guess.
+ *
+ * The path prefix is fixed rather than derived from the layout: REACT projects import
+ * through the same `@/` alias, so `src/` never appears in a specifier.
+ */
+function inventedSectionImport(content: string): string | null {
+  const pattern = /from\s+['"]@\/components\/sections\/([A-Za-z0-9._-]+)['"]/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(content)) !== null) {
+    const name = match[1].replace(/\.(tsx|ts|jsx|js)$/, '');
+    if (!KNOWN_SECTIONS.has(name)) return name;
+  }
+  return null;
+}
+
+const KNOWN_SECTIONS = new Set<string>(SECTION_COMPONENT_NAMES);

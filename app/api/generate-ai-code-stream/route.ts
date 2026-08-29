@@ -62,7 +62,7 @@ import {
 } from '@/lib/signals/collect';
 import { holdProjectLock, LOCK_LOST_MESSAGE, ProjectLockLostError } from '@/lib/projects/lock';
 import { lockConflictJson } from '@/lib/projects/lock-http';
-import { getApprovedPlanRoutes } from '@/lib/projects/plan';
+import { getApprovedPlanContract } from '@/lib/projects/plan';
 import {
   beginJobHeartbeat,
   createOrReuseJob,
@@ -164,6 +164,18 @@ export const dynamic = 'force-dynamic';
  * requires a literal here, so `tests/unit/provider-rest-and-stall.test.ts` asserts the two
  * numbers still match.
  */
+/**
+ * The approved plan's contract, in the shape `runBuildValidation` takes.
+ *
+ * One read for both halves: `plannedRoutes` catches a page the plan promised and the model
+ * never wrote, `plannedPages` catches the page it wrote thin. Reading the plan twice would
+ * be two queries on the hot path of every first build for one fact.
+ */
+async function planContractForBuild(projectId: string) {
+  const contract = await getApprovedPlanContract(projectId);
+  return { plannedRoutes: contract.routes, plannedPages: contract.pages };
+}
+
 export const maxDuration = 1200;
 
 /**
@@ -2364,7 +2376,7 @@ Provide the complete file content without any truncation. Include all necessary 
                   // the site ships smaller than the plan. On an edit the same
                   // check would be wrong: a one-page edit legitimately does not
                   // rebuild the rest of the site.
-                  plannedRoutes: isEdit ? undefined : await getApprovedPlanRoutes(projectId),
+                  ...(isEdit ? {} : await planContractForBuild(projectId)),
                   // Without this the static scan cannot see the starter kit and
                   // reports `@/lib/utils` as an unresolved import, spending a
                   // repair generation rewriting correct code.

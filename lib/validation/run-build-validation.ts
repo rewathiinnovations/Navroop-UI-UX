@@ -6,7 +6,7 @@ import { checkBuild, type BuildCheckResult } from './build-check';
 import { MAX_AUTOFIX_ATTEMPTS, decideAutoFix, type AutoFixDecision } from './autofix-policy';
 import { describeBuildFailure } from './fix-prompt';
 import { checkGeneratedImports, type ImportCheckOutcome } from './import-check';
-import { checkGeneratedQuality, type QualityFinding } from './quality-check';
+import { checkGeneratedQuality, type PlannedPage, type QualityFinding } from './quality-check';
 import { getBuildAutoFixEnabled } from './settings';
 
 /**
@@ -74,6 +74,8 @@ export async function runBuildValidation(input: {
    * one page would otherwise be failed for the pages it correctly left alone.
    */
   plannedRoutes?: readonly string[];
+  /** The approved plan's pages, for the section half of the same contract. */
+  plannedPages?: readonly PlannedPage[];
   /**
    * Decides the starter kit's token block. Without it the *static* scan reports
    * `@/lib/utils` as an unresolved import and spends a repair generation
@@ -155,6 +157,7 @@ export async function runBuildValidation(input: {
       files,
       changedPaths,
       plannedRoutes: input.plannedRoutes,
+      plannedPages: input.plannedPages,
     });
     for (const finding of quality.advisory.slice(0, 3)) {
       await notify(finding.message, 'warning');

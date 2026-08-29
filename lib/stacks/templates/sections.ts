@@ -36,27 +36,59 @@
 const HERO_SOURCE = `import * as React from 'react';
 
 import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
 import { Reveal } from '@/components/ui/reveal';
+
+export type SectionCta = {
+  label: string;
+  /** Omit for a button that a parent wires up, e.g. one that opens a dialog. */
+  href?: string;
+};
 
 export type HeroSectionProps = React.HTMLAttributes<HTMLElement> & {
   eyebrow?: string;
   title: React.ReactNode;
   lede?: React.ReactNode;
-  /** The page's one standout CTA. Pass a <Button variant="premium" asChild>. */
-  primaryAction?: React.ReactNode;
-  secondaryAction?: React.ReactNode;
-  /** Screenshot, illustration or form. Omit for a centred text hero. */
+  /**
+   * The page's one standout CTA, as data rather than an element.
+   *
+   * A ReactNode slot reads well in hand-written code and badly everywhere else: it cannot
+   * come from a JSON tool call, so a section described as data could never carry its own
+   * button. The section renders the Button and picks the variant, which is also how the
+   * "one standout CTA per page" rule stops being prose.
+   */
+  primaryCta?: SectionCta;
+  secondaryCta?: SectionCta;
+  /** Screenshot or illustration. Still an element: only the page knows how to load one. */
   media?: React.ReactNode;
   align?: 'left' | 'center';
 };
+
+/** One button, linked or not. Repeated per file on purpose: each section stands alone. */
+function CtaButton({
+  cta,
+  variant,
+}: {
+  cta: SectionCta;
+  variant?: 'premium' | 'hero' | 'outline' | 'default';
+}) {
+  if (cta.href) {
+    return (
+      <Button asChild variant={variant}>
+        <a href={cta.href}>{cta.label}</a>
+      </Button>
+    );
+  }
+  return <Button variant={variant}>{cta.label}</Button>;
+}
 
 export function HeroSection({
   className,
   eyebrow,
   title,
   lede,
-  primaryAction,
-  secondaryAction,
+  primaryCta,
+  secondaryCta,
   media,
   align,
   ...props
@@ -84,15 +116,15 @@ export function HeroSection({
             {lede ? (
               <p className="mt-6 text-lg leading-relaxed text-muted-foreground">{lede}</p>
             ) : null}
-            {primaryAction || secondaryAction ? (
+            {primaryCta || secondaryCta ? (
               <div
                 className={cn(
                   'mt-10 flex flex-wrap items-center gap-4',
                   centred ? 'justify-center' : 'justify-start',
                 )}
               >
-                {primaryAction ?? null}
-                {secondaryAction ?? null}
+                {primaryCta ? <CtaButton cta={primaryCta} variant="premium" /> : null}
+                {secondaryCta ? <CtaButton cta={secondaryCta} variant="outline" /> : null}
               </div>
             ) : null}
           </div>
@@ -182,6 +214,7 @@ const PRICING_TIERS_SOURCE = `import * as React from 'react';
 
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Reveal } from '@/components/ui/reveal';
 import { SectionHeader } from '@/components/ui/section-header';
@@ -195,7 +228,8 @@ export type PricingTier = {
   features: string[];
   /** Exactly one tier should set this: it is the page's recommendation. */
   featured?: boolean;
-  action: React.ReactNode;
+  actionLabel: string;
+  actionHref?: string;
 };
 
 export type PricingTiersProps = React.HTMLAttributes<HTMLElement> & {
@@ -255,7 +289,17 @@ export function PricingTiers({
                       </li>
                     ))}
                   </ul>
-                  <div className="mt-8">{tier.action}</div>
+                  <div className="mt-8">
+                    {tier.actionHref ? (
+                      <Button asChild className="w-full" variant={tier.featured ? 'premium' : 'default'}>
+                        <a href={tier.actionHref}>{tier.actionLabel}</a>
+                      </Button>
+                    ) : (
+                      <Button className="w-full" variant={tier.featured ? 'premium' : 'default'}>
+                        {tier.actionLabel}
+                      </Button>
+                    )}
+                  </div>
                 </CardContent>
               </Card>
             </Reveal>
@@ -489,21 +533,23 @@ export default Faq;
 const CTA_BAND_SOURCE = `import * as React from 'react';
 
 import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
 import { Reveal } from '@/components/ui/reveal';
 
 export type CtaBandProps = React.HTMLAttributes<HTMLElement> & {
   title: React.ReactNode;
   lede?: React.ReactNode;
-  action: React.ReactNode;
-  secondaryAction?: React.ReactNode;
+  /** Data, not an element, for the reason HeroSection's props give. */
+  cta: { label: string; href?: string };
+  secondaryCta?: { label: string; href?: string };
 };
 
 export function CtaBand({
   className,
   title,
   lede,
-  action,
-  secondaryAction,
+  cta,
+  secondaryCta,
   ...props
 }: CtaBandProps) {
   return (
@@ -517,8 +563,22 @@ export function CtaBand({
             <h2 className="text-3xl font-semibold tracking-tight sm:text-4xl">{title}</h2>
             {lede ? <p className="mt-4 text-lg opacity-90">{lede}</p> : null}
             <div className="mt-8 flex flex-wrap items-center justify-center gap-4">
-              {action}
-              {secondaryAction ?? null}
+              {cta.href ? (
+                <Button asChild variant="hero">
+                  <a href={cta.href}>{cta.label}</a>
+                </Button>
+              ) : (
+                <Button variant="hero">{cta.label}</Button>
+              )}
+              {secondaryCta ? (
+                secondaryCta.href ? (
+                  <Button asChild variant="outline">
+                    <a href={secondaryCta.href}>{secondaryCta.label}</a>
+                  </Button>
+                ) : (
+                  <Button variant="outline">{secondaryCta.label}</Button>
+                )
+              ) : null}
             </div>
           </div>
         </Reveal>
@@ -614,10 +674,19 @@ const SITE_FOOTER_SOURCE = `import * as React from 'react';
 
 import { cn } from '@/lib/utils';
 
+export type FooterLink = {
+  label: string;
+  href: string;
+};
+
 export type FooterColumn = {
   title: string;
-  /** Anchor elements. next/link is not importable here: this file is stack-neutral. */
-  links: React.ReactNode[];
+  /**
+   * Data, not elements. The column renders its own anchors: this file is stack-neutral so
+   * next/link is not importable here anyway, and taking {label, href} means a page — or a
+   * tool call — can describe a footer without constructing JSX.
+   */
+  links: FooterLink[];
 };
 
 export type SiteFooterProps = React.HTMLAttributes<HTMLElement> & {
@@ -648,8 +717,12 @@ export function SiteFooter({
           <div key={column.title}>
             <h3 className="text-sm font-medium text-foreground">{column.title}</h3>
             <ul className="mt-4 space-y-3 text-sm text-muted-foreground">
-              {column.links.map((link, index) => (
-                <li key={index}>{link}</li>
+              {column.links.map((link) => (
+                <li key={link.href}>
+                  <a href={link.href} className="transition-colors hover:text-foreground">
+                    {link.label}
+                  </a>
+                </li>
               ))}
             </ul>
           </div>
