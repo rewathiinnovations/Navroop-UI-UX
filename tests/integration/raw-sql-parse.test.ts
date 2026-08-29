@@ -219,23 +219,25 @@ describe('lib raw SQL parses on Postgres', () => {
   it('credit consumption and the 80% claim', async () => {
     const { consumeCredits } = await import('@/lib/plans/limits');
     // `getEffectivePlan` throws "No default plan is configured" before any SQL when the
-    // Plan table has no default row — true on CI's freshly migrated database, where this
-    // case failed on every run while passing locally against a long-lived test DB that
-    // happened to hold one. Seed a default plan so the statements under test are reached;
-    // `findFirst` orders by `createdAt` asc, so on a database that already has an older
-    // default this row changes nothing.
+    // workspace has no plan and the Plan table no default — true on CI's freshly migrated
+    // database, where this case failed on every run while passing locally against a
+    // long-lived test DB that happened to hold one. Seed a plan and hand it to WS via
+    // `planId`, so the statements under test are reached through the assigned-plan path.
+    // Deliberately NOT `isDefault: true`: test files run in parallel against the shared
+    // database, and `plan-limit-writes.test.ts` asserts the product invariant that
+    // exactly one default plan exists — a second default here raced that assertion red.
     await prisma.$executeRaw`
       INSERT INTO "Plan" (
         id, key, name, "isActive", "isDefault", "monthlyCredits", "maxProjects",
         "maxLiveSites", "maxPreviewSites", "maxMembers", "checkpointRetentionDays",
         "storageBytesLimit", "updatedAt"
       ) VALUES (
-        ${PLAN_ID}, ${PLAN_ID}, 'raw-sql-parse default', true, true, 100, 1,
+        ${PLAN_ID}, ${PLAN_ID}, 'raw-sql-parse plan', true, false, 100, 1,
         1, 1, 1, 1,
         1000000, NOW()
       ) ON CONFLICT (key) DO NOTHING
     `;
-    await parses(() => consumeCredits(BOGUS, BOGUS, 'generation'));
+    await prisma.$executeRaw`UPDATE "Workspace" SET "planId" = ${PLAN_ID} WHERE id = ${WS}`;
     await parses(() => consumeCredits(WS, BOGUS, 'generation'));
   });
 
