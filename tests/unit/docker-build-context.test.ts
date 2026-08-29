@@ -99,8 +99,18 @@ describe('.dockerignore excludes at every depth', () => {
     'scripts/pre-migrate.ts',
     'public/file.svg',
     'README.md',
+    // Re-included from the excluded e2e tree: `next build` type-checks the whole
+    // context, and playwright.config.ts / scripts/seed-e2e-account.ts import these
+    // helpers - excluding them failed the production build on TS2307 (2026-08-29).
+    'e2e/support/paths.ts',
+    'e2e/support/seed-account.ts',
   ])('still ships %s, which the build needs', (path) => {
     expect(isExcluded(path)).toBe(false);
+  });
+
+  it('keeps the spec files out even though e2e/support is re-included', () => {
+    expect(isExcluded('e2e/journeys-critical.spec.ts')).toBe(true);
+    expect(isExcluded('e2e/journeys-authenticated.spec.ts')).toBe(true);
   });
 
   it('anchors every credential and install pattern at any depth', () => {
