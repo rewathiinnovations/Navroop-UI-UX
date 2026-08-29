@@ -62,6 +62,14 @@ jobs:
       # the status check pass today, so this was latent rather than broken; the direct call
       # removes the condition entirely. scripts/migrate-test-db.ts already does it this way.
       - run: node ./node_modules/prisma/build/index.js migrate deploy
+      # A migrated-but-unseeded application database failed every authenticated
+      # journey here: the Plan table was empty, so project creation and the invite
+      # API answered 500 out of `getEffectivePlan` ("No default plan is
+      # configured"), and journey 8 reads the seeded built-in templates. The seed
+      # is idempotent (upserts), touches no network, and its admin/member halves
+      # no-op without SEED_ADMIN_* env — the E2E account comes from the Playwright
+      # `setup` project instead.
+      - run: node ./node_modules/tsx/dist/cli.mjs prisma/seed.ts
       - run: node ./node_modules/playwright/cli.js install --with-deps chromium
       - name: Cache Playwright browsers
         uses: actions/cache@v4

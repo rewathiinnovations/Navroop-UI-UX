@@ -61,6 +61,28 @@ if (migrate.status !== 0) {
   process.exit(migrate.status ?? 1);
 }
 
+// Plans and built-in templates. A migrated-but-empty database 500s the app's core
+// flows — project creation and invites both resolve the workspace plan through
+// `getEffectivePlan`, which throws "No default plan is configured" when the Plan
+// table is empty — and nothing else in this boot sequence writes rows. The seed is
+// the documented one entry point (prisma/seed.ts): idempotent upserts, no network,
+// and its admin half no-ops unless SEED_ADMIN_* / ADMIN_* are set, so on a
+// populated database this is a fast no-op rather than a second source of data.
+// Deliberately non-fatal: on the steady state — an already-populated database —
+// this is a no-op, and a seed hiccup must never crash-loop a healthy deployment.
+// On a fresh database a failure here leaves the 500s it exists to prevent, so it
+// is loud, but the app still boots and an operator can run the seed by hand.
+console.log('[navroop] prisma seed (idempotent)');
+const seed = spawnSync('tsx', ['prisma/seed.ts'], {
+  stdio: 'inherit',
+  env: process.env,
+});
+if (seed.error || seed.status !== 0) {
+  console.error(
+    `[navroop] prisma seed did not complete (${seed.error ? seed.error.message : `exit ${seed.status}`}); continuing boot — a fresh database will refuse project creation until it is seeded`,
+  );
+}
+
 console.log('[navroop] job reconcile');
 const reconcile = spawnSync('tsx', ['scripts/reconcile-jobs.ts'], {
   stdio: 'inherit',
