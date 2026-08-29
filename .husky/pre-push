@@ -12,6 +12,14 @@ set -e
 
 cd "$(git rev-parse --show-toplevel)"
 
+# Git exports its own context into hooks, and from a linked worktree that is an
+# ABSOLUTE GIT_DIR - so every git invocation inside the verify suite, including
+# the one tests/setup/repo-write-guard.test.ts runs in a temp dir to prove git
+# is unavailable there, resolves back to this repository and the gate fails
+# from any worktree. From the primary checkout GIT_DIR is the relative ".git",
+# which is why this never bit there.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+
 tsx="./node_modules/tsx/dist/cli.mjs"
 
 if [ ! -f "$tsx" ]; then
