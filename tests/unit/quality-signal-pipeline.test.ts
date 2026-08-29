@@ -205,8 +205,18 @@ describe('F-732 — /admin/quality is a read', () => {
     prisma.generationEvent.findMany.mockResolvedValue([
       { projectId: 'p1', id: 'gen-1', createdAt: new Date('2026-07-02'), promptVersion: 'v2' },
     ]);
+    // Carries both shapes on purpose: the settle sweep's `(projectId, _max)` and
+    // the cost panel's `(promptVersion, _sum, _count)`, because one mock answers
+    // whichever `generationEvent.groupBy` the render runs. The assertion below is
+    // what separates them.
     prisma.generationEvent.groupBy.mockResolvedValue([
-      { projectId: 'p1', _max: { createdAt: new Date('2026-07-02') } },
+      {
+        projectId: 'p1',
+        _max: { createdAt: new Date('2026-07-02') },
+        promptVersion: null,
+        _sum: { estimatedCost: null, inputTokens: null },
+        _count: { _all: 1 },
+      },
     ]);
 
     await expect(
@@ -217,8 +227,13 @@ describe('F-732 — /admin/quality is a read', () => {
     expect(prisma.qualitySignal.createMany).not.toHaveBeenCalled();
     expect(prisma.qualitySignal.update).not.toHaveBeenCalled();
     // The settle pass is a write and belongs to the daily cron; the render must
-    // not even go looking for projects to settle.
-    expect(prisma.generationEvent.groupBy).not.toHaveBeenCalled();
+    // not even go looking for projects to settle. Named by its grouping rather
+    // than by the table: the cost panel groups the same table by `promptVersion`,
+    // and a blanket "never touches generationEvent.groupBy" would forbid a read.
+    const groupings = prisma.generationEvent.groupBy.mock.calls.map(
+      (call: [{ by: string[] }]) => call[0].by,
+    );
+    expect(groupings).not.toContainEqual(['projectId']);
     expect(prisma.generationEvent.findMany).not.toHaveBeenCalled();
   });
 

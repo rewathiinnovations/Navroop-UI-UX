@@ -105,7 +105,7 @@ describe('preview compile failure is actionable', () => {
     // Verbatim message, plus the class. The instruction differs by class: a
     // runtime crash compiled fine, so asking the model to make it compile sent it
     // hunting a build error that did not exist, and the crash survived the edit.
-    expect(onFix).toHaveBeenCalledWith(MISSING_EXPORT, 'code');
+    expect(onFix).toHaveBeenCalledWith(MISSING_EXPORT, 'code', undefined);
   });
 
   it('reports a runtime crash as its own class', () => {
@@ -119,7 +119,7 @@ describe('preview compile failure is actionable', () => {
     });
 
     findAction(report, 'fix')?.onClick?.();
-    expect(onFix).toHaveBeenCalledWith(crash, 'runtime');
+    expect(onFix).toHaveBeenCalledWith(crash, 'runtime', undefined);
   });
 
   it('does not call recompiling a retry when the code is what is broken', () => {
@@ -275,5 +275,41 @@ describe('our own file names never reach the reader', () => {
     );
 
     expect(markup).not.toContain('__preview-layout');
+  });
+});
+
+/**
+ * Which page crashed travels with the crash.
+ *
+ * The report is where the user presses Fix this, so if the route stops here the
+ * repair prompt never learns it — and a crash on a second page is repaired as
+ * though it had happened on the home page.
+ */
+describe('the route reaches the repair', () => {
+  it('forwards the mounted route to the fix handler', () => {
+    const crash = "Uncaught TypeError: Cannot read properties of undefined (reading 'map')";
+    const onFix = vi.fn();
+    const report = PreviewErrorReport({
+      message: crash,
+      kind: 'runtime',
+      route: '/pricing',
+      onFix,
+      onReload: () => {},
+    });
+
+    findAction(report, 'fix')?.onClick?.();
+    expect(onFix).toHaveBeenCalledWith(crash, 'runtime', '/pricing');
+  });
+
+  it('carries the route from the frame message onto the error state', () => {
+    expect(
+      errorBanner(
+        previewError({ status: 'ready', srcdoc: '<html></html>' }, 'boom', 'runtime', '/about'),
+      ),
+    ).toEqual({
+      message: 'boom',
+      kind: 'runtime',
+      route: '/about',
+    });
   });
 });

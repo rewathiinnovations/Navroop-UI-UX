@@ -1,5 +1,6 @@
 import { getStack } from '@/lib/stacks';
 import { getStackScaffold } from '@/lib/stacks/templates';
+import { renderStarterCredits } from '@/lib/stacks/templates/provenance';
 
 /**
  * The complete file set for a generated project as a standalone repository:
@@ -49,6 +50,16 @@ export function buildRepoFiles(
   if (!files['README.md']) {
     files['README.md'] = readmeFor(definition.label, options.projectName);
   }
+  // The starter kit's third-party notices, carried into the repository that
+  // actually redistributes the code. MIT asks for the notice to travel with the
+  // copy, and this function is the last point where the copy is still ours:
+  // after it the files are a commit in someone else's account, served from
+  // their domain. `null` when the set contains no vendored file, so a project
+  // built entirely from generated code gets no empty ceremony file.
+  const credits = renderStarterCredits(Object.keys(files));
+  if (credits && !files['CREDITS.md'])
+    files['CREDITS.md'] = `${credits}
+`;
 
   return files;
 }

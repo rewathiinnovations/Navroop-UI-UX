@@ -6,7 +6,19 @@ import { checkBuild, type BuildCheckResult } from './build-check';
 import { MAX_AUTOFIX_ATTEMPTS, decideAutoFix, type AutoFixDecision } from './autofix-policy';
 import { describeBuildFailure } from './fix-prompt';
 import { checkGeneratedImports, type ImportCheckOutcome } from './import-check';
+import { checkGeneratedQuality, type QualityFinding } from './quality-check';
 import { getBuildAutoFixEnabled } from './settings';
+
+/**
+ * Stable across runs that found the same defects, so a repair that changed
+ * nothing is recognised as no progress instead of billing a third attempt.
+ */
+function qualitySignature(findings: readonly QualityFinding[]): string {
+  return findings
+    .map((finding) => `${finding.kind}:${finding.file}`)
+    .sort()
+    .join('|');
+}
 
 /**
  * Validates generated code and decides what to do with a failure. Lives here
@@ -54,6 +66,14 @@ export async function runBuildValidation(input: {
    * pre-existing and must not fail this build.
    */
   changedPaths?: string[];
+  /**
+   * Routes the approved plan promised, passed only on a first build.
+   *
+   * The caller decides that: this function has no idea whether a run is an edit,
+   * and `checkGeneratedQuality` must not guess — a follow-up edit that touches
+   * one page would otherwise be failed for the pages it correctly left alone.
+   */
+  plannedRoutes?: readonly string[];
   /**
    * Decides the starter kit's token block. Without it the *static* scan reports
    * `@/lib/utils` as an unresolved import and spends a repair generation
@@ -126,8 +146,68 @@ export async function runBuildValidation(input: {
   }
 
   if (result.status === 'passed') {
-    await notify('Checked the generated code: imports resolve and the build compiles.', 'info');
-    return { result, decision: { action: 'none', reason: 'build-passed' }, retry: null };
+    // Compiling is not the same as working. The checks below are the ones a
+    // bundler has no opinion about: a nav link to a route nobody wrote, a
+    // transparent button variant given a light foreground and no background.
+    // Both shipped to a user on a build this same line called clean.
+    const quality = checkGeneratedQuality({
+      stack,
+      files,
+      changedPaths,
+      plannedRoutes: input.plannedRoutes,
+    });
+    for (const finding of quality.advisory.slice(0, 3)) {
+      await notify(finding.message, 'warning');
+    }
+
+    if (quality.blocking.length === 0) {
+      await notify('Checked the generated code: imports resolve and the build compiles.', 'info');
+      return { result, decision: { action: 'none', reason: 'build-passed' }, retry: null };
+    }
+
+    const signature = qualitySignature(quality.blocking);
+    const repeated = previousSignature !== null && previousSignature === signature;
+    if (!enabled || repeated || attempt >= MAX_AUTOFIX_ATTEMPTS) {
+      // Say what is wrong even when nothing will be spent fixing it: a silent
+      // pass over a nav that 404s is how the defect reached a person.
+      await notify(
+        `${quality.summary} ${
+          repeated
+            ? 'The same issues came back after a repair, so no further generation was spent on them.'
+            : 'They were left as generated.'
+        }`,
+        'warning',
+      );
+      await recordJobStepFailure(jobId, {
+        key: 'validate-quality',
+        label: 'Check the generated site for visible defects',
+        error: quality.summary,
+      });
+      return {
+        result,
+        decision: {
+          action: 'stop',
+          reason: 'quality-left-as-is',
+          detail: quality.summary,
+        },
+        retry: null,
+      };
+    }
+
+    await recordJobStepFailure(jobId, {
+      key: 'validate-quality',
+      label: 'Check the generated site for visible defects',
+      error: quality.summary,
+    });
+    await notify(
+      `${quality.summary} Fixing them automatically — attempt ${attempt + 1} of ${MAX_AUTOFIX_ATTEMPTS}, which runs as its own generation.`,
+      'warning',
+    );
+    return {
+      result,
+      decision: { action: 'reprompt', instruction: quality.instruction, attempt: attempt + 1 },
+      retry: { instruction: quality.instruction, attempt: attempt + 1, signature },
+    };
   }
 
   return settleFailure({

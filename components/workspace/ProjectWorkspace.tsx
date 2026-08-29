@@ -272,8 +272,8 @@ export default function ProjectWorkspace({
     handleSendRef.current = handleSend;
   });
   const handleFixError = useCallback(
-    (message: string, kind: PreviewErrorKind) =>
-      handleSendRef.current(previewRepairInstruction(message, kind), { mode: 'build' }),
+    (message: string, kind: PreviewErrorKind, route?: string) =>
+      handleSendRef.current(previewRepairInstruction(message, kind, route), { mode: 'build' }),
     [],
   );
   const previewStream = useMemo(
@@ -658,6 +658,14 @@ export default function ProjectWorkspace({
                     // so the model went looking for a build error that did not
                     // exist and its edit did not fix anything.
                     onFixError={handleFixError}
+                    // Repair without asking, but only once the build has
+                    // finished and the chat is free to take the message. A
+                    // mid-stream failure is a normal second of a build — the
+                    // next file usually resolves it — and a repair sent while a
+                    // job is running would be refused anyway.
+                    // While previewing an older checkpoint the files on screen are
+                    // not the ones a repair would edit, so it stays manual there.
+                    autoFix={!isJobActive && !sending && !previewing}
                   />
                 )
               ) : (

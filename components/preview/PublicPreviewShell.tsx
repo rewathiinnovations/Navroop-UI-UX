@@ -15,7 +15,19 @@ import {
  * Light Navroop chrome around a sandboxed iframe. The site itself must come
  * from the distinct preview origin — never generated JS on the app origin (F-140).
  */
-export default function PublicPreviewShell({ iframeSrc }: { iframeSrc: string | null }) {
+export default function PublicPreviewShell({
+  iframeSrc,
+  hostProblem = null,
+}: {
+  iframeSrc: string | null;
+  /**
+   * Set when the server-side probe found the preview origin not answering. A
+   * cross-origin iframe cannot report its own failure, so without this the
+   * shell framed the host's raw 503 - Traefik's "no available server" - or a
+   * blank page, and the person with the link had nothing to act on.
+   */
+  hostProblem?: string | null;
+}) {
   const [device, setDevice] = useState<PreviewDeviceKey>('desktop');
   const [rotated, setRotated] = useState(false);
 
@@ -32,7 +44,7 @@ export default function PublicPreviewShell({ iframeSrc }: { iframeSrc: string | 
           <StudioLogo href="/" />
           <p className="text-[13px] font-medium text-[var(--studio-muted)]">Preview</p>
         </div>
-        {iframeSrc ? (
+        {iframeSrc && !hostProblem ? (
           <PreviewDeviceToolbar
             device={device}
             rotated={rotated}
@@ -48,7 +60,16 @@ export default function PublicPreviewShell({ iframeSrc }: { iframeSrc: string | 
         ) : null}
       </header>
       <main className="flex min-h-0 flex-1 items-start justify-center overflow-auto bg-[var(--studio-surface)] p-16">
-        {iframeSrc ? (
+        {hostProblem ? (
+          <div className="flex h-full items-center justify-center px-24 text-center">
+            <div className="max-w-[440px]">
+              <p className="text-[14px] font-medium leading-5 text-[var(--studio-fg)]">
+                The preview host is not answering
+              </p>
+              <p className="mt-8 text-[13px] leading-5 text-[var(--studio-muted)]">{hostProblem}</p>
+            </div>
+          </div>
+        ) : iframeSrc ? (
           <div
             className={cn(
               'overflow-hidden border border-[var(--studio-line)] bg-white transition-[width,height]',

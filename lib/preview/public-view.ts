@@ -1,3 +1,5 @@
+import { isLoopbackHostname } from './loopback';
+
 /**
  * Public token-gated preview shell. The signed destination is minted by
  * `signedPreviewUrl` / `GET /api/projects/[id]/preview`. This module only
@@ -33,7 +35,11 @@ export function resolvePublicPreviewFrameSrc(
     return null;
   }
 
-  if (preview.protocol !== 'https:' || target.protocol !== 'https:') return null;
+  // https everywhere real; plain http only between two loopback names, which
+  // is the local sibling origin (`preview-static.localhost`) - it cannot leave
+  // the machine, and browsers treat it as a secure context anyway.
+  const bothLoopback = isLoopbackHostname(preview.hostname) && isLoopbackHostname(target.hostname);
+  if (!bothLoopback && (preview.protocol !== 'https:' || target.protocol !== 'https:')) return null;
   if (target.username || target.password) return null;
   if (target.origin !== preview.origin) return null;
   if (!target.searchParams.get('token')) return null;

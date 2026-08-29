@@ -9,8 +9,22 @@ import type { FileSnapshotEntry } from '@/lib/checkpoints/snapshot';
 // panels, and the `asCodeFindings` validator, none of which model it.
 export type CodeSeverity = 'pass' | 'low' | 'medium' | 'high';
 
+// `runtime` is the only category whose evidence comes from the page actually running:
+// uncaught exceptions and console errors captured during the browser pass that axe
+// already pays for (`lib/audit/runtime-errors.ts`). Every other category reads the code.
+// That distinction is the point of the category — a null dereference on first render
+// passes the import scan, passes the esbuild compile and passes the source heuristics,
+// so no category above it can ever hold that finding.
 export type CodeCategory =
-  'typescript' | 'lint' | 'dependencies' | 'dead-code' | 'bundle' | 'a11y' | 'ai-review' | 'tool';
+  | 'typescript'
+  | 'lint'
+  | 'dependencies'
+  | 'dead-code'
+  | 'bundle'
+  | 'a11y'
+  | 'runtime'
+  | 'ai-review'
+  | 'tool';
 
 export type CodeFinding = {
   id: string;

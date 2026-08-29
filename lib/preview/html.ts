@@ -19,7 +19,21 @@ export const PREVIEW_MESSAGE_SOURCE = 'navroop-preview';
 
 export type PreviewMessage =
   | { source: typeof PREVIEW_MESSAGE_SOURCE; type: 'ready' }
-  | { source: typeof PREVIEW_MESSAGE_SOURCE; type: 'error'; message: string; stack?: string };
+  | {
+      source: typeof PREVIEW_MESSAGE_SOURCE;
+      type: 'error';
+      message: string;
+      stack?: string;
+      /**
+       * The route mounted when the error fired, from the in-frame router.
+       *
+       * Absent on a crash early enough that the navigation shim has not run —
+       * which is itself informative, and why this is optional rather than
+       * defaulted to `/`. Claiming the home page for an error that happened
+       * before any page mounted is exactly the wrong guess to hand a repair.
+       */
+      route?: string;
+    };
 
 /**
  * Node globals the generated code assumes exist.
@@ -56,12 +70,26 @@ const ERROR_BRIDGE = `
       parent.postMessage(Object.assign({ source: "${PREVIEW_MESSAGE_SOURCE}" }, payload), "*");
     } catch (_) {}
   };
+  // Which page was mounted. Length-capped because everything here crosses a
+  // sandboxed-frame postMessage boundary into a repair prompt: it is untrusted
+  // string data, exactly like message and stack, and the frame runs code this
+  // pipeline generated rather than code anyone reviewed.
+  var ROUTE = function () {
+    try {
+      if (typeof window.__previewRoute !== "function") return undefined;
+      var value = window.__previewRoute();
+      return typeof value === "string" ? value.slice(0, 200) : undefined;
+    } catch (_) {
+      return undefined;
+    }
+  };
   window.__previewPost = POST;
   window.addEventListener("error", function (event) {
     POST({
       type: "error",
       message: (event && event.message) || "Script error",
       stack: event && event.error && event.error.stack ? String(event.error.stack) : undefined,
+      route: ROUTE(),
     });
   });
   window.addEventListener("unhandledrejection", function (event) {
@@ -70,6 +98,7 @@ const ERROR_BRIDGE = `
       type: "error",
       message: reason && reason.message ? String(reason.message) : "Unhandled promise rejection",
       stack: reason && reason.stack ? String(reason.stack) : undefined,
+      route: ROUTE(),
     });
   });
 })();

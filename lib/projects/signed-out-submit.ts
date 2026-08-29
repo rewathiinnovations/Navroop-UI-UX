@@ -1,4 +1,3 @@
-import type { DesignDirectionId } from '@/lib/design/directions';
 import type { ImportMode } from '@/lib/import/mode';
 import type { StackId } from '@/lib/stacks';
 
@@ -6,7 +5,6 @@ import type { StackId } from '@/lib/stacks';
 export type PendingPrompt = {
   text: string;
   stack: StackId;
-  designDirection: DesignDirectionId;
   importMode: ImportMode;
 };
 

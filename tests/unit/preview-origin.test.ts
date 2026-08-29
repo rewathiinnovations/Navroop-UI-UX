@@ -66,6 +66,18 @@ describe('previewStaticBaseUrl', () => {
     settings.getSetting.mockResolvedValue('navroop.example');
     await expect(previewStaticBaseUrl()).resolves.toBeNull();
   });
+
+  it('serves a loopback app from the loopback sibling, never the zone host', async () => {
+    // This instance's database holds the projects and signs the tokens, so the
+    // zone host - the deployed production instance - can never answer for a
+    // local project. `.localhost` is loopback by definition (RFC 6761) and a
+    // different host is a different origin, so F-140's isolation holds: the
+    // dev session cookie is host-only on localhost and is not sent to the
+    // sibling.
+    process.env.APP_URL = 'http://localhost:3000';
+    integrations.peekRootDomain.mockResolvedValue('zone.example');
+    await expect(previewStaticBaseUrl()).resolves.toBe('http://preview-static.localhost:3000');
+  });
 });
 
 describe('signedPreviewUrl', () => {

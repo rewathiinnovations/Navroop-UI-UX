@@ -3,6 +3,7 @@ import { getSetting } from '@/lib/settings/resolve';
 import { getProjectPreviewFields } from './db';
 import { appOriginFromEnv } from './headers';
 import { PREVIEW_STATIC_HOST_PREFIX } from './labels';
+import { isLoopbackUrl } from './loopback';
 import { issuePreviewToken } from './token';
 
 export function previewStaticHost(zoneName: string | null | undefined) {
@@ -31,12 +32,27 @@ export function normalizePreviewHost(raw: string | null | undefined): string | n
  * equal to the app host is refused for the same reason.
  */
 export async function previewStaticBaseUrl(): Promise<string | null> {
+  // A loopback app serves its own previews: this instance's database holds the
+  // projects and signs the tokens, so the zone host - which names the deployed
+  // production instance - can never answer for it. Local development therefore
+  // gets the loopback *sibling*, `preview-static.localhost:<port>`: `.localhost`
+  // names are loopback by definition (RFC 6761) and a different host is a
+  // different origin, so the F-140 isolation is the same as production's
+  // sibling subdomain - host-only session cookies are not sent to it - while
+  // the request lands on this same dev server, whose proxy already rewrites any
+  // `preview-static.*` host onto the serving route.
+  const appOrigin = appOriginFromEnv();
+  if (isLoopbackUrl(appOrigin)) {
+    const app = new URL(appOrigin);
+    return `${app.protocol}//${PREVIEW_STATIC_HOST_PREFIX}.localhost${app.port ? `:${app.port}` : ''}`;
+  }
+
   const zone = await peekRootDomain().catch(() => null);
   const zoneHost = previewStaticHost(zone);
   if (zoneHost) return `https://${zoneHost}`;
 
   const configured = normalizePreviewHost(await getSetting('preview.host'));
-  if (configured && configured !== normalizePreviewHost(appOriginFromEnv())) {
+  if (configured && configured !== normalizePreviewHost(appOrigin)) {
     return `https://${configured}`;
   }
   return null;

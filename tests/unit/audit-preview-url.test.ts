@@ -24,6 +24,10 @@ const OWNER_WRITABLE = 'http://169.254.169.254/latest/meta-data/';
 beforeEach(() => {
   vi.clearAllMocks();
   process.env.AUTH_SECRET = 'test-secret';
+  // Production-shaped, or the loopback sibling preempts the zone: a loopback
+  // app serves its own previews (lib/preview/url.ts), and this test is about
+  // the zone-host path an audit URL takes in production.
+  process.env.APP_URL = 'https://app.example.com';
   store.peekRootDomain.mockResolvedValue('example.com');
   store.getSetting.mockResolvedValue(null);
 });

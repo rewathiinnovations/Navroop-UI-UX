@@ -121,7 +121,6 @@ export default function AuthModal({
       const created = await createProjectFromPrompt(
         pending.text,
         pending.stack,
-        pending.designDirection,
         pending.importMode,
       );
       if (created.ok) {
@@ -469,11 +468,7 @@ export default function AuthModal({
         {panel === 'auth' && !inviteOnly && (
           <p className="mt-18 text-center text-[13px] text-[var(--studio-muted)]">
             New to Navroop?{' '}
-            <button
-              type="button"
-              onClick={() => onModeChange('signup')}
-              className={AUTH_LINK}
-            >
+            <button type="button" onClick={() => onModeChange('signup')} className={AUTH_LINK}>
               How to get access
             </button>
           </p>

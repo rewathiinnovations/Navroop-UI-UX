@@ -120,11 +120,21 @@ Twelve cases in `scripts/prompt-eval-cases.json` — a first build, a multi-page
 
 Scoring reuses what already decides these questions in production: `checkBuild` for compiles-or-does-not, the file store's written paths for the file count, a regex sweep over the files _and_ the closing reply, and the SDK's own usage for tokens. Results go to `tmp/eval/<ISO timestamp>.json` (gitignored) with a printed table and a pass rate.
 
-**It refuses to run without `--live`** and is deliberately **not** in `VERIFY_STEPS` — a gate that spends real tokens on every invocation is one people learn to skip, and `docs/release.md` pins that step list. Run it when a prompt changes and compare the rate against the last recorded baseline.
+**It refuses to run without `--live`** and is deliberately **not** in `VERIFY_STEPS` — a gate that spends real tokens on every invocation is one people learn to skip, and `docs/release.md` pins that step list.
+
+Three things go with the pass rate, because a rate on its own says a run scored 9/12 and not whether it is the same 9:
+
+- **Tool outcomes per case**, counted by tool and by outcome — `ok`, `refused`, `error` — in the printed table and in the JSON. `lib/generation/tools/index.ts` _returns_ its refusals rather than throwing so the model can correct itself, so until this existed a run that burned half its step budget on `search appears 3 times` scored identically to one that never missed. `ok`/`refused` come from the tool surface's own `notify` events; `error` is the remainder between what the model asked for (`step.toolCalls`) and what the surface answered, which is where a call whose arguments failed schema validation shows up — that one never reaches `execute` and emits no event at all. This is the instrument that says whether an `edit_file` tolerance change was worth shipping.
+- **A diff against the last run of the same model**, printed and stored under `baseline` in the JSON: newly passing, newly failing, unchanged, and — kept separate, because adding a case is not a regression — cases the two runs do not share. The results files were written and never read before this.
+- **A model axis**, `--all-models` or `--models=<id>,<id>`, which repeats the case set per model and prints them side by side. The axis is model rather than provider: `ProviderName` is a one-member union. It is opt-in and it multiplies the bill — a bare `--live` still runs the configured primary alone, which is how the baseline below was measured and the only way it stays comparable. A sweep writes one file per model (`<ISO timestamp>--<model>.json`), each in the same shape a single-model run writes, so every file in `tmp/eval` remains readable as a baseline.
+
+The pass/fail rule of a case is unchanged, and deliberately still a boolean: a weighted score would be a better instrument and would strand every number recorded here.
 
 ### Recorded baseline
 
-**9/12 (75%)**, `deepseek-v4-flash`, thinking disabled, 2026-08-27 (`tmp/eval/2026-08-27T10-53-08-055Z.json`). 1.34M tokens in, 52k out. Compare against this after a prompt edit; a drop is the regression the free tier cannot see.
+**9/12 (75%)**, `deepseek-v4-flash`, thinking disabled, 2026-08-27 (`tmp/eval/2026-08-27T10-53-08-055Z.json`). 1.34M tokens in, 52k out. A drop against this is the regression the free tier cannot see.
+
+The harness diffs against it by itself now — but only if that file is still on the machine: `tmp/` is gitignored, so a fresh clone has no history and the first run of a model reports `no earlier run of this model in tmp/eval` rather than a comparison. The numbers here are the record that survives a clone; keep them updated when a run supersedes them.
 
 The three failures are prompt findings, not harness noise, and are open:
 

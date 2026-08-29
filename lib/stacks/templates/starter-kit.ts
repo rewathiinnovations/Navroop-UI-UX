@@ -1,5 +1,6 @@
 import { renderTokenCss, type DirectionTokens } from '@/lib/design/directions';
 import { renderTailwindConfigBody } from '@/lib/design/tailwind-theme';
+import { SECTION_COMPONENTS } from './sections';
 import type { ScaffoldFile } from './shared';
 
 /**
@@ -117,6 +118,7 @@ ${renderTokenCss(tokens)}
   }
 
   body {
+    font-family: var(--font-body);
     background-color: hsl(var(--background));
     color: hsl(var(--foreground));
   }
@@ -171,6 +173,17 @@ const buttonVariants = cva(
         secondary: 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
         ghost: 'hover:bg-accent hover:text-accent-foreground',
         link: 'text-primary underline-offset-4 hover:underline',
+        // Two crafted variants beyond stock shadcn. premium is the page's one
+        // standout CTA: the gradient and both shadows are the direction's own
+        // tokens, so it degrades to a flat primary where the direction says
+        // "no shadows". hero is a button over imagery or an inverted band; the
+        // translucent white is deliberate and literal, because over a
+        // photograph no palette token is the right answer - and this variant
+        // existing is what stops a call-site outline + text-primary-foreground
+        // override, the exact combination that ships an invisible button.
+        premium:
+          'bg-gradient-primary text-primary-foreground shadow-elegant transition-[box-shadow,transform] duration-smooth ease-smooth hover:-translate-y-0.5 hover:shadow-glow motion-reduce:transition-none motion-reduce:hover:translate-y-0',
+        hero: 'border border-white/25 bg-white/10 text-white backdrop-blur-sm hover:bg-white/20',
       },
       size: {
         default: 'h-10 px-4 py-2',
@@ -512,7 +525,161 @@ TabsContent.displayName = TabsPrimitive.Content.displayName;
 export { Tabs, TabsList, TabsTrigger, TabsContent };
 `;
 
-/** The eight primitives, keyed by their file name under `components/ui/`. */
+/**
+ * Scroll entrance, as a primitive.
+ *
+ * BASE_RULES has asked for section reveals (IntersectionObserver, opacity +
+ * translate <=16px, reduced-motion honoured) for as long as the DESIGN section
+ * has existed, and across three measured full generations the model wrote zero
+ * of them — an observer is a dozen lines of boilerplate per section, so it is
+ * the first corner cut. The rule survives only as machinery: wrapping a section
+ * in `<Reveal>` is one line, so it actually happens. Same reasoning as the cn()
+ * helper and the icon repair — provide the mechanism, don't restate the rule.
+ *
+ * Content is visible by default and the effect is opt-out safe: reduced motion,
+ * a missing IntersectionObserver, or JS never hydrating all leave the page
+ * readable, because the hidden state is only entered when the observer is
+ * confirmed available.
+ */
+const REVEAL_SOURCE = `'use client';
+
+import * as React from 'react';
+
+import { cn } from '@/lib/utils';
+
+type RevealProps = React.HTMLAttributes<HTMLDivElement> & {
+  /** Stagger, in ms. Siblings typically step by 80. */
+  delay?: number;
+};
+
+/**
+ * Fades and lifts its children in the first time they scroll into view.
+ * Honors prefers-reduced-motion (content renders immediately, no animation).
+ */
+const Reveal = React.forwardRef<HTMLDivElement, RevealProps>(
+  ({ className, delay = 0, style, children, ...props }, ref) => {
+    const localRef = React.useRef<HTMLDivElement>(null);
+    React.useImperativeHandle(ref, () => localRef.current as HTMLDivElement);
+    // Starts visible: the hidden state is only entered once the observer is
+    // confirmed available, so no-JS, reduced-motion and old browsers all read.
+    const [state, setState] = React.useState<'visible' | 'hidden' | 'shown'>('visible');
+
+    React.useEffect(() => {
+      const node = localRef.current;
+      if (!node) return;
+      if (typeof IntersectionObserver === 'undefined') return;
+      if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+      // Existing is not working: in a locked-down preview frame the observer
+      // constructs fine and then never delivers a single callback - not even
+      // the initial notification a live observer always sends for a new
+      // target. Hiding content on construction alone left every section
+      // invisible there. So the hide is provisional: if no callback arrives
+      // shortly, the observer is presumed dead and everything shows.
+      let delivered = false;
+      const observer = new IntersectionObserver(
+        (entries) => {
+          delivered = true;
+          for (const entry of entries) {
+            if (entry.isIntersecting) {
+              setState('shown');
+              observer.disconnect();
+            }
+          }
+        },
+        { threshold: 0.15, rootMargin: '0px 0px -10% 0px' },
+      );
+      setState((current) => (current === 'visible' ? 'hidden' : current));
+      observer.observe(node);
+      const fallback = window.setTimeout(() => {
+        if (!delivered) {
+          observer.disconnect();
+          setState('shown');
+        }
+      }, 1200);
+      return () => {
+        observer.disconnect();
+        window.clearTimeout(fallback);
+      };
+    }, []);
+
+    return (
+      <div
+        ref={localRef}
+        className={cn(
+          'transition-[opacity,transform] duration-500 ease-smooth motion-reduce:transition-none',
+          state === 'hidden' ? 'translate-y-4 opacity-0' : 'translate-y-0 opacity-100',
+          className,
+        )}
+        style={delay ? { transitionDelay: state === 'hidden' ? undefined : \`\${delay}ms\`, ...style } : style}
+        {...props}
+      >
+        {children}
+      </div>
+    );
+  },
+);
+Reveal.displayName = 'Reveal';
+
+// Both import styles resolve: the first live generation wrote
+// \`import SectionHeader from ...\` against a named-only export and spent an
+// automatic repair on it. A single-component file supporting default import
+// costs nothing and removes the whole failure class.
+export { Reveal };
+export default Reveal;
+`;
+
+/**
+ * The eyebrow / title / lede opening every content section repeats.
+ *
+ * One component instead of a prose rule, so the pattern is consistent across
+ * sections and pages by construction: same tracking on the eyebrow, same scale
+ * step on the title, same measure on the lede. The eyebrow is optional because
+ * the editorial direction forbids decorative section markers.
+ */
+const SECTION_HEADER_SOURCE = `import * as React from 'react';
+
+import { cn } from '@/lib/utils';
+
+type SectionHeaderProps = React.HTMLAttributes<HTMLDivElement> & {
+  /** Small uppercase kicker above the title. Omit where the direction says so. */
+  eyebrow?: string;
+  title: string;
+  /** One or two supporting sentences under the title. */
+  lede?: string;
+  align?: 'left' | 'center';
+};
+
+const SectionHeader = React.forwardRef<HTMLDivElement, SectionHeaderProps>(
+  ({ className, eyebrow, title, lede, align = 'center', ...props }, ref) => (
+    <div
+      ref={ref}
+      className={cn(
+        'max-w-2xl',
+        align === 'center' ? 'mx-auto text-center' : 'text-left',
+        className,
+      )}
+      {...props}
+    >
+      {eyebrow ? (
+        <p className="mb-3 text-sm font-medium uppercase tracking-widest text-primary">
+          {eyebrow}
+        </p>
+      ) : null}
+      <h2 className="text-3xl font-semibold tracking-tight text-foreground sm:text-4xl">
+        {title}
+      </h2>
+      {lede ? <p className="mt-4 text-lg leading-relaxed text-muted-foreground">{lede}</p> : null}
+    </div>
+  ),
+);
+SectionHeader.displayName = 'SectionHeader';
+
+// See Reveal: both import styles resolve on purpose.
+export { SectionHeader };
+export default SectionHeader;
+`;
+
+/** The primitives, keyed by their file name under `components/ui/`. */
 const UI_COMPONENTS: Record<string, string> = {
   button: BUTTON_SOURCE,
   card: CARD_SOURCE,
@@ -522,6 +689,8 @@ const UI_COMPONENTS: Record<string, string> = {
   skeleton: SKELETON_SOURCE,
   dialog: DIALOG_SOURCE,
   tabs: TABS_SOURCE,
+  reveal: REVEAL_SOURCE,
+  'section-header': SECTION_HEADER_SOURCE,
 };
 
 /**
@@ -540,8 +709,17 @@ export function starterKitFiles(layout: StarterLayout, tokens: DirectionTokens):
   for (const [name, content] of Object.entries(UI_COMPONENTS)) {
     files.push({ path: `${layout.srcPrefix}components/ui/${name}.tsx`, content });
   }
+  // The sections sit beside the primitives rather than inside them: a page
+  // composes sections, a section composes primitives, and keeping the two
+  // directories apart is what stops the model reaching for `components/ui/hero`
+  // and finding nothing.
+  for (const [name, content] of Object.entries(SECTION_COMPONENTS)) {
+    files.push({ path: `${layout.srcPrefix}components/sections/${name}.tsx`, content });
+  }
   return files;
 }
 
 /** The primitive names, for the prompt bullet that tells the model they exist. */
 export const UI_COMPONENT_NAMES = Object.keys(UI_COMPONENTS);
+
+export { SECTION_COMPONENT_NAMES } from './sections';

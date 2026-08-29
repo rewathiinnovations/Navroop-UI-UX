@@ -177,6 +177,18 @@ export function renderTailwindTheme(baseIndent = '  '): string {
     `${i(3)}'gradient-primary': 'var(--gradient-primary, ${fallbackFor('gradient-primary')})',`,
     `${i(3)}'gradient-subtle': 'var(--gradient-subtle, ${fallbackFor('gradient-subtle')})',`,
     `${i(2)}},`,
+    // The direction's own typefaces, as `font-sans` and `font-display`.
+    //
+    // `font-sans` is overridden rather than added: it is what Tailwind's
+    // preflight puts on `html`, so a page that names no font class still reads
+    // as the direction. The fallback keeps a project that predates the token
+    // block on the stock stack instead of on nothing, exactly as the colour
+    // fallbacks do — an empty `font-family` is a dropped declaration, not a
+    // default.
+    `${i(2)}fontFamily: {`,
+    `${i(3)}sans: ['var(--font-body, ${fallbackFor('font-body')})'],`,
+    `${i(3)}display: ['var(--font-display, ${fallbackFor('font-display')})'],`,
+    `${i(2)}},`,
     `${i(2)}boxShadow: {`,
     // A direction whose shadow is `none` makes `shadow-elegant` a no-op, which
     // is the correct outcome for the three that say "no shadows, 1px borders".
@@ -194,6 +206,35 @@ export function renderTailwindTheme(baseIndent = '  '): string {
     `${i(2)}},`,
     `${i(2)}transitionDuration: {`,
     `${i(3)}smooth: '200ms',`,
+    `${i(2)}},`,
+    // Entrance animations, as named utilities. Lovable's design-system prompt
+    // ("define ambitious styles and animations in one place") is the model this
+    // follows: a model told to "animate the hero" with nothing to reach for
+    // writes nothing — measured across three full generations, zero animations
+    // — or hand-rolls keyframes per component. `animate-fade-up` is for
+    // load-time entrances (a hero); scroll-triggered reveals go through the
+    // Reveal primitive in components/ui, which transitions and needs no
+    // keyframes. Durations sit in the 300-500ms window BASE_RULES allows for
+    // entrances, and prefers-reduced-motion is handled by Tailwind's own
+    // `motion-reduce:animate-none` at the call site, which BASE_RULES requires.
+    `${i(2)}keyframes: {`,
+    `${i(3)}'fade-up': {`,
+    `${i(4)}from: { opacity: '0', transform: 'translateY(16px)' },`,
+    `${i(4)}to: { opacity: '1', transform: 'translateY(0)' },`,
+    `${i(3)}},`,
+    `${i(3)}'fade-in': {`,
+    `${i(4)}from: { opacity: '0' },`,
+    `${i(4)}to: { opacity: '1' },`,
+    `${i(3)}},`,
+    `${i(3)}'scale-in': {`,
+    `${i(4)}from: { opacity: '0', transform: 'scale(0.96)' },`,
+    `${i(4)}to: { opacity: '1', transform: 'scale(1)' },`,
+    `${i(3)}},`,
+    `${i(2)}},`,
+    `${i(2)}animation: {`,
+    `${i(3)}'fade-up': 'fade-up 0.5s cubic-bezier(0.4, 0, 0.2, 1) both',`,
+    `${i(3)}'fade-in': 'fade-in 0.4s ease-out both',`,
+    `${i(3)}'scale-in': 'scale-in 0.35s cubic-bezier(0.4, 0, 0.2, 1) both',`,
     `${i(2)}},`,
     `${i(1)}},`,
     `${baseIndent}},`,
@@ -259,9 +300,5 @@ export function tailwindThemeVariables(): string[] {
  * broke the moment depth tokens existed. One list, no guessing.
  */
 export function themeColorTokens(): string[] {
-  return [
-    ...FLAT_COLORS,
-    ...PAIRED_COLORS,
-    ...PAIRED_COLORS.map((token) => `${token}-foreground`),
-  ];
+  return [...FLAT_COLORS, ...PAIRED_COLORS, ...PAIRED_COLORS.map((token) => `${token}-foreground`)];
 }

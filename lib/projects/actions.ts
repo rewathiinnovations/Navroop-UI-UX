@@ -3,6 +3,7 @@
 import { Prisma } from '@/generated/prisma';
 import { prisma } from '@/lib/db';
 import { getSessionUser, type SessionUser } from '@/lib/auth';
+import { inferDesignDirection } from '@/lib/design/infer-direction';
 import {
   createProjectSchema,
   nameFromPrompt,
@@ -173,7 +174,14 @@ export async function createProject(input: {
         progressMessage: flow.isUrlImport ? 'Capturing page…' : null,
         phase: skipPlanning ? 'BUILDING' : 'PLANNING',
         stack: parsed.data.stack,
-        designDirection: parsed.data.designDirection,
+        // Read from the prompt when the caller did not choose one. The Design
+        // direction select is gone from the hero: it defaulted to `minimal`,
+        // almost nobody changed it, and every project therefore entered
+        // generation claiming a direction its own prompt contradicted — while
+        // the UI/UX brief, scoring the same words, picked something else and
+        // won. One system, inferred from what the user actually wrote.
+        designDirection:
+          parsed.data.designDirection ?? inferDesignDirection(parsed.data.initialPrompt),
       },
       include: { owner: { select: ownerSelect } },
     }),

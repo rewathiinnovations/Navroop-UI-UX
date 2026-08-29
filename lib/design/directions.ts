@@ -35,8 +35,35 @@ export type DirectionTokens = {
   /** A lighter primary, same hue. The far end of `--gradient-primary` and the glow colour. */
   primaryGlow: string;
   primaryForeground: string;
+  /**
+   * The tinted surface, distinct from `surfaceAlt`.
+   *
+   * `renderTokenCss` mapped `secondary`, `muted` *and* `accent` all onto
+   * `surfaceAlt`, so the six directions between them offered about five
+   * distinct surfaces and every attempt at section rhythm collapsed into the
+   * same two greys. `flat-rhythm` measures the absence this creates: alternating
+   * `bg-muted` with `bg-accent` produced no visible alternation, so the model
+   * reached for a raw colour instead, which is what `raw-color` then reported.
+   * Carrying the direction's own hue at low saturation gives a third surface
+   * that still belongs to the palette.
+   */
+  accent: string;
   border: string;
   radius: string;
+  /**
+   * The display and body font stacks.
+   *
+   * A floor, in the same sense as the colour fallbacks in
+   * `lib/design/tailwind-theme.ts`: `fontPairing` names the families in prose
+   * and asks the model to import them, but nothing declared a family, so a
+   * direction whose whole identity is Playfair over Source Serif rendered in the
+   * same default sans as every other one whenever that import was skipped —
+   * which, being prose, it regularly was. Each stack names the direction's own
+   * family first and then a real generic, so the page reads as serif or grotesk
+   * before the webfont arrives and simply sharpens when it does.
+   */
+  fontDisplay: string;
+  fontBody: string;
   /**
    * A complete CSS `box-shadow` value, or `none`.
    *
@@ -144,6 +171,9 @@ const MINIMAL_TOKENS: DirectionTokens = {
   primary: '221 83% 53%',
   primaryForeground: '0 0% 100%',
   primaryGlow: '221 83% 66%',
+  accent: '221 40% 94%',
+  fontDisplay: '"Inter", ui-sans-serif, system-ui, -apple-system, sans-serif',
+  fontBody: '"Inter", ui-sans-serif, system-ui, -apple-system, sans-serif',
   border: '220 13% 91%',
   radius: '0.375rem',
   // "None. 1px borders only. Depth via spacing, not shadows."
@@ -159,6 +189,9 @@ const BOLD_TOKENS: DirectionTokens = {
   primary: '0 84% 60%',
   primaryForeground: '0 0% 100%',
   primaryGlow: '0 84% 72%',
+  accent: '0 60% 95%',
+  fontDisplay: '"Space Grotesk", ui-sans-serif, system-ui, sans-serif',
+  fontBody: '"Inter", ui-sans-serif, system-ui, -apple-system, sans-serif',
   border: '0 0% 7%',
   radius: '0rem',
   // "Hard offset 4px 4px 0 #111111. No blur. Flat, assertive."
@@ -174,6 +207,9 @@ const PREMIUM_TOKENS: DirectionTokens = {
   primary: '41 47% 56%',
   primaryForeground: '240 15% 5%',
   primaryGlow: '41 60% 70%',
+  accent: '41 38% 88%',
+  fontDisplay: '"Fraunces", ui-serif, Georgia, serif',
+  fontBody: '"Inter", ui-sans-serif, system-ui, -apple-system, sans-serif',
   border: '39 24% 84%',
   radius: '1rem',
   // "Layered depth: 0 1px 2px rgba(0,0,0,0.06), 0 8px 24px rgba(0,0,0,0.08)."
@@ -189,6 +225,9 @@ const PLAYFUL_TOKENS: DirectionTokens = {
   primary: '239 84% 67%',
   primaryForeground: '0 0% 100%',
   primaryGlow: '239 84% 78%',
+  accent: '239 60% 94%',
+  fontDisplay: '"Nunito", ui-rounded, ui-sans-serif, system-ui, sans-serif',
+  fontBody: '"Nunito Sans", ui-sans-serif, system-ui, sans-serif',
   border: '210 40% 88%',
   radius: '1.25rem',
   // "Soft colored 0 8px 20px rgba(99,102,241,0.18)."
@@ -204,6 +243,9 @@ const EDITORIAL_TOKENS: DirectionTokens = {
   primary: '342 79% 35%',
   primaryForeground: '0 0% 100%',
   primaryGlow: '342 70% 50%',
+  accent: '342 28% 91%',
+  fontDisplay: '"Playfair Display", ui-serif, Georgia, serif',
+  fontBody: '"Source Serif 4", ui-serif, Georgia, serif',
   border: '24 6% 83%',
   radius: '0.125rem',
   // "None. 1px hairline rules."
@@ -219,6 +261,9 @@ const TECHNICAL_TOKENS: DirectionTokens = {
   primary: '192 91% 36%',
   primaryForeground: '0 0% 100%',
   primaryGlow: '192 85% 50%',
+  accent: '192 45% 93%',
+  fontDisplay: '"IBM Plex Sans", ui-sans-serif, system-ui, sans-serif',
+  fontBody: '"IBM Plex Sans", ui-sans-serif, system-ui, sans-serif',
   border: '213 27% 84%',
   radius: '0.25rem',
   // "None. 1px slate borders. Tabular figures for numbers."
@@ -241,7 +286,8 @@ export const DESIGN_DIRECTIONS: Record<DesignDirectionId, DesignDirection> = {
     fontPairing:
       'Inter 600 display + Inter 400 body. 16px base, 1.25 type ratio (16 / 20 / 25 / 31 / 39). Humanist, quiet, precise.',
     radiusScale: '4px controls, 6px cards, 999px pills.',
-    spacingScale: '8 / 16 / 24 / 40 / 64. Section padding 64px desktop, 32px at 375px. Lots of air.',
+    spacingScale:
+      '8 / 16 / 24 / 40 / 64. Section padding 64px desktop, 32px at 375px. Lots of air.',
     shadowStyle: 'None. 1px borders only (border-gray-200). Depth via spacing, not shadows.',
     colorGuidance:
       'Off-white #FAFAF9 background, ink #111111 text, one accent #2563EB. No gradients. Body contrast >= 4.5:1.',
@@ -321,8 +367,7 @@ export const DESIGN_DIRECTIONS: Record<DesignDirectionId, DesignDirection> = {
     radiusScale: '2px images, 0px text blocks, 4px buttons.',
     spacingScale: '8 / 16 / 28 / 48 / 72. Print-like column gutters 24px.',
     shadowStyle: 'None. 1px hairline rules (border-stone-300). Optional 1px inset image keyline.',
-    colorGuidance:
-      'Paper #F4EFE6, ink #1C1917, spot color #9F1239. No neon, no heavy gradients.',
+    colorGuidance: 'Paper #F4EFE6, ink #1C1917, spot color #9F1239. No neon, no heavy gradients.',
     toneWords: ['literary', 'measured', 'print'],
     signature:
       'A magazine hero: a large serif headline over a wide-rule image with a drop-cap or pull-quote, set in a true print grid.',
@@ -421,7 +466,7 @@ export function renderTokenCss(tokens: DirectionTokens): string {
     ['secondary-foreground', tokens.foreground],
     ['muted', tokens.surfaceAlt],
     ['muted-foreground', tokens.mutedForeground],
-    ['accent', tokens.surfaceAlt],
+    ['accent', tokens.accent],
     ['accent-foreground', tokens.foreground],
     ['destructive', DESTRUCTIVE],
     ['destructive-foreground', DESTRUCTIVE_FOREGROUND],
@@ -429,8 +474,16 @@ export function renderTokenCss(tokens: DirectionTokens): string {
     ['input', tokens.border],
     ['ring', tokens.primary],
     ['radius', tokens.radius],
-    ['gradient-primary', `linear-gradient(135deg, hsl(${tokens.primary}), hsl(${tokens.primaryGlow}))`],
-    ['gradient-subtle', `linear-gradient(180deg, hsl(${tokens.background}), hsl(${tokens.surfaceAlt}))`],
+    ['font-display', tokens.fontDisplay],
+    ['font-body', tokens.fontBody],
+    [
+      'gradient-primary',
+      `linear-gradient(135deg, hsl(${tokens.primary}), hsl(${tokens.primaryGlow}))`,
+    ],
+    [
+      'gradient-subtle',
+      `linear-gradient(180deg, hsl(${tokens.background}), hsl(${tokens.surfaceAlt}))`,
+    ],
     ['shadow-elegant', tokens.shadow],
     // Derived from the glow so it always belongs to the palette. `none` for a
     // direction whose shadow is `none` would be wrong here: a glow is opt-in
@@ -456,13 +509,13 @@ export function toPromptBlock(direction: DesignDirection): string {
       ? `\nAvoid:\n${direction.avoidTraps.map((trap) => `- ${trap}`).join('\n')}`
       : '';
   return `DESIGN DIRECTION - ${direction.id}
+This block owns FORM: type, spacing, radius, depth and tone. It does not name a palette. Colour comes from one place only: the "Token block" in the UI/UX PRO MAX brief below. The two never disagree, because the radius and shadow in that block are the ones stated here.
 Typography: ${direction.fontPairing}
 Radius: ${direction.radiusScale}
 Spacing: ${direction.spacingScale}
 Shadow/depth: ${direction.shadowStyle}
-Color: ${direction.colorGuidance}
 Tone (keep copy and motion in this register): ${direction.toneWords.join(', ')}.
 ${signature}
 ${traps}
-Load the named Google Fonts in the root layout/head. Use these exact sizes, radii, and colors (as CSS variables once). Do not swap the type pairing or invent a different palette.${INTERFACE_QUALITY_BAR}`;
+Load the named Google Fonts in the root layout/head. Use these exact sizes and radii (as CSS variables once). Do not swap the type pairing.${INTERFACE_QUALITY_BAR}`;
 }

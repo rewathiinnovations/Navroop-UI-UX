@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { DEFAULT_DESIGN_DIRECTION, DESIGN_DIRECTION_IDS } from '@/lib/design/directions';
+import { DESIGN_DIRECTION_IDS } from '@/lib/design/directions';
 import { DEFAULT_IMPORT_MODE, IMPORT_MODES } from '@/lib/import/mode';
 import { httpUrl } from '@/lib/schema/url';
 import { DEFAULT_STACK, STACK_IDS } from '@/lib/stacks';
@@ -26,7 +26,14 @@ export const createProjectSchema = z.object({
    *  The dashboard uses this so submit lands in the workspace instantly. */
   deferPlanning: z.boolean().optional().default(false),
   stack: z.enum(STACK_IDS).default(DEFAULT_STACK),
-  designDirection: z.enum(DESIGN_DIRECTION_IDS).default(DEFAULT_DESIGN_DIRECTION),
+  /**
+   * Optional, with no default, so the action can tell "the caller chose one"
+   * from "nobody said". A default here would make an omitted direction
+   * indistinguishable from a deliberate `minimal`, and inference — which is what
+   * every prompt-driven create now relies on — would never run. Templates and
+   * the admin template editor still pin one deliberately.
+   */
+  designDirection: z.enum(DESIGN_DIRECTION_IDS).optional(),
   importMode: z.enum(IMPORT_MODES).default(DEFAULT_IMPORT_MODE),
   templateId: z.string().trim().min(1).optional(),
 });
@@ -50,10 +57,14 @@ export const updatePlanContentSchema = z.object({
   planId: z.string().trim().min(1),
   content: z.object({
     summary: z.string().trim().min(1).max(4000),
+    /** Optional: plans written before the design-vision step have none. */
+    designVision: z.string().trim().min(1).max(4000).optional(),
     pages: z
       .array(
         z.object({
           name: z.string().trim().min(1).max(200),
+          /** Optional: plans written before multi-page planning have no route. */
+          route: z.string().trim().min(1).max(200).optional(),
           description: z.string().trim().min(1).max(2000),
         }),
       )

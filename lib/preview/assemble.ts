@@ -994,6 +994,11 @@ export function __navigate(path: string): void {
 
 if (typeof window !== 'undefined') {
   window.__previewNavigate = __navigate;
+  // Read by the error bridge in lib/preview/html.ts. An uncaught error posts
+  // only its message and stack, so a crash on /pricing was repaired as if it
+  // had happened on / — the repair had nowhere to look and came back with an
+  // edit that did not fix it. The router already knows which page is mounted.
+  window.__previewRoute = __currentPath;
   window.addEventListener('popstate', () => {
     current = fromLocation();
     listeners.forEach((listener) => listener(current));

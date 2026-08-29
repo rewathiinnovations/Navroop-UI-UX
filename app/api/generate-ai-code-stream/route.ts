@@ -7,6 +7,12 @@ import { getSessionUser } from '@/lib/auth';
 import { looksLikeUrl } from '@/lib/projects/prompt';
 import { attachGenerationInputTokens, logGenerationEvent } from '@/lib/usage-costs';
 import { buildCachedMessages } from '@/lib/generation/prompt-cache';
+import {
+  describeRepairs,
+  hasRepairs,
+  repairedPaths,
+  repairGeneratedFiles,
+} from '@/lib/generation/deterministic-repairs';
 import { filesFromReply, replaceBlockInReply } from '@/lib/generation/parse-blocks';
 import {
   GENERATION_RATE_LIMIT_MESSAGE,
@@ -49,8 +55,14 @@ import { prisma } from '@/lib/db';
 import { getCurrentProjectFiles } from '@/lib/github/current-files';
 import { log, logError } from '@/lib/logger';
 import { trackFailure, trackStart, trackSuccess } from '@/lib/observability/track';
+import {
+  countToolResult,
+  recordToolRefusalRates,
+  type ToolResultTally,
+} from '@/lib/signals/collect';
 import { holdProjectLock, LOCK_LOST_MESSAGE, ProjectLockLostError } from '@/lib/projects/lock';
 import { lockConflictJson } from '@/lib/projects/lock-http';
+import { getApprovedPlanRoutes } from '@/lib/projects/plan';
 import {
   beginJobHeartbeat,
   createOrReuseJob,
@@ -859,7 +871,11 @@ async function generateAiCodeStream(request: NextRequest) {
         }
 
         const uiUxBrief = buildUiUxProMaxBrief({
-          prompt,
+          // The project's own brief, not this turn's prompt. An initial build's
+          // prompt carries the approved plan JSON appended to it, and those extra
+          // words re-scored the palette and the style — so the plan and the build
+          // could commit to two different designs for the same project.
+          prompt: generationProfile.initialPrompt || prompt,
           styleHint: styleHint || context?.styleName || context?.conversationContext?.style,
           // The style the user actually picked. Without it the brief fell out of a
           // keyword tie onto STYLES[0] and shipped Glassmorphism to almost every
@@ -1164,6 +1180,17 @@ async function generateAiCodeStream(request: NextRequest) {
          * optional call is real rather than defensive.
          */
         let toolProgress: (() => void) | null = null;
+        /**
+         * Per-tool call/refusal counts for this run, filled by the `notify`
+         * closure below and written once as a quality signal when the run
+         * finishes (`recordToolRefusalRates`).
+         *
+         * Counted here because this is the only place the results exist: a
+         * refusal is *returned* to the model, never thrown, so it leaves no trace
+         * in the job row, no trace in the logs, and reached the browser as one
+         * `tool_result` frame that the workspace renders and discards.
+         */
+        const toolResults: ToolResultTally = {};
 
         // Typed on purpose: this object used to be `any`, which let the AI SDK v4 names
         // `maxTokens` and `experimental_providerMetadata` sit here unnoticed. Both are
@@ -1200,6 +1227,7 @@ async function generateAiCodeStream(request: NextRequest) {
               // and on the file rail, and `progress()` is what stops a step that
               // only calls tools from being reaped as a stalled stream.
               toolProgress?.();
+              if (event.phase === 'result') countToolResult(toolResults, event.tool, event.ok);
               void sendProgress(
                 event.phase === 'call'
                   ? { type: 'tool_call', tool: event.tool, path: event.path }
@@ -2180,6 +2208,42 @@ Provide the complete file content without any truncation. Include all necessary 
           }
         }
 
+        // Deterministic repairs, applied in place.
+        //
+        // The tool path applies these inside `GenerationFileStore.write`; this is
+        // the fence path's half, and it has to rewrite the reply rather than the
+        // parsed map because `settleStreamedGeneration` re-parses `generatedCode` —
+        // a fix applied only to `files` would be thrown away at persist time. What
+        // they remove: `import { Implant } from "lucide-react"` compiled, the build
+        // check called it clean, and the preview died with "does not provide an
+        // export named 'Implant'" as the first thing the user saw; and a raw <img>
+        // on a stack whose prompt has asked for next/image for a long time.
+        if (!useTools && files.length > 0) {
+          const repaired = repairGeneratedFiles(
+            Object.fromEntries(files.map((file) => [file.path, file.content])),
+            projectStack,
+          );
+          if (hasRepairs(repaired.repairs)) {
+            const rewritten = repairedPaths(repaired.repairs);
+            for (const path of rewritten) {
+              const next = replaceBlockInReply(generatedCode, path, repaired.files[path]);
+              // A path with no block in the reply cannot be rewritten; leaving the
+              // original is the honest outcome, and the build check still sees it.
+              if (next !== null) generatedCode = next;
+            }
+            files = files.map((file) =>
+              rewritten.has(file.path) ? { ...file, content: repaired.files[file.path] } : file,
+            );
+            for (const notice of describeRepairs(repaired.repairs)) {
+              await sendProgress({ type: 'info', message: notice });
+            }
+          }
+        } else if (useTools) {
+          for (const notice of describeRepairs(toolStore.repairs())) {
+            await sendProgress({ type: 'info', message: notice });
+          }
+        }
+
         // Recovery off is not silence: when nothing re-asks for the cut-off files, this
         // step is the only trace detection leaves where an operator looks. With recovery
         // on, the truncation-recovery step above already records the outcome, and a full
@@ -2293,6 +2357,14 @@ Provide the complete file content without any truncation. Include all necessary 
                     ...Object.fromEntries(files.map((file) => [file.path, file.content])),
                   },
                   changedPaths: files.map((file) => file.path),
+                  // First builds only. The approved plan's routes are a contract
+                  // the prompt states and nothing checked: a page the user agreed
+                  // to and the model silently never wrote is linked from nowhere,
+                  // so `missing-route` — which scrapes hrefs — cannot see it, and
+                  // the site ships smaller than the plan. On an edit the same
+                  // check would be wrong: a one-page edit legitimately does not
+                  // rebuild the rest of the site.
+                  plannedRoutes: isEdit ? undefined : await getApprovedPlanRoutes(projectId),
                   // Without this the static scan cannot see the starter kit and
                   // reports `@/lib/utils` as an unresolved import, spending a
                   // repair generation rewriting correct code.
@@ -2619,6 +2691,23 @@ Provide the complete file content without any truncation. Include all necessary 
           // generation; the workspace runs one more pass with this instruction.
           buildFix: buildFix ?? undefined,
         });
+
+        // What the model had to fight to produce that. Filed against the same
+        // `GenerationEvent` the token spend is filed against — `usageEventId` was
+        // pinned before the first call for exactly this reason (F-749), so a
+        // follow-up that started while this run streamed cannot take the row.
+        //
+        // Awaited rather than detached: the completion frame has already gone
+        // out, so nothing the user waits on is behind this, and a floating
+        // promise on the tail of a request is the kind of write that silently
+        // never happens. `withSignalGuard` swallows its own failures, so awaiting
+        // it cannot turn a finished generation into a failed one.
+        //
+        // Success path only. A run that threw stopped mid tool sequence, and its
+        // counts describe how far it got rather than what the prompt version made
+        // the model do; mixing the two populations would move the rate whenever
+        // the provider had a bad day.
+        await recordToolRefusalRates(projectId, toolResults, usageEventId);
 
         // Track edit in conversation history. Writes land on the state this
         // request resolved, never on whatever the process global points at by

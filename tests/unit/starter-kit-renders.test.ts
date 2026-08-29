@@ -49,6 +49,38 @@ export default function Page() {
 }
 `;
 
+/**
+ * A page built the way the DESIGN rules now ask: Reveal-wrapped sections, a
+ * SectionHeader opener, the premium and hero Button variants, and the entrance
+ * animation utilities. If any of the craft machinery fails to compile, the model
+ * following the prompt to the letter produces a broken build — so this page
+ * compiling is the machinery's contract.
+ */
+const CRAFT_PAGE = `import { Button } from '@/components/ui/button';
+import { Reveal } from '@/components/ui/reveal';
+import { SectionHeader } from '@/components/ui/section-header';
+
+export default function Page() {
+  return (
+    <main>
+      <section className="bg-gradient-subtle">
+        <h1 className="animate-fade-up text-6xl tracking-tight">Headline</h1>
+        <Button variant="premium">Book now</Button>
+        <Button variant="hero">Watch the film</Button>
+      </section>
+      <section className="bg-secondary/50">
+        <Reveal>
+          <SectionHeader eyebrow="Services" title="What we do" lede="Real copy." />
+        </Reveal>
+        <Reveal delay={80}>
+          <p>Card</p>
+        </Reveal>
+      </section>
+    </main>
+  );
+}
+`;
+
 const STACK_PAGE_PATH: Record<string, string> = {
   NEXTJS: 'app/page.tsx',
   REACT: 'src/App.tsx',
@@ -66,12 +98,18 @@ describe('the locked starter kit compiles and its tokens reach the frame', () =>
       expect(result.status).toBe('passed');
     });
 
+    it(`${stack}: a page using the craft machinery (Reveal, SectionHeader, premium/hero variants) builds`, async () => {
+      const files = {
+        ...getStackStarterFiles(stack, 'premium'),
+        [STACK_PAGE_PATH[stack]]: CRAFT_PAGE,
+      };
+      const result = await checkBuild({ stack, files, designDirection: 'premium' });
+      expect(result.errors).toEqual([]);
+      expect(result.status).toBe('passed');
+    });
+
     it(`${stack}: the built document carries the direction's tokens and the CDN config`, async () => {
-      const built = await buildStaticSite(
-        stack,
-        { [STACK_PAGE_PATH[stack]]: PAGE },
-        'premium',
-      );
+      const built = await buildStaticSite(stack, { [STACK_PAGE_PATH[stack]]: PAGE }, 'premium');
       expect(built.ok).toBe(true);
       if (!built.ok) return;
       const html = built.files['index.html'];
@@ -99,11 +137,7 @@ describe('the locked starter kit compiles and its tokens reach the frame', () =>
   });
 
   it('a project file beats its starter counterpart', () => {
-    const merged = withStarterFiles(
-      'NEXTJS',
-      { 'app/globals.css': '/* mine */' },
-      'premium',
-    );
+    const merged = withStarterFiles('NEXTJS', { 'app/globals.css': '/* mine */' }, 'premium');
     expect(merged['app/globals.css']).toBe('/* mine */');
     // The rest of the kit is still there.
     expect(merged['components/ui/button.tsx']).toContain('buttonVariants');
@@ -325,10 +359,11 @@ describe('the three things that must agree about a token name', () => {
       [...renderTokenCss(direction.tokens).matchAll(/--([\w-]+):/g)].map((match) => match[1]),
     );
     for (const list of names) {
-      // 21 colour/radius names plus `primary-glow`, two gradients and two
-      // shadows. A direction that declared a different set would give the model
-      // a class that works on five directions and silently does nothing on one.
-      expect(list).toHaveLength(25);
+      // 21 colour/radius names plus `primary-glow`, two gradients, two shadows
+      // and the two font stacks. A direction that declared a different set would
+      // give the model a class that works on five directions and silently does
+      // nothing on one.
+      expect(list).toHaveLength(27);
       expect(list).toEqual(names[0]);
     }
   });
@@ -644,24 +679,48 @@ describe('the starter kit cannot overwrite a project that already decided', () =
   const STARTER_PATHS: Record<string, string[]> = {
     NEXTJS: [
       'app/globals.css',
+      'components/sections/contact-form.tsx',
+      'components/sections/cta-band.tsx',
+      'components/sections/faq.tsx',
+      'components/sections/feature-grid.tsx',
+      'components/sections/hero.tsx',
+      'components/sections/logo-cloud.tsx',
+      'components/sections/pricing-tiers.tsx',
+      'components/sections/site-footer.tsx',
+      'components/sections/stats-band.tsx',
+      'components/sections/testimonials.tsx',
       'components/ui/badge.tsx',
       'components/ui/button.tsx',
       'components/ui/card.tsx',
       'components/ui/dialog.tsx',
       'components/ui/input.tsx',
       'components/ui/label.tsx',
+      'components/ui/reveal.tsx',
+      'components/ui/section-header.tsx',
       'components/ui/skeleton.tsx',
       'components/ui/tabs.tsx',
       'lib/utils.ts',
       'tailwind.config.js',
     ],
     REACT: [
+      'src/components/sections/contact-form.tsx',
+      'src/components/sections/cta-band.tsx',
+      'src/components/sections/faq.tsx',
+      'src/components/sections/feature-grid.tsx',
+      'src/components/sections/hero.tsx',
+      'src/components/sections/logo-cloud.tsx',
+      'src/components/sections/pricing-tiers.tsx',
+      'src/components/sections/site-footer.tsx',
+      'src/components/sections/stats-band.tsx',
+      'src/components/sections/testimonials.tsx',
       'src/components/ui/badge.tsx',
       'src/components/ui/button.tsx',
       'src/components/ui/card.tsx',
       'src/components/ui/dialog.tsx',
       'src/components/ui/input.tsx',
       'src/components/ui/label.tsx',
+      'src/components/ui/reveal.tsx',
+      'src/components/ui/section-header.tsx',
       'src/components/ui/skeleton.tsx',
       'src/components/ui/tabs.tsx',
       'src/index.css',
@@ -719,9 +778,13 @@ describe('the starter kit cannot overwrite a project that already decided', () =
       // preview the customer approved rather than silently becoming `minimal`.
       const [homePath, homeSource] = HOME_PAGE[stack];
       const cssPath = stack === 'NEXTJS' ? 'app/globals.css' : 'src/index.css';
-      const repo = buildRepoFiles(stack, { [homePath]: homeSource }, {
-        designDirection: 'premium',
-      });
+      const repo = buildRepoFiles(
+        stack,
+        { [homePath]: homeSource },
+        {
+          designDirection: 'premium',
+        },
+      );
       expect(repo[cssPath]).toBe(getStackStarterFiles(stack, 'premium')[cssPath]);
       expect(repo[cssPath]).not.toBe(getStackStarterFiles(stack, 'editorial')[cssPath]);
     });

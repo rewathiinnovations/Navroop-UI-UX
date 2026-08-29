@@ -48,7 +48,22 @@ export type PlanTrigger = 'initial' | 'followup';
 
 export type PlanContent = {
   summary: string;
-  pages: { name: string; description: string }[];
+  /**
+   * The design commitment, made before any code exists. Lovable's first-message
+   * prompt - "write what it evokes and what existing beautiful designs you can
+   * draw inspiration from... list possible colors, gradients, animations, fonts"
+   * - is what this vendors: a build that has already said where its one bold
+   * moment lives produces it, while a build deciding mid-file produces the
+   * template default. Optional because stored plans predate it.
+   */
+  designVision?: string;
+  /**
+   * `route` is optional because plans written before multi-page planning existed
+   * are still in the database and still have to open. A missing route means
+   * "the build decides", which is the old behaviour; a present one is a contract
+   * the build must satisfy and `lib/validation/quality-check.ts` enforces.
+   */
+  pages: { name: string; route?: string; description: string }[];
   keyFeatures: string[];
 };
 
@@ -68,10 +83,12 @@ export type PlanCompleter = (input: {
 
 const planContentSchema = z.object({
   summary: z.string().min(1),
+  designVision: z.string().min(1).optional(),
   pages: z
     .array(
       z.object({
         name: z.string().min(1),
+        route: z.string().min(1).optional(),
         description: z.string().min(1),
       }),
     )
@@ -136,7 +153,14 @@ function buildPlanSystemPrompt(
   extras?: { memoryBlock?: string },
 ) {
   const stackId = getStack(stack).id;
-  const brief = buildUiUxProMaxBrief({ prompt: promptContext, isEdit: false }).brief;
+  // `designDirection` was missing here while the generation route passed it. The
+  // plan therefore scored its own style with no direction to break ties, and
+  // promised a design the build then did not produce.
+  const brief = buildUiUxProMaxBrief({
+    prompt: promptContext,
+    designDirection,
+    isEdit: false,
+  }).brief;
   const stackPrompt = getStackPrompt(
     stackId,
     designDirection,
@@ -149,15 +173,56 @@ function buildPlanSystemPrompt(
   );
   return `${stackPrompt}
 
-You are planning a website for the ${stackId} stack. Output a structured plan only. Do NOT write application code, file contents, markup, or diffs.
+${PLAN_TASK}`;
+}
+
+/**
+ * What a plan has to decide before a build starts.
+ *
+ * The plan used to say "pages" and get one, every time: a dental clinic, a
+ * store and an internal dashboard all came back as a single Home route with
+ * ten sections stacked on it. Nothing in the instruction said a site could
+ * have more than one page, so nothing produced one — while the preview has
+ * mounted a client router over every \`app/**\\/page.tsx\` since long before
+ * that. The capability was there; the plan never asked for it.
+ *
+ * Routes are named here rather than left to the build for the same reason the
+ * design system is: two calls that each decide it separately will disagree, and
+ * a nav that links to a page nobody wrote is the failure a user meets first.
+ * \`lib/validation/quality-check.ts\` fails a build whose links do not resolve,
+ * so the route list is a contract, not a suggestion.
+ */
+const PLAN_TASK = `You are planning a website. Output a structured plan only. Do NOT write application code, file contents, markup, or diffs.
+
+HOW MANY PAGES
+Decide from what the site is, not from a habit of building one long page.
+- A single marketing page is right for a one-service local business, a personal portfolio, a launch or waitlist page, or an event.
+- Three to six routes is right for most real businesses: a clinic with distinct treatments, a restaurant with a menu and bookings, an agency with case studies, a school, a property firm.
+- A store needs at least: home, product listing, a product detail route, cart, and checkout.
+- An admin or dashboard product needs at least: an overview, one list/table screen, one detail screen, and settings.
+- Never invent routes to hit a number. A page earns its place by holding content that does not belong on another page.
+
+ROUTES
+- Every page gets a \`route\`: "/" for home, "/shop", "/product/[slug]" for a detail page reached from a list.
+- Use lowercase, hyphenated segments. A dynamic segment is in square brackets.
+- Every route you list will be built as a real page and linked from the shared header or footer. Do not list a route you cannot describe content for.
+
+EACH PAGE
+\`description\` names the sections that page holds, in order, and what each one contains — real subject matter drawn from the user's brief, never "a hero section" on its own. One or two sentences.
+
+KEY FEATURES
+Concrete, checkable capabilities: what a visitor can do and what the page proves. Not styling adjectives, and not a restatement of the section list.
+
+DESIGN VISION
+Commit to the design in 3-5 sentences, before the pages: what the subject evokes and one or two real-world designs worth drawing from; where the ONE bold moment lives (usually the hero) and what it concretely is; how the design brief's palette and type get spent (which section surfaces alternate or invert, where the gradient appears, what the display headline says); and the motion story (what fades up on load, what reveals on scroll). Be specific enough that two builders reading it would produce the same page. This spends the DESIGN DIRECTION and the token block - it never contradicts them.
 
 Return JSON only, matching:
 {
   "summary": string,
-  "pages": [{ "name": string, "description": string }],
+  "designVision": string,
+  "pages": [{ "name": string, "route": string, "description": string }],
   "keyFeatures": string[]
 }`;
-}
 
 function parsePlanJson(raw: string): PlanContent {
   const trimmed = raw.trim();
@@ -267,7 +332,27 @@ async function completePlan(
 }
 
 export function combineBuildContext(initialPrompt: string, content: PlanContent) {
-  return `${initialPrompt}\n\nApproved plan:\n${JSON.stringify(content)}`;
+  // The route list and the vision are repeated outside the JSON, as instructions
+  // rather than data: a plan whose pages are only a field of a serialised object
+  // reads as context, while a build told "these are the routes, build every one"
+  // produces them - and `lib/validation/quality-check.ts` fails a nav link that
+  // resolves to none of them, so the list is a contract, not a suggestion.
+  const routes = content.pages
+    .map((page) => (page.route ? `${page.route} (${page.name})` : null))
+    .filter((entry): entry is string => entry !== null);
+  const routeContract =
+    routes.length > 0
+      ? `\n\nROUTES TO BUILD - every one of these is a real page file, and the shared header links to them:\n${routes
+          .map((route) => `- ${route}`)
+          .join(
+            '\n',
+          )}\nDo not merge them onto one page, and do not add a route that is not on this list.`
+      : '';
+  // The user approved this design; the build spends it, it does not re-decide it.
+  const visionContract = content.designVision
+    ? `\n\nAPPROVED DESIGN VISION - build exactly this:\n${content.designVision}`
+    : '';
+  return `${initialPrompt}\n\nApproved plan:\n${JSON.stringify(content)}${visionContract}${routeContract}`;
 }
 
 async function startLoggedGeneration(input: GenerationStart) {
@@ -897,6 +982,38 @@ export async function retryFailedPlan(projectId: string, prompt: string, signal?
 
   const plan = await generatePlan(projectId, source, 'initial', source, signal);
   return { ok: true as const, data: plan };
+}
+
+/**
+ * The routes the approved plan promised, for the validator to check against.
+ *
+ * `combineBuildContext` writes these into the build prompt under "ROUTES TO
+ * BUILD" and its comment calls the list "a contract, not a suggestion" — but
+ * nothing read the plan back afterwards, so the contract was prose. The
+ * validator's `missing-route` only sees a *link* to a page that does not exist;
+ * a promised page the model never wrote and never linked to is invisible to it.
+ *
+ * Never throws and never returns a partial answer as a whole one: an empty
+ * array means "no contract to check", which is also what a missing plan, an
+ * unparseable one, and a failed read all mean. Failing a generation because a
+ * lookup for extra assurance failed would be strictly worse than not checking.
+ */
+export async function getApprovedPlanRoutes(projectId: string): Promise<string[]> {
+  try {
+    const plan = await prisma.projectPlan.findFirst({
+      where: { projectId, status: 'APPROVED' },
+      orderBy: { version: 'desc' },
+      select: { content: true },
+    });
+    if (!plan) return [];
+    const parsed = planContentSchema.safeParse(plan.content);
+    if (!parsed.success) return [];
+    return parsed.data.pages
+      .map((page) => page.route?.trim())
+      .filter((route): route is string => Boolean(route));
+  } catch {
+    return [];
+  }
 }
 
 export async function getApprovedPlanGenerationContext(projectId: string) {

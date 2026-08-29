@@ -1,4 +1,3 @@
-import type { DesignDirectionId } from '@/lib/design/directions';
 import { DEFAULT_IMPORT_MODE, type ImportMode } from '@/lib/import/mode';
 import { looksLikeUrl } from '@/lib/projects/prompt';
 import type { StackId } from '@/lib/stacks';
@@ -50,13 +49,13 @@ export function takeProjectArm(projectId: string): string | null {
 export async function createProjectFromPrompt(
   prompt: string,
   stack: StackId,
-  designDirection?: DesignDirectionId,
   importMode: ImportMode = DEFAULT_IMPORT_MODE,
 ) {
   const response = await fetch('/api/projects', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt, status: 'idle', stack, designDirection, importMode }),
+    // No `designDirection`: the server infers it from the prompt.
+    body: JSON.stringify({ prompt, status: 'idle', stack, importMode }),
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {

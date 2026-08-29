@@ -7,6 +7,7 @@ const CATEGORIES: CodeFinding['category'][] = [
   'dead-code',
   'bundle',
   'a11y',
+  'runtime',
   'ai-review',
   'tool',
 ];

@@ -138,7 +138,7 @@ Generated sites are served from a **different origin** than the app (`/preview-s
 | ----- | ---------------- | ------------------------ |
 | CNAME | `preview-static` | the Navroop app hostname |
 
-That becomes `preview-static.{zone}` (for example `preview-static.navroop.app`). Point it at the same Coolify app. Locally the path form on `localhost:3000` is used; CSP still allows framing only by the app origin.
+That becomes `preview-static.{zone}` (for example `preview-static.navroop.app`). Point it at the same Coolify app — **and add the same `https://preview-static.{zone}` to the Coolify application's domains** (for a compose app, on the `app` service). A DNS record alone gives Traefik no router for that Host, which answers `503 no available server` for every preview. Locally none of this is needed: a loopback app serves its own previews from the sibling origin `preview-static.localhost:<port>` (`lib/preview/url.ts`), which the proxy's `preview-static.*` host rewrite already routes; CSP still allows framing only by the app origin.
 
 ## Password-protected client previews
 

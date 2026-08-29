@@ -11,12 +11,6 @@ import {
 import PromptBox from '@/components/app/studio/PromptBox';
 import CategoryChips from '@/components/templates/CategoryChips';
 import { PENDING_PROMPT_KEY, useDraftStorage } from '@/hooks/useDraftStorage';
-import {
-  DESIGN_DIRECTION_IDS,
-  DESIGN_DIRECTIONS,
-  isDesignDirectionId,
-  type DesignDirectionId,
-} from '@/lib/design/directions';
 import { DEFAULT_IMPORT_MODE, type ImportMode } from '@/lib/import/mode';
 import { looksLikeUrl } from '@/lib/projects/prompt';
 import { STACK_IDS, getStack, isStackId, type StackId } from '@/lib/stacks';
@@ -29,12 +23,16 @@ export type PromptHeroHandle = {
 
 type PromptHeroProps = {
   greeting: string;
-  onSubmit: (
-    text: string,
-    stack: StackId,
-    designDirection: DesignDirectionId,
-    importMode: ImportMode,
-  ) => void | Promise<void>;
+  /**
+   * `designDirection` is deliberately absent. The hero used to carry a Design
+   * direction select that defaulted to `minimal` and that almost nobody touched,
+   * so every project claimed "minimal" while its prompt described a luxury
+   * clinic or a data console — and the UI/UX brief, scoring the same prompt,
+   * disagreed. The direction is now read from the prompt server-side
+   * (`lib/design/infer-direction.ts`), which is the only way one design system
+   * reaches the model.
+   */
+  onSubmit: (text: string, stack: StackId, importMode: ImportMode) => void | Promise<void>;
   description?: ReactNode;
 };
 
@@ -45,17 +43,8 @@ const PromptHero = forwardRef<PromptHeroHandle, PromptHeroProps>(function Prompt
   { greeting, onSubmit, description },
   ref,
 ) {
-  const {
-    value,
-    setValue,
-    stack,
-    setStack,
-    designDirection,
-    setDesignDirection,
-    importMode,
-    setImportMode,
-    flush,
-  } = useDraftStorage(PENDING_PROMPT_KEY);
+  const { value, setValue, stack, setStack, importMode, setImportMode, flush } =
+    useDraftStorage(PENDING_PROMPT_KEY);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -71,11 +60,13 @@ const PromptHero = forwardRef<PromptHeroHandle, PromptHeroProps>(function Prompt
       focus: () => textareaRef.current?.focus(),
       fill: (text: string) => {
         setValue(text);
-        flush(text, stack, designDirection, importMode);
+        // `undefined` keeps the hook's stored direction: the draft record still
+        // has the field, nothing in the hero sets it any more.
+        flush(text, stack, undefined, importMode);
         window.setTimeout(() => textareaRef.current?.focus(), 20);
       },
     }),
-    [flush, setValue, stack, designDirection, importMode],
+    [flush, setValue, stack, importMode],
   );
 
   useEffect(() => {
@@ -86,10 +77,10 @@ const PromptHero = forwardRef<PromptHeroHandle, PromptHeroProps>(function Prompt
   }, []);
 
   const handleSubmit = async (text: string) => {
-    flush(text, stack, designDirection, importMode);
+    flush(text, stack, undefined, importMode);
     setSubmitting(true);
     try {
-      await onSubmit(text, stack, designDirection, importMode);
+      await onSubmit(text, stack, importMode);
     } finally {
       setSubmitting(false);
     }
@@ -133,24 +124,6 @@ const PromptHero = forwardRef<PromptHeroHandle, PromptHeroProps>(function Prompt
                       </option>
                     );
                   })}
-                </select>
-              </label>
-              <label className="inline-flex min-h-[36px] items-center gap-8">
-                <span className="sr-only">Design direction</span>
-                <select
-                  value={designDirection}
-                  aria-label="Design direction"
-                  onChange={(event) => {
-                    const next = event.target.value;
-                    if (isDesignDirectionId(next)) setDesignDirection(next);
-                  }}
-                  className={selectClassName}
-                >
-                  {DESIGN_DIRECTION_IDS.map((id) => (
-                    <option key={id} value={id}>
-                      {DESIGN_DIRECTIONS[id].label}
-                    </option>
-                  ))}
                 </select>
               </label>
               {showImportMode && (
