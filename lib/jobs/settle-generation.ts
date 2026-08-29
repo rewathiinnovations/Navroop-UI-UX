@@ -103,6 +103,13 @@ export const STREAM_REJECTED_FILES_MESSAGE =
   'The AI finished without producing any files we could save — every file it sent was rejected (too large, unreadable, or unsafe). Try again.';
 
 /**
+ * The all-refused failure when every refusal was an import of a section the kit does not
+ * ship. Its own class because the generic copy names three causes, none of which is this one.
+ */
+export const STREAM_REJECTED_SECTIONS_MESSAGE =
+  'The AI finished without producing any files we could save — every page it wrote was built from a section the kit does not have. Try again.';
+
+/**
  * Last line of defence: no file is stored with a raw `NEED_IMAGE: …` sitting
  * in a `src`. Fulfilment only sees the files a run rewrote, so a token in an
  * untouched file — written before fulfilment worked, or left when an image
@@ -625,9 +632,18 @@ export async function settleStreamedGeneration(
     // reported as an "unsafe path" the user can never find.
     if (Object.keys(streamedFiles).length === 0) {
       const allPathRefusals = rejected.every((file) => PATH_REJECTION_CODES[file.code]);
-      const errorMessage = allPathRefusals
-        ? STREAM_REJECTED_PATHS_MESSAGE
-        : STREAM_REJECTED_FILES_MESSAGE;
+      // A third case, because neither of the other two describes it. "Too large, unreadable,
+      // or unsafe" sends the user looking for an oversized or corrupt file that does not
+      // exist, when what actually happened is that every page imported a section the kit
+      // does not ship — which the per-file refusal already explains, and which the frame
+      // above it was contradicting.
+      const allUnknownSections =
+        rejected.length > 0 && rejected.every((file) => file.code === 'unknown_section');
+      const errorMessage = allUnknownSections
+        ? STREAM_REJECTED_SECTIONS_MESSAGE
+        : allPathRefusals
+          ? STREAM_REJECTED_PATHS_MESSAGE
+          : STREAM_REJECTED_FILES_MESSAGE;
       await failJob(job.id, {
         errorCode: 'no_files_generated',
         errorMessage,

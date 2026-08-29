@@ -13,12 +13,19 @@
  * Three constraints shaped every component here, and each of them is a bug that
  * would otherwise ship:
  *
- * 1. Stack-neutral. `components/` is merged into NEXTJS *and* REACT projects, so
- *    nothing here may import `next/image` or `next/link` — `resolveBareSpecifier`
- *    rejects them in a Vite project and the section would fail to bundle. Images
- *    and links are `React.ReactNode` slots the page fills, which also keeps
- *    `next/image` available to the page that wants it and keeps the `raw-img`
- *    advisory pointed at the page rather than at the kit.
+ * 1. Stack-neutral. `components/` is merged into NEXTJS *and* REACT projects, so nothing
+ *    here may import `next/image` or `next/link` — `resolveBareSpecifier` rejects them in a
+ *    Vite project and the section would fail to bundle. Two different escape hatches, and
+ *    the difference matters:
+ *
+ *    - An image is a `React.ReactNode` slot the page fills, so `next/image` stays available
+ *      to the page that wants it and the `raw-img` advisory points at the page, not the kit.
+ *    - A *link* cannot be a slot, because a CTA is data now — that is what lets a section be
+ *      described by a JSON tool call at all. So each section that renders one takes
+ *      `linkComponent`, defaulting to `'a'`. A Next page passes `next/link` and gets client
+ *      routing; a Vite project passes nothing. The conversion to data props briefly removed
+ *      this, and every in-app navigation from a hero, a tier, a CTA band or a footer became
+ *      a full document load on the default stack.
  * 2. No new dependency. Entrance motion is `Reveal` (IntersectionObserver,
  *    already in the kit) rather than framer-motion, which is pinned in
  *    `PREVIEW_DEPS` but absent from `STARTER_DEPENDENCIES` — a section importing
@@ -62,20 +69,34 @@ export type HeroSectionProps = React.HTMLAttributes<HTMLElement> & {
   /** Screenshot or illustration. Still an element: only the page knows how to load one. */
   media?: React.ReactNode;
   align?: 'left' | 'center';
+  /**
+   * Renders in-app links. Pass \`next/link\` on a Next project for client-side routing;
+   * the default anchor keeps this file resolvable in a Vite project.
+   */
+  linkComponent?: React.ElementType;
 };
 
-/** One button, linked or not. Repeated per file on purpose: each section stands alone. */
+/**
+ * One button, linked or not. Repeated per file on purpose: each section stands alone.
+ *
+ * \`linkComponent\` is how a Next page gets client-side routing out of a stack-neutral file.
+ * The anchor is the default because \`components/\` is merged into REACT projects too, where
+ * \`next/link\` does not resolve — but leaving it as the only option meant every in-app
+ * navigation from a hero, a tier or a footer was a full document load on the default stack.
+ */
 function CtaButton({
   cta,
   variant,
+  linkComponent: Link = 'a',
 }: {
   cta: SectionCta;
   variant?: 'premium' | 'hero' | 'outline' | 'default';
+  linkComponent?: React.ElementType;
 }) {
   if (cta.href) {
     return (
       <Button asChild variant={variant}>
-        <a href={cta.href}>{cta.label}</a>
+        <Link href={cta.href}>{cta.label}</Link>
       </Button>
     );
   }
@@ -91,6 +112,7 @@ export function HeroSection({
   secondaryCta,
   media,
   align,
+  linkComponent,
   ...props
 }: HeroSectionProps) {
   const resolvedAlign = align ?? (media ? 'left' : 'center');
@@ -123,8 +145,12 @@ export function HeroSection({
                   centred ? 'justify-center' : 'justify-start',
                 )}
               >
-                {primaryCta ? <CtaButton cta={primaryCta} variant="premium" /> : null}
-                {secondaryCta ? <CtaButton cta={secondaryCta} variant="outline" /> : null}
+                {primaryCta ? (
+                  <CtaButton cta={primaryCta} variant="premium" linkComponent={linkComponent} />
+                ) : null}
+                {secondaryCta ? (
+                  <CtaButton cta={secondaryCta} variant="outline" linkComponent={linkComponent} />
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -237,6 +263,11 @@ export type PricingTiersProps = React.HTMLAttributes<HTMLElement> & {
   title: string;
   lede?: string;
   tiers: PricingTier[];
+  /**
+   * Renders in-app links. Pass \`next/link\` on a Next project for client-side routing;
+   * the default anchor keeps this file resolvable in a Vite project.
+   */
+  linkComponent?: React.ElementType;
 };
 
 export function PricingTiers({
@@ -245,6 +276,7 @@ export function PricingTiers({
   title,
   lede,
   tiers,
+  linkComponent: Link = 'a',
   ...props
 }: PricingTiersProps) {
   return (
@@ -292,7 +324,7 @@ export function PricingTiers({
                   <div className="mt-8">
                     {tier.actionHref ? (
                       <Button asChild className="w-full" variant={tier.featured ? 'premium' : 'default'}>
-                        <a href={tier.actionHref}>{tier.actionLabel}</a>
+                        <Link href={tier.actionHref}>{tier.actionLabel}</Link>
                       </Button>
                     ) : (
                       <Button className="w-full" variant={tier.featured ? 'premium' : 'default'}>
@@ -542,6 +574,11 @@ export type CtaBandProps = React.HTMLAttributes<HTMLElement> & {
   /** Data, not an element, for the reason HeroSection's props give. */
   cta: { label: string; href?: string };
   secondaryCta?: { label: string; href?: string };
+  /**
+   * Renders in-app links. Pass \`next/link\` on a Next project for client-side routing;
+   * the default anchor keeps this file resolvable in a Vite project.
+   */
+  linkComponent?: React.ElementType;
 };
 
 export function CtaBand({
@@ -550,6 +587,7 @@ export function CtaBand({
   lede,
   cta,
   secondaryCta,
+  linkComponent: Link = 'a',
   ...props
 }: CtaBandProps) {
   return (
@@ -565,7 +603,7 @@ export function CtaBand({
             <div className="mt-8 flex flex-wrap items-center justify-center gap-4">
               {cta.href ? (
                 <Button asChild variant="hero">
-                  <a href={cta.href}>{cta.label}</a>
+                  <Link href={cta.href}>{cta.label}</Link>
                 </Button>
               ) : (
                 <Button variant="hero">{cta.label}</Button>
@@ -573,7 +611,7 @@ export function CtaBand({
               {secondaryCta ? (
                 secondaryCta.href ? (
                   <Button asChild variant="outline">
-                    <a href={secondaryCta.href}>{secondaryCta.label}</a>
+                    <Link href={secondaryCta.href}>{secondaryCta.label}</Link>
                   </Button>
                 ) : (
                   <Button variant="outline">{secondaryCta.label}</Button>
@@ -694,6 +732,11 @@ export type SiteFooterProps = React.HTMLAttributes<HTMLElement> & {
   blurb?: string;
   columns?: FooterColumn[];
   legal?: React.ReactNode;
+  /**
+   * Renders in-app links. Pass \`next/link\` on a Next project for client-side routing;
+   * the default anchor keeps this file resolvable in a Vite project.
+   */
+  linkComponent?: React.ElementType;
 };
 
 export function SiteFooter({
@@ -702,6 +745,7 @@ export function SiteFooter({
   blurb,
   columns = [],
   legal,
+  linkComponent: Link = 'a',
   ...props
 }: SiteFooterProps) {
   return (
@@ -719,9 +763,9 @@ export function SiteFooter({
             <ul className="mt-4 space-y-3 text-sm text-muted-foreground">
               {column.links.map((link) => (
                 <li key={link.href}>
-                  <a href={link.href} className="transition-colors hover:text-foreground">
+                  <Link href={link.href} className="transition-colors hover:text-foreground">
                     {link.label}
-                  </a>
+                  </Link>
                 </li>
               ))}
             </ul>

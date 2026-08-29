@@ -66,6 +66,17 @@ export const updatePlanContentSchema = z.object({
           /** Optional: plans written before multi-page planning have no route. */
           route: z.string().trim().min(1).max(200).optional(),
           description: z.string().trim().min(1).max(2000),
+          /**
+           * The sections the page promised, carried through a user's edit.
+           *
+           * A bare `z.object` strips what it does not declare, so while this field was
+           * missing the first edit to anything in the plan card silently deleted every
+           * page's section commitment — the one field that can now cost a billed repair
+           * generation, removed by renaming a page. The comment above this schema has
+           * always claimed it matches `planContentSchema`; this is what makes that true
+           * again rather than aspirational.
+           */
+          sections: z.array(z.string().trim().min(1).max(100)).max(12).optional(),
         }),
       )
       .min(1)

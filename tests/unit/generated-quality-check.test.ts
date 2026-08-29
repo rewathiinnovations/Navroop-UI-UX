@@ -527,3 +527,123 @@ describe('sections the approved plan promised', () => {
     expect(result.blocking.map((f) => f.kind)).not.toContain('missing-section');
   });
 });
+
+/**
+ * The three ways this check used to fail a page that was correct.
+ *
+ * Each was proven against the real function before it was fixed, and each cost a billed
+ * repair generation whose instruction asked the model to add something the page already had
+ * — or, worse, to paste a second footer under the one the layout renders.
+ */
+describe('missing-section does not fire on a page that obeyed the prompt', () => {
+  const page = (body: string) => `export default function Page() { return (${body}); }`;
+  const importing = (names: string[], body = '<main>x</main>') =>
+    names.map((n) => `import { X${n} } from '@/components/sections/${n}';`).join('\n') +
+    `\n${page(body)}`;
+
+  it('counts a section the root layout renders, not just the page', () => {
+    // base-rules: "Shared chrome (nav, footer) lives in layout.tsx". A model that obeyed it
+    // was graded as having built a thin page, on every page of the site.
+    const result = checkGeneratedQuality({
+      stack: 'NEXTJS',
+      files: {
+        'app/layout.tsx': importing(['site-footer']),
+        'app/page.tsx': importing(['hero', 'feature-grid']),
+      },
+      changedPaths: ['app/page.tsx'],
+      plannedPages: [{ route: '/', sections: ['hero', 'feature-grid', 'site-footer'] }],
+    });
+    expect(result.blocking.map((f) => f.kind)).not.toContain('missing-section');
+  });
+
+  it('inherits a nested layout only for the routes under it', () => {
+    const files = {
+      'app/layout.tsx': importing(['site-footer']),
+      'app/shop/layout.tsx': importing(['logo-cloud']),
+      'app/shop/page.tsx': importing(['hero']),
+      'app/about/page.tsx': importing(['hero']),
+    };
+    const under = checkGeneratedQuality({
+      stack: 'NEXTJS',
+      files,
+      changedPaths: Object.keys(files),
+      plannedPages: [{ route: '/shop', sections: ['hero', 'logo-cloud'] }],
+    });
+    expect(under.blocking.map((f) => f.kind)).not.toContain('missing-section');
+
+    const outside = checkGeneratedQuality({
+      stack: 'NEXTJS',
+      files,
+      changedPaths: Object.keys(files),
+      plannedPages: [{ route: '/about', sections: ['hero', 'logo-cloud'] }],
+    });
+    expect(outside.blocking.map((f) => f.kind)).toContain('missing-section');
+  });
+
+  it('never promises a layout-owned section per page in the first place', () => {
+    // Belt and braces: even with no layout file at all, a stored plan naming site-footer
+    // must not bill a repair, because the prompt never asks a page to render one.
+    const result = checkGeneratedQuality({
+      stack: 'NEXTJS',
+      files: { 'app/page.tsx': importing(['hero']) },
+      changedPaths: ['app/page.tsx'],
+      plannedPages: [{ route: '/', sections: ['hero', 'site-footer'] }],
+    });
+    expect(result.blocking.map((f) => f.kind)).not.toContain('missing-section');
+  });
+
+  it('sees a section imported through next/dynamic', () => {
+    const source = [
+      "import dynamic from 'next/dynamic';",
+      "const Faq = dynamic(() => import('@/components/sections/faq'));",
+      page('<main>x</main>'),
+    ].join('\n');
+    const result = checkGeneratedQuality({
+      stack: 'NEXTJS',
+      files: { 'app/page.tsx': source },
+      changedPaths: ['app/page.tsx'],
+      plannedPages: [{ route: '/', sections: ['faq'] }],
+    });
+    expect(result.blocking.map((f) => f.kind)).not.toContain('missing-section');
+  });
+
+  it('sees a specifier carrying an explicit extension, which the write guard blesses', () => {
+    const result = checkGeneratedQuality({
+      stack: 'NEXTJS',
+      files: {
+        'app/page.tsx': `import { HeroSection } from '@/components/sections/hero.tsx';\n${page('<main>x</main>')}`,
+      },
+      changedPaths: ['app/page.tsx'],
+      plannedPages: [{ route: '/', sections: ['hero'] }],
+    });
+    expect(result.blocking.map((f) => f.kind)).not.toContain('missing-section');
+  });
+
+  it('stays silent when a barrel import makes the section set unknowable', () => {
+    const result = checkGeneratedQuality({
+      stack: 'NEXTJS',
+      files: {
+        'app/page.tsx': `import { HeroSection, Faq } from '@/components/sections';\n${page('<main>x</main>')}`,
+      },
+      changedPaths: ['app/page.tsx'],
+      plannedPages: [{ route: '/', sections: ['hero', 'faq'] }],
+    });
+    expect(result.blocking.map((f) => f.kind)).not.toContain('missing-section');
+  });
+
+  it('still reports a genuinely thin page', () => {
+    // The check must not have been softened into uselessness by the four fixes above.
+    const result = checkGeneratedQuality({
+      stack: 'NEXTJS',
+      files: {
+        'app/layout.tsx': importing(['site-footer']),
+        'app/page.tsx': importing(['hero']),
+      },
+      changedPaths: ['app/page.tsx'],
+      plannedPages: [{ route: '/', sections: ['hero', 'pricing-tiers', 'faq'] }],
+    });
+    const finding = result.blocking.find((f) => f.kind === 'missing-section');
+    expect(finding?.message).toContain('pricing-tiers');
+    expect(finding?.message).toContain('faq');
+  });
+});

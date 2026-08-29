@@ -1,5 +1,6 @@
 import type { StackId } from '@/lib/stacks';
 import { SECTION_COMPONENT_NAMES } from '@/lib/stacks/templates/sections';
+import { LAYOUT_OWNED_SECTIONS, sectionImportsIn } from '@/lib/stacks/section-imports';
 
 /**
  * Defects a compiler cannot see.
@@ -177,13 +178,24 @@ function routeOfPagePath(path: string): string | null {
   return `/${segments.join('/')}`.replace(/\/$/, '') || '/';
 }
 
-/** Sections a file imports from the catalogue, by their registry name. */
-function importedSections(source: string): Set<string> {
-  const found = new Set<string>();
-  const pattern = /from\s+['"]@\/components\/sections\/([a-z0-9-]+)['"]/g;
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(source)) !== null) found.add(match[1]);
-  return found;
+/** `app/(site)/pricing/page.tsx` -> `app/(site)/pricing`, the directory a layout must cover. */
+function directoryOf(path: string): string {
+  const cut = path.lastIndexOf('/');
+  return cut === -1 ? '' : path.slice(0, cut);
+}
+
+/** Layouts whose chrome a page inherits: the page's own directory and every parent. */
+function layoutSectionsFor(
+  pagePath: string,
+  layouts: ReadonlyArray<{ dir: string; sections: Set<string> }>,
+): Set<string> {
+  const pageDir = directoryOf(pagePath);
+  const inherited = new Set<string>();
+  for (const layout of layouts) {
+    const covers = pageDir === layout.dir || pageDir.startsWith(`${layout.dir}/`);
+    if (covers) for (const name of layout.sections) inherited.add(name);
+  }
+  return inherited;
 }
 
 /**
@@ -204,11 +216,24 @@ function checkPlannedSections(
   files: Record<string, string>,
   findings: QualityFinding[],
 ): void {
-  const byRoute = new Map<string, { path: string; sections: Set<string> }>();
+  // Chrome the prompt orders into a layout is rendered once, not per page, so a page's own
+  // imports are only half of what it renders. Reading the page alone reported every page of
+  // a site as thin and billed a repair that would paste a second footer under the real one.
+  const layouts: Array<{ dir: string; sections: Set<string> }> = [];
+  for (const [path, raw] of Object.entries(files)) {
+    if (typeof raw !== 'string') continue;
+    if (!/^app\/(.*\/)?layout\.(tsx|jsx)$/.test(path)) continue;
+    layouts.push({ dir: directoryOf(path), sections: sectionImportsIn(raw).names });
+  }
+
+  const byRoute = new Map<string, { path: string; sections: Set<string>; barrel: boolean }>();
   for (const [path, raw] of Object.entries(files)) {
     if (typeof raw !== 'string') continue;
     const route = routeOfPagePath(path);
-    if (route) byRoute.set(routeShape(route), { path, sections: importedSections(raw) });
+    if (!route) continue;
+    const own = sectionImportsIn(raw);
+    const sections = new Set([...own.names, ...layoutSectionsFor(path, layouts)]);
+    byRoute.set(routeShape(route), { path, sections, barrel: own.barrel });
   }
 
   for (const page of pages) {
@@ -218,8 +243,14 @@ function checkPlannedSections(
     const built = byRoute.get(routeShape(route));
     // No page file at all is `missing-planned-route`'s finding, not a second report here.
     if (!built) continue;
+    // `from '@/components/sections'` imports the directory, so which sections the page uses
+    // cannot be read off its specifiers. Unknowable is not the same as none, and guessing
+    // "none" here is a blocking finding against a page that may be complete.
+    if (built.barrel) continue;
 
-    const promised = [...new Set(page.sections)].filter((name) => KNOWN_SECTION_NAMES.has(name));
+    const promised = [...new Set(page.sections)].filter(
+      (name) => KNOWN_SECTION_NAMES.has(name) && !LAYOUT_OWNED_SECTIONS.has(name),
+    );
     const absent = promised.filter((name) => !built.sections.has(name));
     if (absent.length === 0) continue;
 

@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { generateObject, generateText } from 'ai';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
-import { SECTION_REGISTRY_NAMES } from '@/lib/stacks/section-registry';
+import { pageSectionNames } from '@/lib/stacks/section-imports';
 import { getSessionUser, type SessionUser } from '@/lib/auth';
 import { chatModelForEntry } from '@/lib/ai/client-for-entry';
 import { completeWithProviderFailover } from '@/lib/ai/plan-complete';
@@ -64,7 +64,7 @@ export type PlanContent = {
    * "the build decides", which is the old behaviour; a present one is a contract
    * the build must satisfy and `lib/validation/quality-check.ts` enforces.
    */
-  pages: { name: string; route?: string; description: string }[];
+  pages: { name: string; route?: string; description: string; sections?: string[] }[];
   keyFeatures: string[];
 };
 
@@ -219,7 +219,7 @@ ROUTES
 
 EACH PAGE
 \`description\` names the sections that page holds, in order, and what each one contains — real subject matter drawn from the user's brief, never "a hero section" on its own. One or two sentences.
-\`sections\` lists the catalogue sections that page uses, in the order they appear, from: ${SECTION_REGISTRY_NAMES.join(', ')}. List only what the page genuinely has; omit the field for a page whose layout none of them expresses. This is a commitment the build is checked against, so do not pad it.
+\`sections\` lists the catalogue sections that page uses, in the order they appear, from: ${pageSectionNames().join(', ')}. List only what the page genuinely has; omit the field for a page whose layout none of them expresses. This is a commitment the build is checked against, so do not pad it.
 
 KEY FEATURES
 Concrete, checkable capabilities: what a visitor can do and what the page proves. Not styling adjectives, and not a restatement of the section list.
@@ -359,11 +359,28 @@ export function combineBuildContext(initialPrompt: string, content: PlanContent)
             '\n',
           )}\nDo not merge them onto one page, and do not add a route that is not on this list.`
       : '';
+  // The same reasoning, applied to the section commitment, and for the same reason: it is
+  // now enforced at blocking severity by `missing-section`, which drives a billed repair
+  // generation. Left inside the serialised plan it would reach the builder in exactly the
+  // form the comment above says does not produce output, so the checker would be stricter
+  // than any instruction the builder ever received — the pipeline billing a repair for a
+  // contract it never handed over as one.
+  const sectionLines = content.pages
+    .map((page) => {
+      const sections = page.sections?.filter((name) => typeof name === 'string' && name.trim());
+      if (!sections?.length) return null;
+      return `- ${page.route ?? page.name}: ${sections.join(', ')}`;
+    })
+    .filter((entry): entry is string => entry !== null);
+  const sectionContract =
+    sectionLines.length > 0
+      ? `\n\nSECTIONS PER PAGE - build each page from these, in this order, by calling use_section for every one:\n${sectionLines.join('\n')}\nAdding a section beyond the list is fine; leaving one out is not.`
+      : '';
   // The user approved this design; the build spends it, it does not re-decide it.
   const visionContract = content.designVision
     ? `\n\nAPPROVED DESIGN VISION - build exactly this:\n${content.designVision}`
     : '';
-  return `${initialPrompt}\n\nApproved plan:\n${JSON.stringify(content)}${visionContract}${routeContract}`;
+  return `${initialPrompt}\n\nApproved plan:\n${JSON.stringify(content)}${visionContract}${routeContract}${sectionContract}`;
 }
 
 async function startLoggedGeneration(input: GenerationStart) {
@@ -1033,24 +1050,6 @@ export async function getApprovedPlanContract(projectId: string): Promise<Approv
     };
   } catch {
     return empty;
-  }
-}
-
-export async function getApprovedPlanRoutes(projectId: string): Promise<string[]> {
-  try {
-    const plan = await prisma.projectPlan.findFirst({
-      where: { projectId, status: 'APPROVED' },
-      orderBy: { version: 'desc' },
-      select: { content: true },
-    });
-    if (!plan) return [];
-    const parsed = planContentSchema.safeParse(plan.content);
-    if (!parsed.success) return [];
-    return parsed.data.pages
-      .map((page) => page.route?.trim())
-      .filter((route): route is string => Boolean(route));
-  } catch {
-    return [];
   }
 }
 

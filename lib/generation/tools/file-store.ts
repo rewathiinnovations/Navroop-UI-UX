@@ -60,6 +60,16 @@ export type GenerationFileStore = {
   readonly stack: StackId;
 };
 
+/** Section files the project already has, keyed the way an import spells them. */
+function projectSectionNames(files: Record<string, string>): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const path of Object.keys(files)) {
+    const match = /(?:^|\/)components\/sections\/([^/]+)\.(tsx|ts|jsx|js)$/.exec(path);
+    if (match) names.add(match[1]);
+  }
+  return names;
+}
+
 export function createGenerationFileStore(input: {
   base: Record<string, string>;
   stack: StackId;
@@ -103,7 +113,10 @@ export function createGenerationFileStore(input: {
       return Object.keys(snapshot()).sort();
     },
     write(path, content) {
-      const file = assertWritableGenerationFile({ path, content });
+      // The project's own section files count as existing, alongside the kit's catalogue.
+      // Without this the guard contradicted itself within a turn: it allowed
+      // `components/sections/team.tsx` and then refused the page importing it.
+      const file = assertWritableGenerationFile({ path, content }, projectSectionNames(snapshot()));
       // Deterministic corrections on the way in: an icon lucide does not export
       // (a runtime crash the bundler cannot see) and a raw <img> on the Next.js
       // stack. Repaired here rather than reported, because a report costs a

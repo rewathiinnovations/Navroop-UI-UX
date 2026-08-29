@@ -154,3 +154,93 @@ describe('the write guard refuses a section that does not exist', () => {
     ).not.toThrow();
   });
 });
+
+/**
+ * The two ways the tool used to say "success" about something wrong.
+ *
+ * Both were proven against the real tool: an invented field came back silently dropped, and
+ * the hero's media example handed a NEXTJS build a raw `<img>` pointing at a URL that exists
+ * nowhere — code the same pipeline criticises two steps later and the deterministic image
+ * repair refuses to fix.
+ */
+describe('what use_section refuses rather than silently drops', () => {
+  it('names an invented field instead of stripping it', async () => {
+    // `primaryAction` is the exact prop removed from HeroSection when sections became
+    // data-driven, so it is the most likely thing a model reaches for.
+    const { reply } = await call('use_section', {
+      name: 'hero',
+      content: { title: 'T', primaryAction: '/signup' },
+    });
+
+    expect(reply).toContain('does not match hero');
+    expect(reply).toContain('primaryAction');
+  });
+
+  it('names a misspelt field, which is the same defect wearing a typo', async () => {
+    const { reply } = await call('use_section', {
+      name: 'hero',
+      content: { title: 'T', tittle: 'typo' },
+    });
+    expect(reply).toContain('tittle');
+  });
+
+  it('refuses an invented key inside a nested object too', async () => {
+    const { reply } = await call('use_section', {
+      name: 'hero',
+      content: { title: 'T', primaryCta: { label: 'Go', url: '/x' } },
+    });
+    expect(reply).toContain('does not match hero');
+    expect(reply).toContain('url');
+  });
+
+  it('emits a next/image media slot on NEXTJS, not a raw img at an invented URL', async () => {
+    const { reply } = await call('use_section', {
+      name: 'hero',
+      content: { title: 'Every crossing, one timetable' },
+      slots: ['media'],
+    });
+
+    expect(reply).toContain("import Image from 'next/image';");
+    expect(reply).toContain('<Image');
+    expect(reply).not.toContain('/hero.webp');
+    // The stack's own mechanism for an image that does not exist yet.
+    expect(reply).toContain('NEED_IMAGE:');
+    // Sized, so the deterministic repair has nothing to object to and there is no shift.
+    expect(reply).toContain('width={1600}');
+  });
+});
+
+/**
+ * Client-side routing, which the conversion to data props briefly removed.
+ *
+ * Sections must stay stack-neutral — `components/` is merged into REACT projects too — so
+ * they default to a plain anchor. That default alone meant every in-app navigation from a
+ * hero, a pricing tier, a CTA band or a footer was a full document load on NEXTJS, which is
+ * the default stack. `linkComponent` is the escape hatch, and the tool supplies it.
+ */
+describe('sections that render links get next/link on NEXTJS', () => {
+  it('passes linkComponent and imports it', async () => {
+    const { reply } = await call('use_section', {
+      name: 'cta-band',
+      content: { title: 'Start free', cta: { label: 'Create an account', href: '/signup' } },
+    });
+
+    expect(reply).toContain("import Link from 'next/link';");
+    expect(reply).toContain('linkComponent={Link}');
+  });
+
+  it('leaves a section with no links alone', async () => {
+    const { reply } = await call('use_section', {
+      name: 'stats-band',
+      content: {
+        items: [
+          { value: '9', label: 'Operators' },
+          { value: '4k', label: 'Sailings' },
+        ],
+      },
+    });
+
+    expect(reply).not.toContain('linkComponent');
+    expect(reply).not.toContain('next/link');
+  });
+});

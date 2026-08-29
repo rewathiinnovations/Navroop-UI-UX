@@ -28,6 +28,9 @@ export function lockedStackRule(srcPrefix: string): string {
 - Section content is DATA, not elements: a call to action is {label, href}, footer links are
   {label, href}, and the section renders the Button or the anchor itself. The one exception is
   the hero's media prop, which stays an element because only the page knows how to load an image.
+- On NEXTJS give any section that renders a link linkComponent={Link} (import Link from 'next/link'),
+  so an in-app CTA routes on the client instead of reloading the whole document. use_section
+  emits it for you; add it yourself if you write the section usage by hand.
 - The catalogue, and what each one is for:
 ${sectionCatalogueRule()}
 - Icons come from lucide-react. Never inline an SVG icon set.

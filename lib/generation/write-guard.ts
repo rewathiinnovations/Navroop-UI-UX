@@ -6,6 +6,7 @@ import {
   type ParsedGenerationFile,
 } from './parse-files';
 import { SECTION_COMPONENT_NAMES } from '@/lib/stacks/templates/sections';
+import { sectionImportsIn } from '@/lib/stacks/section-imports';
 
 function isPackageJsonPath(path: string) {
   return path === 'package.json' || path.endsWith('/package.json');
@@ -23,10 +24,20 @@ function isPackageJsonPath(path: string) {
  * total cap is the one check that cannot live here: it is cross-file, and
  * `safeGeneratedFiles` carries it.
  */
-export function assertWritableGenerationFile(file: {
-  path: string;
-  content: string;
-}): ParsedGenerationFile {
+export function assertWritableGenerationFile(
+  file: {
+    path: string;
+    content: string;
+  },
+  /**
+   * Section files the project itself has, beyond the kit's catalogue.
+   *
+   * The store passes its own snapshot so a section the model wrote this turn — or one a
+   * pre-existing project already had — is importable. Absent, only the catalogue counts,
+   * which is the right default for the fence path and for callers with no file set.
+   */
+  knownProjectSections?: ReadonlySet<string>,
+): ParsedGenerationFile {
   const safe = sanitizeGenerationPath(file.path ?? '');
   if (!safe.ok) {
     throw new ParseFilesError(safe.code, `Unsafe file path: ${file.path || '(empty)'}`, file.path);
@@ -50,7 +61,7 @@ export function assertWritableGenerationFile(file: {
       );
     }
   }
-  const invented = inventedSectionImport(content);
+  const invented = inventedSectionImport(safe.path, content, knownProjectSections);
   if (invented) {
     throw new ParseFilesError(
       'unknown_section',
@@ -62,7 +73,7 @@ export function assertWritableGenerationFile(file: {
 }
 
 /**
- * The first import of a section the kit does not ship, if there is one.
+ * The first import of a section that exists nowhere, if there is one.
  *
  * A model that wants a carousel writes `@/components/sections/carousel` and moves on. The
  * import is a real module specifier, so `resolveBareSpecifier` never sees it — it looks
@@ -71,17 +82,36 @@ export function assertWritableGenerationFile(file: {
  * earliest anything can know, and the refusal carries the catalogue so the next step is a
  * choice rather than another guess.
  *
- * The path prefix is fixed rather than derived from the layout: REACT projects import
- * through the same `@/` alias, so `src/` never appears in a specifier.
+ * "Exists" means the kit's catalogue OR a section file the project itself has. Without the
+ * second half the guard contradicted itself within a turn: it allowed a model to write
+ * `components/sections/team.tsx` and then refused the page importing it, saying the file
+ * "does not exist" about a file the same turn had just created — with no correct recovery
+ * except deleting its own component. It also made any project that already had a file there
+ * un-editable, since every rewrite of the importing page goes through this same gate.
+ *
+ * Only code files are read. The check is textual, so a Markdown file quoting an import in
+ * prose used to be refused with a message about imports, and on the fence path a refusal is
+ * a silent per-file drop rather than a stop — the page vanished from a build that still
+ * reported success. Commented-out lines are skipped for the same reason.
  */
-function inventedSectionImport(content: string): string | null {
-  const pattern = /from\s+['"]@\/components\/sections\/([A-Za-z0-9._-]+)['"]/g;
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(content)) !== null) {
-    const name = match[1].replace(/\.(tsx|ts|jsx|js)$/, '');
-    if (!KNOWN_SECTIONS.has(name)) return name;
-  }
-  return null;
+const CODE_FILE_FOR_IMPORTS = /\.(tsx|ts|jsx|js|mjs|cjs)$/;
+
+function withoutCommentLines(content: string): string {
+  return content
+    .split(/\r?\n/)
+    .filter((line) => {
+      const trimmed = line.trimStart();
+      return !trimmed.startsWith('//') && !trimmed.startsWith('*') && !trimmed.startsWith('/*');
+    })
+    .join(' ');
 }
 
-const KNOWN_SECTIONS = new Set<string>(SECTION_COMPONENT_NAMES);
+function inventedSectionImport(
+  path: string,
+  content: string,
+  knownProjectSections?: ReadonlySet<string>,
+): string | null {
+  if (!CODE_FILE_FOR_IMPORTS.test(path)) return null;
+  const { unknown } = sectionImportsIn(withoutCommentLines(content));
+  return unknown.find((name) => !knownProjectSections?.has(name)) ?? null;
+}

@@ -473,7 +473,13 @@ export function buildGenerationTools(deps: GenerationToolDeps): ToolSet {
           return [detail, ...problems].join('\n');
         }
 
-        const usage = renderSectionUsage(name, parsed.data, { includeOptionalSlots: slots });
+        // The stack decides the media slot's spelling: `next/image` on NEXTJS, a sized
+        // `<img>` elsewhere. Without it the tool handed a NEXTJS build a raw <img> that
+        // the pipeline's own raw-img advisory then criticised.
+        const usage = renderSectionUsage(name, parsed.data, {
+          includeOptionalSlots: slots,
+          stack: store.stack,
+        });
         const unknownSlots = (slots ?? []).filter(
           (slot) => !entry.slots.some((known) => known.name === slot),
         );

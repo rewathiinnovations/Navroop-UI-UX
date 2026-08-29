@@ -10,14 +10,24 @@ import {
 import { checkBuild } from '@/lib/validation/build-check';
 
 /**
- * The registry describes the sections truthfully, proved by compiling what it emits.
+ * The registry describes the sections truthfully, proved by type-checking what it emits.
  *
- * A props schema is a claim about a component's interface, and a claim in a second file is
- * a claim that can drift. Nothing downstream would catch it either: a wrong prop name is
- * not an error esbuild can see, so a section rendered from a stale schema bundles, previews
- * and publishes clean and only fails `next build` inside the client's own repository. So
- * the fixtures below are checked twice — once by the schema, once by the compiler — and the
- * second check is the one that cannot be satisfied by agreeing with itself.
+ * A props schema is a claim about a component's interface, and a claim in a second file is a
+ * claim that can drift. Nothing else in the pipeline would catch it: a wrong prop name is not
+ * an error esbuild can see, so a section rendered from a stale schema bundles, previews and
+ * publishes clean and only fails `next build` inside the client's own repository.
+ *
+ * `checkBuild` is not that check, and this file used to claim it was. It runs
+ * `esbuild.build({ bundle: true })`, which strips TypeScript types without reading them —
+ * a page built from a deliberately drifted registry (`heading` for `title`, a `cost` field
+ * PricingTier does not have, a CtaBand with no `cta` at all) returns `status: 'passed',
+ * errors: []`. The bundle check still earns its place, because it is what proves the
+ * sections resolve on both layouts, but it can only answer "does this link".
+ *
+ * So there are two checks below and they answer different questions: the bundle proves the
+ * module graph, and `ts.createProgram` over the same page against the real component sources
+ * proves the props. The second one has a negative control, because a checker that cannot fail
+ * is the thing this docblock used to describe.
  */
 
 /** One realistic call per section: what a good generation would actually pass. */
