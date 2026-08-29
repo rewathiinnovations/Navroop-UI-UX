@@ -2,12 +2,18 @@ import { recordJobStepFailure } from '@/lib/jobs/step-failure';
 import { PREVIEW_DEPS } from '@/lib/preview/deps';
 import type { StackId } from '@/lib/stacks';
 import { withStarterFiles } from '@/lib/stacks/starter';
-import { checkBuild, type BuildCheckResult } from './build-check';
+import {
+  buildErrorSignature,
+  checkBuild,
+  type BuildCheckResult,
+  type BuildError,
+} from './build-check';
 import { MAX_AUTOFIX_ATTEMPTS, decideAutoFix, type AutoFixDecision } from './autofix-policy';
 import { describeBuildFailure } from './fix-prompt';
 import { checkGeneratedImports, type ImportCheckOutcome } from './import-check';
 import { checkGeneratedQuality, type PlannedPage, type QualityFinding } from './quality-check';
 import { getBuildAutoFixEnabled } from './settings';
+import { typecheckGenerated } from './typecheck';
 
 /**
  * Stable across runs that found the same defects, so a repair that changed
@@ -148,6 +154,34 @@ export async function runBuildValidation(input: {
   }
 
   if (result.status === 'passed') {
+    // Bundling is not type-checking. esbuild strips TypeScript rather than reading it, so a
+    // section given a prop it does not have, or a variant a component never defined, gets
+    // this far untouched — and `BuildErrorKind` has carried a `'type'` arm since it was
+    // written that nothing could produce. Next.js *does* type-check on `next build`, so the
+    // discovery point without this stage is inside the client's own repository after
+    // publish, which is the one place in the product that cannot repair anything.
+    //
+    // After the bundle rather than before it: a syntax error should fail on the cheaper
+    // check, and a program built over unparseable files reports noise about the parse.
+    const types = typecheckGenerated({ stack, files: input.files, changedPaths, designDirection });
+    if (types.status === 'failed') {
+      const typed: BuildCheckResult = {
+        ...result,
+        status: 'failed',
+        errors: types.errors,
+        signature: buildErrorSignature(types.errors),
+      };
+      return settleFailure({
+        result: typed,
+        summary: typeCheckSummary(types.errors),
+        jobId,
+        attempt,
+        previousSignature,
+        enabled,
+        notify,
+      });
+    }
+
     // Compiling is not the same as working. The checks below are the ones a
     // bundler has no opinion about: a nav link to a route nobody wrote, a
     // transparent button variant given a light foreground and no background.
@@ -302,6 +336,24 @@ async function reportUnchecked(input: {
  * package. A bound has to be arithmetic on a counter the server owns; the model
  * changing its mind is not a bound.
  */
+/**
+ * What the chat and the job step say when the types are wrong.
+ *
+ * Named as a distinct class from a bundle failure on purpose: "the build failed" sends the
+ * model looking for a broken import, and the defect is a prop or a value that the bundler was
+ * perfectly happy with.
+ */
+function typeCheckSummary(errors: BuildError[]): string {
+  const first = errors[0];
+  const rest = errors.length - 1;
+  const where = first.file
+    ? `${first.file}${first.line ? `:${first.line}` : ''}`
+    : 'the generated code';
+  return `The site bundles, but it does not type-check: ${where} — ${first.message}${
+    rest > 0 ? ` (and ${rest} more)` : ''
+  }`;
+}
+
 async function settleFailure(input: {
   result: BuildCheckResult;
   summary: string;

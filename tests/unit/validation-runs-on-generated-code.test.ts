@@ -312,3 +312,92 @@ describe('runBuildValidation', () => {
     expect(notices.some((notice) => notice.message.includes('spawn esbuild ENOENT'))).toBe(true);
   });
 });
+
+/**
+ * The gap between "it bundles" and "it type-checks", closed inside the real pipeline.
+ *
+ * The module is tested on its own in generated-typecheck.test.ts; what this asserts is that
+ * it is actually *reached* — a stage that works and is never called is the failure mode this
+ * whole file exists to prevent (`runBuildValidation` once had no caller at all).
+ */
+describe('the type-check stage runs after the bundle passes', () => {
+  const page = (body: string, imports: string) =>
+    `${imports}\nexport default function Page() { return (<main>${body}</main>); }\n`;
+
+  it('fails a build whose props the bundler was perfectly happy with', async () => {
+    const notify = vi.fn();
+    const files = {
+      'app/page.tsx': page(
+        '<HeroSection title="T" heading="drifted" />',
+        "import { HeroSection } from '@/components/sections/hero';",
+      ),
+    };
+
+    // The same files bundle cleanly — that is the premise, and it is asserted rather than
+    // assumed, because if esbuild ever started catching this the stage would be redundant.
+    const bundled = await checkBuild({ stack: 'NEXTJS', files, designDirection: 'minimal' });
+    expect(bundled.status).toBe('passed');
+
+    const outcome = await runBuildValidation({
+      stack: 'NEXTJS',
+      files,
+      changedPaths: Object.keys(files),
+      designDirection: 'minimal',
+      attempt: 0,
+      previousSignature: null,
+      notify,
+    });
+
+    expect(outcome.result.status).toBe('failed');
+    expect(outcome.result.errors[0].kind).toBe('type');
+    expect(outcome.result.errors[0].file).toBe('app/page.tsx');
+  }, 60_000);
+
+  it('says it bundles but does not type-check, not "the build failed"', async () => {
+    // A repair told "the build failed" hunts a broken import; the defect is a prop.
+    const notify = vi.fn();
+    const files = {
+      'app/page.tsx': page(
+        '<CtaBand title="Start" />',
+        "import { CtaBand } from '@/components/sections/cta-band';",
+      ),
+    };
+    await runBuildValidation({
+      stack: 'NEXTJS',
+      files,
+      changedPaths: Object.keys(files),
+      designDirection: 'minimal',
+      attempt: 0,
+      previousSignature: null,
+      notify,
+    });
+
+    const said = notify.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(said).toMatch(/bundles, but it does not type-check/i);
+  }, 60_000);
+
+  it('still passes a build that is genuinely fine', async () => {
+    const notify = vi.fn();
+    // No href on the CTA: a link to a route this one-page fixture does not have is a
+    // `missing-route` finding, which is the quality checker working correctly and would
+    // make this test about the wrong thing.
+    const files = {
+      'app/page.tsx': page(
+        '<HeroSection title="Every crossing" primaryCta={{ label: "Book" }} />',
+        "import { HeroSection } from '@/components/sections/hero';",
+      ),
+    };
+    const outcome = await runBuildValidation({
+      stack: 'NEXTJS',
+      files,
+      changedPaths: Object.keys(files),
+      designDirection: 'minimal',
+      attempt: 0,
+      previousSignature: null,
+      notify,
+    });
+
+    expect(outcome.result.status).toBe('passed');
+    expect(outcome.retry).toBeNull();
+  }, 60_000);
+});
