@@ -46,6 +46,8 @@ async function parses(run: () => Promise<unknown>) {
 
 const BOGUS = 'raw_sql_parse_missing_row';
 const WS = 'ws_raw_sql_parse';
+/** Seeded so `getEffectivePlan` reaches its SQL on a fresh database (see the credit case). */
+const PLAN_ID = 'plan_raw_sql_parse_default';
 
 /** Two independent project trees, so the scoping join has something to exclude. */
 const DOMAIN_WS = 'ws_raw_sql_parse_domains';
@@ -131,6 +133,7 @@ async function seedProjectWithDomain(key: (typeof DOMAIN_KEYS)[number]) {
 afterAll(async () => {
   await prisma.creditLedger.deleteMany({ where: { workspaceId: WS } }).catch(() => undefined);
   await prisma.$executeRaw`DELETE FROM "Workspace" WHERE id = ${WS}`.catch(() => undefined);
+  await prisma.$executeRaw`DELETE FROM "Plan" WHERE id = ${PLAN_ID}`.catch(() => undefined);
   await prisma.$executeRaw`DELETE FROM "AppSetting" WHERE key = 'sandbox.roundRobinCursor'`.catch(
     () => undefined,
   );
@@ -215,6 +218,23 @@ describe('lib raw SQL parses on Postgres', () => {
 
   it('credit consumption and the 80% claim', async () => {
     const { consumeCredits } = await import('@/lib/plans/limits');
+    // `getEffectivePlan` throws "No default plan is configured" before any SQL when the
+    // Plan table has no default row — true on CI's freshly migrated database, where this
+    // case failed on every run while passing locally against a long-lived test DB that
+    // happened to hold one. Seed a default plan so the statements under test are reached;
+    // `findFirst` orders by `createdAt` asc, so on a database that already has an older
+    // default this row changes nothing.
+    await prisma.$executeRaw`
+      INSERT INTO "Plan" (
+        id, key, name, "isActive", "isDefault", "monthlyCredits", "maxProjects",
+        "maxLiveSites", "maxPreviewSites", "maxMembers", "checkpointRetentionDays",
+        "storageBytesLimit", "updatedAt"
+      ) VALUES (
+        ${PLAN_ID}, ${PLAN_ID}, 'raw-sql-parse default', true, true, 100, 1,
+        1, 1, 1, 1,
+        1000000, NOW()
+      ) ON CONFLICT (key) DO NOTHING
+    `;
     await parses(() => consumeCredits(BOGUS, BOGUS, 'generation'));
     await parses(() => consumeCredits(WS, BOGUS, 'generation'));
   });
