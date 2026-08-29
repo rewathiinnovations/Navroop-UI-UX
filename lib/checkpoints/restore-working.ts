@@ -1,7 +1,4 @@
 import { prisma } from '@/lib/db';
-import { checkGeneratedImports } from '@/lib/validation/import-check';
-import { checkBuild } from '@/lib/validation/build-check';
-import { typecheckGenerated } from '@/lib/validation/typecheck';
 import { withStarterFiles } from '@/lib/stacks/starter';
 import { getStack } from '@/lib/stacks';
 import type { StackId } from '@/lib/stacks';
@@ -100,6 +97,16 @@ async function validates(
 ): Promise<boolean> {
   const merged = withStarterFiles(stack, files, designDirection);
   try {
+    // Loaded here rather than at module scope, and that is not a style choice.
+    // `lib/projects/actions.ts` imports `checkpoints/actions`, which imports this file, so a
+    // static import would put the TypeScript compiler and esbuild into the module graph of
+    // essentially every project route — paid on every cold start, for a rescue that runs only
+    // after a repair loop has already given up.
+    const [{ checkGeneratedImports }, { checkBuild }, { typecheckGenerated }] = await Promise.all([
+      import('@/lib/validation/import-check'),
+      import('@/lib/validation/build-check'),
+      import('@/lib/validation/typecheck'),
+    ]);
     const imports = checkGeneratedImports({ stack, files: merged });
     if (imports.result.status === 'failed') return false;
 
