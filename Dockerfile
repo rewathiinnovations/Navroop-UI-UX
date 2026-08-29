@@ -25,16 +25,14 @@ ENV PATH="${PNPM_HOME}:${PATH}"
 # `minimumReleaseAgeExclude`, `verifyDepsBeforeRun`) and silently dropped the `overrides`
 # that pin the tar and deepmerge-ts advisories — shipping the vulnerable transitives while
 # `pnpm audit` on a developer machine reported clean (F-716).
-# The image's bundled corepack predates npm's 2025 signing-key rotation, so
-# `corepack install` for a current pnpm fails signature verification with a
-# bare exit 1 ("Cannot find matching keyid") - which took the production
-# deploy down at the dependency step. Pinned to 0.31.0, not @latest: it is the
-# first line with the rotated keys, and later majors require Node >= 22.13
-# while this image is node:20 - @latest installed fine and then refused to
-# run, which failed the very same step one deploy later. The pin keeps the
-# integrity check real instead of disabling it via COREPACK_INTEGRITY_KEYS=0.
-RUN npm install -g corepack@0.31.0 && corepack enable
-ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+# No corepack at all. Three deploys died in this stage to three different
+# corepack failures on this image: the bundled corepack predates npm's 2025
+# signing-key rotation ("Cannot find matching keyid"), corepack@latest
+# requires Node >= 22.13 and refused to run on node:20, and corepack@0.31.0
+# crashes on this image's Node 20.20 with ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING.
+# The deps stage installs the declared pnpm through npm instead - the version
+# is still read from package.json "packageManager", so the single source of
+# truth stands, and npm verifies its own registry signatures.
 
 FROM base AS deps
 WORKDIR /app
@@ -42,7 +40,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 # Fails the build rather than installing under a pnpm that cannot read this lockfile.
 # String concatenation, not template literals: Docker substitutes ${...} in a RUN line with
 # build args and would blank them out.
-RUN corepack install \
+RUN npm install -g pnpm@"$(node -p "require('./package.json').packageManager.split('@')[1]")" \
   && node -e "const want=require('./package.json').packageManager.split('@')[1];const got=require('node:child_process').execSync('pnpm --version').toString().trim();if(got!==want){console.error('pnpm '+got+' is not the declared packageManager '+want);process.exit(1)}console.log('pnpm '+got)"
 RUN pnpm install --frozen-lockfile --ignore-scripts
 
