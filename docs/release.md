@@ -36,23 +36,28 @@ Four more variables steer that bootstrap, and none of them had appeared in any d
 
 ## Commands
 
-| Script                               | What                                                                                                                                                                                                             |
-| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pnpm run verify`                    | Pre-push gate (stop on first fatal failure). **pnpm only** — never `npm run verify`; npm resolves `node_modules` differently in a pnpm workspace and writes `package-lock.json`                                  |
-| `pnpm run verify:full`               | Everything, with one `playwright test` over **every** project replacing the two per-project Playwright steps                                                                                                     |
-| `pnpm run verify:bypass -- "reason"` | Log a hook bypass, then `git push --no-verify`                                                                                                                                                                   |
-| `pnpm db:test`                       | Create `openlovable_test` / `openlovable_shadow`, then migrate the test DB                                                                                                                                       |
-| `pnpm db:test:migrate`               | `prisma migrate deploy` on `TEST_DATABASE_URL` (guarded to `openlovable_test`)                                                                                                                                   |
-| `pnpm test`                          | Vitest unit + integration                                                                                                                                                                                        |
-| `pnpm test:e2e:critical`             | Playwright project `critical` (journey 1, plus the scaffolded journey 4). The signed-in journeys live in the `authenticated` project: `node ./node_modules/@playwright/test/cli.js test --project=authenticated` |
-| `pnpm smoke`                         | Live smoke (`SMOKE_URL`, optional `SMOKE_CLIENT_URL`)                                                                                                                                                            |
-| `pnpm rollback`                      | Coolify rollback of the **main Navroop app** only                                                                                                                                                                |
+| Script                               | What                                                                                                                                                                                                                                            |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm run verify`                    | The full local gate (stop on first fatal failure). **pnpm only** — never `npm run verify`; npm resolves `node_modules` differently in a pnpm workspace and writes `package-lock.json`                                                           |
+| `pnpm run verify:light`              | What `.husky/pre-push` runs (~2 min): the fast fatal steps, with the slow half deferred to CI — `.github/workflows/verify.yml` runs the complete `verify` on the same push. The summary prints one `– … deferred to CI` line per deferred entry |
+| `pnpm run verify:full`               | Everything, with one `playwright test` over **every** project replacing the two per-project Playwright steps                                                                                                                                    |
+| `pnpm run verify:bypass -- "reason"` | Log a hook bypass, then `git push --no-verify`                                                                                                                                                                                                  |
+| `pnpm db:test`                       | Create `openlovable_test` / `openlovable_shadow`, then migrate the test DB                                                                                                                                                                      |
+| `pnpm db:test:migrate`               | `prisma migrate deploy` on `TEST_DATABASE_URL` (guarded to `openlovable_test`)                                                                                                                                                                  |
+| `pnpm test`                          | Vitest unit + integration                                                                                                                                                                                                                       |
+| `pnpm test:e2e:critical`             | Playwright project `critical` (journey 1, plus the scaffolded journey 4). The signed-in journeys live in the `authenticated` project: `node ./node_modules/@playwright/test/cli.js test --project=authenticated`                                |
+| `pnpm smoke`                         | Live smoke (`SMOKE_URL`, optional `SMOKE_CLIENT_URL`)                                                                                                                                                                                           |
+| `pnpm rollback`                      | Coolify rollback of the **main Navroop app** only                                                                                                                                                                                               |
 
 `verify` order — the **only** enumeration of this gate in the repository. `AGENTS.md`, `CLAUDE.md`
 and `.cursor/README.md` point here instead of keeping their own copies, because the copies they did
 keep each dropped a fatal step. Each entry names its `VERIFY_STEPS` id from
 `lib/verify/orchestrator.ts`; `tests/unit/docs-accuracy.test.ts` fails when this list and that array
-disagree in length or in ids. Fatal unless the row says otherwise:
+disagree in length or in ids. Fatal unless the row says otherwise. Rows marked **deferred in
+`verify:light`** are skipped by the pre-push hook's light run (`LIGHT_DEFERRED_STEP_IDS`,
+`lib/verify/orchestrator.ts`) and enforced instead by `.github/workflows/verify.yml`, which runs the
+complete `verify` on the very push the hook let through — the deferral changes when a red is
+reported, never whether:
 
 1. `tsc` — `tsc --noEmit` (excludes generated `.next` / `next-env.d.ts` route types; `types/next-env.d.ts` keeps `next` refs)
 2. `eslint` — `eslint . --max-warnings 0`
@@ -61,13 +66,13 @@ disagree in length or in ids. Fatal unless the row says otherwise:
 5. `prisma-validate` — `prisma validate`
 6. `schema-drift` — `prisma migrate diff --from-migrations` vs committed schema (`--shadow-database-url`, dedicated `openlovable_shadow` — never the app or test DB)
 7. `destructive` — destructive-migration detector (`ALLOW_DESTRUCTIVE_MIGRATION=true` required for DROP TABLE/COLUMN / ALTER TYPE)
-8. `vitest` — `vitest run --coverage`
-9. `next-build` — `next build`
-10. `playwright-critical` — `playwright test --project=critical`
-11. `playwright-authenticated` — `playwright test --project=authenticated`; the `setup` project seeds the E2E account and signs in first as a declared dependency, so this is the step that proves a real signed-in user can reach the dashboard and create a project. Separate from `critical` on purpose: merged into one command, a silently empty `authenticated` project would hide behind `critical`'s passing count
-12. `depcheck` — **fatal** since 2026-08-21 (F-645). It was report-only with no config, printing the same ten entries on every run and blocking nothing. `.depcheckrc.yml` declares those ten — split into "used, but not via an import depcheck can see" (`autoprefixer`, `postcss-import`, `postcss-nesting`, `depcheck`, `knip`, `@vitest/coverage-v8`, `prettier`) and "unused, pending removal with a lockfile regeneration" (`@eslint/eslintrc`, `msw`, `semver`) — so a clean tree exits 0 and a _newly_ unused dependency is a red gate
-13. `knip` — **report only**, non-fatal, but the tick is now truthful (`--no-exit-code` was removed)
-14. `audit` — `pnpm audit --audit-level=high`; high severity blocks
+8. `vitest` — `vitest run --coverage`; in `verify:light` the same suite runs **without** `--coverage`, so every assertion still executes locally and only the coverage-floor ratchet waits for CI
+9. `next-build` — `next build` — **deferred in `verify:light`**
+10. `playwright-critical` — `playwright test --project=critical` — **deferred in `verify:light`**
+11. `playwright-authenticated` — `playwright test --project=authenticated`; the `setup` project seeds the E2E account and signs in first as a declared dependency, so this is the step that proves a real signed-in user can reach the dashboard and create a project. Separate from `critical` on purpose: merged into one command, a silently empty `authenticated` project would hide behind `critical`'s passing count. **Deferred in `verify:light`**
+12. `depcheck` — **fatal** since 2026-08-21 (F-645). It was report-only with no config, printing the same ten entries on every run and blocking nothing. `.depcheckrc.yml` declares those ten — split into "used, but not via an import depcheck can see" (`autoprefixer`, `postcss-import`, `postcss-nesting`, `depcheck`, `knip`, `@vitest/coverage-v8`, `prettier`) and "unused, pending removal with a lockfile regeneration" (`@eslint/eslintrc`, `msw`, `semver`) — so a clean tree exits 0 and a _newly_ unused dependency is a red gate. **Deferred in `verify:light`**
+13. `knip` — **report only**, non-fatal, but the tick is now truthful (`--no-exit-code` was removed). **Deferred in `verify:light`**
+14. `audit` — `pnpm audit --audit-level=high`; high severity blocks. **Not** deferred in `verify:light` — it costs a second, and a high-severity advisory should stop a push, not follow it; likewise `secret-scan` always runs locally, because a credential must never leave the machine at all — CI reporting it is already the leak
 
 **No repo-wide `prettier --check` step, deliberately** (the other half of F-785, scoped out 2026-08-21). `.prettierrc.json` exists and `lint-staged` formats staged files, but the tree it has been applied to is not the whole repository: `prettier . --check` reports **809 files** with style differences as of `345a0a8`. Adding the step means a reformat of 809 files in one commit — a diff that conflicts with every branch in flight and buries real changes in whitespace for a year of `git blame`. The gate would also be red for the entire window between adding the step and landing that reformat. The honest sequence is: reformat first, in its own commit, on a quiet tree; add the step second. Neither belongs in a finding whose subject is the missing secret scan.
 
@@ -127,14 +132,14 @@ A test once stamped a fixture Sentry project id over the dev server's live `.dat
 
 Four rules, because several agents may be editing the checkout while the suite runs and the dev server is writing it:
 
-| What changed | Where                                                                                          | Verdict |
-| ------------ | ---------------------------------------------------------------------------------------------- | ------- |
-| Anything     | a **fenced** state path (`public/uploads` while `STORAGE_LOCAL_DIR` points outside the repo)   | ignored |
-| Modified or removed | state paths only (`.data`, `tmp/backups`, and `DATA_DIR` when it points inside the repo) | fail    |
-| Added        | state paths                                                                                    | fail    |
-| Added        | anywhere else, and git ignores it                                                              | fail    |
-| Added        | anywhere else, and git can see it                                                              | ignored |
-| Modified     | anywhere else                                                                                  | ignored |
+| What changed        | Where                                                                                        | Verdict |
+| ------------------- | -------------------------------------------------------------------------------------------- | ------- |
+| Anything            | a **fenced** state path (`public/uploads` while `STORAGE_LOCAL_DIR` points outside the repo) | ignored |
+| Modified or removed | state paths only (`.data`, `tmp/backups`, and `DATA_DIR` when it points inside the repo)     | fail    |
+| Added               | state paths                                                                                  | fail    |
+| Added               | anywhere else, and git ignores it                                                            | fail    |
+| Added               | anywhere else, and git can see it                                                            | ignored |
+| Modified            | anywhere else                                                                                | ignored |
 
 The first row is attribution, not tolerance, and it is the only row that is _earned_ rather than assumed. A before/after tree diff cannot say **who** wrote a file, and a dev server runs from this checkout by design: on 2026-08-27 it wrote a preview build and a checkpoint snapshot into `public/uploads` nine seconds into a run in which all 4,421 tests passed, and the guard reported them as the suite's pollution. Allowlisting the path would have deleted the check. Instead `storage-dir-guard.ts` points every process that could be the suite — the `globalSetup` process before the pool forks, and each worker again after `env.ts` has loaded `.env.local` — at a throwaway directory, so a write under `public/uploads` is provably somebody else's. Nothing is subtracted that the fence does not already prevent, and `resolveFencedPrefixes` returns nothing at all if the storage root is ever back inside the repository, which restores every verdict above.
 
@@ -166,7 +171,7 @@ Two things are still covered by nothing, deliberately recorded here rather than 
 Husky + lint-staged:
 
 - **pre-commit** (<10s): ESLint + Prettier on staged files; in-repo secret scanner over the **index** (PEM / AWS / GitHub PAT). Install `gitleaks` for a second pass on the local full-tree audit (`node ./node_modules/tsx/dist/cli.mjs scripts/secret-scan.ts`).
-- **pre-push**: `verify` (`node ./node_modules/tsx/dist/cli.mjs scripts/verify.ts`), whose `secret-scan` step re-runs the same rules over every **tracked** file — see below.
+- **pre-push** (~2 min): `verify:light` (`node ./node_modules/tsx/dist/cli.mjs scripts/verify.ts --light`) — the fast fatal steps, with the slow half deferred to the CI `verify` run on the same push (see the `verify` order above). Its `secret-scan` step re-runs the same rules over every **tracked** file — see below.
 
 ### Hooks call binaries directly, never `pnpm exec` / `pnpm run`
 

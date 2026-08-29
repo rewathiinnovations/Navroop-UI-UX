@@ -27,4 +27,8 @@ if [ ! -f "$tsx" ]; then
   exit 1
 fi
 
-node "$tsx" scripts/verify.ts
+# --light: the fast fatal steps run here (~2 min); the slow half — next build, both
+# Playwright projects, depcheck, knip, and the coverage ratchet — is deferred to CI,
+# where .github/workflows/verify.yml runs the complete `verify` on this same push.
+# `pnpm run verify` is still the full local gate when you want it before pushing.
+node "$tsx" scripts/verify.ts --light

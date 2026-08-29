@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   formatSummary,
+  LIGHT_DEFERRED_STEP_IDS,
   requireExecuted,
   runVerify,
   stepsForMode,
@@ -135,6 +136,56 @@ describe('verify orchestrator', () => {
       .filter((step) => step.command.includes('pnpm'))
       .map((step) => step.id);
     expect(shims).toEqual(['audit']);
+  });
+
+  /**
+   * `verify:light` is what .husky/pre-push runs (2026-08-29): a push was paying
+   * ~5.5 minutes for a gate whose slow half is re-run by CI on the same push
+   * (.github/workflows/verify.yml). The mode must stay a *deferral*, not a hole:
+   * every skipped id names a real VERIFY_STEPS entry, the summary prints each one
+   * it skipped, and the two entries that must never wait for CI — the secret scan
+   * (a credential reported by CI has already left the machine) and the audit —
+   * still run locally.
+   */
+  describe('verify:light — the pre-push deferral', () => {
+    const light = stepsForMode('verify:light');
+
+    it('defers exactly the declared ids, all of which exist, and keeps the order', () => {
+      const all = VERIFY_STEPS.map((step) => step.id);
+      for (const id of LIGHT_DEFERRED_STEP_IDS) expect(all).toContain(id);
+      expect(light.map((step) => step.id)).toEqual(
+        all.filter((id) => !LIGHT_DEFERRED_STEP_IDS.includes(id)),
+      );
+    });
+
+    it('keeps the secret scan and the audit local', () => {
+      const ids = light.map((step) => step.id);
+      expect(ids).toContain('secret-scan');
+      expect(ids).toContain('audit');
+    });
+
+    it('runs vitest without the coverage ratchet, changing nothing else', () => {
+      const vitest = light.find((step) => step.id === 'vitest');
+      expect(vitest?.command).toBe('node ./node_modules/vitest/vitest.mjs run');
+      expect(vitest?.fatal).toBe(true);
+      // The light rewrite must not leak back into the canonical list.
+      expect(VERIFY_STEPS.find((step) => step.id === 'vitest')?.command).toContain('--coverage');
+    });
+
+    it('prints one deferred line per skipped entry, so the summary cannot read as "everything ran"', async () => {
+      const result = await runVerify({
+        mode: 'verify:light',
+        async runCommand(command) {
+          return stubOk(command);
+        },
+      });
+      expect(result.ok).toBe(true);
+      expect(result.results.map((row) => row.id)).not.toContain('next-build');
+      const deferred = result.summaryLines.filter((line) => line.includes('deferred to CI'));
+      expect(deferred).toHaveLength(LIGHT_DEFERRED_STEP_IDS.length);
+      expect(deferred.join('\n')).toContain('Next.js build');
+      expect(deferred.join('\n')).toContain('.github/workflows/verify.yml');
+    });
   });
 
   /**
