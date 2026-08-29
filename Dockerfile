@@ -171,13 +171,18 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 # Turbopack writes for the instrumentation graph (require-in-the-middle-<hash>) —
 # deleting those crashed the server too. `cp -rL` dereferences the pnpm symlinks
 # so the rescued aliases survive the tree they pointed into being removed.
-RUN set -eu; mkdir -p /tmp/turbopack-aliases; \
-  cd node_modules && for d in $(ls | grep -E -- '-[0-9a-f]{12,}$' || true); do \
-    cp -rL "$d" /tmp/turbopack-aliases/; \
-  done
+# The aliases live in the standalone tree's OWN .next/node_modules (esbuild-<hash>,
+# require-in-the-middle-<hash>, sharp-<hash>, …), as symlinks into the pruned
+# node_modules/.pnpm store — so removing that store would leave them dangling,
+# which is exactly the crash the first replacement attempt produced. Dereference
+# them into real directories first; the resolution walk from .next/server finds
+# .next/node_modules before /app/node_modules, so nothing else moves.
+RUN set -eu; if [ -d ./.next/node_modules ]; then \
+    mkdir /tmp/nm && cp -rL ./.next/node_modules/. /tmp/nm/ \
+    && rm -rf ./.next/node_modules && mv /tmp/nm ./.next/node_modules; \
+  fi
 RUN rm -rf ./node_modules
 COPY --from=prod-deps --chown=nextjs:nodejs /app/node_modules ./node_modules
-RUN cp -r /tmp/turbopack-aliases/. ./node_modules/ 2>/dev/null || true; rm -rf /tmp/turbopack-aliases
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
 COPY --from=builder --chown=nextjs:nodejs /app/generated ./generated
