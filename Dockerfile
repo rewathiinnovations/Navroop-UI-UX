@@ -25,7 +25,12 @@ ENV PATH="${PNPM_HOME}:${PATH}"
 # `minimumReleaseAgeExclude`, `verifyDepsBeforeRun`) and silently dropped the `overrides`
 # that pin the tar and deepmerge-ts advisories — shipping the vulnerable transitives while
 # `pnpm audit` on a developer machine reported clean (F-716).
-RUN corepack enable
+# The image's bundled corepack predates npm's 2025 signing-key rotation, so
+# `corepack install` for a current pnpm fails signature verification with a
+# bare exit 1 ("Cannot find matching keyid") - which took the production
+# deploy down at the dependency step. Upgrading corepack first keeps the
+# integrity check real instead of disabling it via COREPACK_INTEGRITY_KEYS=0.
+RUN npm install -g corepack@latest && corepack enable
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
 FROM base AS deps
