@@ -161,15 +161,16 @@ ENV OBSERVABILITY_CONFIG_PATH=/data/config/observability.json
 
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-# Replace the standalone tree's pruned node_modules with the full declared
-# production set (hoisted, real directories — see the prod-deps stage). Replace,
-# not merge: the pnpm-built standalone tree links packages through symlinks, and
-# COPY refuses a directory over a symlink ("cannot copy to non-directory",
-# deploy 2026-08-29). The server keeps working — the trace is a subset of these
-# packages — and the tsx boot scripts stop depending on which packages the
-# server graph happened to pull in.
-RUN rm -rf ./node_modules
-COPY --from=prod-deps --chown=nextjs:nodejs /app/node_modules ./node_modules
+# The full declared production set as a RESOLUTION FALLBACK at /node_modules —
+# one directory above /app — so Node's lookup walk finds it for anything the
+# standalone trace does not carry (dotenv for scripts/pre-migrate.ts, bcryptjs
+# for the seed). /app/node_modules itself is deliberately untouched: merging
+# over it fails on the pnpm symlinks ("cannot copy to non-directory") and
+# replacing it deletes the hash-named external aliases Turbopack writes into
+# the trace (require-in-the-middle-<hash> — the 2026-08-29 instrumentation
+# crash), so the server keeps resolving from its own tree first and the boot
+# scripts fall through to this one.
+COPY --from=prod-deps --chown=nextjs:nodejs /app/node_modules /node_modules
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
 COPY --from=builder --chown=nextjs:nodejs /app/generated ./generated
