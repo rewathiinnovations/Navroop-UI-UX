@@ -188,7 +188,12 @@ export const VERIFY_STEPS: VerifyStep[] = [
     label: 'Playwright authenticated journeys',
     command: 'node ./node_modules/@playwright/test/cli.js test --project=authenticated',
     fatal: true,
-    assertExecuted: requireExecuted(),
+    // One declared conditional skip: "POST publish is refused while an
+    // integration is missing" covers only the refusal, and on a machine where
+    // GitHub, Cloudflare and Coolify are all genuinely connected it skips
+    // itself rather than pushing a repository and deploying for real. On a
+    // machine without the integrations it runs, so the ceiling stays 1.
+    assertExecuted: requireExecuted({ allowSkipped: 1 }),
   },
   {
     // Fatal since 2026-08-21. It was `fatal: false` with no config, so it printed the
