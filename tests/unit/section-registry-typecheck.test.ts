@@ -90,8 +90,61 @@ ${bodies.join('\n')}
 `;
 }
 
-/** A scratch project inside the repo, so module resolution finds the real node_modules. */
-const scratchRoot = mkdtempSync(join(process.cwd(), 'tmp-section-typecheck-'));
+/**
+ * The generated project's own dependencies, declared rather than resolved.
+ *
+ * The first version of this test let the starter files resolve `clsx` and the rest from
+ * whatever the *host* repository happened to have installed. That is not a property of the
+ * code under test, and it broke exactly where you would expect: green locally, TS2307 on
+ * `clsx` in CI, because a pnpm install puts only declared dependencies at the root of
+ * node_modules and Navroop does not depend on the packages its generated projects do.
+ *
+ * `react` is deliberately NOT stubbed — JSX needs its real types, and `@types/react` is a
+ * dependency of this repository, so it resolves everywhere. Everything a *generated* project
+ * installs is stubbed, which also makes the check hermetic: what it asserts is the section
+ * components' own prop types, and those are declared in the section sources themselves.
+ */
+const AMBIENT = `declare module 'clsx' {
+  export type ClassValue = unknown;
+  export default function clsx(...inputs: ClassValue[]): string;
+  export function clsx(...inputs: ClassValue[]): string;
+}
+declare module 'tailwind-merge' {
+  export function twMerge(...inputs: string[]): string;
+}
+declare module 'class-variance-authority' {
+  export type VariantProps<T> = Record<string, unknown>;
+  export function cva(...args: unknown[]): (...args: unknown[]) => string;
+}
+declare module 'lucide-react' {
+  const icons: any;
+  export = icons;
+}
+declare module '@radix-ui/react-slot' {
+  export const Slot: any;
+}
+declare module '@radix-ui/react-dialog' {
+  const dialog: any;
+  export = dialog;
+}
+declare module '@radix-ui/react-label' {
+  const label: any;
+  export = label;
+}
+declare module '@radix-ui/react-tabs' {
+  const tabs: any;
+  export = tabs;
+}
+`;
+
+/**
+ * A scratch project inside the repo, so `react` resolves from this repository's install.
+ *
+ * Under `tmp/`, which is gitignored: `afterAll` removes it, but a killed run would otherwise
+ * leave a directory of generated `.tsx` files sitting in the working tree.
+ */
+mkdirSync(join(process.cwd(), 'tmp'), { recursive: true });
+const scratchRoot = mkdtempSync(join(process.cwd(), 'tmp', 'section-typecheck-'));
 afterAll(() => rmSync(scratchRoot, { recursive: true, force: true }));
 
 function semanticErrorsFor(pageSource: string): string[] {
@@ -102,9 +155,10 @@ function semanticErrorsFor(pageSource: string): string[] {
     mkdirSync(dirname(target), { recursive: true });
     writeFileSync(target, content, 'utf8');
   }
+  writeFileSync(join(scratchRoot, 'ambient.d.ts'), AMBIENT, 'utf8');
 
   const entry = join(scratchRoot, 'app/page.tsx');
-  const program = ts.createProgram([entry], {
+  const program = ts.createProgram([entry, join(scratchRoot, 'ambient.d.ts')], {
     jsx: ts.JsxEmit.ReactJSX,
     strict: true,
     noEmit: true,
