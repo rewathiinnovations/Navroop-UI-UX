@@ -10,8 +10,13 @@
 # builder fails the build when they part.
 ARG PLAYWRIGHT_VERSION=1.62.1
 
-FROM node:20-bookworm-slim AS base
-# Pin the Node major used in production. Bump deliberately.
+FROM node:22-bookworm-slim AS base
+# Pin the Node major used in production. Bump deliberately. 22, not 20: the declared
+# pnpm (11.21.0) requires Node >= 22.13 and imports `node:sqlite`, which does not exist
+# on Node 20 — so on node:20 every pnpm 11 executable crashed at startup no matter how
+# it was installed (ERR_UNKNOWN_BUILTIN_MODULE, deploy 2026-08-29). CI already runs the
+# full verify on Node 22 (.github/workflows/verify.yml), so this also closes a
+# build-runtime-vs-CI version split.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends openssl ca-certificates \
   && rm -rf /var/lib/apt/lists/*
@@ -25,14 +30,16 @@ ENV PATH="${PNPM_HOME}:${PATH}"
 # `minimumReleaseAgeExclude`, `verifyDepsBeforeRun`) and silently dropped the `overrides`
 # that pin the tar and deepmerge-ts advisories — shipping the vulnerable transitives while
 # `pnpm audit` on a developer machine reported clean (F-716).
-# No corepack at all. Three deploys died in this stage to three different
-# corepack failures on this image: the bundled corepack predates npm's 2025
-# signing-key rotation ("Cannot find matching keyid"), corepack@latest
-# requires Node >= 22.13 and refused to run on node:20, and corepack@0.31.0
-# crashes on this image's Node 20.20 with ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING.
-# The deps stage installs the declared pnpm through npm instead - the version
-# is still read from package.json "packageManager", so the single source of
-# truth stands, and npm verifies its own registry signatures.
+# No corepack at all. Four deploys died in this stage before the picture was
+# complete: the node:20 image's bundled corepack predates npm's 2025 signing-key
+# rotation ("Cannot find matching keyid"), corepack@latest refused Node 20,
+# corepack@0.31.0 crashed on Node 20.20 with ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING —
+# and then the npm-installed pnpm crashed too (ERR_UNKNOWN_BUILTIN_MODULE:
+# node:sqlite), which exposed the real constraint: pnpm 11.21 simply cannot run
+# below Node 22.13, hence the node:22 base above. The npm install is kept anyway:
+# the version is still read from package.json "packageManager", so the single
+# source of truth stands, npm verifies its own registry signatures, and the build
+# does not depend on whichever corepack a base image happens to bundle.
 
 FROM base AS deps
 WORKDIR /app

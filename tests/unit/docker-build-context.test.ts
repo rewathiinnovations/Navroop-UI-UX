@@ -123,8 +123,10 @@ describe('Dockerfile pnpm', () => {
   it('does not pin a pnpm version beside package.json packageManager', () => {
     // `corepack prepare pnpm@<version>` was a second source of truth that drifted once
     // already - and corepack itself is gone now: three deploys died to three different
-    // corepack failures on the node:20 image (pre-rotation signing keys, @latest requiring
-    // Node >= 22.13, 0.31.0 crashing with ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING). The
+    // corepack failures on the then-node:20 image (pre-rotation signing keys, @latest
+    // refusing Node 20, 0.31.0 crashing with ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING),
+    // and a fourth exposed the real constraint - pnpm 11.21 needs Node >= 22.13, which
+    // is why the base image is node:22 now (see dockerfile-health.test.ts). The
     // declared pnpm is installed through npm, with the version read from package.json at
     // build time, so there is still exactly one place the number lives.
     expect(dockerfile).not.toMatch(/corepack/);
