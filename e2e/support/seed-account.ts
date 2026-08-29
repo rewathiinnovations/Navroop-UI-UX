@@ -113,10 +113,54 @@ async function upsertAccount(
 }
 
 /** The MEMBER the `authenticated` project's storage state belongs to. */
+/**
+ * The plan the journeys assume, made explicit instead of inherited from
+ * whatever the database's default plan happens to be. Two journeys read plan
+ * fields directly: journey 5 renders the Domains panel only when the effective
+ * plan has `allowCustomDomain` (the seeded `free` default does not, so on a
+ * freshly seeded database it rendered its plan lock), and journey 7's invite is
+ * refused once the member count reaches `maxMembers` (`free` allows 2, and the
+ * E2E member + admin already exist). Both passed locally only because that
+ * machine's long-lived default plan drifted generous. A dedicated plan row,
+ * assigned to the shared `default` workspace, pins the assumption; the seeded
+ * built-in plans are left exactly as the product ships them.
+ */
+const E2E_PLAN_KEY = 'e2e-journeys';
+
+async function ensureJourneyPlan(prisma: PrismaClient): Promise<void> {
+  const plan = await prisma.plan.upsert({
+    where: { key: E2E_PLAN_KEY },
+    create: {
+      key: E2E_PLAN_KEY,
+      name: 'E2E journeys',
+      isActive: true,
+      isDefault: false,
+      monthlyCredits: 10_000,
+      maxProjects: 500,
+      maxLiveSites: 50,
+      maxPreviewSites: 50,
+      maxMembers: 50,
+      checkpointRetentionDays: 30,
+      storageBytesLimit: BigInt(50) * BigInt(1024 ** 3),
+      allowCustomDomain: true,
+      allowGithubSync: true,
+    },
+    // Re-pin the two fields the journeys read, in case an admin screen or an
+    // earlier run changed them; everything else keeps whatever it has.
+    update: { isActive: true, allowCustomDomain: true, maxMembers: 50 },
+  });
+  await prisma.workspace.upsert({
+    where: { id: WORKSPACE_ID },
+    create: { id: WORKSPACE_ID, storageBytes: 0, planId: plan.id },
+    update: { planId: plan.id },
+  });
+}
+
 export async function seedE2eAccount(): Promise<SeedResult> {
   return withE2ePrisma(async (prisma, target) => {
     const { member } = e2eAccounts();
     const created = await upsertAccount(prisma, member, 'MEMBER');
+    await ensureJourneyPlan(prisma);
     return { account: member, database: target.database, created };
   });
 }

@@ -161,10 +161,14 @@ ENV OBSERVABILITY_CONFIG_PATH=/data/config/observability.json
 
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-# Over the standalone tree's pruned node_modules: the full declared production set
-# (hoisted, real directories — see the prod-deps stage). The server keeps working —
-# the trace is a subset of these packages — and the tsx boot scripts stop depending
-# on which packages the server graph happened to pull in.
+# Replace the standalone tree's pruned node_modules with the full declared
+# production set (hoisted, real directories — see the prod-deps stage). Replace,
+# not merge: the pnpm-built standalone tree links packages through symlinks, and
+# COPY refuses a directory over a symlink ("cannot copy to non-directory",
+# deploy 2026-08-29). The server keeps working — the trace is a subset of these
+# packages — and the tsx boot scripts stop depending on which packages the
+# server graph happened to pull in.
+RUN rm -rf ./node_modules
 COPY --from=prod-deps --chown=nextjs:nodejs /app/node_modules ./node_modules
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
