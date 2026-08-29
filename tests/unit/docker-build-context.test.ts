@@ -121,20 +121,25 @@ describe('.dockerignore excludes at every depth', () => {
 
 describe('Dockerfile pnpm', () => {
   it('does not pin a pnpm version beside package.json packageManager', () => {
-    // `corepack prepare pnpm@<version>` is a second source of truth that drifted once already.
-    expect(dockerfile).not.toMatch(/corepack prepare/);
-    expect(dockerfile).toMatch(/corepack enable/);
+    // `corepack prepare pnpm@<version>` was a second source of truth that drifted once
+    // already - and corepack itself is gone now: three deploys died to three different
+    // corepack failures on the node:20 image (pre-rotation signing keys, @latest requiring
+    // Node >= 22.13, 0.31.0 crashing with ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING). The
+    // declared pnpm is installed through npm, with the version read from package.json at
+    // build time, so there is still exactly one place the number lives.
+    expect(dockerfile).not.toMatch(/corepack/);
+    const pinned = dockerfile.match(/pnpm@(\d+\.\d+\.\d+)/g) ?? [];
+    expect(pinned).toEqual([]);
   });
 
   it('installs the packageManager version and asserts it before installing dependencies', () => {
-    expect(dockerfile).toMatch(/corepack install/);
-    // The assertion has to read package.json, not repeat the version.
+    // The install reads package.json rather than repeating the version, and the check
+    // beside it fails the build if the installed pnpm is not the declared one.
+    expect(dockerfile).toMatch(
+      /npm install -g pnpm@"\$\(node -p "require\('\.\/package\.json'\)\.packageManager\.split\('@'\)\[1\]"\)"/,
+    );
     expect(dockerfile).toMatch(/packageManager/);
     expect(packageJson.packageManager).toMatch(/^pnpm@\d+\.\d+\.\d+$/);
-    const pinned = dockerfile.match(/pnpm@(\d+\.\d+\.\d+)/g) ?? [];
-    for (const occurrence of pinned) {
-      expect(occurrence).toBe(packageJson.packageManager);
-    }
   });
 
   it('calls the prisma CLI directly rather than through pnpm exec', () => {
