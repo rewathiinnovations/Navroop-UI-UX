@@ -277,6 +277,14 @@ export type RuntimeCapture = {
  * Both handlers are synchronous and swallow nothing: a throw inside a Playwright event
  * handler surfaces as an unhandled rejection in the serving process, so they do no work
  * that can fail beyond reading strings off the event.
+ *
+ * The two listeners do not overlap, and this was measured rather than assumed — the unit
+ * tests drive a fake page, so nothing in them could have caught it. Against a real Chromium
+ * (Playwright 1.62) a single uncaught `throw` arrives exactly once, on `pageerror`; it never
+ * also appears on `console`. `console` carries only explicit console API calls, and the
+ * `type() === 'error'` filter below drops `warn` and `log`. Had that been wrong, one throw
+ * would have been filed twice under two different ids — once as an exception, once as a
+ * console error — and `groupRecurringIssues` would have double-counted every crash.
  */
 export function captureRuntimeMessages(page: Page): RuntimeCapture {
   const collected: RuntimeMessage[] = [];
