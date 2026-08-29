@@ -1,4 +1,5 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import ts from 'typescript';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -138,13 +139,21 @@ declare module '@radix-ui/react-tabs' {
 `;
 
 /**
- * A scratch project inside the repo, so `react` resolves from this repository's install.
+ * The scratch project lives outside the repository, and that is not tidiness.
  *
- * Under `tmp/`, which is gitignored: `afterAll` removes it, but a killed run would otherwise
- * leave a directory of generated `.tsx` files sitting in the working tree.
+ * It was under `tmp/` at first, on the theory that being inside the repo let `react` resolve
+ * by walking up to node_modules. Two tests over, `lint-config-ratchet` enumerates the repo's
+ * source files and asserts none declares an `any` outside its allowlist — and it found
+ * the `ambient.d.ts` under that scratch directory, whose whole job is to declare `any` stubs,
+ * because the two files were on disk at the same moment. Anything written inside the working
+ * tree is visible to every repo-wide scanner that happens to run beside it.
+ *
+ * So the project goes to the OS temp directory and `react` is pointed at this repository's
+ * own install explicitly, which is a statement of intent rather than a side effect of where
+ * a directory happened to sit.
  */
-mkdirSync(join(process.cwd(), 'tmp'), { recursive: true });
-const scratchRoot = mkdtempSync(join(process.cwd(), 'tmp', 'section-typecheck-'));
+const REPO_TYPES = join(process.cwd(), 'node_modules');
+const scratchRoot = mkdtempSync(join(tmpdir(), 'navroop-section-typecheck-'));
 afterAll(() => rmSync(scratchRoot, { recursive: true, force: true }));
 
 function semanticErrorsFor(pageSource: string): string[] {
@@ -170,7 +179,14 @@ function semanticErrorsFor(pageSource: string): string[] {
     module: ts.ModuleKind.ESNext,
     target: ts.ScriptTarget.ES2022,
     baseUrl: scratchRoot,
-    paths: { '@/*': ['./*'] },
+    // `@/*` is the generated project's own alias; the rest point at this repository's install,
+    // because the program no longer sits anywhere that could reach it by walking up.
+    paths: {
+      '@/*': ['./*'],
+      react: [join(REPO_TYPES, '@types/react')],
+      'react/*': [join(REPO_TYPES, '@types/react/*')],
+    },
+    typeRoots: [join(REPO_TYPES, '@types')],
   });
 
   return ts
