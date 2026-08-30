@@ -19,12 +19,18 @@ import { readSnapshot } from './snapshot';
  * site changing under a user who did not ask is its own defect. This runs only when the
  * current state is broken, so the choice is between a broken site and a working one.
  *
- * WHY IT VERIFIES RATHER THAN REMEMBERS. Recording "this checkpoint was good" on the row
- * would be a claim that ages: the flag is written once and read much later, and nothing keeps
- * it true. Re-running the checks against the candidate's own files answers the only question
- * that matters — does *this* version work — at the moment it is asked, and needs no schema
- * change to do it. The cost is a few seconds, paid only on the rare path where a repair loop
- * has already given up.
+ * WHY IT VERIFIES RATHER THAN REMEMBERS. `Checkpoint.snapshotValidated` records what the
+ * validators said when the snapshot was written, and a snapshot is immutable — so unlike a
+ * claim about a mutable row, that verdict is not stale about *its own bytes*. What does move
+ * is the checkers: rules are added, the starter kit changes, the type-check gained a whole
+ * stage this month. A stored `true` therefore means "passed the rules of the day it was
+ * written", which is not the question being asked here.
+ *
+ * So the flag prunes and the re-run decides. A candidate recorded `false` is skipped without
+ * paying for a compile — nothing has happened since that could make those exact bytes start
+ * building — and every other candidate is checked again now. When the re-run proves a
+ * candidate good, that answer is written back, so the evidence improves rather than being
+ * thrown away.
  */
 
 /** How far back to look. Beyond this the version is old enough that silently restoring it is its own surprise. */
@@ -58,6 +64,11 @@ export async function findLastWorkingCheckpoint(
     where: {
       projectId,
       snapshotPruned: false,
+      // Known-broken snapshots are not candidates. Their bytes are frozen, so nothing that
+      // has happened since could make them start building, and re-compiling them would be
+      // several seconds spent to reach the answer already on the row. `null` — never checked
+      // — is not excluded: that is an absence of evidence, and the re-run below supplies it.
+      snapshotValidated: { not: false },
       ...(options.skipCheckpointId ? { id: { not: options.skipCheckpointId } } : {}),
     },
     orderBy: { createdAt: 'desc' },
@@ -71,6 +82,14 @@ export async function findLastWorkingCheckpoint(
     if (entries.length === 0) continue;
     const files = Object.fromEntries(entries.map((entry) => [entry.path, entry.content]));
     if (await validates(stack, files, project.designDirection)) {
+      // Write the proof down. The checks just ran against these exact bytes, so recording the
+      // answer costs one UPDATE and saves the next reader the compile — and it is what makes
+      // this snapshot findable as the version to hold a broken build back to. Never fatal:
+      // the rescue's job is to restore, and failing that because a bookkeeping write failed
+      // would trade a working site for a database hiccup.
+      await prisma.checkpoint
+        .update({ where: { id: candidate.id }, data: { snapshotValidated: true } })
+        .catch(() => {});
       return {
         found: true,
         checkpointId: candidate.id,

@@ -439,6 +439,19 @@ export async function writeMergedSite(
    * files that the import is supposed to replace.
    */
   mode: 'merge' | 'replace' = 'merge',
+  /**
+   * What the build validators said about the files being written: `true` passed, `false`
+   * failed, `null` nobody asked.
+   *
+   * It rides in this statement rather than a follow-up UPDATE because it is a claim *about
+   * these bytes*. A second write could land after another writer had already replaced the
+   * site, and the row would then carry a verdict belonging to code it no longer holds —
+   * which is worse than no verdict at all, because the read path trusts it.
+   *
+   * `null` is the honest default for every caller that is not a generation (an import, a
+   * restore): a site nothing checked is not evidence, and the read path treats it as such.
+   */
+  validated: boolean | null = null,
 ): Promise<void> {
   let base = seen;
   for (let attempt = 0; attempt < MAX_SITE_WRITE_ATTEMPTS; attempt += 1) {
@@ -450,6 +463,7 @@ export async function writeMergedSite(
       data: {
         lastCode: toLastCode(merged),
         contentVersion: { increment: 1 },
+        lastCodeValidated: validated,
         // Files present is the whole condition for reaching this write, so the site is
         // finished — COMPLETE is always correct here.
         phase: 'COMPLETE',
@@ -502,6 +516,15 @@ export type StreamSettleInput = {
   noChangeReason?: string | null;
   /** Initial build produced files that can't render on the project's stack. */
   stackMismatchReason?: string | null;
+  /**
+   * The build validators' verdict on the files this turn produced, stored alongside them.
+   *
+   * The caller has already run them — it needs the answer to decide whether to offer a
+   * repair pass — so re-running here would pay for the same compile twice. Undefined and
+   * `null` both mean "not checked", which is what a caller that skipped validation (zero
+   * files, a stack with no module graph) should record.
+   */
+  validated?: boolean | null;
   tokensIn?: number;
   tokensOut?: number;
   estimatedCostUsd?: number | null;
@@ -688,6 +711,8 @@ export async function settleStreamedGeneration(
         contentVersion: project?.contentVersion ?? 0,
       },
       deletedPaths,
+      'merge',
+      input.validated ?? null,
     );
     hasSite = true;
     // The merged-site write is the step that turns a stream into the product, and it

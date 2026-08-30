@@ -57,6 +57,26 @@ export type BuildValidationOutcome = {
   retry: BuildRetry | null;
 };
 
+/**
+ * The verdict stored beside the files, from the verdict used to decide a repair pass.
+ *
+ * Three states because there are three, and collapsing them is the bug this whole area keeps
+ * relearning: `skipped` is not `passed`. A stack with no module graph and an empty file set
+ * both end here, and neither is evidence that anything works — so they record `null`, and the
+ * read path that decides whether to hold a broken site back from the preview declines to act
+ * on them rather than treating "nobody looked" as a clean bill of health.
+ *
+ * Quality findings deliberately do not count. A nav link to a page nobody wrote is a real
+ * finding and not a reason to call the site broken; this answers "does it build", which is
+ * the only question the hold-back is entitled to act on.
+ */
+export function siteValidatedFromBuild(outcome: BuildValidationOutcome | null): boolean | null {
+  if (!outcome) return null;
+  if (outcome.result.status === 'passed') return true;
+  if (outcome.result.status === 'failed') return false;
+  return null;
+}
+
 type NotifyLevel = 'info' | 'warning';
 
 export async function runBuildValidation(input: {

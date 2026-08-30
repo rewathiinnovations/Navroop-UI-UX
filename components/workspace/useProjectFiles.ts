@@ -3,11 +3,26 @@
 import { useCallback, useEffect, useState } from 'react';
 import { PROJECT_FILES_CHANGED_EVENT } from '@/lib/preview/events';
 
+/** An earlier version is on screen because the current one does not build. */
+export type HeldBackVersion = {
+  checkpointId: string;
+  label: string;
+  createdAt: string;
+};
+
 export type ProjectFiles = {
   stack: string;
   /** Decides the starter stylesheet's token block, so the preview shows this project's palette. */
   designDirection: string | null;
   files: Record<string, string>;
+  /**
+   * Set when the server declined to serve the current files because they failed validation.
+   *
+   * It must reach the UI. Substituting an older site silently would leave someone looking at
+   * a page without the change they just asked for and no way to tell whether the request was
+   * ignored, so the workspace renders a banner off this.
+   */
+  heldBack: HeldBackVersion | null;
   loading: boolean;
   error: string | null;
   reload: () => void;
@@ -24,6 +39,7 @@ export function useProjectFiles(projectId: string | null): ProjectFiles {
   const [stack, setStack] = useState('NEXTJS');
   const [designDirection, setDesignDirection] = useState<string | null>(null);
   const [files, setFiles] = useState<Record<string, string>>({});
+  const [heldBack, setHeldBack] = useState<HeldBackVersion | null>(null);
   const [loading, setLoading] = useState(Boolean(projectId));
   const [error, setError] = useState<string | null>(null);
   const [token, setToken] = useState(0);
@@ -33,6 +49,7 @@ export function useProjectFiles(projectId: string | null): ProjectFiles {
   useEffect(() => {
     if (!projectId) {
       setFiles({});
+      setHeldBack(null);
       setLoading(false);
       return;
     }
@@ -45,6 +62,7 @@ export function useProjectFiles(projectId: string | null): ProjectFiles {
           stack: string;
           designDirection?: string | null;
           files: Record<string, string>;
+          heldBack?: HeldBackVersion | null;
         };
       })
       .then((data) => {
@@ -52,6 +70,7 @@ export function useProjectFiles(projectId: string | null): ProjectFiles {
         setStack(data.stack);
         setDesignDirection(data.designDirection ?? null);
         setFiles(data.files ?? {});
+        setHeldBack(data.heldBack ?? null);
         setError(null);
       })
       .catch((cause: unknown) => {
@@ -72,5 +91,5 @@ export function useProjectFiles(projectId: string | null): ProjectFiles {
     return () => window.removeEventListener(PROJECT_FILES_CHANGED_EVENT, reload);
   }, [reload]);
 
-  return { stack, designDirection, files, loading, error, reload };
+  return { stack, designDirection, files, heldBack, loading, error, reload };
 }

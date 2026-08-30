@@ -17,6 +17,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const findMany = vi.fn();
 const findFirst = vi.fn();
+const checkpointUpdate = vi.fn();
 const readSnapshot = vi.fn();
 const checkGeneratedImports = vi.fn();
 const checkBuild = vi.fn();
@@ -25,7 +26,10 @@ const typecheckGenerated = vi.fn();
 vi.mock('@/lib/db', () => ({
   prisma: {
     project: { findFirst: (...args: unknown[]) => findFirst(...args) },
-    checkpoint: { findMany: (...args: unknown[]) => findMany(...args) },
+    checkpoint: {
+      findMany: (...args: unknown[]) => findMany(...args),
+      update: (...args: unknown[]) => checkpointUpdate(...args),
+    },
   },
 }));
 vi.mock('@/lib/checkpoints/snapshot', () => ({
@@ -60,6 +64,7 @@ function passing() {
 beforeEach(() => {
   vi.clearAllMocks();
   findFirst.mockResolvedValue({ stack: 'NEXTJS', designDirection: 'minimal' });
+  checkpointUpdate.mockResolvedValue(undefined);
   readSnapshot.mockResolvedValue([{ path: 'app/page.tsx', content: 'export default () => null;' }]);
   passing();
 });
@@ -71,9 +76,43 @@ describe('what it restores to', () => {
     const found = await findLastWorkingCheckpoint('p1');
 
     expect(found).toMatchObject({ found: true, checkpointId: 'c3', label: 'Latest' });
-    // Proven, not remembered: a stored "this one was good" flag is written once and read much
-    // later, and nothing keeps it true in between.
+    // Proven now, not remembered. `Checkpoint.snapshotValidated` is not stale about its own
+    // frozen bytes, but the *checkers* move — rules are added and the type-check gained a
+    // whole stage this month — so a stored `true` only means "passed the rules of its day".
     expect(checkBuild).toHaveBeenCalledTimes(1);
+  });
+
+  it('writes the proof back, so the next reader does not pay for the same compile', async () => {
+    findMany.mockResolvedValue([checkpoint('c3', 'Latest')]);
+
+    await findLastWorkingCheckpoint('p1');
+
+    // This is also what makes the snapshot findable as the version to hold a broken build
+    // back to — the preview's read path looks for exactly this flag.
+    expect(checkpointUpdate).toHaveBeenCalledWith({
+      where: { id: 'c3' },
+      data: { snapshotValidated: true },
+    });
+  });
+
+  it('restores anyway when recording the proof fails', async () => {
+    findMany.mockResolvedValue([checkpoint('c3', 'Latest')]);
+    checkpointUpdate.mockRejectedValue(new Error('database hiccup'));
+
+    // The rescue's job is to put a working site back. Failing that because a bookkeeping
+    // write failed would trade a working site for a transient database error.
+    expect(await findLastWorkingCheckpoint('p1')).toMatchObject({ found: true });
+  });
+
+  it('does not spend a compile on a candidate already recorded as broken', async () => {
+    findMany.mockResolvedValue([checkpoint('c3', 'Latest')]);
+
+    await findLastWorkingCheckpoint('p1');
+
+    // Frozen bytes cannot start building, so re-compiling a recorded failure is seconds spent
+    // to reach the answer already on the row. `null` — never checked — is *not* excluded:
+    // that is an absence of evidence, and the re-run is what supplies it.
+    expect(findMany.mock.calls[0]?.[0]?.where?.snapshotValidated).toEqual({ not: false });
   });
 
   it('walks back past a candidate that does not build', async () => {

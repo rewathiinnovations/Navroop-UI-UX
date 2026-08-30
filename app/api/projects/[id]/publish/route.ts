@@ -6,6 +6,7 @@ import type { DeploymentKind } from '@/generated/prisma';
 import { getPublishReadiness } from '@/lib/integrations/store';
 import { publishBlockedMessage } from '@/lib/integrations/messages';
 import { getPublishState, startPublish } from '@/lib/publish/actions';
+import { siteFailsToBuild, PUBLISH_FILES_BROKEN } from '@/lib/publish/files';
 import { DEFAULT_WORKSPACE_ID } from '@/lib/publish/constants';
 import { assertPublishSlot, PublishLimitError, publishLimitPayload } from '@/lib/publish/limits';
 import { runPublishJob } from '@/lib/publish/execute';
@@ -57,6 +58,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   if (!project) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
   if (project.ownerId !== user.id && user.role !== 'ADMIN') {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  }
+
+  // The button is already disabled for this, but the button is not the gate: this route is
+  // reachable directly, and what it starts pushes code into a client's repository and
+  // deploys it. A site the validators said does not compile does not go out.
+  if (await siteFailsToBuild(id)) {
+    return NextResponse.json({ error: PUBLISH_FILES_BROKEN }, { status: 409 });
   }
 
   const readiness = await getPublishReadiness(DEFAULT_WORKSPACE_ID);

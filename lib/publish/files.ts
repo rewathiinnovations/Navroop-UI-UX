@@ -110,6 +110,30 @@ export async function collectPublishFiles(projectId: string) {
 export const PUBLISH_FILES_UNAVAILABLE =
   "We could not read this project's files from storage. Try again in a few minutes.";
 
+export const PUBLISH_FILES_BROKEN =
+  'The current version does not build. Fix it or restore an earlier version, then publish.';
+
+/**
+ * The stored verdict says this project's current files do not compile.
+ *
+ * Deliberately *not* folded into {@link projectHasPublishableFiles}. That function answers
+ * "are there files to work with", and its other two callers are the code audit and the SEO
+ * scan — the two things a person most wants to run on a site that does not build. Only
+ * publishing has to refuse, because only publishing puts the result in someone else's
+ * repository, so only publishing asks.
+ *
+ * Only a recorded `false` counts. `null` is every row written before the column existed and
+ * every write that is not a generation; refusing to publish on an absence of evidence would
+ * take the button away from projects that work perfectly well.
+ */
+export async function siteFailsToBuild(projectId: string): Promise<boolean> {
+  const project = await prisma.project.findFirst({
+    where: { id: projectId, deletedAt: null },
+    select: { lastCodeValidated: true },
+  });
+  return project?.lastCodeValidated === false;
+}
+
 /**
  * Whether the UI may offer Publish. `unavailable` is a storage failure — not "ready"
  * and not "no files". Callers must switch on `status`; do not coerce this to a boolean

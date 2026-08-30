@@ -141,7 +141,7 @@ import {
   createConversationalScrubber,
   summarizeGenerationOutput,
 } from '@/lib/generation/output-summary';
-import { runBuildValidation } from '@/lib/validation/run-build-validation';
+import { runBuildValidation, siteValidatedFromBuild } from '@/lib/validation/run-build-validation';
 
 /**
  * The three fields the prompt builder reads off `context.conversationContext
@@ -2356,41 +2356,45 @@ Provide the complete file content without any truncation. Include all necessary 
         //
         // Skipped for zero files on purpose: a fileless reply is either an answer or a
         // reported miss, and both are decided above.
-        const buildFix =
+        const validation =
           files.length > 0
-            ? (
-                await runBuildValidation({
-                  stack: projectStack,
-                  // The stored project merged with what this run produced. A partial map
-                  // makes a correct one-file edit look like a broken project, because every
-                  // import into the untouched rest of the site resolves to nothing.
-                  files: {
-                    ...backendFiles,
-                    ...Object.fromEntries(files.map((file) => [file.path, file.content])),
-                  },
-                  changedPaths: files.map((file) => file.path),
-                  // First builds only. The approved plan's routes are a contract
-                  // the prompt states and nothing checked: a page the user agreed
-                  // to and the model silently never wrote is linked from nowhere,
-                  // so `missing-route` — which scrapes hrefs — cannot see it, and
-                  // the site ships smaller than the plan. On an edit the same
-                  // check would be wrong: a one-page edit legitimately does not
-                  // rebuild the rest of the site.
-                  ...(isEdit ? {} : await planContractForBuild(projectId)),
-                  // Without this the static scan cannot see the starter kit and
-                  // reports `@/lib/utils` as an unresolved import, spending a
-                  // repair generation rewriting correct code.
-                  designDirection: projectDirection,
-                  jobId: generationJob?.id ?? null,
-                  attempt: Number(buildFixAttempt ?? 0),
-                  previousSignature:
-                    typeof buildFixSignature === 'string' ? buildFixSignature : null,
-                  // It writes its own chat notice and its own `validate-build` job step, so
-                  // nothing here repeats them.
-                  notify: (message, level) => sendProgress({ type: level, message }),
-                })
-              ).retry
+            ? await runBuildValidation({
+                stack: projectStack,
+                // The stored project merged with what this run produced. A partial map
+                // makes a correct one-file edit look like a broken project, because every
+                // import into the untouched rest of the site resolves to nothing.
+                files: {
+                  ...backendFiles,
+                  ...Object.fromEntries(files.map((file) => [file.path, file.content])),
+                },
+                changedPaths: files.map((file) => file.path),
+                // First builds only. The approved plan's routes are a contract
+                // the prompt states and nothing checked: a page the user agreed
+                // to and the model silently never wrote is linked from nowhere,
+                // so `missing-route` — which scrapes hrefs — cannot see it, and
+                // the site ships smaller than the plan. On an edit the same
+                // check would be wrong: a one-page edit legitimately does not
+                // rebuild the rest of the site.
+                ...(isEdit ? {} : await planContractForBuild(projectId)),
+                // Without this the static scan cannot see the starter kit and
+                // reports `@/lib/utils` as an unresolved import, spending a
+                // repair generation rewriting correct code.
+                designDirection: projectDirection,
+                jobId: generationJob?.id ?? null,
+                attempt: Number(buildFixAttempt ?? 0),
+                previousSignature: typeof buildFixSignature === 'string' ? buildFixSignature : null,
+                // It writes its own chat notice and its own `validate-build` job step, so
+                // nothing here repeats them.
+                notify: (message, level) => sendProgress({ type: level, message }),
+              })
             : null;
+        const buildFix = validation?.retry ?? null;
+        // Stored with the files, not derived later. Whether this site builds is a fact about
+        // the bytes this run produced, and the only moment it is known for certain is here —
+        // a reader that re-ran the checks later would be answering about whatever the project
+        // holds by then. See `servedProjectFiles`, which uses it to decline to show a broken
+        // repair pass in the preview.
+        const siteValidated = siteValidatedFromBuild(validation);
 
         let streamSettle: StreamSettleResult | null = null;
         /** Set when the answer turn could not be recorded as finished. */
@@ -2463,6 +2467,7 @@ Provide the complete file content without any truncation. Include all necessary 
                 deletedPaths: useTools ? toolStore.deletedPaths() : null,
                 noChangeReason,
                 stackMismatchReason,
+                validated: siteValidated,
                 tokensIn: inputTokens,
                 tokensOut: outputTokens,
                 estimatedCostUsd,

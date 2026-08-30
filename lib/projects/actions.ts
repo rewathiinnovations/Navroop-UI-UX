@@ -725,6 +725,7 @@ export async function duplicateProject(id: string) {
       stack: true,
       designDirection: true,
       lastCode: true,
+      lastCodeValidated: true,
       thumbnailUrl: true,
       style: true,
       model: true,
@@ -767,6 +768,9 @@ export async function duplicateProject(id: string) {
         stack: source.stack,
         designDirection: source.designDirection,
         lastCode: source.lastCode,
+        // The copy is byte-for-byte the same site, so it inherits the same verdict. Dropping
+        // it would silently re-enable Publish on a duplicate of a project that does not build.
+        lastCodeValidated: source.lastCodeValidated,
         thumbnailUrl: source.thumbnailUrl,
         style: source.style,
         model: source.model,

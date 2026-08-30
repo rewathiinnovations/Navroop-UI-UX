@@ -35,6 +35,7 @@ const {
   collectPublishFiles,
   projectHasPublishableFiles,
   publishJobErrorCode,
+  siteFailsToBuild,
   withoutNeverPublishedPaths,
 } = await import('@/lib/publish/files');
 const { buildRepoFiles } = await import('@/lib/deploy/repo-files');
@@ -187,5 +188,55 @@ describe('withoutNeverPublishedPaths', () => {
     expect(Object.keys(built)).toEqual(
       expect.arrayContaining(['package.json', 'Dockerfile', '.gitignore', '.dockerignore']),
     );
+  });
+});
+
+/**
+ * A site the validators said does not compile must not reach a client's repository.
+ *
+ * This is deliberately its own function rather than a fourth status on
+ * `projectHasPublishableFiles`: that answer is also what gates the code audit and the SEO
+ * scan, and those are the two things a person most wants to run on a site that does not
+ * build. Only publishing has to refuse, because only publishing pushes the result somewhere
+ * a refusal cannot be taken back from.
+ */
+describe('siteFailsToBuild', () => {
+  it('refuses only on a recorded failure', async () => {
+    db.projectFindFirst.mockResolvedValue({ lastCodeValidated: false });
+
+    expect(await siteFailsToBuild('p1')).toBe(true);
+  });
+
+  it('allows a project nothing ever checked', async () => {
+    db.projectFindFirst.mockResolvedValue({ lastCodeValidated: null });
+
+    // Every row written before the column existed carries `null`, as does every URL import.
+    // Taking Publish away on an absence of evidence would break projects that work.
+    expect(await siteFailsToBuild('p1')).toBe(false);
+  });
+
+  it('allows a project that passed', async () => {
+    db.projectFindFirst.mockResolvedValue({ lastCodeValidated: true });
+
+    expect(await siteFailsToBuild('p1')).toBe(false);
+  });
+
+  it('allows a project that is not there rather than throwing on the publish path', async () => {
+    db.projectFindFirst.mockResolvedValue(null);
+
+    // The caller's own "project not found" answer is the one worth showing; this check has
+    // nothing to say about a row it cannot see.
+    expect(await siteFailsToBuild('gone')).toBe(false);
+  });
+
+  it('does not read the files to answer', async () => {
+    db.projectFindFirst.mockResolvedValue({ lastCodeValidated: false });
+
+    await siteFailsToBuild('p1');
+
+    // It runs on every publish-state poll, so it is one indexed column read and no snapshot
+    // fetch — the reason it is asked before `collectPublishFiles` rather than inside it.
+    expect(snapshot.read).not.toHaveBeenCalled();
+    expect(snapshot.capture).not.toHaveBeenCalled();
   });
 });

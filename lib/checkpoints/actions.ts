@@ -136,6 +136,15 @@ export async function createCheckpoint(
     restoredFromAt?: Date | null;
     /** Overrides the trigger-derived label — used for the pre-restore safety snapshot. */
     label?: string;
+    /**
+     * What the build validators said about the files being frozen here: `true` passed,
+     * `false` failed, `null`/omitted nobody asked.
+     *
+     * A snapshot is immutable, so unlike a claim about a project row this one cannot go
+     * stale — it is a fact about bytes that will never change again. That is exactly what
+     * makes an earlier version findable as a *proven* good one to fall back to.
+     */
+    snapshotValidated?: boolean | null;
   },
 ) {
   const fileSnapshot = await captureFileSnapshot(projectId);
@@ -160,6 +169,7 @@ export async function createCheckpoint(
       label,
       sourceMessage: input.sourceMessage ?? null,
       trigger: input.trigger,
+      snapshotValidated: input.snapshotValidated ?? null,
       fileSnapshot: Prisma.DbNull,
     },
   });
@@ -222,6 +232,15 @@ export async function createCheckpointAfterGeneration(
     sourceMessage = plan?.sourceMessage ?? project?.initialPrompt ?? sourceMessage;
   }
 
+  // The verdict recorded beside `lastCode` by the run that wrote it (`writeMergedSite`).
+  // Read here rather than re-derived, because the snapshot being frozen is exactly the code
+  // that verdict was about — and because re-running the checkers on a persist would pay for
+  // a second compile of files that were already checked seconds ago.
+  const validation = await prisma.project.findFirst({
+    where: { id: projectId, deletedAt: null },
+    select: { lastCodeValidated: true },
+  });
+
   const snapshot = await captureFileSnapshot(projectId);
   // Nothing to snapshot is a legitimate outcome, not a fault. A zero-file reply
   // is now an answer turn ("hello" on a project with no site yet), and it ends
@@ -246,7 +265,11 @@ export async function createCheckpointAfterGeneration(
     return null;
   }
 
-  return createCheckpoint(projectId, { trigger, sourceMessage });
+  return createCheckpoint(projectId, {
+    trigger,
+    sourceMessage,
+    snapshotValidated: validation?.lastCodeValidated ?? null,
+  });
 }
 
 export async function getCheckpoints(projectId: string) {
@@ -287,7 +310,9 @@ export async function getCheckpoints(projectId: string) {
 async function loadProjectForWrite(projectId: string) {
   return prisma.project.findFirst({
     where: { id: projectId, deletedAt: null },
-    select: { id: true, ownerId: true },
+    // `lastCodeValidated` rides along because a restore replaces the site, and the verdict
+    // stored beside it has to be replaced in the same breath — see `writeCheckpointFiles`.
+    select: { id: true, ownerId: true, lastCodeValidated: true },
   });
 }
 
@@ -297,14 +322,26 @@ async function loadProjectForWrite(projectId: string) {
  * files into a sandbox VM; there is no VM now, and a restore that only touched
  * a VM would be lost on the next reload.
  */
-async function writeCheckpointFiles(projectId: string, files: FileSnapshotEntry[]) {
+async function writeCheckpointFiles(
+  projectId: string,
+  files: FileSnapshotEntry[],
+  /**
+   * The restored snapshot's own verdict, which becomes the project's.
+   *
+   * Not optional and not defaulted, because forgetting it is the failure mode that matters:
+   * a rescue restores a version proven to build, and a stale `false` left on the row would
+   * keep the preview holding the site back and the Publish button disabled over code that
+   * works. The verdict travels with the bytes.
+   */
+  validated: boolean | null,
+) {
   if (files.length === 0) {
     throw new Error('Checkpoint has no files to write');
   }
   const lastCode = toLastCode(Object.fromEntries(files.map((file) => [file.path, file.content])));
   await prisma.project.update({
     where: { id: projectId },
-    data: { lastCode },
+    data: { lastCode, lastCodeValidated: validated },
   });
   await bumpContentVersion(projectId);
 }
@@ -459,10 +496,14 @@ export async function restoreCheckpoint(projectId: string, checkpointId: string)
         trigger: 'followup',
         sourceMessage: null,
         label: 'Before restoring an earlier version',
+        // These are the files being replaced, so the verdict to freeze with them is the one
+        // the project is carrying right now — including `false`. A broken version recorded
+        // as "unknown" would be a candidate the rescue has to re-check for nothing.
+        snapshotValidated: project.lastCodeValidated,
       });
     }
 
-    await writeCheckpointFiles(projectId, files);
+    await writeCheckpointFiles(projectId, files, checkpoint.snapshotValidated);
     // A restore makes this version the current one, so any preview of it is over. Left set,
     // the read path would keep serving the pre-restore checkpoint under a stale banner.
     await clearPreviewingCheckpoint(projectId);
@@ -470,6 +511,10 @@ export async function restoreCheckpoint(projectId: string, checkpointId: string)
       trigger: 'restore',
       sourceMessage: null,
       restoredFromAt: checkpoint.createdAt,
+      // Byte-for-byte the snapshot that was just restored, so it carries the same verdict.
+      // Deriving it from the project row instead would work today and break the moment
+      // anything writes between the two statements.
+      snapshotValidated: checkpoint.snapshotValidated,
     });
     await bumpContentVersion(projectId);
     void recordRevertRate(projectId);

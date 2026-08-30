@@ -595,6 +595,18 @@ export default function ProjectWorkspace({
               planApproved={plan?.status === 'APPROVED'}
               previewing={previewing}
               previewingLabel={versionLabelFor(checkpoints, previewingId)}
+              /*
+               * `v7` when the held-back version is in the loaded history, its own label when
+               * it is not. Never null while the server actually substituted a version: a
+               * banner that hides itself because it could not work out a nickname would
+               * leave the substitution invisible, which is the failure it exists to prevent.
+               */
+              heldBackLabel={
+                projectFiles.heldBack
+                  ? (versionLabelFor(checkpoints, projectFiles.heldBack.checkpointId) ??
+                    projectFiles.heldBack.label)
+                  : null
+              }
               onExitPreview={() => {
                 void exitPreview().then((result) => {
                   if (!result.ok && !('locked' in result && result.locked)) {
@@ -664,8 +676,11 @@ export default function ProjectWorkspace({
                     // next file usually resolves it — and a repair sent while a
                     // job is running would be refused anyway.
                     // While previewing an older checkpoint the files on screen are
-                    // not the ones a repair would edit, so it stays manual there.
-                    autoFix={!isJobActive && !sending && !previewing}
+                    // not the ones a repair would edit, so it stays manual there. A
+                    // held-back version is the same situation arrived at differently:
+                    // the pane is compiling an older snapshot, and a runtime error in it
+                    // would spend a generation rewriting code the project no longer has.
+                    autoFix={!isJobActive && !sending && !previewing && !projectFiles.heldBack}
                   />
                 )
               ) : (

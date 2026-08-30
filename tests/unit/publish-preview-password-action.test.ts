@@ -33,6 +33,9 @@ vi.mock('@/lib/publish/publish', () => ({
 vi.mock('@/lib/publish/execute', () => ({ runPublishJob: vi.fn() }));
 vi.mock('@/lib/publish/files', () => ({
   projectHasPublishableFiles: async () => ({ status: 'ready' as const }),
+  /** This project builds, so the publish gate has nothing to say about it. */
+  siteFailsToBuild: async () => false,
+  PUBLISH_FILES_BROKEN: 'broken',
 }));
 vi.mock('@/lib/publish/slug', () => ({
   resolveUniqueSlug: async () => 'shop',

@@ -151,7 +151,13 @@ export async function keepPartialBuild(jobId: string) {
     await prisma.project.update({
       where: { id: job.projectId },
       data: {
-        ...(changed ? { lastCode: toLastCode({ ...existing, ...kept }) } : {}),
+        // A kept partial is code nobody checked — the run died before validation. The verdict
+        // is cleared rather than left alone: whatever it said was about the files this write
+        // is replacing, and a stale `false` would hold a site back from its own preview while
+        // a stale `true` would let a half-written one publish. `null` is the truth here.
+        ...(changed
+          ? { lastCode: toLastCode({ ...existing, ...kept }), lastCodeValidated: null }
+          : {}),
         generationStatus: 'ready',
       },
     });
