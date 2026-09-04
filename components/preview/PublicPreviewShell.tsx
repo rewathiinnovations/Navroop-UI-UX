@@ -3,7 +3,9 @@
 import { useState } from 'react';
 import { cn } from '@/utils/cn';
 import StudioLogo from '@/components/app/studio/StudioLogo';
+import { BrowserPreview } from '@/components/workspace/BrowserPreview';
 import PreviewDeviceToolbar from '@/components/workspace/PreviewDeviceToolbar';
+import type { PublicPreviewSite } from '@/lib/preview/public-view';
 import {
   formatPreviewSize,
   getPreviewDevice,
@@ -12,10 +14,10 @@ import {
 } from '@/lib/preview/devices';
 
 /**
- * Light Navroop chrome around a sandboxed iframe. The site itself must come
- * from the distinct preview origin — never generated JS on the app origin (F-140).
+ * Light Navroop chrome around the same in-browser preview as the workspace.
+ * Generated JS runs in BrowserPreview's srcdoc iframe — never top-level (F-140).
  */
-export default function PublicPreviewShell({ iframeSrc }: { iframeSrc: string | null }) {
+export default function PublicPreviewShell({ site }: { site: PublicPreviewSite | null }) {
   const [device, setDevice] = useState<PreviewDeviceKey>('desktop');
   const [rotated, setRotated] = useState(false);
 
@@ -24,6 +26,7 @@ export default function PublicPreviewShell({ iframeSrc }: { iframeSrc: string | 
     spec.width != null && spec.height != null && rotated
       ? rotateDeviceSize(spec.width, spec.height)
       : spec;
+  const ready = site?.ok === true;
 
   return (
     <div className="flex h-screen min-h-0 flex-col bg-[var(--studio-bg)]">
@@ -32,7 +35,7 @@ export default function PublicPreviewShell({ iframeSrc }: { iframeSrc: string | 
           <StudioLogo href="/" />
           <p className="text-[13px] font-medium text-[var(--studio-muted)]">Preview</p>
         </div>
-        {iframeSrc ? (
+        {ready ? (
           <PreviewDeviceToolbar
             device={device}
             rotated={rotated}
@@ -48,7 +51,7 @@ export default function PublicPreviewShell({ iframeSrc }: { iframeSrc: string | 
         ) : null}
       </header>
       <main className="flex min-h-0 flex-1 items-start justify-center overflow-auto bg-[var(--studio-surface)] p-16">
-        {iframeSrc ? (
+        {ready ? (
           <div
             className={cn(
               'overflow-hidden border border-[var(--studio-line)] bg-white transition-[width,height]',
@@ -60,12 +63,11 @@ export default function PublicPreviewShell({ iframeSrc }: { iframeSrc: string | 
                 : undefined
             }
           >
-            <iframe
-              src={iframeSrc}
-              title="Project preview"
-              className="h-full w-full border-0 bg-white"
-              sandbox="allow-scripts allow-forms allow-modals allow-popups"
-              referrerPolicy="no-referrer"
+            <BrowserPreview
+              stack={site.stack}
+              files={site.files}
+              designDirection={site.designDirection}
+              className="h-full w-full"
             />
           </div>
         ) : (

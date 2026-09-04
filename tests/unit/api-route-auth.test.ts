@@ -23,6 +23,7 @@ const endpoints = collectRouteEndpoints();
 const EXPECTED_PUBLIC_ENDPOINTS: string[] = [
   'GET /api/health',
   'GET /api/health/sentry-test',
+  'GET /api/projects/:id/preview-files',
   'GET /preview-static/:projectId',
   'GET /preview-static/:projectId/*',
   'POST /api/auth/accept-invite',

@@ -2,6 +2,7 @@
 
 import { FileText, ImagePlus, LayoutTemplate, Plus } from 'lucide-react';
 import Accordion from '@/components/admin/Accordion';
+import ConfirmAction from '@/components/admin/ConfirmAction';
 import StatusPill from '@/components/admin/StatusPill';
 import AdminCard from '@/components/admin/AdminCard';
 import AdminPage from '@/components/admin/AdminPage';
@@ -179,6 +180,16 @@ export default function TemplatesAdmin({
     }
   };
 
+  const onDelete = async (id: string, name: string) => {
+    const response = await fetch(`/api/admin/templates/${id}`, { method: 'DELETE' });
+    const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!response.ok) {
+      throw new Error(readError(payload, 'Could not delete template'));
+    }
+    setTemplates((current) => current.filter((row) => row.id !== id));
+    notify.success(`Template “${name}” deleted.`, { key: `template-${id}` });
+  };
+
   const onUpload = async (id: string, file: File | undefined) => {
     if (!file) return;
     setBusy(`up-${id}`);
@@ -332,6 +343,19 @@ export default function TemplatesAdmin({
                     >
                       {busy === `test-${template.id}` ? 'Testing…' : 'Test'}
                     </StudioButton>
+                    <ConfirmAction
+                      label="Delete"
+                      title={`Delete “${template.name}”?`}
+                      body={
+                        template.isBuiltIn || !template.workspaceId
+                          ? 'This built-in template is removed for every workspace. This cannot be undone.'
+                          : 'This workspace template is deleted permanently. This cannot be undone.'
+                      }
+                      confirmLabel="Delete"
+                      busyLabel="Deleting…"
+                      disabled={busy === template.id}
+                      onConfirm={() => onDelete(template.id, template.name)}
+                    />
                     <label className="inline-flex h-44 cursor-pointer items-center gap-6 rounded-full border border-[var(--studio-line-strong)] px-18 text-[14px] font-medium text-[var(--studio-fg)] transition-colors duration-200 hover:bg-[var(--studio-surface)]">
                       <ImagePlus className="size-14" aria-hidden />
                       Upload thumbnail

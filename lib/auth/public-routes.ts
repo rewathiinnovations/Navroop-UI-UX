@@ -173,6 +173,12 @@ export const PUBLIC_API_ROUTES: PublicRouteRule[] = [
       'HMAC-SHA256 signature over the raw body (X-Hub-Signature-256) checked against the App webhook secret before the payload is parsed or anything is written; a delivery that will not verify gets 401.',
   },
   {
+    pattern: '/api/projects/:id/preview-files',
+    methods: ['GET'],
+    reason: 'Public /preview-view loads project files without a session.',
+    ownMechanism: 'Signed 2-hour HMAC preview token checked against the project id.',
+  },
+  {
     pattern: '/preview-static/:projectId',
     methods: ['GET'],
     reason: 'Published static previews are opened by people without an account.',

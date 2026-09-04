@@ -21,6 +21,7 @@ export function toPublic(row: TemplateRow, thumbnailBase: string | null = null):
     isActive: row.isActive,
     isBuiltIn: row.isBuiltIn,
     workspaceId: row.workspaceId,
+    createdById: row.createdById,
     usageCount: row.usageCount,
     sortOrder: row.sortOrder,
     createdAt: row.createdAt.toISOString(),

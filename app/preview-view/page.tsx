@@ -1,15 +1,15 @@
 import type { Metadata } from 'next';
 import '@/components/app/studio/studio.css';
 import PublicPreviewShell from '@/components/preview/PublicPreviewShell';
-import { resolvePublicPreviewFrameSrc } from '@/lib/preview/public-view';
-import { previewStaticBaseUrl } from '@/lib/preview/url';
+import { loadPublicPreviewSite } from '@/lib/preview/public-site';
+import { parsePublicPreviewViewSearch } from '@/lib/preview/public-view';
 
 /**
- * Anonymous Open-in-new-tab shell. No login. The signed preview-static URL
- * is already minted (`GET /api/projects/[id]/preview`); this page only
- * validates its host against `previewStaticBaseUrl` and iframes it.
- * Anyone with the link can view until the 2-hour token expires.
- * Generated JS never runs top-level here (F-140).
+ * Anonymous Open-in-new-tab shell. No login. The HMAC token is minted by
+ * `GET /api/projects/[id]/preview`; this page validates it, loads the project's
+ * files (checkpoint / lastCode), and renders BrowserPreview. Generated JS stays
+ * inside the srcdoc iframe (F-140). Anyone with the link can view until the
+ * 2-hour token expires.
  */
 export const metadata: Metadata = {
   title: 'Preview · Navroop',
@@ -19,9 +19,11 @@ export const metadata: Metadata = {
 export default async function PublicPreviewViewPage({
   searchParams,
 }: {
-  searchParams: Promise<{ u?: string }>;
+  searchParams: Promise<{ projectId?: string; token?: string }>;
 }) {
-  const { u } = await searchParams;
-  const iframeSrc = resolvePublicPreviewFrameSrc(u, await previewStaticBaseUrl());
-  return <PublicPreviewShell iframeSrc={iframeSrc} />;
+  const parsed = parsePublicPreviewViewSearch(await searchParams);
+  const site = parsed
+    ? await loadPublicPreviewSite({ projectId: parsed.projectId, token: parsed.token })
+    : null;
+  return <PublicPreviewShell site={site} />;
 }

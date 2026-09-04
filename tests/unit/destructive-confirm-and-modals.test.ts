@@ -84,6 +84,24 @@ describe('destructive actions are gated by the shared dialog (F-406, F-422)', ()
     expect(panel).not.toMatch(/<StudioButton[^>]*variant="danger"/);
   });
 
+  it('admin template delete goes through ConfirmAction, not a native prompt', () => {
+    const admin = codeOnly(repoFile('app/(app)/admin/templates/TemplatesAdmin.tsx'));
+    expect(admin).toMatch(/import\s+ConfirmAction\s+from\s*'@\/components\/admin\/ConfirmAction'/);
+    expect(admin).toContain('<ConfirmAction');
+    expect(admin).toContain('/api/admin/templates/');
+    expect(admin).toMatch(/method:\s*'DELETE'/);
+  });
+
+  it('gallery template delete goes through ConfirmAction and the member route', () => {
+    const sheet = codeOnly(repoFile('components/templates/TemplateSheet.tsx'));
+    expect(sheet).toMatch(
+      /import\s+ConfirmAction\s+from\s*'@\/components\/admin\/ConfirmAction'/,
+    );
+    expect(sheet).toContain('<ConfirmAction');
+    expect(sheet).toContain('/api/templates/');
+    expect(sheet).toMatch(/method:\s*'DELETE'/);
+  });
+
   it('removing an API key goes through ConfirmAction, personal and team alike', () => {
     const page = codeOnly(repoFile('app/(app)/settings/api-keys/page.tsx'));
     expect(page).toMatch(/import\s+ConfirmAction\s+from\s*'@\/components\/admin\/ConfirmAction'/);

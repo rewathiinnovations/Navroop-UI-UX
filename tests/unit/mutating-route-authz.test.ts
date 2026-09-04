@@ -345,6 +345,11 @@ const ROUTE_AUTHZ: Record<string, RouteAuthz> = {
     action: 'lib/templates/actions#createFromTemplate',
     why: 'creates a new project owned by the caller from a workspace-visible template',
   },
+  'DELETE /api/templates/:id': {
+    gate: 'session',
+    action: 'lib/templates/actions#deleteTemplate',
+    why: 'deletes a Template the caller saved in this workspace, or any visible template if ADMIN; built-ins refuse a MEMBER in English',
+  },
 
   /* --------------------------------------------------------------- cron/open */
   'POST /api/cron/backup-db': { gate: 'cron' },

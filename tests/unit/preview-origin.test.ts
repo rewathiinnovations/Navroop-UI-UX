@@ -163,42 +163,39 @@ describe('openPreviewWindow', () => {
     return open;
   }
 
-  it('refuses to open a same-origin preview URL top-level', () => {
+  it('refuses to open generated preview-static JS top-level on the app origin (F-140)', () => {
     const open = stubWindow();
     openPreviewWindow(`${APP_ORIGIN}/preview-static/proj-1/?token=t`);
     expect(open).not.toHaveBeenCalled();
   });
 
-  it('refuses a relative preview URL (same-origin by construction)', () => {
+  it('refuses a relative preview-static URL (same-origin generated JS)', () => {
     const open = stubWindow();
     openPreviewWindow('/preview-static/proj-1/?token=t');
     expect(open).not.toHaveBeenCalled();
   });
 
-  it('opens the public token-gated shell, not the served origin and not /project/[id]/preview', () => {
+  it('opens the public /preview-view chrome shell even on the app origin', () => {
     const open = stubWindow();
-    const signed = 'https://preview-static.zone.example/proj-1/?token=t';
-    openPreviewWindow(signed);
-    expect(open).toHaveBeenCalledWith(
-      publicPreviewViewHref(signed),
-      '_blank',
-      'noopener,noreferrer',
-    );
-    // There is no sized-popup variant: the device toolbar lives on the public
-    // shell (and the signed-in /project/[id]/preview page). Generated JS never
-    // runs top-level on the app origin (F-140).
+    const href = publicPreviewViewHref({ projectId: 'proj-1', token: 't' });
+    openPreviewWindow(href);
+    expect(open).toHaveBeenCalledWith(href, '_blank', 'noopener,noreferrer');
     expect(open).toHaveBeenCalledTimes(1);
+    expect(open.mock.calls[0][0]).not.toContain('preview-static');
+    expect(open.mock.calls[0][0]).not.toContain('/project/');
   });
 
   it('still uses the public shell when a project id is given', () => {
     const open = stubWindow();
-    const signed = 'https://preview-static.zone.example/proj-1/?token=t';
-    openPreviewWindow(signed, 'proj 1');
-    expect(open).toHaveBeenCalledWith(
-      publicPreviewViewHref(signed),
-      '_blank',
-      'noopener,noreferrer',
-    );
+    const href = publicPreviewViewHref({ projectId: 'proj 1', token: 't' });
+    openPreviewWindow(href, 'proj 1');
+    expect(open).toHaveBeenCalledWith(href, '_blank', 'noopener,noreferrer');
     expect(open.mock.calls[0][0]).not.toContain('/project/');
+  });
+
+  it('refuses a Cloudflare preview-static destination — new-tab is BrowserPreview only', () => {
+    const open = stubWindow();
+    openPreviewWindow('https://preview-static.zone.example/proj-1/?token=t');
+    expect(open).not.toHaveBeenCalled();
   });
 });

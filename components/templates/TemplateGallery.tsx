@@ -138,6 +138,11 @@ export default function TemplateGallery({
           // and there was no way out but editing the address bar.
           if (openId) setParam('open', '');
         }}
+        onDeleted={(id) => {
+          setTemplates((current) => current.filter((row) => row.id !== id));
+          setOpen(null);
+          if (openId) setParam('open', '');
+        }}
       />
     </div>
   );

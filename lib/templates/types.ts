@@ -35,6 +35,7 @@ export type PublicTemplate = {
   isActive: boolean;
   isBuiltIn: boolean;
   workspaceId: string | null;
+  createdById: string | null;
   usageCount: number;
   sortOrder: number;
   createdAt: string;

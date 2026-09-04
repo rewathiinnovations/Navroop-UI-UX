@@ -448,7 +448,7 @@ export default function ProjectWorkspace({
         }}
         onShare={share}
         previewUrl={previewUrl}
-        previewOriginConfigured={staticPreview.originConfigured}
+        onMintPreviewUrl={() => staticPreview.issueTokenUrl(selectedPage)}
         previewDevice={previewDevice.device}
         previewRotated={previewDevice.rotated}
         onPreviewDeviceChange={previewDevice.setDevice}

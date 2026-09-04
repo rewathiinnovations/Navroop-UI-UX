@@ -14,16 +14,22 @@ import { isStackId } from '@/lib/stacks';
 import { TEMPLATE_CATEGORY_LABELS, isTemplateCategory } from '@/lib/templates/categories';
 import type { PublicTemplate } from '@/lib/templates/types';
 import { notify, toMessage } from '@/lib/notify';
+import { canDeleteTemplate } from '@/lib/templates/auth';
+import { useAuth } from '@/components/app/auth/AuthProvider';
+import ConfirmAction from '@/components/admin/ConfirmAction';
 import StudioModal, { StudioModalTitle } from '@/components/ui/StudioModal';
 
 export default function TemplateSheet({
   template,
   onClose,
+  onDeleted,
 }: {
   template: PublicTemplate | null;
   onClose: () => void;
+  onDeleted?: (id: string) => void;
 }) {
   const router = useRouter();
+  const { user } = useAuth();
   const [prompt, setPrompt] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -165,6 +171,38 @@ export default function TemplateSheet({
         >
           {busy ? 'Creating…' : 'Create from this template'}
         </button>
+        {user && canDeleteTemplate(user, template) ? (
+          <div className="mt-10 flex justify-center">
+            <ConfirmAction
+              label="Delete template"
+              title={`Delete “${template.name}”?`}
+              body={
+                template.isBuiltIn || !template.workspaceId
+                  ? 'This built-in template is removed for every workspace. This cannot be undone.'
+                  : 'This workspace template is deleted permanently. This cannot be undone.'
+              }
+              confirmLabel="Delete"
+              busyLabel="Deleting…"
+              variant="ghost"
+              disabled={busy}
+              onConfirm={async () => {
+                const response = await fetch(`/api/templates/${template.id}`, { method: 'DELETE' });
+                const payload = (await response.json().catch(() => ({}))) as {
+                  error?: { message?: string } | string;
+                };
+                if (!response.ok) {
+                  const message =
+                    (typeof payload.error === 'object' && payload.error?.message) ||
+                    (typeof payload.error === 'string' ? payload.error : null) ||
+                    'Could not delete this template';
+                  throw new Error(String(message));
+                }
+                notify.success(`“${template.name}” deleted.`);
+                onDeleted?.(template.id);
+              }}
+            />
+          </div>
+        ) : null}
       </div>
     </StudioModal>
   );

@@ -9,7 +9,14 @@ import { createProject, deleteProject } from '@/lib/projects/actions';
 import { WORKSPACE_ROW_ID } from '@/lib/storage/usage';
 import { DEFAULT_DESIGN_DIRECTION, isDesignDirectionId } from '@/lib/design/directions';
 import { DEFAULT_STACK, isStackId } from '@/lib/stacks';
-import { canManageTemplates, memberCannotAdmin } from './auth';
+import {
+  BUILTIN_TEMPLATE_DELETE_FORBIDDEN,
+  WORKSPACE_TEMPLATE_DELETE_FORBIDDEN,
+  canDeleteTemplate,
+  canManageTemplates,
+  isBuiltInTemplate,
+  memberCannotAdmin,
+} from './auth';
 import { createProjectFromTemplate } from './create';
 import {
   createFromTemplateSchema,
@@ -268,6 +275,34 @@ export async function saveProjectAsTemplate(
   }
 
   return { ok: true as const, data: { template: toPublic(created, await thumbnailUrlBase()) } };
+}
+
+export async function deleteTemplate(id: string) {
+  const { user, err } = await requireUser();
+  if (!user) return err;
+
+  const row = await findTemplateById(id);
+  const admin = canManageTemplates(user.role);
+  if (!row || !isVisibleToWorkspace(row, WORKSPACE_ROW_ID, { includeInactive: admin })) {
+    return notFound();
+  }
+  if (!canDeleteTemplate(user, row, WORKSPACE_ROW_ID)) {
+    if (isBuiltInTemplate(row)) {
+      return { ok: false as const, error: BUILTIN_TEMPLATE_DELETE_FORBIDDEN, status: 403 };
+    }
+    return { ok: false as const, error: WORKSPACE_TEMPLATE_DELETE_FORBIDDEN, status: 403 };
+  }
+
+  await deleteTemplateRow(id);
+  await writeAudit({
+    actorId: user.id,
+    actorEmail: user.email,
+    action: 'template.delete',
+    targetType: 'template',
+    targetId: id,
+    after: { name: row.name },
+  });
+  return { ok: true as const, data: { id } };
 }
 
 export async function adminListTemplates(query: {

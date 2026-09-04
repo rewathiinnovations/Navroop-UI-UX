@@ -317,6 +317,10 @@ export const ACTION_AUTHZ: ModuleAuthz[] = [
       },
       previewSaveAsTemplate: { gate: 'owner' },
       saveProjectAsTemplate: { gate: 'owner', args: ['proj-1', TEMPLATE_INPUT] },
+      deleteTemplate: {
+        gate: 'session',
+        why: 'deletes a Template row, not a project: owner (createdById) or ADMIN for a workspace template, ADMIN-only for a built-in, 404 for another workspace. The target is resolved after the session gate.',
+      },
       adminListTemplates: { gate: 'admin', args: [{}] },
       adminCreateTemplate: { gate: 'admin' },
       adminUpdateTemplate: { gate: 'admin' },

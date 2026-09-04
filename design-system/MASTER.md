@@ -12,7 +12,7 @@ Product UI for auth and dashboard. Generated websites use a per-request UI/UX Pr
 - Icons: Lucide / existing SVGs, never emoji. Do not switch the product chrome to Phosphor.
 - Controls: 44px minimum hit area (`studio-icon-hit` or `min-h/min-w-[44px]`); the glyph can stay 16–20px. Visible `focus-visible` rings on every interactive control. Labeled inputs.
 - Default theme is light (`enableSystem={false}`). Dark is an opt-in toggle, not the default.
-- Below `md`, the app sidebar is an overlay drawer. Below `lg`, the workspace shows one pane (chat or preview) via the existing chat-collapse toggle. On `lg+` the chat column stays visible.
+- Below `md`, the app sidebar is an overlay drawer. Below `lg`, the workspace shows one pane (chat or preview) via the existing chat-collapse toggle. On `lg+` the chat column is 380px by default and Collapse chat hides it so the preview fills the row.
 - Shared primitives — do not invent a fourth: `EmptyState`, `ConfirmAction`, `StatusPill`, `StatusBanner`, `StudioButton`, `StudioField`.
 
 ## Generated websites

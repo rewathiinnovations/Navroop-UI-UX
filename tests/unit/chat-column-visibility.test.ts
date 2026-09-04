@@ -5,12 +5,16 @@ import { chatPaneClassName, previewPaneClassName } from '@/components/workspace/
 const WORKSPACE = readFileSync('components/workspace/ProjectWorkspace.tsx', 'utf8');
 const GENERATION = readFileSync('components/workspace/GenerationWorkspace.tsx', 'utf8');
 
-describe('desktop chat column stays visible', () => {
-  it('does not collapse to zero width at lg even when the one-pane toggle is on', () => {
+describe('chat collapse hides the column at every breakpoint', () => {
+  it('collapses to zero width at lg instead of locking a 380px column', () => {
     const collapsed = chatPaneClassName(true);
     expect(collapsed).toMatch(/w-0/);
-    expect(collapsed).toMatch(/lg:w-\[380px\]/);
+    expect(collapsed).toMatch(/overflow-hidden/);
+    expect(collapsed).toMatch(/opacity-0/);
+    expect(collapsed).not.toMatch(/lg:w-\[380px\]/);
+    expect(collapsed).not.toMatch(/lg:opacity-100/);
     expect(chatPaneClassName(false)).toMatch(/w-\[380px\]/);
+    expect(chatPaneClassName(false)).toMatch(/max-lg:w-full/);
   });
 
   it('still hides the preview below lg when chat is the one pane', () => {
