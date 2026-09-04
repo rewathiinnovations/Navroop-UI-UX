@@ -1,8 +1,17 @@
 'use client';
 
-import { AlertCircle, FolderOpen, Gauge, GitCommitHorizontal, Sparkles } from 'lucide-react';
+import {
+  AlertCircle,
+  Coins,
+  FolderOpen,
+  Gauge,
+  GitCommitHorizontal,
+  Sparkles,
+  Wrench,
+} from 'lucide-react';
 import AdminCard from '@/components/admin/AdminCard';
 import AdminPage from '@/components/admin/AdminPage';
+import { AdminTable, Td, Th, Tr } from '@/components/admin/AdminTable';
 import StatTile from '@/components/admin/StatTile';
 import StatusBanner from '@/components/admin/StatusBanner';
 import { FormEvent, useEffect, useMemo, useState } from 'react';
@@ -44,6 +53,22 @@ type VersionRow = {
   metrics: Record<string, KindMetric>;
 };
 
+type ToolRefusalRow = {
+  tool: string;
+  rate: number | null;
+  n: number;
+};
+
+type CostRow = {
+  promptVersion: string | null;
+  label: string;
+  events: number;
+  estimatedCostUsd: number;
+  inputTokens: number;
+  costPerEventUsd: number | null;
+  tokensPerEvent: number | null;
+};
+
 type Dashboard = {
   summary: {
     totalGenerations: number;
@@ -53,6 +78,8 @@ type Dashboard = {
   metrics: Record<QualitySignalKind, KindMetric>;
   overall: number | null;
   versions: VersionRow[];
+  toolRefusals: ToolRefusalRow[];
+  costs: CostRow[];
   recurringIssues: RecurringIssue[];
 };
 
@@ -87,6 +114,28 @@ const SHOWN_SIGNAL_KINDS = QUALITY_SIGNAL_KINDS.filter((kind) => !BROKEN_SIGNAL_
 
 function formatPct(value: number) {
   return `${Math.round(value * 1000) / 10}%`;
+}
+
+/**
+ * Four decimals under a cent, two above.
+ *
+ * `GenerationEvent.estimatedCost` is a `Decimal(10, 4)` and one follow-up
+ * usually prices well under a cent, so the two-decimal money format the rest of
+ * the admin surface uses renders a whole prompt version's per-generation cost as
+ * `$0.00` — the exact comparison this panel exists to make, printed as a tie.
+ */
+function formatUsd(value: number) {
+  const digits = value !== 0 && Math.abs(value) < 0.01 ? 4 : 2;
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  }).format(value);
+}
+
+function formatCount(value: number) {
+  return new Intl.NumberFormat('en-US').format(Math.round(value));
 }
 
 function trendLabel(trend: number | null) {
@@ -242,6 +291,50 @@ export default function QualityDashboard() {
       </AdminCard>
 
       <AdminCard
+        icon={<Wrench className="size-14" aria-hidden />}
+        title="Tool refusals"
+        description="How often each generation tool answered the model with a refusal instead of doing the work."
+      >
+        <p className="mb-12 text-[12px] text-[var(--studio-muted)]">
+          Not part of the quality score, and deliberately one figure per tool rather than one
+          blended rate: an add_dependency refusal is the write guard turning down a package the
+          preview cannot serve, which is it working, while an edit_file refusal means the model
+          could not find the text it meant to change. Recorded per generation from the tool results
+          themselves, and shown once a tool has {MIN_KIND_SAMPLES} generations behind it.
+        </p>
+        {!data ? (
+          <p className="text-[13px] text-[var(--studio-muted)]">
+            {loading ? 'Loading…' : 'Not loaded.'}
+          </p>
+        ) : data.toolRefusals.length === 0 ? (
+          <p className="text-[13px] text-[var(--studio-muted)]">
+            No tool calls recorded in this range.
+          </p>
+        ) : (
+          <div className="grid grid-cols-1 gap-12 sm:grid-cols-2 lg:grid-cols-4">
+            {data.toolRefusals.map((row) => (
+              <div
+                key={row.tool}
+                className="rounded-12 border border-[var(--studio-line)] bg-[var(--studio-bg)] px-16 py-18"
+              >
+                <p className="text-[12px] uppercase tracking-[0.08em] text-[var(--studio-faint)]">
+                  {row.tool}
+                </p>
+                <p className="mt-8 text-[22px] font-medium tracking-[-0.03em] text-[var(--studio-fg)]">
+                  {row.rate != null
+                    ? formatPct(row.rate)
+                    : `Not enough data yet (${row.n}/${MIN_KIND_SAMPLES})`}
+                </p>
+                <p className="mt-6 text-[12px] text-[var(--studio-muted)]">
+                  refused · based on {row.n} generations that called it
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+      </AdminCard>
+
+      <AdminCard
         icon={<GitCommitHorizontal className="size-14" aria-hidden />}
         title="Prompt version history"
       >
@@ -284,6 +377,61 @@ export default function QualityDashboard() {
               </div>
             ))}
           </div>
+        )}
+      </AdminCard>
+
+      <AdminCard
+        icon={<Coins className="size-14" aria-hidden />}
+        title="Estimated cost by prompt version"
+        description="What each version spent over this range, to be read next to what it scored above."
+      >
+        <p className="mb-12 text-[12px] text-[var(--studio-muted)]">
+          Estimated, never billed: the cost is priced from token counts at the operator rate, the
+          same number /admin/usage reports. Events counts every priced provider call in the range —
+          builds, plans, images and helper calls — so the column totals the Generations tile above
+          it. Input tokens are a floor rather than a total: a run that never attached a count
+          contributes none, and only input tokens are kept per event.
+        </p>
+        {!data ? (
+          <p className="text-[13px] text-[var(--studio-muted)]">
+            {loading ? 'Loading…' : 'Not loaded.'}
+          </p>
+        ) : (
+          <AdminTable
+            isEmpty={data.costs.length === 0}
+            empty="No generations in this range."
+            head={
+              <>
+                <Th>Prompt version</Th>
+                <Th align="right">Events</Th>
+                <Th align="right">Estimated cost</Th>
+                <Th align="right">Estimated per event</Th>
+                <Th align="right">Input tokens</Th>
+                <Th align="right">Tokens per event</Th>
+              </>
+            }
+          >
+            {data.costs.map((row) => (
+              <Tr key={row.promptVersion ?? 'unversioned'}>
+                <Td>{row.label}</Td>
+                <Td align="right" muted>
+                  {formatCount(row.events)}
+                </Td>
+                <Td align="right" muted>
+                  {formatUsd(row.estimatedCostUsd)}
+                </Td>
+                <Td align="right" muted>
+                  {row.costPerEventUsd != null ? formatUsd(row.costPerEventUsd) : '—'}
+                </Td>
+                <Td align="right" muted>
+                  {formatCount(row.inputTokens)}
+                </Td>
+                <Td align="right" muted>
+                  {row.tokensPerEvent != null ? formatCount(row.tokensPerEvent) : '—'}
+                </Td>
+              </Tr>
+            ))}
+          </AdminTable>
         )}
       </AdminCard>
 

@@ -51,3 +51,40 @@ describe('previewRepairInstruction', () => {
     expect(previewRepairInstruction(withStack, 'runtime')).toContain('at Gallery');
   });
 });
+
+/**
+ * Which page crashed.
+ *
+ * The bridge posted only a message and a stack, so every page of a multi-page
+ * site reported its crash identically and a failure on `/pricing` was repaired
+ * as though it had happened on the home page. The stack was added because a
+ * repair "had nowhere to look"; the route is the other half of that fix, and
+ * the preview's own router already knows it.
+ */
+describe('previewRepairInstruction with a route', () => {
+  it('names the page that crashed', () => {
+    const instruction = previewRepairInstruction(CRASH, 'runtime', '/pricing');
+
+    expect(instruction).toContain('/pricing');
+    expect(instruction).toContain(CRASH);
+  });
+
+  it('keeps the runtime framing rather than turning into a compile message', () => {
+    const instruction = previewRepairInstruction(CRASH, 'runtime', '/pricing');
+
+    expect(instruction).not.toMatch(/does not compile|fails to compile/i);
+    expect(instruction).toMatch(/always defined/i);
+  });
+
+  it('reads exactly as before when the frame could not say which page it was', () => {
+    expect(previewRepairInstruction(CRASH, 'runtime', undefined)).toBe(
+      previewRepairInstruction(CRASH, 'runtime'),
+    );
+  });
+
+  it('leaves a compile failure alone, where a route means nothing', () => {
+    expect(previewRepairInstruction(MISSING_EXPORT, 'code', '/pricing')).toBe(
+      previewRepairInstruction(MISSING_EXPORT, 'code'),
+    );
+  });
+});

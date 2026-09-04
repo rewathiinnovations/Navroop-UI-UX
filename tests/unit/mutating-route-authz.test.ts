@@ -206,6 +206,10 @@ const ROUTE_AUTHZ: Record<string, RouteAuthz> = {
     gate: 'owner',
     gateFile: 'lib/checkpoints/actions.ts',
   },
+  'POST /api/projects/:id/checkpoints/restore-working': {
+    gate: 'owner',
+    gateFile: 'lib/checkpoints/actions.ts',
+  },
   'POST /api/projects/:id/checkpoints/:checkpointId/bookmark': {
     gate: 'owner',
     gateFile: 'lib/checkpoints/actions.ts',

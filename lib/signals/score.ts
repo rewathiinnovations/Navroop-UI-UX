@@ -76,6 +76,59 @@ export const SIGNAL_DEFINITIONS: Record<QualitySignalKind, { label: string; defi
     },
   };
 
+/**
+ * Tool-refusal rates live in `QualitySignal` under their own kind namespace,
+ * deliberately outside `QUALITY_SIGNAL_KINDS`.
+ *
+ * Two reasons, and both are load-bearing. `QUALITY_SIGNAL_KINDS` is typed
+ * against `QUALITY_SCORE_WEIGHTS`, whose weights sum to 1 — a ninth member is a
+ * compile error until the other eight are re-argued, which is exactly the guard
+ * F-760 bought and not something a new observability reading should spend. And
+ * `value` here is a refusal *rate*, not a score: higher is worse, where every
+ * other kind in the table is a 0..1 goodness score. Folding these rows into the
+ * weighted composite would move the number an operator judges a prompt change by
+ * in the wrong direction.
+ *
+ * The tool name is in the kind rather than in `rawValue` so the per-tool mean
+ * falls out of the same `groupBy(['kind', 'promptVersion'])` the dashboard
+ * already runs, under the `@@index([kind, createdAt])` that already exists — no
+ * new query and no JSON-path filter. Per tool is the only honest granularity:
+ * `add_dependency` answering "that package is not available" is the write guard
+ * doing its job, while `edit_file` refusing means the model could not find the
+ * text it meant to change. A single blended rate averages a working guard into a
+ * defect count.
+ */
+export const TOOL_REFUSAL_KIND_PREFIX = 'tool_refusal_rate:';
+
+export function toolRefusalKind(tool: string) {
+  return `${TOOL_REFUSAL_KIND_PREFIX}${tool}`;
+}
+
+export function toolFromRefusalKind(kind: string): string | null {
+  if (!kind.startsWith(TOOL_REFUSAL_KIND_PREFIX)) return null;
+  const tool = kind.slice(TOOL_REFUSAL_KIND_PREFIX.length);
+  return tool.length > 0 ? tool : null;
+}
+
+/**
+ * The runtime-error count as a 0..1 goodness score.
+ *
+ * Deliberately NOT a member of `QUALITY_SIGNAL_KINDS`: that union is typed against
+ * `QUALITY_SCORE_WEIGHTS`, whose eight weights must sum to exactly 1, so admitting a ninth
+ * kind means re-arguing all eight. This kind is written, read and charted on its own — the
+ * same arrangement `TOOL_REFUSAL_KIND_PREFIX` above uses, and for the same reason.
+ *
+ * One error is most of the damage: a page that threw once is a page the visitor saw break.
+ * The curve is steep at the start and flat after four, because the difference between "broken"
+ * and "very broken" is not worth resolution the panel would then have to display.
+ */
+export const RUNTIME_ERRORS_KIND = 'runtime_errors';
+
+export function runtimeErrorScore(errors: number) {
+  if (errors <= 0) return 1;
+  return clamp01(1 / (1 + errors));
+}
+
 export function clamp01(value: number) {
   if (Number.isNaN(value)) return 0;
   return Math.min(1, Math.max(0, value));

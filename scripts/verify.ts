@@ -34,13 +34,22 @@ function runCommand(command: string) {
 
 function printSummary(result: VerifyRunResult) {
   console.log('');
-  console.log(result.mode === 'verify:full' ? 'verify:full' : 'verify');
+  console.log(result.mode);
   for (const line of result.summaryLines) {
     console.log(line);
   }
 }
 
-const mode = process.argv.includes('--full') || process.env.VERIFY_FULL === '1' ? 'verify:full' : 'verify';
+// `--light` is what .husky/pre-push passes: the fast fatal steps run here, the
+// slow half is deferred to CI, which runs the complete `verify` on the same push
+// (`.github/workflows/verify.yml`). `pnpm run verify` stays the full local gate,
+// and `--full` outranks `--light` if both are ever passed.
+const mode =
+  process.argv.includes('--full') || process.env.VERIFY_FULL === '1'
+    ? 'verify:full'
+    : process.argv.includes('--light') || process.env.VERIFY_LIGHT === '1'
+      ? 'verify:light'
+      : 'verify';
 const result = await runVerify({ mode, runCommand });
 printSummary(result);
 process.exit(result.ok ? 0 : 1);

@@ -14,6 +14,7 @@ import { AlertTriangle, Loader2, RefreshCw, Wand2 } from 'lucide-react';
 import { assemblePreview, previewFilesKey, type PreviewAssembly } from '@/lib/preview/assemble';
 import { bundlePreview } from '@/lib/preview/bundle';
 import { buildPreviewSrcdoc, PREVIEW_MESSAGE_SOURCE } from '@/lib/preview/html';
+import { inlineLoopbackAssets } from '@/lib/preview/inline-local-assets';
 import {
   explainPreviewError,
   pendingLocalModules,
@@ -46,7 +47,14 @@ export type PreviewState =
   | { status: 'bundling'; srcdoc?: string }
   | { status: 'running'; srcdoc: string }
   | { status: 'ready'; srcdoc: string }
-  | { status: 'error'; message: string; srcdoc?: string; kind?: PreviewErrorKind };
+  | {
+      status: 'error';
+      message: string;
+      srcdoc?: string;
+      kind?: PreviewErrorKind;
+      /** The route mounted when a runtime error fired, when the frame knew it. */
+      route?: string;
+    };
 
 /**
  * Which recovery a failure admits. Recompiling the same files can only fail the
@@ -66,6 +74,24 @@ export type PreviewStream = {
 
 /** A module that never loads fires no error anywhere; without this the frame hangs blank. */
 const READY_WATCHDOG_MS = 15_000;
+
+/**
+ * Automatic repairs allowed per mount.
+ *
+ * Each one is a generation, charged like any other message, so this is a spend
+ * ceiling as much as a loop guard. Two is enough for the classes worth healing
+ * without asking — an import that does not resolve, a component that throws on
+ * first render — and past that the failure is nearly always something a second
+ * identical attempt cannot move.
+ */
+const AUTO_FIX_LIMIT = 2;
+
+/**
+ * How long a failure has to persist before it is repaired unasked. Long enough
+ * that a frame still fetching its packages, or a rebuild about to replace the
+ * state entirely, is never mistaken for a settled fault.
+ */
+const AUTO_FIX_DELAY_MS = 1_500;
 
 /**
  * How long a burst of file completions has to go quiet before we rebuild.
@@ -123,8 +149,9 @@ export function previewError(
   prev: PreviewState,
   message: string,
   kind?: PreviewErrorKind,
+  route?: string,
 ): PreviewState {
-  return { status: 'error', message, srcdoc: srcdocOf(prev), kind };
+  return { status: 'error', message, srcdoc: srcdocOf(prev), kind, route };
 }
 
 /**
@@ -158,9 +185,9 @@ export function bundleFailureState(
 /** The failure the pane reports, with the recovery it can honestly offer. */
 export function errorBanner(
   state: PreviewState,
-): { message: string; kind: PreviewErrorKind } | null {
+): { message: string; kind: PreviewErrorKind; route?: string } | null {
   if (state.status !== 'error') return null;
-  return { message: state.message, kind: state.kind ?? 'code' };
+  return { message: state.message, kind: state.kind ?? 'code', route: state.route };
 }
 
 /**
@@ -205,6 +232,7 @@ function BrowserPreviewImpl({
   onStatusChange,
   onFrameMounted,
   onFixError,
+  autoFix = false,
 }: {
   stack: string;
   /** Files already persisted for the project; the base layer. */
@@ -239,7 +267,22 @@ function BrowserPreviewImpl({
    * differs: a runtime crash compiled fine, and telling the model to "fix the
    * code so it compiles" sent it looking for a build error that did not exist.
    */
-  onFixError?: (message: string, kind: PreviewErrorKind) => void;
+  onFixError?: (message: string, kind: PreviewErrorKind, route?: string) => void;
+  /**
+   * Repair a settled failure without waiting to be asked.
+   *
+   * The pane used to render a broken preview with a Fix this button beside it
+   * and stop there, so the first thing a person saw after a successful-looking
+   * build was an error and a chore. The caller passes `true` only when a repair
+   * is safe to spend: no generation in flight (mid-stream failures are normal
+   * and heal themselves as the next file lands) and the project is the user's
+   * to change.
+   *
+   * Bounded here rather than by the caller, because the bound has to survive the
+   * caller re-rendering: at most {@link AUTO_FIX_LIMIT} repairs per mount, never
+   * twice for the same message.
+   */
+  autoFix?: boolean;
 }) {
   const [state, setState] = useState<PreviewState>({ status: 'idle' });
   const [reloadToken, setReloadToken] = useState(0);
@@ -334,11 +377,23 @@ function BrowserPreviewImpl({
         setState((prev) => bundleFailureState(prev, result.error, streamActiveRef.current));
         return;
       }
+      // Localhost only, and only this app's own `/uploads/…`. Chrome's Private
+      // Network Access blocks a public-to-local subresource request, and an
+      // opaque-origin `srcdoc` counts as public — so on a development machine
+      // every generated site previewed with its photographs missing while the
+      // same URLs answered 200 in the tab. A `data:` URI has no address space.
+      // See lib/preview/inline-local-assets.ts.
+      const [code, css] = await inlineLoopbackAssets(
+        [result.code, result.css ?? ''],
+        typeof window === 'undefined' ? null : window.location.origin,
+      );
+      if (cancelled) return;
+
       setState({
         status: 'running',
         // The same `deps` the bundle resolved against: a document whose import map
         // is narrower than what compiled loads a module the frame cannot serve.
-        srcdoc: buildPreviewSrcdoc({ code: result.code, css: result.css, deps: settled.deps }),
+        srcdoc: buildPreviewSrcdoc({ code, css, deps: settled.deps }),
       });
     }
 
@@ -371,6 +426,7 @@ function BrowserPreviewImpl({
         type?: string;
         message?: string;
         stack?: string;
+        route?: string;
       } | null;
       if (!data || data.source !== PREVIEW_MESSAGE_SOURCE) return;
       if (data.type === 'ready') {
@@ -389,7 +445,11 @@ function BrowserPreviewImpl({
         const runtime = data.stack
           ? `${data.message || 'The preview hit a runtime error.'}\n\n${data.stack}`
           : data.message || 'The preview hit a runtime error.';
-        setState((prev) => previewError(prev, runtime, 'runtime'));
+        // The route travels beside the message rather than inside it, so the
+        // repair prompt can name the page while `healedRef` keeps keying on the
+        // message alone — a crash that recurs on a second page is the same
+        // defect, and spending a second attempt on it would be a billing loop.
+        setState((prev) => previewError(prev, runtime, 'runtime', data.route));
       }
     }
 
@@ -419,6 +479,41 @@ function BrowserPreviewImpl({
   const srcdoc = srcdocOf(state);
   const bundling = state.status === 'bundling';
   const banner = errorBanner(state);
+
+  /**
+   * Repair a settled failure without being asked.
+   *
+   * `healedRef` is keyed by the failure's own message, so a repair that does not
+   * work cannot be spent on the identical error twice — that is the difference
+   * between healing and a billing loop. The delay is what keeps a frame still
+   * fetching packages, or a rebuild one render away, out of the count.
+   */
+  const healedRef = useRef<{ seen: Set<string>; spent: number }>({ seen: new Set(), spent: 0 });
+  const [healing, setHealing] = useState(false);
+  // Re-read at fire time, not at schedule time. A build can start during the
+  // delay, and a repair sent into a running job is refused with "a build is
+  // already running on this project" — a spent attempt and a confusing line in
+  // the chat, for a failure the running build is probably about to replace.
+  const autoFixRef = useRef(autoFix);
+  useEffect(() => {
+    autoFixRef.current = autoFix;
+  });
+  useEffect(() => {
+    if (!autoFix || !banner || !onFixError) {
+      setHealing(false);
+      return;
+    }
+    const healed = healedRef.current;
+    if (healed.spent >= AUTO_FIX_LIMIT || healed.seen.has(banner.message)) return;
+    const timer = setTimeout(() => {
+      if (!autoFixRef.current) return;
+      healed.seen.add(banner.message);
+      healed.spent += 1;
+      setHealing(true);
+      onFixError(banner.message, banner.kind, banner.route);
+    }, AUTO_FIX_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [autoFix, banner, onFixError]);
 
   // The pane keeps the last good document mounted through a rebuild, a wait and
   // a recoverable error, so "is there a frame" is `srcdoc`, not `status`. The
@@ -489,6 +584,8 @@ function BrowserPreviewImpl({
             <PreviewErrorReport
               message={banner.message}
               kind={banner.kind}
+              route={banner.route}
+              healing={healing}
               onFix={onFixError}
               onReload={reload}
             />
@@ -504,6 +601,8 @@ function BrowserPreviewImpl({
             compact
             message={banner.message}
             kind={banner.kind}
+            route={banner.route}
+            healing={healing}
             onFix={onFixError}
             onReload={reload}
           />
@@ -549,15 +648,26 @@ function recoveryNote(kind: PreviewErrorKind, canFix: boolean): string {
 export function PreviewErrorReport({
   message,
   kind,
+  route,
   compact = false,
+  healing = false,
   onFix,
   onReload,
 }: {
   message: string;
   kind: PreviewErrorKind;
+  /** Passed through to `onFix` so the repair names the page that crashed. */
+  route?: string;
   /** Rendered over a working preview, so it has to stay small. */
   compact?: boolean;
-  onFix?: (message: string, kind: PreviewErrorKind) => void;
+  /**
+   * A repair is already running, unasked. The report still shows what broke —
+   * hiding it would make the pane look like it had simply hung — but it stops
+   * offering Fix this, because pressing it would spend a second generation on
+   * the failure already being worked on.
+   */
+  healing?: boolean;
+  onFix?: (message: string, kind: PreviewErrorKind, route?: string) => void;
   onReload: () => void;
 }) {
   const sentences = explainPreviewError(message);
@@ -599,31 +709,43 @@ export function PreviewErrorReport({
         <pre className={rawClassName}>{compilerOutput}</pre>
       )}
 
-      <div className="flex flex-wrap items-center gap-8">
-        {onFix ? (
+      {healing ? (
+        <div
+          data-preview-action="healing"
+          className="inline-flex w-fit items-center gap-6 rounded-full border border-[var(--studio-line)] px-14 py-8 text-[13px] font-medium text-[var(--studio-fg)]"
+        >
+          <Loader2 className="size-14 animate-spin motion-reduce:animate-none" />
+          Repairing this automatically
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-8">
+          {onFix ? (
+            <button
+              type="button"
+              data-preview-action="fix"
+              onClick={() => onFix(message, kind, route)}
+              className="inline-flex items-center gap-6 rounded-full [background-image:var(--studio-cta-gradient)] px-14 py-8 text-[13px] font-medium text-[var(--studio-cta-fg)] transition-[filter] hover:brightness-[1.07] motion-reduce:transition-none"
+            >
+              <Wand2 className="size-14" />
+              Fix this
+            </button>
+          ) : null}
           <button
             type="button"
-            data-preview-action="fix"
-            onClick={() => onFix(message, kind)}
-            className="inline-flex items-center gap-6 rounded-full [background-image:var(--studio-cta-gradient)] px-14 py-8 text-[13px] font-medium text-[var(--studio-cta-fg)] transition-[filter] hover:brightness-[1.07] motion-reduce:transition-none"
+            data-preview-action="reload"
+            onClick={onReload}
+            className="inline-flex items-center gap-6 rounded-full border border-[var(--studio-line)] px-14 py-8 text-[13px] font-medium text-[var(--studio-fg)] transition-colors hover:bg-[var(--studio-subtle)]"
           >
-            <Wand2 className="size-14" />
-            Fix this
+            <RefreshCw className="size-14" />
+            {kind === 'runtime' ? 'Try again' : 'Recompile'}
           </button>
-        ) : null}
-        <button
-          type="button"
-          data-preview-action="reload"
-          onClick={onReload}
-          className="inline-flex items-center gap-6 rounded-full border border-[var(--studio-line)] px-14 py-8 text-[13px] font-medium text-[var(--studio-fg)] transition-colors hover:bg-[var(--studio-subtle)]"
-        >
-          <RefreshCw className="size-14" />
-          {kind === 'runtime' ? 'Try again' : 'Recompile'}
-        </button>
-      </div>
+        </div>
+      )}
 
       <p className="text-[12px] leading-5 text-[var(--studio-muted)]">
-        {recoveryNote(kind, Boolean(onFix))}
+        {healing
+          ? 'The error was sent to the chat and a fix is being generated. It runs as its own generation and is charged like any other message.'
+          : recoveryNote(kind, Boolean(onFix))}
       </p>
     </div>
   );

@@ -23,6 +23,7 @@ import {
 import { startingGenerationFields } from '@/lib/generation/starting-progress';
 import GenerationCodeView from '@/components/workspace/GenerationCodeView';
 import CodeApplicationProgress from '@/components/CodeApplicationProgress';
+import { restoreLastWorkingCheckpoint } from '@/lib/checkpoints/client';
 import { persistProject } from '@/lib/projects/persist-client';
 import { decidePendingPromptAction } from '@/lib/projects/pending-prompt';
 import { projectDisplayName } from '@/lib/projects/prompt';
@@ -953,6 +954,33 @@ function AISandboxPage({
           `The build still fails after ${MAX_CLIENT_BUILD_FIX_PASSES} automatic fix attempts. No more generations were spent on it — describe what is wrong and I will try again.`,
           'system',
         );
+        // The loop is over and the site does not work. Left here, the project holds the last
+        // broken attempt — which on an edit to a working site is worse than what the person
+        // had before they typed anything: two billed repairs, and a site more broken than at
+        // the start. The server restores the most recent earlier version it can *prove* still
+        // builds, and does nothing when there is none, which is the ordinary case on a first
+        // build. Never a silent swap: whichever happens is said in the chat.
+        if (projectId) {
+          try {
+            const rescue = await restoreLastWorkingCheckpoint(projectId);
+            if (rescue.restored) {
+              addChatMessage(
+                `Put the site back to the last version that worked ("${rescue.restored.label}"), so you are not left with a broken preview. The failed attempts are still in your version history if you want to look at them.`,
+                'system',
+              );
+              // The restore rewrote the project's files server-side; the workspace is
+              // holding the pre-restore ones.
+              router.refresh();
+            } else if (rescue.reason === 'none-validated' || rescue.reason === 'no-candidates') {
+              addChatMessage(
+                'There is no earlier working version to go back to, so the current files are left as they are.',
+                'system',
+              );
+            }
+          } catch {
+            // A failed rescue must not replace the explanation the user already has above.
+          }
+        }
       } else if (buildFix?.instruction) {
         // Named as what it is: another generation, billed. The old line said only
         // "attempting an automatic fix", so a message that cost three credits

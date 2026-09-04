@@ -57,6 +57,11 @@ jobs:
       # sets CI: '1', which is the one condition .cursor/lessons-learned.md says never to
       # combine with `pnpm exec`'s dependency-status check.
       - run: node ./node_modules/prisma/build/index.js migrate deploy
+      # Plans + built-in templates, same as verify.yml: an unseeded application
+      # database 500s project creation and invites (`getEffectivePlan`) and hides
+      # the template journey's subject. Idempotent; no network; the admin/member
+      # halves no-op without SEED_ADMIN_* env.
+      - run: node ./node_modules/tsx/dist/cli.mjs prisma/seed.ts
       - run: node ./node_modules/playwright/cli.js install --with-deps chromium
       - run: pnpm run verify:full
       - name: Upload Playwright traces

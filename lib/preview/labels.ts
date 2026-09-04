@@ -194,14 +194,35 @@ export type PreviewErrorKind = 'code' | 'runtime';
  * undefined (reading 'map')` — code that compiled perfectly — the model went
  * looking for a build error, wrote one unrelated file, and the crash survived.
  */
-export function previewRepairInstruction(message: string, kind: PreviewErrorKind): string {
+export function previewRepairInstruction(
+  message: string,
+  kind: PreviewErrorKind,
+  /**
+   * The route mounted when the crash happened, from the preview's own router.
+   *
+   * A multi-page site posts the same bare message whichever page threw, so a
+   * crash on /pricing was repaired as if it had happened on the home page: the
+   * model was handed a stack of minified frames and no page to open, and came
+   * back with an edit that did not fix it. Naming the route costs one line and
+   * is the other half of the fix the stack started.
+   *
+   * The route is named, never a file path: `/product/abc` is rendered by
+   * `app/product/[slug]/page.tsx` and only the file map knows that, so guessing
+   * a path here would send the repair to a file that does not exist.
+   */
+  route?: string,
+): string {
   if (kind === 'runtime') {
     return [
-      'The site compiles, but the page crashes as soon as it runs:',
+      route
+        ? `The site compiles, but the page at ${route} crashes as soon as it runs:`
+        : 'The site compiles, but the page crashes as soon as it runs:',
       '',
       message,
       '',
-      'Find the code that throws this and fix it. If a list is being mapped over,',
+      route
+        ? `Open the page file that renders ${route}, find the code that throws this. If a list is being mapped over,`
+        : 'Find the code that throws this and fix it. If a list is being mapped over,',
       'make sure the data it reads is always defined when the component renders.',
       'Return the corrected files.',
     ].join('\n');

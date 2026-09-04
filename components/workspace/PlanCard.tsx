@@ -28,8 +28,11 @@ function EditablePlan({
 
   const save = () => {
     onSave({
-      summary,
+      // `route` rides along untouched: the editor does not offer it as a field,
+      // and dropping it here would silently turn an edited multi-page plan back
+      // into one the build is free to collapse onto a single page.
       pages: pages.filter((p) => p.name.trim() && p.description.trim()),
+      summary,
       keyFeatures: keyFeatures.filter((f) => f.trim()),
     });
   };
@@ -191,17 +194,38 @@ export default function PlanCard({
         </div>
 
         {editing && onUpdate ? (
-          <EditablePlan plan={plan} saving={saving ?? false} onSave={onUpdate} onCancel={onCancelEdit ?? (() => {})} />
+          <EditablePlan
+            plan={plan}
+            saving={saving ?? false}
+            onSave={onUpdate}
+            onCancel={onCancelEdit ?? (() => {})}
+          />
         ) : (
           <>
             <p
               className={cn(
                 'whitespace-pre-wrap text-[var(--studio-fg)]',
-                pending ? 'text-[13px] leading-5' : 'text-[12px] leading-5 text-[var(--studio-muted)]',
+                pending
+                  ? 'text-[13px] leading-5'
+                  : 'text-[12px] leading-5 text-[var(--studio-muted)]',
               )}
             >
               {plan.content.summary}
             </p>
+
+            {plan.content.designVision ? (
+              <section className={cn(pending ? 'mt-14' : 'mt-10')}>
+                <h4 className="mb-6 text-[11px] font-medium uppercase tracking-wide text-[var(--studio-faint)]">
+                  Design vision
+                </h4>
+                {/* Shown before the pages because it is approved along with them:
+                    the build treats it as a contract, so the person approving
+                    should see exactly what look they are signing off on. */}
+                <p className="whitespace-pre-wrap text-[12px] leading-5 text-[var(--studio-muted)]">
+                  {plan.content.designVision}
+                </p>
+              </section>
+            ) : null}
 
             <section className={cn(pending ? 'mt-14' : 'mt-10')}>
               <h4 className="mb-6 text-[11px] font-medium uppercase tracking-wide text-[var(--studio-faint)]">
@@ -210,10 +234,26 @@ export default function PlanCard({
               <ul className="space-y-8">
                 {plan.content.pages.map((page) => (
                   <li key={`${page.name}-${page.description}`}>
-                    <p className={cn('font-medium text-[var(--studio-fg)]', pending ? 'text-[13px]' : 'text-[12px]')}>
+                    <p
+                      className={cn(
+                        'flex flex-wrap items-baseline gap-6 font-medium text-[var(--studio-fg)]',
+                        pending ? 'text-[13px]' : 'text-[12px]',
+                      )}
+                    >
                       {page.name}
+                      {/* The route is the contract the build has to satisfy — a
+                          nav link to a page nobody wrote is the failure a visitor
+                          meets first — so it is shown, not hidden in the JSON.
+                          Absent on plans written before routes existed. */}
+                      {page.route ? (
+                        <code className="rounded-6 bg-[var(--studio-subtle)] px-6 py-1 text-[11px] font-normal text-[var(--studio-muted)]">
+                          {page.route}
+                        </code>
+                      ) : null}
                     </p>
-                    <p className="text-[12px] leading-5 text-[var(--studio-muted)]">{page.description}</p>
+                    <p className="text-[12px] leading-5 text-[var(--studio-muted)]">
+                      {page.description}
+                    </p>
                   </li>
                 ))}
               </ul>

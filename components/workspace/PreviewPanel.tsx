@@ -38,6 +38,7 @@ export default function PreviewPanel({
   planApproved = false,
   previewing = false,
   previewingLabel = null,
+  heldBackLabel = null,
   onExitPreview,
   previewKind = 'static',
   preparingPreview = false,
@@ -60,6 +61,15 @@ export default function PreviewPanel({
   previewing?: boolean;
   /** `v3`, when the version being previewed is known. Names it in the banner (F-102). */
   previewingLabel?: string | null;
+  /**
+   * The version on screen because the newest one does not build, e.g. `v7`.
+   *
+   * Distinct from {@link previewingLabel}: that one is a version the reader chose and can
+   * leave, this one is the product refusing to render what they just asked for. There is no
+   * "back to current" here on purpose — current is broken, and offering a button that puts a
+   * non-working site on screen would be an affordance for making things worse.
+   */
+  heldBackLabel?: string | null;
   onExitPreview?: () => void;
   previewKind?: 'static' | 'live';
   preparingPreview?: boolean;
@@ -132,6 +142,24 @@ export default function PreviewPanel({
        * stayed on the old version. It names the version because "an older version" left the
        * reader with no way to tell which, and no way back except guessing.
        */}
+      {/*
+       * The repair loop writes every failed attempt into `Project.lastCode`, so without the
+       * server-side hold-back this pane would compile the broken one and show it. It holds
+       * the last version proven to build instead — and says so, because a site that silently
+       * lacks the change someone just asked for reads as the request having been ignored.
+       * Only ever visible when the server actually substituted a version: the banner is
+       * driven by `heldBack` on the files response, never by a local guess about the build.
+       */}
+      {!previewing && heldBackLabel && (
+        <div
+          role="status"
+          className="flex items-center gap-12 border-b border-amber-500/25 bg-amber-500/10 px-16 py-8"
+        >
+          <p className="text-[13px] font-medium text-amber-800 dark:text-amber-300">
+            {`The newest version does not build, so ${heldBackLabel} — the last one that did — is on screen. Your files are all still in version history.`}
+          </p>
+        </div>
+      )}
       {previewing && (
         <div
           role="status"

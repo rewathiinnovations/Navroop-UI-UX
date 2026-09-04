@@ -18,20 +18,30 @@
  * and compare the pass rate with the last recorded baseline.
  *
  * Results are written to `tmp/eval/<ISO timestamp>.json` (gitignored) alongside a
- * printed table. The JSON carries every case's files, tokens and failures, so a
- * regression can be read after the fact rather than re-run.
+ * printed table. The JSON carries every case's files, tokens, tool outcomes and
+ * failures, so a regression can be read after the fact rather than re-run — and
+ * each run is diffed against the most recent earlier run of the same model, so the
+ * output says what *changed* rather than only what happened.
  *
  * The provider is resolved exactly as generation resolves it — the effective-env
  * overlay, the provider chain, the chat-completions model — so a score here is
- * about the configured deployment, not about DeepSeek in general.
+ * about the configured deployment, not about DeepSeek in general. `--all-models`
+ * (or `--models=a,b`) repeats the case set across the offered models and prints
+ * them side by side; it multiplies the bill by the number of models, which is why
+ * a bare `--live` still runs the configured one alone.
  */
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { config } from 'dotenv';
 import { generateText, stepCountIs } from 'ai';
 import { chatModelForEntry, thinkingEnabledFromEnv } from '../lib/ai/client-for-entry';
 import { loadEffectiveProviderEnv } from '../lib/ai/effective-env';
-import { loadProviderChain, type ProviderEntry } from '../lib/ai/providers';
+import {
+  DEEPSEEK_MODELS,
+  loadProviderChain,
+  modelSupportsTools,
+  type ProviderEntry,
+} from '../lib/ai/providers';
 import { temperatureForModel } from '../lib/ai/temperature';
 import { buildCachedMessages } from '../lib/generation/prompt-cache';
 import { buildGenerationTools } from '../lib/generation/tools';
@@ -42,6 +52,23 @@ import { isStackId, type StackId } from '../lib/stacks';
 import { withStarterFiles } from '../lib/stacks/starter';
 import { checkBuild } from '../lib/validation/build-check';
 import { prisma } from '../lib/db';
+import {
+  ALL_MODELS_FLAG,
+  MODELS_FLAG,
+  diffVerdicts,
+  emptyToolTally,
+  formatToolTally,
+  mergeToolTallies,
+  modelsForRun,
+  parseRunFile,
+  priorRunFilesNewestFirst,
+  renderModelMatrix,
+  tallyToolOutcomes,
+  type BaselineDiff,
+  type BaselineRun,
+  type RunVerdict,
+  type ToolTally,
+} from './eval-report';
 
 config({ path: '.env' });
 config({ path: '.env.local', override: true });
@@ -92,6 +119,15 @@ type CaseResult = {
   durationMs: number;
   reply: string;
   error: string | null;
+  /**
+   * Every tool the model called, by tool and by outcome.
+   *
+   * A pass/fail plus a file count cannot distinguish a run that wrote four files
+   * in four clean steps from one that spent half its step budget being refused,
+   * and the refusals are the half a prompt or a tolerance change can move. This
+   * is the instrument that decides whether such a change was worth shipping.
+   */
+  tools: ToolTally;
 };
 
 function readCases(): EvalCase[] {
@@ -173,13 +209,28 @@ async function runCase(
     durationMs: 0,
     reply: '',
     error: null,
+    tools: emptyToolTally(),
   };
+
+  // Only the outcome of each tool result is kept. A successful write carries the
+  // complete file on `content`, and holding twelve cases' worth of those to count
+  // them would be pure waste — the store already has the files.
+  const toolResults: { tool: string; ok: boolean }[] = [];
 
   try {
     const result = await generateText({
       model: chatModelForEntry(entry, providerEnv, entry.model),
       messages: buildCachedMessages({ stablePrefix, volatileUser }),
-      tools: buildGenerationTools({ store, notify: () => {} }),
+      // `notify: () => {}` here until 2026-08-29, which is why nothing could see a
+      // refused `edit_file`: the tools *return* their refusals rather than throwing,
+      // so a run that burned half its step budget on "search appears 3 times" scored
+      // exactly like one that never missed.
+      tools: buildGenerationTools({
+        store,
+        notify: (event) => {
+          if (event.phase === 'result') toolResults.push({ tool: event.tool, ok: event.ok });
+        },
+      }),
       toolChoice: 'auto',
       stopWhen: stepCountIs(MAX_STEPS),
       maxOutputTokens: MAX_OUTPUT_TOKENS,
@@ -190,9 +241,26 @@ async function runCase(
     base.reply = result.text ?? '';
     base.tokensIn = result.totalUsage?.inputTokens ?? 0;
     base.tokensOut = result.totalUsage?.outputTokens ?? 0;
+    base.tools = tallyToolOutcomes({
+      // The SDK's own list of what the model asked for, which includes a call whose
+      // arguments failed schema validation — that one never reaches `execute` and so
+      // never appears among `toolResults`, and it is exactly the failure a
+      // tool-surface change is most likely to introduce.
+      // Defensive for the same reason every read beside it is: a throw here would be
+      // caught below and recorded as `passed: false` with a provider error, turning a
+      // generation that actually succeeded into a failed case — and the pass rate this
+      // harness exists to measure is the one number that must never lie quietly.
+      calls: (result.steps ?? []).flatMap((step) =>
+        (step.toolCalls ?? []).map((call) => call.toolName),
+      ),
+      results: toolResults,
+    });
   } catch (error) {
     base.error = error instanceof Error ? error.message : String(error);
     base.failures.push(`provider: ${base.error}`);
+    // A provider blow-up mid-run still made tool calls, and what it managed before
+    // dying is the evidence for whether the failure was the tool surface's fault.
+    base.tools = tallyToolOutcomes({ calls: [], results: toolResults });
     base.durationMs = Date.now() - startedAt;
     return base;
   }
@@ -247,32 +315,78 @@ function pad(value: string, width: number): string {
   return value.length >= width ? value.slice(0, width) : value.padEnd(width);
 }
 
-async function main() {
-  const argv = process.argv.slice(2);
-  if (!argv.includes('--live')) {
-    console.error('This spends real tokens: twelve generations against the configured provider.');
-    console.error('Re-run with --live when you mean it:');
-    console.error('  node ./node_modules/tsx/dist/cli.mjs scripts/eval-prompts.ts --live');
-    process.exitCode = 1;
-    return;
+/** Every run this harness has ever written. Gitignored, and the only history there is. */
+const EVAL_DIR = join('tmp', 'eval');
+
+/**
+ * The most recent earlier run of the same model, or `null` before there is one.
+ *
+ * Keyed on the model rather than simply taking the newest file, because a sweep
+ * writes one file per model within the same second and diffing Pro against Flash
+ * would report every difference between two *models* as a change in the prompt.
+ *
+ * Read newest-first and stopped at the first match, so the usual cost is one file.
+ * A file that will not parse is skipped rather than fatal: an interrupted run leaves
+ * a truncated one behind, and losing the comparison is no reason to lose the run.
+ */
+function findBaseline(model: string, written: readonly string[]): BaselineRun | null {
+  let names: string[];
+  try {
+    names = readdirSync(EVAL_DIR);
+  } catch {
+    return null;
   }
-
-  const cases = readCases();
-  // No user: the admin/env overlay only, which is what a cron-driven generation
-  // would resolve to as well.
-  const providerEnv = await loadEffectiveProviderEnv(null);
-  const [entry] = loadProviderChain(providerEnv, {});
-  if (!entry) {
-    console.error('No provider is configured (no DeepSeek API key). Nothing to evaluate.');
-    process.exitCode = 1;
-    return;
+  for (const name of priorRunFilesNewestFirst(names, written)) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readFileSync(join(EVAL_DIR, name), 'utf8'));
+    } catch {
+      continue;
+    }
+    const run = parseRunFile(name, parsed);
+    if (run && run.model === model) return run;
   }
+  return null;
+}
 
-  console.log(`model: ${entry.model}`);
-  console.log(`thinking: ${thinkingEnabledFromEnv(providerEnv) ? 'enabled' : 'disabled'}`);
-  console.log(`cases: ${cases.length}`);
-  console.log('');
+function listing(ids: readonly string[]): string {
+  return ids.length > 0 ? `: ${ids.join(', ')}` : '';
+}
 
+function printBaselineDiff(
+  baseline: BaselineRun | null,
+  results: readonly CaseResult[],
+): BaselineDiff | null {
+  if (!baseline) {
+    console.log('baseline: no earlier run of this model in tmp/eval — this run becomes it.');
+    return null;
+  }
+  const diff = diffVerdicts(
+    baseline.verdicts,
+    results.map((result) => ({ id: result.id, passed: result.passed })),
+  );
+  const when = baseline.at ? ` at ${baseline.at}` : '';
+  console.log(`baseline: ${baseline.file} — ${baseline.passed}/${baseline.total}${when}`);
+  console.log(`  newly passing (${diff.newlyPassing.length})${listing(diff.newlyPassing)}`);
+  console.log(`  newly failing (${diff.newlyFailing.length})${listing(diff.newlyFailing)}`);
+  console.log(
+    `  unchanged: ${diff.unchangedPassing.length} passing, ${diff.unchangedFailing.length} failing`,
+  );
+  if (diff.added.length > 0) {
+    console.log(`  not in the baseline (${diff.added.length})${listing(diff.added)}`);
+  }
+  if (diff.removed.length > 0) {
+    console.log(`  absent from this run (${diff.removed.length})${listing(diff.removed)}`);
+  }
+  return diff;
+}
+
+/** The whole case set against one model, printed as it goes. */
+async function runModel(
+  entry: ProviderEntry,
+  providerEnv: Record<string, string | undefined>,
+  cases: readonly EvalCase[],
+): Promise<CaseResult[]> {
   const results: CaseResult[] = [];
   for (const testCase of cases) {
     process.stdout.write(`${pad(testCase.id, 26)} `);
@@ -282,39 +396,154 @@ async function main() {
       `${result.passed ? 'PASS' : 'FAIL'}  ${pad(`${result.fileCount} files`, 10)} ${pad(result.buildStatus, 14)} ${result.tokensOut} out`,
     );
     for (const failure of result.failures) console.log(`${' '.repeat(27)}- ${failure}`);
+    const tools = formatToolTally(result.tools);
+    if (tools) console.log(`${' '.repeat(27)}${tools}`);
+  }
+  return results;
+}
+
+async function main() {
+  const argv = process.argv.slice(2);
+  if (!argv.includes('--live')) {
+    console.error('This spends real tokens: twelve generations against the configured provider.');
+    console.error('Re-run with --live when you mean it:');
+    console.error('  node ./node_modules/tsx/dist/cli.mjs scripts/eval-prompts.ts --live');
+    console.error(
+      `Add ${ALL_MODELS_FLAG} (or ${MODELS_FLAG}<id>,<id>) to repeat the set per model — one bill per model.`,
+    );
+    process.exitCode = 1;
+    return;
   }
 
-  const passed = results.filter((result) => result.passed).length;
-  const tokensIn = results.reduce((sum, result) => sum + result.tokensIn, 0);
-  const tokensOut = results.reduce((sum, result) => sum + result.tokensOut, 0);
-  const rate = results.length > 0 ? Math.round((passed / results.length) * 100) : 0;
+  const cases = readCases();
+  // No user: the admin/env overlay only, which is what a cron-driven generation
+  // would resolve to as well.
+  const providerEnv = await loadEffectiveProviderEnv(null);
+  const [configured] = loadProviderChain(providerEnv, {});
+  if (!configured) {
+    console.error('No provider is configured (no DeepSeek API key). Nothing to evaluate.');
+    process.exitCode = 1;
+    return;
+  }
 
+  // An unprobed model is kept out of a sweep: `modelSupportsTools` answers false for
+  // anything nobody has measured, and a model that cannot call a tool would produce
+  // twelve empty projects and read as a catastrophic prompt regression rather than
+  // as the capability gap it is.
+  const selection = modelsForRun(argv, {
+    configured: configured.model,
+    offered: DEEPSEEK_MODELS.map((row) => row.id).filter((id) => modelSupportsTools(id)),
+  });
+  if (selection.unknown.length > 0) {
+    console.error(`Not an available model: ${selection.unknown.join(', ')}.`);
+    console.error(`Choose from: ${DEEPSEEK_MODELS.map((row) => row.id).join(', ')}.`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const thinking = thinkingEnabledFromEnv(providerEnv);
+  const sweep = selection.models.length > 1;
+  if (sweep) {
+    console.log(`models: ${selection.models.join(', ')}`);
+    console.log(`thinking: ${thinking ? 'enabled' : 'disabled'}`);
+    console.log(
+      `cases: ${cases.length} x ${selection.models.length} models = ${cases.length * selection.models.length} generations`,
+    );
+  } else {
+    console.log(`model: ${selection.models[0]}`);
+    console.log(`thinking: ${thinking ? 'enabled' : 'disabled'}`);
+    console.log(`cases: ${cases.length}`);
+  }
   console.log('');
-  console.log(`pass rate: ${passed}/${results.length} (${rate}%)`);
-  console.log(`tokens: ${tokensIn} in, ${tokensOut} out`);
 
+  // One stamp for the whole sweep, so every file a run produced sorts together.
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const outPath = join('tmp', 'eval', `${stamp}.json`);
-  mkdirSync(dirname(outPath), { recursive: true });
-  writeFileSync(
-    outPath,
-    `${JSON.stringify(
-      {
-        at: new Date().toISOString(),
-        model: entry.model,
-        thinking: thinkingEnabledFromEnv(providerEnv),
-        passed,
-        total: results.length,
-        rate,
-        tokensIn,
-        tokensOut,
-        results,
-      },
-      null,
-      2,
-    )}\n`,
-  );
-  console.log(`written: ${outPath}`);
+  const written: string[] = [];
+  const runs: { model: string; verdicts: RunVerdict[] }[] = [];
+
+  for (const model of selection.models) {
+    // The configured entry is reused rather than re-resolved, because `resolveModel`
+    // passes `AI_PRIMARY_MODEL` through without checking it against `DEEPSEEK_MODELS`
+    // — a deployment may legally be running an id `requestedModel` would refuse.
+    const entry =
+      model === configured.model
+        ? configured
+        : loadProviderChain(providerEnv, { requestedModel: model })[0];
+    // A sweep is paid for model by model, so an unresolvable id must not throw after the
+    // earlier models have already been billed. `noUncheckedIndexedAccess` is off, so the
+    // empty chain types as an entry and only fails on the first property read.
+    if (!entry) {
+      console.log(`--- ${model} --- skipped: no provider chain resolves this model`);
+      continue;
+    }
+
+    if (sweep) console.log(`--- ${model} ---`);
+    const results = await runModel(entry, providerEnv, cases);
+
+    const passed = results.filter((result) => result.passed).length;
+    const tokensIn = results.reduce((sum, result) => sum + result.tokensIn, 0);
+    const tokensOut = results.reduce((sum, result) => sum + result.tokensOut, 0);
+    const rate = results.length > 0 ? Math.round((passed / results.length) * 100) : 0;
+    const toolTotals = mergeToolTallies(results.map((result) => result.tools));
+
+    console.log('');
+    console.log(`pass rate: ${passed}/${results.length} (${rate}%)`);
+    console.log(`tokens: ${tokensIn} in, ${tokensOut} out`);
+    const tools = formatToolTally(toolTotals);
+    if (tools) console.log(`tools: ${tools}`);
+
+    // Looked up before the write, so this run's own file cannot become its baseline.
+    const baseline = findBaseline(entry.model, written);
+    const diff = printBaselineDiff(baseline, results);
+
+    // One file per model, in the one shape every earlier run was written in — the
+    // 2026-08-27 baseline included, which is what keeps it readable by `parseRunFile`
+    // and therefore still comparable. The name only carries the model when a sweep
+    // would otherwise write several files under one stamp.
+    const outName = sweep ? `${stamp}--${entry.model}.json` : `${stamp}.json`;
+    const outPath = join(EVAL_DIR, outName);
+    mkdirSync(dirname(outPath), { recursive: true });
+    writeFileSync(
+      outPath,
+      `${JSON.stringify(
+        {
+          at: new Date().toISOString(),
+          model: entry.model,
+          thinking,
+          passed,
+          total: results.length,
+          rate,
+          tokensIn,
+          tokensOut,
+          tools: toolTotals,
+          baseline: baseline
+            ? {
+                file: baseline.file,
+                at: baseline.at,
+                passed: baseline.passed,
+                total: baseline.total,
+                diff,
+              }
+            : null,
+          results,
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    written.push(outName);
+    console.log(`written: ${outPath}`);
+    if (sweep) console.log('');
+
+    runs.push({
+      model: entry.model,
+      verdicts: results.map((result) => ({ id: result.id, passed: result.passed })),
+    });
+  }
+
+  if (runs.length > 1) {
+    for (const line of renderModelMatrix(runs)) console.log(line);
+  }
 }
 
 main()

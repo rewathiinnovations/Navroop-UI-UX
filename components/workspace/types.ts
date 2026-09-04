@@ -221,7 +221,14 @@ export type PlanTrigger = 'initial' | 'followup';
 
 export type WorkspacePlanContent = {
   summary: string;
-  pages: { name: string; description: string }[];
+  /** The plan's committed spend of the design direction. Absent on older plans. */
+  designVision?: string;
+  /**
+   * `route` is optional: plans stored before multi-page planning existed have no
+   * route, and they still have to open. Present, it is the URL the build must
+   * produce a page file for — see `lib/projects/plan.ts`.
+   */
+  pages: { name: string; route?: string; description: string }[];
   keyFeatures: string[];
 };
 
@@ -250,13 +257,21 @@ export function parsePlanContent(value: unknown): WorkspacePlanContent | null {
     if (!page || typeof page !== 'object') return [];
     const item = page as Record<string, unknown>;
     if (typeof item.name !== 'string' || typeof item.description !== 'string') return [];
-    return [{ name: item.name, description: item.description }];
+    // Carried through rather than dropped: an editor that saves a plan without
+    // its routes silently turns a multi-page plan back into one the build is
+    // free to collapse onto a single page.
+    const route = typeof item.route === 'string' && item.route.trim() ? item.route : undefined;
+    return [{ name: item.name, route, description: item.description }];
   });
   const keyFeatures = raw.keyFeatures.filter(
     (item): item is string => typeof item === 'string' && Boolean(item.trim()),
   );
   if (pages.length === 0 || keyFeatures.length === 0) return null;
-  return { summary: raw.summary, pages, keyFeatures };
+  // Carried through, not re-validated: dropping it on an edit save would strip
+  // the approved vision from the very plan the build is about to spend.
+  const designVision =
+    typeof raw.designVision === 'string' && raw.designVision.trim() ? raw.designVision : undefined;
+  return { summary: raw.summary, designVision, pages, keyFeatures };
 }
 
 /** Accepts the Prisma `Date`, a serialised ISO string, or neither. */

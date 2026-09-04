@@ -98,6 +98,10 @@ const PREVIEW_ASSEMBLY_MODULES = [
   'lib/preview/labels.ts',
   'lib/preview/deps.ts',
   'lib/stacks/templates/starter-kit.ts',
+  // The section layer the starter kit emits. Component source strings only —
+  // the same weight and the same kind of content as the primitives beside them,
+  // and the preview must ship them for a page that composes a section to render.
+  'lib/stacks/templates/sections.ts',
   'lib/design/tailwind-theme.ts',
   // residual — see above
   'lib/design/directions.ts',

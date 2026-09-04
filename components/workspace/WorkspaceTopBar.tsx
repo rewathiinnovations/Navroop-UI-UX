@@ -38,10 +38,10 @@ import {
   formatPreviewSize,
   getPreviewDevice,
   openPreviewWindow,
+  PREVIEW_NEW_TAB_REQUIRES_ORIGIN,
   rotateDeviceSize,
   type PreviewDeviceKey,
 } from '@/lib/preview/devices';
-import { canOpenPreviewInNewTab, resolveNewTabPreviewHref } from '@/lib/preview/public-view';
 import { useDisclosurePopover } from '@/hooks/useDisclosurePopover';
 import { type Checkpoint, type SaveStatus, type WorkspacePage, type WorkspaceView } from './types';
 import PresenceAvatars from './PresenceAvatars';
@@ -135,7 +135,7 @@ export default function WorkspaceTopBar({
   onRefresh,
   onShare,
   previewUrl = null,
-  onMintPreviewUrl,
+  previewOriginConfigured = true,
   previewDevice = 'desktop',
   previewRotated = false,
   onPreviewDeviceChange,
@@ -168,8 +168,7 @@ export default function WorkspaceTopBar({
   onRefresh: () => void;
   onShare?: () => void;
   previewUrl?: string | null;
-  /** POST /preview action:token — used when GET has not minted a new-tab href yet. */
-  onMintPreviewUrl?: () => Promise<string | null>;
+  previewOriginConfigured?: boolean;
   previewDevice?: PreviewDeviceKey;
   previewRotated?: boolean;
   onPreviewDeviceChange?: (key: PreviewDeviceKey) => void;
@@ -197,7 +196,6 @@ export default function WorkspaceTopBar({
   const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportHint, setExportHint] = useState<string | null>(null);
-  const [openingPreview, setOpeningPreview] = useState(false);
   const [compactPreview, setCompactPreview] = useState(false);
   const [compactActions, setCompactActions] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
@@ -248,7 +246,6 @@ export default function WorkspaceTopBar({
   };
 
   const status = saveLabel(saveState, updatedAt, hasStoredFiles, filesKnown);
-  const canOpenNewTab = canOpenPreviewInNewTab({ hasStoredFiles, previewUrl });
 
   return (
     <>
@@ -413,23 +410,14 @@ export default function WorkspaceTopBar({
             </button>
           </Hint>
           <div className="inline-flex items-center">
-            <Hint label={canOpenNewTab ? 'Open in new tab' : 'Nothing to preview yet'}>
+            <Hint
+              label={previewOriginConfigured ? 'Open in new tab' : PREVIEW_NEW_TAB_REQUIRES_ORIGIN}
+            >
               <button
                 type="button"
-                disabled={!canOpenNewTab || openingPreview}
-                title={canOpenNewTab ? undefined : 'Nothing to preview yet'}
-                onClick={() => {
-                  if (!projectId || !canOpenNewTab || openingPreview) return;
-                  setOpeningPreview(true);
-                  void resolveNewTabPreviewHref({
-                    previewUrl,
-                    mint: onMintPreviewUrl,
-                  })
-                    .then((href) => {
-                      if (href) openPreviewWindow(href, projectId);
-                    })
-                    .finally(() => setOpeningPreview(false));
-                }}
+                disabled={!previewUrl || !previewOriginConfigured}
+                title={previewOriginConfigured ? undefined : PREVIEW_NEW_TAB_REQUIRES_ORIGIN}
+                onClick={() => previewUrl && projectId && openPreviewWindow(previewUrl, projectId)}
                 aria-label="Open in new tab"
                 className={ICON_BTN}
               >

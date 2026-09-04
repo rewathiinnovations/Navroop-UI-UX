@@ -103,6 +103,13 @@ export const STREAM_REJECTED_FILES_MESSAGE =
   'The AI finished without producing any files we could save — every file it sent was rejected (too large, unreadable, or unsafe). Try again.';
 
 /**
+ * The all-refused failure when every refusal was an import of a section the kit does not
+ * ship. Its own class because the generic copy names three causes, none of which is this one.
+ */
+export const STREAM_REJECTED_SECTIONS_MESSAGE =
+  'The AI finished without producing any files we could save — every page it wrote was built from a section the kit does not have. Try again.';
+
+/**
  * Last line of defence: no file is stored with a raw `NEED_IMAGE: …` sitting
  * in a `src`. Fulfilment only sees the files a run rewrote, so a token in an
  * untouched file — written before fulfilment worked, or left when an image
@@ -432,6 +439,19 @@ export async function writeMergedSite(
    * files that the import is supposed to replace.
    */
   mode: 'merge' | 'replace' = 'merge',
+  /**
+   * What the build validators said about the files being written: `true` passed, `false`
+   * failed, `null` nobody asked.
+   *
+   * It rides in this statement rather than a follow-up UPDATE because it is a claim *about
+   * these bytes*. A second write could land after another writer had already replaced the
+   * site, and the row would then carry a verdict belonging to code it no longer holds —
+   * which is worse than no verdict at all, because the read path trusts it.
+   *
+   * `null` is the honest default for every caller that is not a generation (an import, a
+   * restore): a site nothing checked is not evidence, and the read path treats it as such.
+   */
+  validated: boolean | null = null,
 ): Promise<void> {
   let base = seen;
   for (let attempt = 0; attempt < MAX_SITE_WRITE_ATTEMPTS; attempt += 1) {
@@ -443,6 +463,7 @@ export async function writeMergedSite(
       data: {
         lastCode: toLastCode(merged),
         contentVersion: { increment: 1 },
+        lastCodeValidated: validated,
         // Files present is the whole condition for reaching this write, so the site is
         // finished — COMPLETE is always correct here.
         phase: 'COMPLETE',
@@ -495,6 +516,15 @@ export type StreamSettleInput = {
   noChangeReason?: string | null;
   /** Initial build produced files that can't render on the project's stack. */
   stackMismatchReason?: string | null;
+  /**
+   * The build validators' verdict on the files this turn produced, stored alongside them.
+   *
+   * The caller has already run them — it needs the answer to decide whether to offer a
+   * repair pass — so re-running here would pay for the same compile twice. Undefined and
+   * `null` both mean "not checked", which is what a caller that skipped validation (zero
+   * files, a stack with no module graph) should record.
+   */
+  validated?: boolean | null;
   tokensIn?: number;
   tokensOut?: number;
   estimatedCostUsd?: number | null;
@@ -625,9 +655,18 @@ export async function settleStreamedGeneration(
     // reported as an "unsafe path" the user can never find.
     if (Object.keys(streamedFiles).length === 0) {
       const allPathRefusals = rejected.every((file) => PATH_REJECTION_CODES[file.code]);
-      const errorMessage = allPathRefusals
-        ? STREAM_REJECTED_PATHS_MESSAGE
-        : STREAM_REJECTED_FILES_MESSAGE;
+      // A third case, because neither of the other two describes it. "Too large, unreadable,
+      // or unsafe" sends the user looking for an oversized or corrupt file that does not
+      // exist, when what actually happened is that every page imported a section the kit
+      // does not ship — which the per-file refusal already explains, and which the frame
+      // above it was contradicting.
+      const allUnknownSections =
+        rejected.length > 0 && rejected.every((file) => file.code === 'unknown_section');
+      const errorMessage = allUnknownSections
+        ? STREAM_REJECTED_SECTIONS_MESSAGE
+        : allPathRefusals
+          ? STREAM_REJECTED_PATHS_MESSAGE
+          : STREAM_REJECTED_FILES_MESSAGE;
       await failJob(job.id, {
         errorCode: 'no_files_generated',
         errorMessage,
@@ -672,6 +711,8 @@ export async function settleStreamedGeneration(
         contentVersion: project?.contentVersion ?? 0,
       },
       deletedPaths,
+      'merge',
+      input.validated ?? null,
     );
     hasSite = true;
     // The merged-site write is the step that turns a stream into the product, and it

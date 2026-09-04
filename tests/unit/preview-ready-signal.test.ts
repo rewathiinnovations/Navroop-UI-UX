@@ -83,10 +83,10 @@ describe('a blocked Tailwind CDN stays a styling problem', () => {
   });
 
   it('still configures the CDN when it did load', () => {
-    const applied = new Function(
-      'tailwind',
-      `${configScript}\nreturn tailwind.config;`,
-    )({}) as { darkMode?: string; theme?: unknown } | null;
+    const applied = new Function('tailwind', `${configScript}\nreturn tailwind.config;`)({}) as {
+      darkMode?: string;
+      theme?: unknown;
+    } | null;
     expect(applied?.darkMode).toBe('class');
     expect(applied?.theme).toBeTruthy();
   });
@@ -97,5 +97,31 @@ describe('a blocked Tailwind CDN stays a styling problem', () => {
     expect(bridgeAt).toBeLessThan(srcdoc.indexOf('cdn.tailwindcss.com'));
     expect(bridgeAt).toBeLessThan(srcdoc.indexOf('tailwind.config'));
     expect(bridgeAt).toBeLessThan(srcdoc.indexOf('id="__preview-app"'));
+  });
+});
+
+/**
+ * The bridge reports which page threw.
+ *
+ * Asserted on the emitted document because the bridge is source text in a
+ * sandboxed frame — there is no module to import and no way to call it from a
+ * test. The router shim publishes `window.__previewRoute`; the bridge must read
+ * it defensively, because a crash early enough that the shim never ran is
+ * exactly the case where an exception inside the bridge would swallow the
+ * error entirely.
+ */
+describe('the error bridge reports the mounted route', () => {
+  const srcdoc = buildPreviewSrcdoc({ code: 'console.log(1);' });
+
+  it('sends the route with an uncaught error and a rejected promise alike', () => {
+    expect(srcdoc.split('route: ROUTE()').length - 1).toBe(2);
+  });
+
+  it('reads the router shim rather than assuming one is there', () => {
+    expect(srcdoc).toContain('typeof window.__previewRoute !== "function"');
+  });
+
+  it('caps the value, because it crosses a sandbox boundary into a prompt', () => {
+    expect(srcdoc).toMatch(/value\.slice\(0, 200\)/);
   });
 });

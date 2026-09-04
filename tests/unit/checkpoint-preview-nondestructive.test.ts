@@ -39,7 +39,13 @@ const db = vi.hoisted(() => ({
 }));
 const actor = vi.hoisted(() => ({ peek: vi.fn() }));
 const lock = vi.hoisted(() => ({ withProjectLock: vi.fn(), bumpContentVersion: vi.fn() }));
-const snapshot = vi.hoisted(() => ({ readSnapshot: vi.fn(), captureFileSnapshot: vi.fn() }));
+const snapshot = vi.hoisted(() => ({
+  readSnapshot: vi.fn(),
+  captureFileSnapshot: vi.fn(),
+  /** Defaults to "the newest checkpoint already holds these files", which is what skips the
+   *  pre-restore safety snapshot. One test turns it off to reach that branch. */
+  snapshotsEqual: vi.fn(),
+}));
 
 vi.mock('@/lib/db', () => ({
   prisma: {
@@ -75,7 +81,7 @@ vi.mock('@/lib/checkpoints/snapshot', () => ({
   captureFileSnapshot: snapshot.captureFileSnapshot,
   writeSnapshot: async () => ({ snapshotKey: 'k', snapshotBytes: 10, snapshotFileCount: 1 }),
   snapshotObjectKey: () => 'k',
-  snapshotsEqual: () => true,
+  snapshotsEqual: snapshot.snapshotsEqual,
   SnapshotReadError: FakeSnapshotReadError,
 }));
 vi.mock('@/lib/plans/limits', () => ({ checkLimit: async () => ({ ok: true }) }));
@@ -136,6 +142,7 @@ beforeEach(() => {
   db.projectUpdate.mockResolvedValue(undefined);
   db.executeRaw.mockResolvedValue(1);
   db.queryRaw.mockResolvedValue([{ previewingCheckpointId: null }]);
+  snapshot.snapshotsEqual.mockReturnValue(true);
   snapshot.readSnapshot.mockResolvedValue(OLD_FILES);
   snapshot.captureFileSnapshot.mockResolvedValue(OLD_FILES);
   lock.withProjectLock.mockImplementation(
@@ -269,6 +276,76 @@ describe('leaving the preview clears the flag and writes no files', () => {
     const clear = previewFlagWrite();
     expect(clear).toBeDefined();
     expect(rawSql(clear)).toContain('NULL');
+  });
+});
+
+/**
+ * A restore replaces the site, so it must replace the verdict stored beside it.
+ *
+ * This is the hop that unsticks a project the rescue just saved. `lastCodeValidated === false`
+ * is what makes the preview serve an older version and the Publish button refuse; left behind
+ * on a row whose files have just been swapped for ones proven to build, both would keep
+ * punishing a project that works.
+ */
+describe("restoring carries the snapshot's verdict onto the project", () => {
+  function projectWrite() {
+    return db.projectUpdate.mock.calls.find((call) => {
+      const args = call[0] as { data?: Record<string, unknown> } | undefined;
+      return Boolean(args?.data && 'lastCode' in args.data);
+    })?.[0] as { data: Record<string, unknown> } | undefined;
+  }
+
+  it('clears a failure when the restored version is proven good', async () => {
+    db.projectFindFirst.mockResolvedValue({
+      id: PROJECT,
+      ownerId: OWNER.id,
+      lastCodeValidated: false,
+    });
+    db.checkpointFindFirst.mockResolvedValue({ ...CHECKPOINT_ROW, snapshotValidated: true });
+    const { restoreCheckpoint } = await import('@/lib/checkpoints/actions');
+
+    const result = await restoreCheckpoint(PROJECT, CHECKPOINT);
+
+    expect(result.ok).toBe(true);
+    expect(projectWrite()?.data.lastCodeValidated).toBe(true);
+  });
+
+  it('does not invent a pass when the restored version was never checked', async () => {
+    db.projectFindFirst.mockResolvedValue({
+      id: PROJECT,
+      ownerId: OWNER.id,
+      lastCodeValidated: true,
+    });
+    db.checkpointFindFirst.mockResolvedValue({ ...CHECKPOINT_ROW, snapshotValidated: null });
+    const { restoreCheckpoint } = await import('@/lib/checkpoints/actions');
+
+    await restoreCheckpoint(PROJECT, CHECKPOINT);
+
+    // Restoring an old version is not evidence about it. Keeping the outgoing `true` would
+    // be a claim about bytes that are no longer there.
+    expect(projectWrite()?.data.lastCodeValidated).toBeNull();
+  });
+
+  it('freezes the outgoing files with the verdict they actually carried', async () => {
+    db.projectFindFirst.mockResolvedValue({
+      id: PROJECT,
+      ownerId: OWNER.id,
+      lastCodeValidated: false,
+    });
+    db.checkpointFindFirst.mockResolvedValue({ ...CHECKPOINT_ROW, snapshotValidated: true });
+    // The live files have drifted from the newest checkpoint, which is the only case that
+    // takes the safety snapshot — and exactly the state a failed repair loop leaves behind.
+    snapshot.snapshotsEqual.mockReturnValue(false);
+    const { restoreCheckpoint } = await import('@/lib/checkpoints/actions');
+
+    await restoreCheckpoint(PROJECT, CHECKPOINT);
+
+    // The "Before restoring an earlier version" safety snapshot holds the broken site. Saved
+    // as `null` it would be a candidate the rescue has to re-compile to reject.
+    const safety = db.checkpointCreate.mock.calls
+      .map((call) => (call[0] as { data?: Record<string, unknown> } | undefined)?.data)
+      .find((data) => data?.label === 'Before restoring an earlier version');
+    expect(safety?.snapshotValidated).toBe(false);
   });
 });
 

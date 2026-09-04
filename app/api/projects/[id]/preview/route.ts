@@ -3,7 +3,7 @@ import { getSessionUser } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { withRequest } from '@/lib/api/with-request';
 import { getPreviewStatus } from '@/lib/preview/status';
-import { publicPreviewViewHref } from '@/lib/preview/public-view';
+import { signedPreviewUrl } from '@/lib/preview/url';
 import { issuePreviewToken } from '@/lib/preview/token';
 
 /**
@@ -11,13 +11,13 @@ import { issuePreviewToken } from '@/lib/preview/token';
  * project list shows every member every project, and `BrowserPreview` renders a
  * teammate's site in the reader's own tab with no token at all.
  *
- * What is not a read is *minting* a preview token. The `/preview-view?projectId=&token=`
- * href it returns is an anonymous, two-hour capability over the project's files
- * (`GET /api/projects/[id]/preview-files` and the public shell). That is owner/ADMIN
- * only (F-148): a member who can read the project still cannot hand its site to the
- * world. So `loadProject` fetches `ownerId`, `POST action:'token'` refuses a
- * non-owner, and the status read omits the URL it may not mint rather than refusing
- * the whole read.
+ * What is not a read is *minting* a preview token. The signed `/preview-static`
+ * URL it returns is the only thing that route checks, on a path that is public
+ * by allowlist — an anonymous, two-hour capability over the project's built
+ * site. That is owner/ADMIN only (F-148): a member who can read the project
+ * still cannot hand its site to the world. So `loadProject` fetches `ownerId`,
+ * `POST action:'token'` refuses a non-owner, and the status read omits the URL
+ * it may not mint rather than refusing the whole read.
  */
 async function loadProject(id: string) {
   return prisma.project.findFirst({
@@ -74,10 +74,12 @@ async function postPreview(request: NextRequest, params: Promise<{ id: string }>
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
     const token = issuePreviewToken({ projectId: id, userId: user.id });
-    return NextResponse.json({
-      token,
-      previewUrl: publicPreviewViewHref({ projectId: id, token }),
+    const previewUrl = await signedPreviewUrl({
+      projectId: id,
+      userId: user.id,
+      path: typeof body.path === 'string' ? body.path : '/',
     });
+    return NextResponse.json({ token, previewUrl });
   }
 
   // 'heartbeat', 'live' and 'retry' are gone with the sandbox VMs. The live

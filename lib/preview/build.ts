@@ -9,6 +9,7 @@ import { gzipSync } from 'node:zlib';
 import { shouldExcludeExportPath } from '@/lib/export/files';
 import { sanitizeGenerationPath } from '@/lib/generation/parse-files';
 import { log } from '@/lib/logger';
+import { inlineLoopbackAssetsIntoBuild } from './inline-assets-server';
 import { buildStaticSite } from './server-bundle';
 import { contentTypeForPath, shouldGzipPreviewPath } from './mime';
 import { PREVIEW_TOO_LARGE } from './labels';
@@ -60,6 +61,13 @@ export async function buildStaticPreview(
     return fail(deps, created.id, 'Preview could not be built', { buildLog: built.error });
   }
 
+  // Loopback only. The build's absolute asset URLs are correct in production,
+  // but a locally served build renders in the public shell's opaque-origin
+  // iframe, where Chrome's Private Network Access blocks every fetch back to
+  // localhost - so each photograph became its alt text. Inlining reads the
+  // bytes straight from storage; see lib/preview/inline-assets-server.ts.
+  const servedFiles = await inlineLoopbackAssetsIntoBuild(built.files);
+
   // Each path here is model output (Project.lastCode, via the static-HTML branch of
   // buildStaticSite, which ships the project files as-is) and becomes a storage key
   // below. A `..` segment used to write outside the uploads root on the local
@@ -67,7 +75,7 @@ export async function buildStaticPreview(
   // anyone holding the preview token can fetch.
   const files: { relative: string; body: Buffer }[] = [];
   const rejected: string[] = [];
-  for (const [rawPath, content] of Object.entries(built.files)) {
+  for (const [rawPath, content] of Object.entries(servedFiles)) {
     const safe = sanitizeGenerationPath(rawPath);
     if (!safe.ok || shouldExcludeExportPath(safe.path)) {
       rejected.push(rawPath);

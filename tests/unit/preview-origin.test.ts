@@ -66,6 +66,18 @@ describe('previewStaticBaseUrl', () => {
     settings.getSetting.mockResolvedValue('navroop.example');
     await expect(previewStaticBaseUrl()).resolves.toBeNull();
   });
+
+  it('serves a loopback app from the loopback sibling, never the zone host', async () => {
+    // This instance's database holds the projects and signs the tokens, so the
+    // zone host - the deployed production instance - can never answer for a
+    // local project. `.localhost` is loopback by definition (RFC 6761) and a
+    // different host is a different origin, so F-140's isolation holds: the
+    // dev session cookie is host-only on localhost and is not sent to the
+    // sibling.
+    process.env.APP_URL = 'http://localhost:3000';
+    integrations.peekRootDomain.mockResolvedValue('zone.example');
+    await expect(previewStaticBaseUrl()).resolves.toBe('http://preview-static.localhost:3000');
+  });
 });
 
 describe('signedPreviewUrl', () => {
@@ -163,39 +175,42 @@ describe('openPreviewWindow', () => {
     return open;
   }
 
-  it('refuses to open generated preview-static JS top-level on the app origin (F-140)', () => {
+  it('refuses to open a same-origin preview URL top-level', () => {
     const open = stubWindow();
     openPreviewWindow(`${APP_ORIGIN}/preview-static/proj-1/?token=t`);
     expect(open).not.toHaveBeenCalled();
   });
 
-  it('refuses a relative preview-static URL (same-origin generated JS)', () => {
+  it('refuses a relative preview URL (same-origin by construction)', () => {
     const open = stubWindow();
     openPreviewWindow('/preview-static/proj-1/?token=t');
     expect(open).not.toHaveBeenCalled();
   });
 
-  it('opens the public /preview-view chrome shell even on the app origin', () => {
+  it('opens the public token-gated shell, not the served origin and not /project/[id]/preview', () => {
     const open = stubWindow();
-    const href = publicPreviewViewHref({ projectId: 'proj-1', token: 't' });
-    openPreviewWindow(href);
-    expect(open).toHaveBeenCalledWith(href, '_blank', 'noopener,noreferrer');
+    const signed = 'https://preview-static.zone.example/proj-1/?token=t';
+    openPreviewWindow(signed);
+    expect(open).toHaveBeenCalledWith(
+      publicPreviewViewHref(signed),
+      '_blank',
+      'noopener,noreferrer',
+    );
+    // There is no sized-popup variant: the device toolbar lives on the public
+    // shell (and the signed-in /project/[id]/preview page). Generated JS never
+    // runs top-level on the app origin (F-140).
     expect(open).toHaveBeenCalledTimes(1);
-    expect(open.mock.calls[0][0]).not.toContain('preview-static');
-    expect(open.mock.calls[0][0]).not.toContain('/project/');
   });
 
   it('still uses the public shell when a project id is given', () => {
     const open = stubWindow();
-    const href = publicPreviewViewHref({ projectId: 'proj 1', token: 't' });
-    openPreviewWindow(href, 'proj 1');
-    expect(open).toHaveBeenCalledWith(href, '_blank', 'noopener,noreferrer');
+    const signed = 'https://preview-static.zone.example/proj-1/?token=t';
+    openPreviewWindow(signed, 'proj 1');
+    expect(open).toHaveBeenCalledWith(
+      publicPreviewViewHref(signed),
+      '_blank',
+      'noopener,noreferrer',
+    );
     expect(open.mock.calls[0][0]).not.toContain('/project/');
-  });
-
-  it('refuses a Cloudflare preview-static destination — new-tab is BrowserPreview only', () => {
-    const open = stubWindow();
-    openPreviewWindow('https://preview-static.zone.example/proj-1/?token=t');
-    expect(open).not.toHaveBeenCalled();
   });
 });

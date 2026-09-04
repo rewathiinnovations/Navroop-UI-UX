@@ -1,11 +1,15 @@
 import { prisma } from '@/lib/db';
 import { stampActivePromptHash } from '@/lib/prompts/version';
 import {
+  RUNTIME_ERRORS_KIND,
+  TOOL_REFUSAL_KIND_PREFIX,
   a11yScoreFromAxe,
   buildSuccessScore,
   followupsToSettleScore,
   looksLikeVisualEdit,
+  runtimeErrorScore,
   seoScoreFromFindings,
+  toolRefusalKind,
   typeSafetyScore,
   visualEditRateScore,
 } from './score';
@@ -339,6 +343,88 @@ export function countVisualEditsFromSource(source?: string | null, sourceMessage
   return 0;
 }
 
+/** Per-tool `{ phase: 'result' }` counts for one generation. */
+export type ToolResultTally = Record<string, { results: number; refusals: number }>;
+
+/**
+ * Counts one tool result into a run's tally.
+ *
+ * Lives here rather than inline in the generate route so the rule for what
+ * counts is in the same module as the writer that reads it: only `result`
+ * events, one per returned tool call, and a refusal is a result the tool
+ * returned with `ok: false` — never a thrown error. The tools return their
+ * refusals on purpose (see `lib/generation/tools/index.ts`), so a run with a
+ * high refusal rate is a run the model kept correcting itself through, not a run
+ * that crashed.
+ */
+export function countToolResult(tally: ToolResultTally, tool: string, ok: boolean) {
+  const counts = (tally[tool] ??= { results: 0, refusals: 0 });
+  counts.results += 1;
+  if (!ok) counts.refusals += 1;
+  return tally;
+}
+
+/**
+ * What fraction of this generation's tool calls each tool refused.
+ *
+ * The tool surface is the product's only view of what the model actually tried
+ * to do, and the refusals were visible in the SSE stream and nowhere else: they
+ * reached the browser as `tool_result` frames, were rendered once, and were
+ * gone. A prompt change that makes the model guess at paths, or reach for
+ * packages the preview cannot serve, shows up here a long time before it shows
+ * up in `revert_rate` — which needs a user to notice and restore.
+ *
+ * One row per tool per generation, keyed to the generation's own
+ * `promptVersion` (not the active one — see `writeSignal`), so "did v3 make the
+ * model fight `edit_file`" is a `groupBy` and not a log grep. `value` is the
+ * refusal rate, so higher is worse; it is deliberately outside
+ * `QUALITY_SIGNAL_KINDS` and the weighted composite (see
+ * `TOOL_REFUSAL_KIND_PREFIX`).
+ *
+ * Idempotent on the generation event: a retried record must not double a run's
+ * contribution to the population, and unlike the other collectors there is no
+ * single kind to look for, so the check is on the namespace.
+ */
+export async function recordToolRefusalRates(
+  projectId: string,
+  tally: ToolResultTally,
+  generationEventId?: string | null,
+) {
+  return withSignalGuard('tool_refusal_rate', async () => {
+    const tools = Object.entries(tally).filter(([, counts]) => counts.results > 0);
+    if (tools.length === 0) return null;
+    const event = await signalSubject(projectId, generationEventId);
+    if (event) {
+      const existing = await prisma.qualitySignal.findFirst({
+        where: {
+          projectId,
+          generationEventId: event.id,
+          kind: { startsWith: TOOL_REFUSAL_KIND_PREFIX },
+        },
+        select: { id: true },
+      });
+      if (existing) return null;
+    }
+    const promptVersion = event?.promptVersion || (await stampActivePromptHash());
+    // One insert for the whole run: a generation calls six tools and the loop
+    // form would be six round trips on the tail of a request the user is already
+    // waiting on.
+    await prisma.qualitySignal.createMany({
+      data: tools.map(([tool, counts]) => ({
+        projectId,
+        generationEventId: event?.id ?? null,
+        kind: toolRefusalKind(tool),
+        value: counts.refusals / counts.results,
+        // Both counts, not just the rate: 1/1 and 40/40 are the same rate and
+        // very different runs, and the mean over rows cannot tell them apart.
+        rawValue: { tool, results: counts.results, refusals: counts.refusals },
+        promptVersion,
+      })),
+    });
+    return tools.length;
+  });
+}
+
 export async function recordThumbs(
   projectId: string,
   rating: 'up' | 'down',
@@ -430,6 +516,13 @@ export type CodeAuditSignalInput = {
   tsErrors?: number | null;
   /** `null` = no production build was attempted. */
   buildOk?: boolean | null;
+  /**
+   * `0` = a page loaded and threw nothing; `null` = no page was ever opened.
+   *
+   * The distinction is the whole point, as with `axeViolations`: a scan where Chromium was
+   * unavailable must not read as a clean site (F-705).
+   */
+  runtimeErrors?: number | null;
 };
 
 export async function recordCodeAuditSignals(input: CodeAuditSignalInput) {
@@ -474,6 +567,12 @@ export async function recordCodeAuditSignals(input: CodeAuditSignalInput) {
 
     if (input.tsErrors != null) {
       await record('type_safety', typeSafetyScore(input.tsErrors), { tsErrors: input.tsErrors });
+    }
+
+    if (input.runtimeErrors != null) {
+      await record(RUNTIME_ERRORS_KIND, runtimeErrorScore(input.runtimeErrors), {
+        runtimeErrors: input.runtimeErrors,
+      });
     }
 
     return created;

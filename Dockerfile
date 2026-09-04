@@ -10,8 +10,13 @@
 # builder fails the build when they part.
 ARG PLAYWRIGHT_VERSION=1.62.1
 
-FROM node:20-bookworm-slim AS base
-# Pin the Node major used in production. Bump deliberately.
+FROM node:22-bookworm-slim AS base
+# Pin the Node major used in production. Bump deliberately. 22, not 20: the declared
+# pnpm (11.21.0) requires Node >= 22.13 and imports `node:sqlite`, which does not exist
+# on Node 20 — so on node:20 every pnpm 11 executable crashed at startup no matter how
+# it was installed (ERR_UNKNOWN_BUILTIN_MODULE, deploy 2026-08-29). CI already runs the
+# full verify on Node 22 (.github/workflows/verify.yml), so this also closes a
+# build-runtime-vs-CI version split.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends openssl ca-certificates \
   && rm -rf /var/lib/apt/lists/*
@@ -25,8 +30,16 @@ ENV PATH="${PNPM_HOME}:${PATH}"
 # `minimumReleaseAgeExclude`, `verifyDepsBeforeRun`) and silently dropped the `overrides`
 # that pin the tar and deepmerge-ts advisories — shipping the vulnerable transitives while
 # `pnpm audit` on a developer machine reported clean (F-716).
-RUN corepack enable
-ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+# No corepack at all. Four deploys died in this stage before the picture was
+# complete: the node:20 image's bundled corepack predates npm's 2025 signing-key
+# rotation ("Cannot find matching keyid"), corepack@latest refused Node 20,
+# corepack@0.31.0 crashed on Node 20.20 with ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING —
+# and then the npm-installed pnpm crashed too (ERR_UNKNOWN_BUILTIN_MODULE:
+# node:sqlite), which exposed the real constraint: pnpm 11.21 simply cannot run
+# below Node 22.13, hence the node:22 base above. The npm install is kept anyway:
+# the version is still read from package.json "packageManager", so the single
+# source of truth stands, npm verifies its own registry signatures, and the build
+# does not depend on whichever corepack a base image happens to bundle.
 
 FROM base AS deps
 WORKDIR /app
@@ -34,9 +47,25 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 # Fails the build rather than installing under a pnpm that cannot read this lockfile.
 # String concatenation, not template literals: Docker substitutes ${...} in a RUN line with
 # build args and would blank them out.
-RUN corepack install \
+RUN npm install -g pnpm@"$(node -p "require('./package.json').packageManager.split('@')[1]")" \
   && node -e "const want=require('./package.json').packageManager.split('@')[1];const got=require('node:child_process').execSync('pnpm --version').toString().trim();if(got!==want){console.error('pnpm '+got+' is not the declared packageManager '+want);process.exit(1)}console.log('pnpm '+got)"
 RUN pnpm install --frozen-lockfile --ignore-scripts
+
+# The runner's boot scripts (pre-migrate, seed, reconcile) run under the global tsx
+# from /app, so they resolve packages from /app/node_modules — and the standalone
+# trace only holds what the *server* graph imports. `dotenv` (scripts/pre-migrate.ts)
+# was not in that trace and the 2026-08-29 deploy crash-looped on
+# ERR_MODULE_NOT_FOUND before migrate ever ran. This stage builds the full declared
+# production set with a hoisted (real-directory, npm-style) layout, so overlaying it
+# on the standalone tree is a plain directory merge with no pnpm symlinks to break.
+# A fresh stage from base, not FROM deps: pnpm refuses to re-link an existing
+# node_modules without a TTY confirm (ABORTED_REMOVE_MODULES_DIR_NO_TTY).
+FROM base AS prod-deps
+WORKDIR /app
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+# Same declared-version install as deps; see the comment there.
+RUN npm install -g pnpm@"$(node -p "require('./package.json').packageManager.split('@')[1]")"
+RUN pnpm install --prod --frozen-lockfile --ignore-scripts --config.node-linker=hoisted
 
 # FROM deps, not base: the builder then inherits both node_modules and the corepack-installed
 # pnpm, so `pnpm build` cannot resolve a different version than the one deps asserted.
@@ -132,6 +161,28 @@ ENV OBSERVABILITY_CONFIG_PATH=/data/config/observability.json
 
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+# The standalone trace cannot be trusted as the server's node_modules: three
+# deploys on 2026-08-29 found three holes in it — dotenv and bcryptjs absent for
+# the tsx boot scripts, and @swc/helpers traced *partially* (its esm/ interop
+# files missing), which killed `next start` inside the instrumentation hook. So
+# the full declared production set (hoisted, real directories — see prod-deps)
+# becomes /app/node_modules outright. One thing in the traced tree is
+# irreplaceable and is carried over first: the hash-named external aliases
+# Turbopack writes for the instrumentation graph (require-in-the-middle-<hash>) —
+# deleting those crashed the server too. `cp -rL` dereferences the pnpm symlinks
+# so the rescued aliases survive the tree they pointed into being removed.
+# The aliases live in the standalone tree's OWN .next/node_modules (esbuild-<hash>,
+# require-in-the-middle-<hash>, sharp-<hash>, …), as symlinks into the pruned
+# node_modules/.pnpm store — so removing that store would leave them dangling,
+# which is exactly the crash the first replacement attempt produced. Dereference
+# them into real directories first; the resolution walk from .next/server finds
+# .next/node_modules before /app/node_modules, so nothing else moves.
+RUN set -eu; if [ -d ./.next/node_modules ]; then \
+    mkdir /tmp/nm && cp -rL ./.next/node_modules/. /tmp/nm/ \
+    && rm -rf ./.next/node_modules && mv /tmp/nm ./.next/node_modules; \
+  fi
+RUN rm -rf ./node_modules
+COPY --from=prod-deps --chown=nextjs:nodejs /app/node_modules ./node_modules
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
 COPY --from=builder --chown=nextjs:nodejs /app/generated ./generated

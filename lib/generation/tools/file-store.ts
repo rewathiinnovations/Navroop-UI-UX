@@ -1,4 +1,5 @@
 import type { StackId } from '@/lib/stacks';
+import { repairGeneratedFiles, type GenerationRepairs } from '../deterministic-repairs';
 import { sanitizeGenerationPath } from '../parse-files';
 import { assertWritableGenerationFile } from '../write-guard';
 
@@ -51,8 +52,23 @@ export type GenerationFileStore = {
   writtenPaths(): string[];
   /** Every accepted write in order, including repeats — for the step-budget report. */
   journal(): readonly ToolFileWrite[];
+  /**
+   * Corrections made on the way in, so the chat can say what changed instead of
+   * silently rendering a different picture or different markup.
+   */
+  repairs(): GenerationRepairs;
   readonly stack: StackId;
 };
+
+/** Section files the project already has, keyed the way an import spells them. */
+function projectSectionNames(files: Record<string, string>): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const path of Object.keys(files)) {
+    const match = /(?:^|\/)components\/sections\/([^/]+)\.(tsx|ts|jsx|js)$/.exec(path);
+    if (match) names.add(match[1]);
+  }
+  return names;
+}
 
 export function createGenerationFileStore(input: {
   base: Record<string, string>;
@@ -64,6 +80,7 @@ export function createGenerationFileStore(input: {
   const written = new Map<string, string>();
   const deleted = new Set<string>();
   const journal: ToolFileWrite[] = [];
+  const repairs: GenerationRepairs = { iconSubstitutions: [], imageConversions: [] };
 
   const snapshot = (): Record<string, string> => {
     const files: Record<string, string> = { ...base, ...Object.fromEntries(written) };
@@ -96,18 +113,29 @@ export function createGenerationFileStore(input: {
       return Object.keys(snapshot()).sort();
     },
     write(path, content) {
-      const file = assertWritableGenerationFile({ path, content });
+      // The project's own section files count as existing, alongside the kit's catalogue.
+      // Without this the guard contradicted itself within a turn: it allowed
+      // `components/sections/team.tsx` and then refused the page importing it.
+      const file = assertWritableGenerationFile({ path, content }, projectSectionNames(snapshot()));
+      // Deterministic corrections on the way in: an icon lucide does not export
+      // (a runtime crash the bundler cannot see) and a raw <img> on the Next.js
+      // stack. Repaired here rather than reported, because a report costs a
+      // second model call — see `lib/generation/deterministic-repairs.ts`.
+      const repaired = repairGeneratedFiles({ [file.path]: file.content }, input.stack);
+      const finalContent = repaired.files[file.path] ?? file.content;
+      repairs.iconSubstitutions.push(...repaired.repairs.iconSubstitutions);
+      repairs.imageConversions.push(...repaired.repairs.imageConversions);
       // `kind` is decided against the turn's starting state, not against
       // previous writes: a file this turn created and then rewrote is still a
       // `create` from the project's point of view, and reporting the second
       // write as an `update` would tell the user a file existed before it did.
       const kind: ToolFileWrite['kind'] = file.path in base ? 'update' : 'create';
-      written.set(file.path, file.content);
+      written.set(file.path, finalContent);
       // Writing a path this turn deleted revives it — that is what a rename
       // back, or a delete-then-rewrite, means. Leaving it in `deleted` would
       // have the persist step remove the file the model had just written.
       deleted.delete(file.path);
-      const entry: ToolFileWrite = { path: file.path, content: file.content, kind };
+      const entry: ToolFileWrite = { path: file.path, content: finalContent, kind };
       journal.push(entry);
       return entry;
     },
@@ -134,6 +162,9 @@ export function createGenerationFileStore(input: {
     },
     journal() {
       return journal;
+    },
+    repairs() {
+      return repairs;
     },
   };
 }

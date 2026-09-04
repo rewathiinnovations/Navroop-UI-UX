@@ -23,7 +23,13 @@ export type AutoFixDecision =
   | { action: 'reprompt'; instruction: string; attempt: number }
   | {
       action: 'stop';
-      reason: 'attempts-exhausted' | 'no-progress' | 'not-actionable' | 'autofix-disabled';
+      reason:
+        | 'attempts-exhausted'
+        | 'no-progress'
+        | 'not-actionable'
+        | 'autofix-disabled'
+        /** The build compiles; `lib/validation/quality-check.ts` found defects it will not spend a generation on. */
+        | 'quality-left-as-is';
       detail: string;
     };
 

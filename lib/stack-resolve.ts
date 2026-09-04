@@ -58,11 +58,30 @@ export async function resolveRequestGenerationProfile(input: {
   stack?: unknown;
   designDirection?: unknown;
   projectId?: unknown;
-}): Promise<{ stack: StackId; designDirection: DesignDirectionId }> {
+}): Promise<{
+  stack: StackId;
+  designDirection: DesignDirectionId;
+  /**
+   * The project's own brief, for design selection only.
+   *
+   * The turn's prompt is not it. On an initial build the prompt is
+   * `initialPrompt + "
+
+Approved plan:
+" + JSON`, and on an edit it is the
+   * edit instruction — both re-score the palette and the style against words
+   * the user never wrote about their brand. Planning and building therefore
+   * chose from different inputs and could describe two different sites: the
+   * plan promised a glassmorphism clinic in stone and gold while the project
+   * row said `minimal`. Selecting from this one stable string makes the two
+   * calls deterministic in each other.
+   */
+  initialPrompt: string;
+}> {
   if (typeof input.projectId === 'string' && input.projectId) {
     const project = await prisma.project.findUnique({
       where: { id: input.projectId },
-      select: { stack: true, designDirection: true },
+      select: { stack: true, designDirection: true, initialPrompt: true },
     });
     if (!project) {
       throw new Error(`Cannot resolve generation profile: project ${input.projectId} not found`);
@@ -70,6 +89,7 @@ export async function resolveRequestGenerationProfile(input: {
     return {
       stack: getStack(project.stack).id,
       designDirection: resolveDirectionId(project.designDirection),
+      initialPrompt: project.initialPrompt ?? '',
     };
   }
   return {
@@ -77,5 +97,6 @@ export async function resolveRequestGenerationProfile(input: {
     designDirection: input.designDirection
       ? resolveDirectionId(input.designDirection)
       : DEFAULT_DESIGN_DIRECTION,
+    initialPrompt: '',
   };
 }

@@ -10,7 +10,6 @@ import StudioLogo from '@/components/app/studio/StudioLogo';
 import ThemeToggle from '@/components/app/studio/ThemeToggle';
 import '@/components/app/studio/studio.css';
 import { PENDING_PROMPT_KEY, clearDraftStorage } from '@/hooks/useDraftStorage';
-import type { DesignDirectionId } from '@/lib/design/directions';
 import type { ImportMode } from '@/lib/import/mode';
 import { createProjectFromPrompt } from '@/lib/projects/start-from-prompt';
 import { createSignedOutSubmit, type SignedOutSubmit } from '@/lib/projects/signed-out-submit';
@@ -64,20 +63,15 @@ export default function HomeLanding({
     setAuthOpen(false);
   };
 
-  const onSubmit = async (
-    value: string,
-    stack: StackId,
-    designDirection: DesignDirectionId,
-    importMode: ImportMode,
-  ) => {
+  const onSubmit = async (value: string, stack: StackId, importMode: ImportMode) => {
     if (!session?.user) {
-      pendingSubmitRef.current?.arm({ text: value, stack, designDirection, importMode });
+      pendingSubmitRef.current?.arm({ text: value, stack, importMode });
       openAuth('signup');
       return;
     }
 
     try {
-      const created = await createProjectFromPrompt(value, stack, designDirection, importMode);
+      const created = await createProjectFromPrompt(value, stack, importMode);
       if (!created.ok) {
         notify.error(created.error, { key: 'create-project' });
         return;

@@ -41,6 +41,8 @@ export const STARTER_RUNTIME_PREFIXES: readonly string[] = [
   'src/lib/utils.ts',
   'components/ui/',
   'src/components/ui/',
+  'components/sections/',
+  'src/components/sections/',
 ];
 
 /**

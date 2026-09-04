@@ -1,11 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { cn } from '@/utils/cn';
-import { BrowserPreview } from '@/components/workspace/BrowserPreview';
 import PreviewDeviceToolbar from '@/components/workspace/PreviewDeviceToolbar';
-import { useProjectFiles } from '@/components/workspace/useProjectFiles';
 import {
   formatPreviewSize,
   getPreviewDevice,
@@ -14,19 +12,44 @@ import {
 } from '@/lib/preview/devices';
 
 /**
- * Signed-in in-app preview. "Open in new tab" targets `/preview-view?projectId=&token=`.
- * This page stays for in-app use and uses the same BrowserPreview srcdoc renderer
- * as the workspace — not an iframe of that public URL (nested chrome) and not
- * a hosted snapshot origin. Generated JS never runs top-level (F-140).
+ * Signed-in in-app preview. "Open in new tab" now targets the public
+ * `/preview-view` shell; this page stays for in-app use. The served build is
+ * model-authored JavaScript, so it renders inside a sandboxed iframe here rather
+ * than running top-level on the app origin with the viewer's session (F-140).
+ * The device toolbar is the same control the workspace Preview tab uses.
  */
 export default function ProjectPreviewPage() {
   const params = useParams();
   const projectId = typeof params.id === 'string' ? params.id : null;
-  const projectFiles = useProjectFiles(projectId);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [device, setDevice] = useState<PreviewDeviceKey>('desktop');
   const [rotated, setRotated] = useState(false);
-  const hasFiles = Object.keys(projectFiles.files).length > 0;
-  const error = projectFiles.error;
+
+  useEffect(() => {
+    if (!projectId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch(`/api/projects/${projectId}/preview`);
+        if (cancelled) return;
+        const data = (await response.json().catch(() => ({}))) as {
+          previewUrl?: string | null;
+          error?: string;
+        };
+        if (!response.ok || !data.previewUrl) {
+          setError(data.error || 'Preview is not available');
+          return;
+        }
+        setPreviewUrl(data.previewUrl);
+      } catch {
+        if (!cancelled) setError('Could not load the preview');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
 
   const spec = getPreviewDevice(device);
   const size =
@@ -52,7 +75,7 @@ export default function ProjectPreviewPage() {
         />
       </header>
       <main className="flex min-h-0 flex-1 items-start justify-center overflow-auto bg-[var(--studio-surface)] p-16">
-        {hasFiles ? (
+        {previewUrl ? (
           <div
             className={cn(
               'overflow-hidden border border-[var(--studio-line)] bg-white transition-[width,height]',
@@ -64,17 +87,17 @@ export default function ProjectPreviewPage() {
                 : undefined
             }
           >
-            <BrowserPreview
-              stack={projectFiles.stack}
-              files={projectFiles.files}
-              designDirection={projectFiles.designDirection}
-              className="h-full w-full"
+            <iframe
+              src={previewUrl}
+              title="Project preview"
+              className="h-full w-full border-0 bg-white"
+              sandbox="allow-scripts allow-forms allow-modals allow-popups"
             />
           </div>
         ) : (
           <div className="flex h-full items-center justify-center px-24 text-center">
             <p className="text-[13px] leading-5 text-[var(--studio-muted)]">
-              {error ?? (projectFiles.loading ? 'Loading preview…' : 'Preview is not available')}
+              {error ?? 'Loading preview…'}
             </p>
           </div>
         )}

@@ -100,10 +100,9 @@ export async function getProjectPreviewFields(projectId: string) {
       activePreviewBuildId: string | null;
       stack: string;
       previewUrl: string | null;
-      lastCode: string | null;
     }>
   >`
-    SELECT "previewMode", "activePreviewBuildId", "stack"::text AS stack, "previewUrl", "lastCode"
+    SELECT "previewMode", "activePreviewBuildId", "stack"::text AS stack, "previewUrl"
     FROM "Project"
     WHERE id = ${projectId} AND "deletedAt" IS NULL
     LIMIT 1

@@ -13,7 +13,6 @@ import ProjectCard from '@/components/dashboard/ProjectCard';
 import { loginModalHref } from '@/lib/auth/public-login';
 import { notify } from '@/lib/notify';
 import { PENDING_PROMPT_KEY, clearDraftStorage } from '@/hooks/useDraftStorage';
-import type { DesignDirectionId } from '@/lib/design/directions';
 import type { ImportMode } from '@/lib/import/mode';
 import { createProject } from '@/lib/projects/actions';
 import { armProjectGeneration } from '@/lib/projects/start-from-prompt';
@@ -87,12 +86,7 @@ export default function DashboardPage() {
   const recent = useMemo(() => projects.slice(0, 8), [projects]);
   const visible = tab === 'mine' ? mine : recent;
 
-  const onSubmit = async (
-    text: string,
-    stack: StackId,
-    designDirection: DesignDirectionId,
-    importMode: ImportMode,
-  ) => {
+  const onSubmit = async (text: string, stack: StackId, importMode: ImportMode) => {
     // No `templateId`: template attribution belongs to the sheet's own create call
     // (`POST /api/templates/[id]/create`). This used to read it back out of the shared hero
     // draft, which the template sheet wrote into — so the next unrelated prompt sent from the
@@ -101,7 +95,8 @@ export default function DashboardPage() {
     const created = await createProject({
       initialPrompt: text,
       stack,
-      designDirection,
+      // No `designDirection`: the server reads it out of the prompt. Sending one
+      // from here is what let a stale dropdown value contradict the brief.
       importMode,
       // Land in the workspace immediately; the plan streams in behind it.
       deferPlanning: true,

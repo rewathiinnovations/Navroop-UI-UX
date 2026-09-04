@@ -1,6 +1,7 @@
 import { OPTIONAL_PREVIEW_DEPS, PREVIEW_DEPS } from '@/lib/preview/deps';
+import { sectionCatalogueRule } from '@/lib/stacks/section-registry';
 import { starterFilePaths } from '@/lib/stacks/starter';
-import { UI_COMPONENT_NAMES } from '@/lib/stacks/templates/starter-kit';
+import { SECTION_COMPONENT_NAMES, UI_COMPONENT_NAMES } from '@/lib/stacks/templates/starter-kit';
 
 /**
  * The prompt's half of the locked stack.
@@ -18,8 +19,20 @@ export function lockedStackRule(srcPrefix: string): string {
   const ui = `${srcPrefix}components/ui`;
   return `LOCKED STACK (already in the project — never recreate these files):
 - ${srcPrefix}lib/utils.ts exports cn(). Use it for every conditional className.
-- ${ui}/ holds shadcn/ui primitives: ${UI_COMPONENT_NAMES.join(', ')}. Import them as @/components/ui/<name> and compose them. They are meant to be customized: to give one a new look, add a cva variant inside its own file and use it by name. Never hand-roll your own Button, Card or Dialog beside them.
+- ${ui}/ holds the primitives: ${UI_COMPONENT_NAMES.join(', ')}. Import them as @/components/ui/<name> and compose them. They are meant to be customized: to give one a new look, add a cva variant inside its own file and use it by name. Never hand-roll your own Button, Card or Dialog beside them.
+- Button already has two crafted variants beyond stock shadcn: variant="premium" (gradient + elegant shadow — the page's ONE standout CTA) and variant="hero" (translucent, for a button sitting on a photo or an inverted band). Use them by name; never rebuild either with call-site classes.
+- ${ui}/reveal.tsx exports Reveal: wrap a section's inner container in <Reveal> (stagger siblings with delay={80}, delay={160}, …) for the scroll entrance the DESIGN rules require. It handles IntersectionObserver and prefers-reduced-motion itself — never hand-roll an observer.
+- ${ui}/section-header.tsx exports SectionHeader: <SectionHeader eyebrow="…" title="…" lede="…" align="center|left" /> opens every content section, so eyebrow/title/lede stay consistent. Omit the eyebrow where the design direction forbids decorative markers.
 - tailwind.config.js and the global stylesheet exist and define the palette, the gradients and the shadows. Do not recreate either; to add a colour, add the CSS variable to the token block in the global stylesheet (HSL triplet, no wrapper) and extend the config.
+- ${srcPrefix}components/sections/ holds the section shapes a page is built from: ${SECTION_COMPONENT_NAMES.join(', ')}. Import them as @/components/sections/<name>. They take content as props and already handle the section rhythm, the <Reveal> entrance and the alternating surface, so compose them instead of hand-writing a <section> — reach for raw markup only for a section none of them expresses.
+- Section content is DATA, not elements: a call to action is {label, href}, footer links are
+  {label, href}, and the section renders the Button or the anchor itself. The one exception is
+  the hero's media prop, which stays an element because only the page knows how to load an image.
+- On NEXTJS give any section that renders a link linkComponent={Link} (import Link from 'next/link'),
+  so an in-app CTA routes on the client instead of reloading the whole document. use_section
+  emits it for you; add it yourself if you write the section usage by hand.
+- The catalogue, and what each one is for:
+${sectionCatalogueRule()}
 - Icons come from lucide-react. Never inline an SVG icon set.
 - Do not create package.json, tsconfig.json, postcss.config.js or the Tailwind config — they exist.`;
 }

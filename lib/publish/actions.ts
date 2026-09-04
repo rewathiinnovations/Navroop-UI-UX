@@ -20,7 +20,7 @@ import { confirmRepoOverwrite } from './overwrite';
 import { ROLLBACK_CONFIRM_PHRASE } from '@/lib/deploy/rollback';
 import { planDeploymentRollback, rollbackCommitMessage } from './rollback';
 import { readReleaseHistory, settleRollback, startRollback } from './rollback-run';
-import { projectHasPublishableFiles } from './files';
+import { projectHasPublishableFiles, siteFailsToBuild, PUBLISH_FILES_BROKEN } from './files';
 import { serializeDeployment } from './serialize';
 import { mapPrimaryHosts } from '@/lib/domains/store';
 import { getPublishReadiness, peekRootDomain } from '@/lib/integrations/store';
@@ -58,9 +58,10 @@ export async function getPublishState(projectId: string) {
   });
   if (!project) return { ok: false as const, error: 'Project not found', status: 404 as const };
 
-  const [deployments, filesState, readiness, root] = await Promise.all([
+  const [deployments, filesState, broken, readiness, root] = await Promise.all([
     getProjectDeployments(projectId),
     projectHasPublishableFiles(projectId),
+    siteFailsToBuild(projectId),
     getPublishReadiness(DEFAULT_WORKSPACE_ID),
     peekRootDomain(DEFAULT_WORKSPACE_ID),
   ]);
@@ -69,9 +70,14 @@ export async function getPublishState(projectId: string) {
   // `unavailable` is not "no files" — the Publish button hint must not say
   // "Generate the project first" during a storage outage.
   const hasFiles = filesState.status === 'ready';
-  const filesHint = filesState.status === 'unavailable' ? filesState.reason : null;
+  // A broken site does have files, so `hasFiles` stays true and only the hint and
+  // `canPublish` change. Saying otherwise would put "Generate the project first" on the
+  // button of a project holding a full site — the wrong instruction as well as the wrong
+  // reason — and that sentence is what the fallback below produces.
+  const filesHint =
+    filesState.status === 'unavailable' ? filesState.reason : broken ? PUBLISH_FILES_BROKEN : null;
   const setupMessage = filesHint ?? publishBlockedMessage(missing, isAdmin, readiness.unreadable);
-  const canPublish = filesState.status === 'ready' && missing.length === 0;
+  const canPublish = filesState.status === 'ready' && !broken && missing.length === 0;
 
   const existingPreview = deployments.find((row) => row.kind === 'PREVIEW')?.slug ?? null;
   const existingLive = deployments.find((row) => row.kind === 'LIVE')?.slug ?? null;
@@ -127,6 +133,12 @@ export async function startPublish(
   const filesState = await projectHasPublishableFiles(projectId);
   if (filesState.status === 'unavailable') {
     return { ok: false as const, error: filesState.reason, status: 503 as const };
+  }
+  // A site that does not compile must not reach a client's repository. Not a storage fault
+  // and not "nothing generated yet", so it gets its own sentence — 409, the same code the
+  // integrations gate uses for "this cannot run yet".
+  if (await siteFailsToBuild(projectId)) {
+    return { ok: false as const, error: PUBLISH_FILES_BROKEN, status: 409 as const };
   }
   if (filesState.status !== 'ready') {
     return { ok: false as const, error: 'Generate the project first', status: 400 as const };

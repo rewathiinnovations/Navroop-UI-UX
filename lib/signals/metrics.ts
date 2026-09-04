@@ -1,10 +1,12 @@
 import { prisma } from '@/lib/db';
 import { getActivePromptVersion } from '@/lib/prompts/version';
+import { decimalToNumber } from '@/lib/usage-costs';
 import {
   QUALITY_SIGNAL_KINDS,
   SIGNAL_DEFINITIONS,
   composeKindStat,
   composeOverallScore,
+  toolFromRefusalKind,
   type QualitySignalKind,
 } from './score';
 
@@ -30,6 +32,37 @@ export type KindMetric = {
   n: number;
   trend: number | null;
 };
+
+export type ToolRefusalMetric = {
+  tool: string;
+  /**
+   * Share of this tool's calls that it refused, or `null` under the sample
+   * floor. Higher is worse — this is the one number on the page that is not a
+   * score, which is why it is reported per tool and never composed.
+   */
+  rate: number | null;
+  n: number;
+};
+
+export type PromptVersionCost = {
+  /** `null` for generations written before they carried a version. */
+  promptVersion: string | null;
+  label: string;
+  events: number;
+  estimatedCostUsd: number;
+  inputTokens: number;
+  costPerEventUsd: number | null;
+  tokensPerEvent: number | null;
+};
+
+/**
+ * What a generation whose row predates prompt-version stamping is called.
+ *
+ * These rows are kept and labelled rather than filtered out: they are real
+ * money, and a cost table that quietly drops a bucket reads as a smaller bill
+ * than the workspace actually paid.
+ */
+const UNVERSIONED_LABEL = 'No prompt version recorded';
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -103,6 +136,101 @@ function metricsFrom(
     };
   }
   return result;
+}
+
+/**
+ * Per-tool refusal rates, read out of the aggregate the page already ran.
+ *
+ * `aggregate` groups by `(kind, promptVersion)` with no kind filter, so the
+ * `tool_refusal_rate:*` rows are already in `windows.all` — `metricsFrom` simply
+ * ignores them, because it iterates `QUALITY_SIGNAL_KINDS`. Deriving these here
+ * costs no query at all, which is the whole reason the tool name lives in the
+ * kind rather than in `rawValue`; a JSON-path grouping would have been a scan,
+ * and this page's history is F-732.
+ *
+ * Weighted by row count when a tool's rows span several prompt versions: the
+ * per-group figure is already a mean, so averaging the means would give a
+ * version with three generations the same say as one with three hundred.
+ */
+function toolRefusalsFrom(all: Aggregate[]): ToolRefusalMetric[] {
+  const byTool = new Map<string, { weighted: number; n: number }>();
+  for (const row of all) {
+    const tool = toolFromRefusalKind(row.kind);
+    if (!tool) continue;
+    const totals = byTool.get(tool) ?? { weighted: 0, n: 0 };
+    totals.weighted += row.mean * row.n;
+    totals.n += row.n;
+    byTool.set(tool, totals);
+  }
+  return [...byTool.entries()]
+    .map(([tool, totals]) => ({
+      tool,
+      rate:
+        composeKindStat(totals.n === 0 ? null : totals.weighted / totals.n, totals.n)?.mean ?? null,
+      n: totals.n,
+    }))
+    .sort((a, b) => (b.rate ?? -1) - (a.rate ?? -1) || a.tool.localeCompare(b.tool));
+}
+
+/**
+ * What each prompt version cost, alongside what it scored.
+ *
+ * `GenerationEvent` has carried `estimatedCost`, `inputTokens` and
+ * `promptVersion` on every row since the version stamp was added, and nothing
+ * had ever read the three together — so "the new prompt scores four points
+ * better" was answerable and "and costs 40% more per generation" was not.
+ *
+ * One `groupBy`, and it sums every row in the range rather than only builds, so
+ * the total reconciles with the Generations tile above it (`getQualitySummary`
+ * counts every row too). That makes the count *events*, not generations: a plan,
+ * an image and a memory extraction each carry the version that was active when
+ * they ran. The column is labelled accordingly on the page.
+ */
+async function getPromptVersionCosts(
+  from: Date,
+  to: Date,
+): Promise<Array<Omit<PromptVersionCost, 'label'>>> {
+  const grouped = await prisma.generationEvent.groupBy({
+    by: ['promptVersion'],
+    where: { createdAt: { gte: from, lt: to } },
+    _sum: { estimatedCost: true, inputTokens: true },
+    _count: { _all: true },
+  });
+  return grouped
+    .map((row) => {
+      const events = row._count._all;
+      const estimatedCostUsd = decimalToNumber(row._sum.estimatedCost);
+      // `inputTokens` is nullable and stays null on a run that never attached a
+      // count, so this sum is a floor rather than a total. Said out loud on the
+      // page rather than papered over with an average of the non-null rows,
+      // which would read higher than the workspace actually sent.
+      const inputTokens = row._sum.inputTokens ?? 0;
+      return {
+        promptVersion: row.promptVersion,
+        events,
+        estimatedCostUsd,
+        inputTokens,
+        costPerEventUsd: events > 0 ? estimatedCostUsd / events : null,
+        tokensPerEvent: events > 0 ? inputTokens / events : null,
+      };
+    })
+    .sort(
+      (a, b) =>
+        b.estimatedCostUsd - a.estimatedCostUsd ||
+        (a.promptVersion ?? '').localeCompare(b.promptVersion ?? ''),
+    );
+}
+
+/**
+ * A version's own label where the history has it, its hash where it does not.
+ *
+ * The history is capped at `MAX_VERSION_ROWS`, and a version older than that cap
+ * can still have spend inside the range. Naming it by hash keeps its money on
+ * the page; dropping the row would make the column stop adding up.
+ */
+function labelForVersion(hash: string | null, labels: Map<string, string>) {
+  if (hash == null) return UNVERSIONED_LABEL;
+  return labels.get(hash) ?? hash.slice(0, 12);
 }
 
 function overallFrom(metrics: Record<QualitySignalKind, KindMetric>): number | null {
@@ -187,11 +315,23 @@ export async function getPromptVersionHistory(from: Date, to: Date) {
  * thin-checkpoints cron.
  */
 export async function getQualityDashboard(from: Date, to: Date) {
-  const [summary, windows, versions] = await Promise.all([
+  const [summary, windows, versions, costs] = await Promise.all([
     getQualitySummary(from, to),
     aggregateWindows({ from, to }),
     getPromptVersionHistory(from, to),
+    getPromptVersionCosts(from, to),
   ]);
   const metrics = metricsFrom(windows.all, windows.recent, windows.prior);
-  return { summary, metrics, overall: overallFrom(metrics), versions };
+  const labels = new Map(versions.map((version) => [version.hash, version.label]));
+  return {
+    summary,
+    metrics,
+    overall: overallFrom(metrics),
+    versions,
+    toolRefusals: toolRefusalsFrom(windows.all),
+    costs: costs.map((row) => ({
+      ...row,
+      label: labelForVersion(row.promptVersion, labels),
+    })),
+  };
 }

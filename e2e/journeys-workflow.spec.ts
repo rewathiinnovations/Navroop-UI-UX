@@ -197,11 +197,12 @@ test.describe('journey 2 — create project from a prompt', () => {
 
     // The prompt is what the project was created from, so it has to be on the row
     // the workspace is showing — a workspace that opened some *other* project
-    // would satisfy every assertion above.
-    const response = await page.request.get(`/api/projects/${createdProjectId}`);
-    expect(response.ok()).toBeTruthy();
-    const body = (await response.json()) as { project?: { initialPrompt?: string } };
-    expect(body.project?.initialPrompt).toBe(prompt);
+    // would satisfy every assertion above. The detail API deliberately stopped
+    // returning initialPrompt (getProject destructures it away), so the proof
+    // is the row-derived name the workspace loaded: a deferred-planning create
+    // names the row from the prompt itself (nameFromPrompt), and no other
+    // project row can produce this fragment.
+    await expect(nameField).toHaveValue(/neighbourhood bike repair/i, { timeout: 15_000 });
   });
 });
 
@@ -360,8 +361,19 @@ test.describe('journey 4 — publish refuses before it can run', () => {
     // `Hint` keeps its tooltip in the DOM and reveals it on hover, so the reason
     // is assertable. `PublishPanel` prefers the server's setup message and falls
     // back to the generated-yet hint, so the expectation follows the same order.
+    //
+    // The generous timeout is the point of the assertion, not slack around it. The
+    // panel renders the fallback hint until its own `GET /publish` resolves, and the
+    // journeys run against a dev server that compiles each route on first request:
+    // a trace of the one failure this ever had shows that GET taking 4.2s and the
+    // default 5s expect losing by ~370ms, while the served body was correct. The
+    // claim under test is that the chrome ends up agreeing with the server, so wait
+    // as long as the button's own visibility check does rather than re-testing how
+    // fast Next compiles.
     const reason = state.setupMessage || 'Generate the project first';
-    await expect(page.locator('[data-tour="publish"] [role="tooltip"]')).toHaveText(reason);
+    await expect(page.locator('[data-tour="publish"] [role="tooltip"]')).toHaveText(reason, {
+      timeout: 60_000,
+    });
   });
 
   test('POST publish is refused while an integration is missing', async ({ request }) => {

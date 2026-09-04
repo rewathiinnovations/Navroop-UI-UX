@@ -3,6 +3,7 @@ import type { Browser } from 'playwright';
 import { withHeadlessBrowser } from './headless-browser';
 import type { SeoFinding } from '@/lib/seo/types';
 import { finding } from './findings';
+import { captureRuntimeMessages, runtimeFindings, type RuntimeMessage } from './runtime-errors';
 import { toolFailedFinding, toolFailedId } from './static/tool-fail';
 import type { AxeViolation, CodeFinding, CodeSeverity } from './types';
 
@@ -111,13 +112,25 @@ export function dedupeA11yAgainstSeo(a11y: CodeFinding[], seo: SeoFinding[]): Co
   });
 }
 
+/**
+ * One viewport pass: what axe found, and what the page said while it was open.
+ *
+ * The two travel together because they are one page load. Nothing else in the pipeline
+ * ever runs the generated site, so a second load purely to listen for exceptions would
+ * mean a second Chromium page for a fact this one is already in a position to observe —
+ * see the module comment in `lib/audit/runtime-errors.ts`.
+ */
 async function axeOnPage(
   browser: Browser,
   url: string,
   width: number,
   label: string,
-): Promise<CodeFinding[]> {
+): Promise<{ a11y: CodeFinding[]; runtime: RuntimeMessage[] }> {
   const page = await browser.newPage({ viewport: { width, height: width === 390 ? 844 : 800 } });
+  // Before the goto, not after: a component that throws on its first render has already
+  // thrown by the time the navigation settles, and a listener attached afterwards would
+  // hear nothing and report the page as clean.
+  const runtime = captureRuntimeMessages(page);
   try {
     await page.goto(url, { waitUntil: 'networkidle', timeout: 15_000 });
     const axePath = require.resolve('axe-core');
@@ -133,12 +146,26 @@ async function axeOnPage(
       if (!runner) return [];
       return runner.run().then((result) => result.violations || []);
     })) as AxeViolation[];
-    return findingsFromAxe(violations, label);
+    // Read after the axe run rather than straight after the goto: console events are
+    // delivered on the CDP connection, not synchronously with the page's own execution,
+    // and the evaluate round trip is the last point at which this pass is still waiting
+    // on the page for anything.
+    return { a11y: findingsFromAxe(violations, label), runtime: runtime.messages() };
   } finally {
     await page.close().catch(() => undefined);
   }
 }
 
+/**
+ * The audit's whole browser pass: `a11y` rows from axe and `runtime` rows from the page.
+ *
+ * The name is axe's because axe is what pays for the Chromium; the runtime capture is a
+ * passenger on the same two loads. Both categories come back in one array so the caller's
+ * existing failure handling covers both — the pass is atomic, and a throw anywhere in it
+ * (no browser, a navigation timeout, an axe injection that was refused) means neither
+ * check reached a verdict, which is exactly what the `tool:a11y` rows below already say.
+ * `runCodeScan` splits the array by category; see the `runtime` arm there.
+ */
 export async function runA11yAudit(
   previewUrl: string | null,
   seo: SeoFinding[],
@@ -154,10 +181,19 @@ export async function runA11yAudit(
       await axeOnPage(browser, previewUrl, 390, '390px'),
     ]);
     const merged = new Map<string, CodeFinding>();
-    for (const row of [...desktop, ...mobile]) {
+    for (const row of [...desktop.a11y, ...mobile.a11y]) {
       if (!merged.has(row.id)) merged.set(row.id, row);
     }
-    return dedupeA11yAgainstSeo([...merged.values()], seo);
+    // The runtime rows are deliberately outside `dedupeA11yAgainstSeo`. That function
+    // matches on words — "alt text", "viewport", "title" — anywhere in a finding's id,
+    // title or detail, and a runtime message quotes the page's own error text, so a
+    // TypeError mentioning a `title` property would be silently dropped because the SEO
+    // audit happened to report a missing page title. The overlap it exists to remove is
+    // between axe and SEO; nothing in SEO restates a thrown exception.
+    return [
+      ...dedupeA11yAgainstSeo([...merged.values()], seo),
+      ...runtimeFindings([...desktop.runtime, ...mobile.runtime]),
+    ];
   } catch (error) {
     // "There is no browser here" and "the browser choked on this page" are two
     // different sentences with two different first moves; see

@@ -1,60 +1,48 @@
+import { isLoopbackHostname } from './loopback';
+
 /**
- * Public token-gated preview shell. New-tab opens `/preview-view?projectId=&token=`.
- * The page loads project files and renders them in BrowserPreview (srcdoc).
- * Generated JS never runs top-level on the app origin (F-140).
+ * Public token-gated preview shell. The signed destination is minted by
+ * `signedPreviewUrl` / `GET /api/projects/[id]/preview`. This module only
+ * wraps that URL in a chrome-only app page and checks the iframe host
+ * against the configured preview origin (F-140).
  */
 
 export const PUBLIC_PREVIEW_VIEW_PATH = '/preview-view';
 
-/** Serializable site the public shell hands to BrowserPreview. */
-export type PublicPreviewSite = {
-  ok: true;
-  stack: string;
-  designDirection: string | null;
-  files: Record<string, string>;
-};
-
-export function publicPreviewViewHref(input: { projectId: string; token: string }): string {
-  const params = new URLSearchParams({
-    projectId: input.projectId,
-    token: input.token,
-  });
-  return `${PUBLIC_PREVIEW_VIEW_PATH}?${params}`;
+export function publicPreviewViewHref(signedUrl: string): string {
+  return `${PUBLIC_PREVIEW_VIEW_PATH}?u=${encodeURIComponent(signedUrl)}`;
 }
 
-export function parsePublicPreviewViewSearch(
-  search: Record<string, string | string[] | undefined> | { projectId?: string; token?: string; u?: string },
-): { projectId: string; token: string } | null {
-  const projectId = firstSearchValue(search, 'projectId');
-  const token = firstSearchValue(search, 'token');
-  if (!projectId || !token) return null;
-  return { projectId, token };
-}
-
-function firstSearchValue(
-  search: Record<string, string | string[] | undefined> | { projectId?: string; token?: string; u?: string },
-  key: 'projectId' | 'token',
+/**
+ * The only iframe src the public shell may load: an https URL whose origin
+ * is exactly the configured `previewStaticBaseUrl`, carrying the existing
+ * signed token. Anything else (app origin, other hosts, relative, javascript,
+ * missing token, missing preview origin) is refused — query-passing a full
+ * URL is otherwise an open redirect / XSS sink.
+ */
+export function resolvePublicPreviewFrameSrc(
+  candidate: string | null | undefined,
+  previewOrigin: string | null | undefined,
 ): string | null {
-  const raw = search[key];
-  const value = Array.isArray(raw) ? raw[0] : raw;
-  const trimmed = value?.trim();
-  return trimmed || null;
-}
+  if (!candidate?.trim() || !previewOrigin?.trim()) return null;
 
-/** Open-in-new-tab is a site, not a Cloudflare origin. */
-export function canOpenPreviewInNewTab(input: {
-  hasStoredFiles: boolean;
-  previewUrl?: string | null;
-}): boolean {
-  return Boolean(input.hasStoredFiles);
-}
+  let preview: URL;
+  let target: URL;
+  try {
+    preview = new URL(previewOrigin);
+    target = new URL(candidate);
+  } catch {
+    return null;
+  }
 
-/** Prefer a minted href; otherwise ask the caller to mint (POST action:token). */
-export async function resolveNewTabPreviewHref(input: {
-  previewUrl: string | null | undefined;
-  mint?: () => Promise<string | null>;
-}): Promise<string | null> {
-  if (input.previewUrl) return input.previewUrl;
-  if (!input.mint) return null;
-  return (await input.mint()) ?? null;
+  // https everywhere real; plain http only between two loopback names, which
+  // is the local sibling origin (`preview-static.localhost`) - it cannot leave
+  // the machine, and browsers treat it as a secure context anyway.
+  const bothLoopback = isLoopbackHostname(preview.hostname) && isLoopbackHostname(target.hostname);
+  if (!bothLoopback && (preview.protocol !== 'https:' || target.protocol !== 'https:')) return null;
+  if (target.username || target.password) return null;
+  if (target.origin !== preview.origin) return null;
+  if (!target.searchParams.get('token')) return null;
+
+  return target.toString();
 }

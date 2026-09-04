@@ -36,9 +36,11 @@ export type VerifyStepResult = {
   failureReason?: string;
 };
 
+export type VerifyMode = 'verify' | 'verify:full' | 'verify:light';
+
 export type VerifyRunResult = {
   ok: boolean;
-  mode: 'verify' | 'verify:full';
+  mode: VerifyMode;
   results: VerifyStepResult[];
   failedStep?: VerifyStepResult;
   reproduce?: string;
@@ -188,7 +190,12 @@ export const VERIFY_STEPS: VerifyStep[] = [
     label: 'Playwright authenticated journeys',
     command: 'node ./node_modules/@playwright/test/cli.js test --project=authenticated',
     fatal: true,
-    assertExecuted: requireExecuted(),
+    // One declared conditional skip: "POST publish is refused while an
+    // integration is missing" covers only the refusal, and on a machine where
+    // GitHub, Cloudflare and Coolify are all genuinely connected it skips
+    // itself rather than pushing a repository and deploying for real. On a
+    // machine without the integrations it runs, so the ceiling stays 1.
+    assertExecuted: requireExecuted({ allowSkipped: 1 }),
   },
   {
     // Fatal since 2026-08-21. It was `fatal: false` with no config, so it printed the
@@ -234,7 +241,31 @@ export const VERIFY_FULL_EXTRA_STEPS: VerifyStep[] = [
   },
 ];
 
-export function stepsForMode(mode: 'verify' | 'verify:full') {
+/**
+ * What `verify:light` — the pre-push hook's mode since 2026-08-29 — defers to CI
+ * rather than runs on the developer's machine. The full gate took ~5.5 minutes
+ * per push and these five entries were ~2.7 of them (next build 58s, the two
+ * Playwright projects 81s, depcheck 12s, knip 7s); `.github/workflows/verify.yml`
+ * runs the complete `verify` on the very push the hook just let through, so the
+ * deferral narrows *when* a red is reported, never *whether*. The light run also
+ * drops `--coverage` from the vitest step — the assertions all still run locally;
+ * only the coverage-floor ratchet waits for CI. Deliberately NOT deferred:
+ * `secret-scan` (a credential must never leave the machine at all — CI reporting
+ * it is already the leak) and `audit` (1.1s, and a high-severity advisory should
+ * stop a push, not follow it). The summary prints one line per deferred entry so
+ * the gate says what it did not do; `pnpm run verify` remains the full local run.
+ */
+export const LIGHT_DEFERRED_STEP_IDS: readonly string[] = [
+  'next-build',
+  'playwright-critical',
+  'playwright-authenticated',
+  'depcheck',
+  'knip',
+];
+
+export const LIGHT_VITEST_COMMAND = 'node ./node_modules/vitest/vitest.mjs run';
+
+export function stepsForMode(mode: VerifyMode) {
   if (mode === 'verify:full') {
     // `playwright-all` runs every project, so the two per-project Playwright
     // steps would only repeat work it already covers.
@@ -242,6 +273,13 @@ export function stepsForMode(mode: 'verify' | 'verify:full') {
       (step) => step.id !== 'playwright-critical' && step.id !== 'playwright-authenticated',
     );
     return [...withoutProjectRuns, ...VERIFY_FULL_EXTRA_STEPS];
+  }
+  if (mode === 'verify:light') {
+    return VERIFY_STEPS.filter((step) => !LIGHT_DEFERRED_STEP_IDS.includes(step.id)).map((step) =>
+      step.id === 'vitest'
+        ? { ...step, label: 'Vitest (coverage in CI)', command: LIGHT_VITEST_COMMAND }
+        : step,
+    );
   }
   return VERIFY_STEPS;
 }
@@ -257,6 +295,17 @@ export function formatSummary(result: VerifyRunResult) {
     const reason = row.failureReason ? ` — ${row.failureReason}` : '';
     return `${tick(row.ok)} ${row.label}${suffix}  ${seconds}s${reason}`;
   });
+  if (result.mode === 'verify:light') {
+    // A summary that lists only what ran reads as "everything passed". These are
+    // the entries this run deliberately did not execute, and where they went.
+    for (const step of VERIFY_STEPS) {
+      if (LIGHT_DEFERRED_STEP_IDS.includes(step.id)) {
+        lines.push(
+          `– ${step.label}  deferred to CI (.github/workflows/verify.yml runs it on this push)`,
+        );
+      }
+    }
+  }
   if (!result.ok && result.reproduce) {
     lines.push('');
     lines.push(`Failed. Reproduce: ${result.reproduce}`);
@@ -265,7 +314,7 @@ export function formatSummary(result: VerifyRunResult) {
 }
 
 export async function runVerify(options: {
-  mode: 'verify' | 'verify:full';
+  mode: VerifyMode;
   runCommand: RunCommand;
   now?: () => number;
 }): Promise<VerifyRunResult> {

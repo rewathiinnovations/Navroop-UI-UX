@@ -1,4 +1,11 @@
-import { resolveDirectionId, type DesignDirectionId } from '@/lib/design/directions';
+import {
+  getDirectionTokens,
+  renderTokenCss,
+  resolveDirectionId,
+  type DesignDirectionId,
+  type DirectionTokens,
+} from '@/lib/design/directions';
+import { resolveProjectTokens } from '@/lib/design/palette-tokens';
 import {
   STYLE_PROFILES,
   TYPEFACE_PROFILES,
@@ -10,13 +17,34 @@ import {
 
 type ColorProfile = {
   name: string;
+  /**
+   * Mood and adjacent words. Worth a normal hit.
+   *
+   * These used to be the only list, and that is how "a premium dental clinic"
+   * got the Luxury palette: `premium` (Luxury) and `clinic` (Healthcare) both
+   * scored 2, the tie was broken by array position, and Luxury is declared
+   * first. An adjective outranked the industry the site is actually in.
+   */
   keywords: string[];
+  /**
+   * The nouns that name the industry outright. Worth three times a mood word, so
+   * "clinic" beats "premium" and the direction — which is where a mood word
+   * belongs — is what carries "premium" into the design.
+   */
+  industry: string[];
   mode: 'light' | 'dark';
   primary: string;
   accent: string;
   background: string;
   foreground: string;
   notes: string;
+  /**
+   * Domain tags for this palette, matched against a style's `avoid:` prose so a
+   * style that declares itself wrong for the sector is excluded outright rather
+   * than merely outscored. Glassmorphism's own row says it is wrong for
+   * "serious/medical" — and it shipped a dental clinic anyway.
+   */
+  tags: string[];
 };
 
 type StyleProfile = VendoredStyle & {
@@ -37,10 +65,7 @@ type LandingProfile = VendoredLanding;
 const STYLES: StyleProfile[] = STYLE_PROFILES.filter((style) => style.type === 'General').map(
   (style) => ({
     ...style,
-    aliases: [
-      style.name.toLowerCase(),
-      ...style.keywords.map((keyword) => keyword.toLowerCase()),
-    ],
+    aliases: [style.name.toLowerCase(), ...style.keywords.map((keyword) => keyword.toLowerCase())],
   }),
 );
 
@@ -66,105 +91,155 @@ const LANDINGS: LandingProfile[] = LANDING_PROFILES;
 const COLORS: ColorProfile[] = [
   {
     name: 'SaaS',
-    keywords: ['saas', 'software', 'platform', 'b2b', 'tool'],
+    keywords: ['software', 'b2b', 'tool', 'workspace', 'subscription'],
+    industry: ['saas', 'platform', 'dashboard', 'crm', 'api'],
     mode: 'light',
     primary: '#2563EB',
     accent: '#EA580C',
     background: '#F8FAFC',
     foreground: '#1E293B',
-    notes: 'Trust blue + orange CTA',
+    notes: 'Trust blue on a cool near-white',
+    tags: ['saas', 'corporate', 'data'],
   },
   {
     name: 'E-commerce',
-    keywords: ['shop', 'store', 'ecommerce', 'product', 'cart'],
+    keywords: ['product', 'cart', 'checkout', 'catalog', 'brand'],
+    industry: ['shop', 'store', 'ecommerce', 'boutique', 'marketplace'],
     mode: 'light',
     primary: '#059669',
     accent: '#EA580C',
     background: '#ECFDF5',
     foreground: '#064E3B',
-    notes: 'Success green + urgency orange',
+    notes: 'Confident green, high-contrast CTA',
+    tags: ['ecommerce', 'retail'],
   },
   {
     name: 'Luxury',
-    keywords: ['luxury', 'fashion', 'spa', 'hotel', 'premium', 'beauty'],
+    keywords: ['luxury', 'premium', 'bespoke', 'exclusive', 'couture', 'upscale'],
+    industry: ['fashion', 'spa', 'hotel', 'resort', 'jewellery', 'jewelry', 'salon'],
     mode: 'light',
     primary: '#1C1917',
     accent: '#A16207',
     background: '#FAFAF9',
     foreground: '#0C0A09',
-    notes: 'Stone + gold',
+    notes: 'Stone and near-black, gold reserved for one accent',
+    tags: ['luxury', 'hospitality'],
   },
   {
     name: 'Healthcare',
-    keywords: ['health', 'clinic', 'medical', 'wellness', 'hospital'],
+    keywords: ['health', 'wellness', 'patient', 'care', 'treatment', 'therapy'],
+    industry: [
+      'clinic',
+      'medical',
+      'hospital',
+      'dental',
+      'dentist',
+      'doctor',
+      'physiotherapy',
+      'pharmacy',
+      'diagnostic',
+      'veterinary',
+    ],
     mode: 'light',
     primary: '#0891B2',
     accent: '#059669',
     background: '#ECFEFF',
     foreground: '#164E63',
-    notes: 'Calm cyan + health green',
+    notes: 'Calm clinical cyan, nothing that reads as a hard sell',
+    tags: ['medical', 'serious', 'accessibility'],
   },
   {
     name: 'Creative',
-    keywords: ['agency', 'studio', 'creative', 'portfolio', 'design'],
+    keywords: ['creative', 'design', 'brand', 'art', 'director'],
+    industry: ['agency', 'studio', 'portfolio', 'illustrator', 'photographer'],
     mode: 'light',
     primary: '#EC4899',
     accent: '#0891B2',
     background: '#FDF2F8',
     foreground: '#831843',
-    notes: 'Bold pink + cyan',
+    notes: 'Expressive pink, used sparingly against near-white',
+    tags: ['creative', 'portfolio'],
   },
   {
     name: 'Fintech',
-    keywords: ['bank', 'finance', 'fintech', 'crypto', 'trading'],
+    keywords: ['finance', 'trading', 'invest', 'portfolio value', 'ledger'],
+    industry: ['bank', 'banking', 'fintech', 'crypto', 'insurance', 'accounting'],
     mode: 'dark',
     primary: '#0F172A',
     accent: '#22C55E',
     background: '#020617',
     foreground: '#F8FAFC',
-    notes: 'Dark navy + positive green',
+    notes: 'Dark navy, green reserved for positive figures only',
+    tags: ['finance', 'serious', 'data', 'corporate'],
   },
   {
     name: 'Education',
-    keywords: ['school', 'learn', 'course', 'education', 'kids'],
+    keywords: ['learn', 'course', 'student', 'curriculum', 'tuition'],
+    industry: ['school', 'education', 'academy', 'college', 'university', 'coaching'],
     mode: 'light',
     primary: '#4F46E5',
     accent: '#EA580C',
     background: '#EEF2FF',
     foreground: '#1E1B4B',
-    notes: 'Indigo + energetic orange',
+    notes: 'Indigo, warm and legible at long reading lengths',
+    tags: ['education', 'accessibility'],
   },
   {
     name: 'Restaurant',
-    keywords: ['food', 'restaurant', 'cafe', 'menu', 'kitchen'],
+    keywords: ['food', 'menu', 'kitchen', 'dining', 'chef', 'tasting'],
+    industry: ['restaurant', 'cafe', 'bakery', 'bistro', 'catering', 'brewery'],
     mode: 'light',
     primary: '#C2410C',
     accent: '#CA8A04',
     background: '#FFF7ED',
     foreground: '#431407',
-    notes: 'Warm terracotta',
+    notes: 'Warm terracotta on cream',
+    tags: ['food', 'hospitality'],
   },
   {
     name: 'Real Estate',
-    keywords: ['real estate', 'property', 'home', 'architect'],
+    keywords: ['property', 'listing', 'architect', 'interior', 'apartment'],
+    industry: ['real estate', 'realty', 'builder', 'developer property', 'brokerage'],
     mode: 'light',
     primary: '#1E3A8A',
     accent: '#D97706',
     background: '#F8FAFC',
     foreground: '#1E3A8A',
-    notes: 'Navy + amber',
+    notes: 'Navy with an amber highlight',
+    tags: ['realestate', 'corporate'],
   },
   {
     name: 'Gaming',
-    keywords: ['game', 'esport', 'gaming', 'stream'],
+    keywords: ['game', 'stream', 'clan', 'tournament', 'arcade'],
+    industry: ['esport', 'esports', 'gaming', 'games studio'],
     mode: 'dark',
     primary: '#7C3AED',
     accent: '#F43F5E',
     background: '#0F0F23',
     foreground: '#E2E8F0',
-    notes: 'Neon purple + rose',
+    notes: 'Neon violet on near-black',
+    tags: ['gaming', 'entertainment'],
   },
 ];
+
+/**
+ * Domain tag -> the words a style's `avoid:` prose uses for it.
+ *
+ * The vendored profiles already carry an honest `avoid` line per style; nothing
+ * read it. Matching it against the selected palette's tags turns that prose into
+ * an exclusion, which is the difference between "Glassmorphism scored highest"
+ * and "Glassmorphism says it is wrong for medical, so it is not a candidate".
+ */
+const AVOID_TERMS: Record<string, string[]> = {
+  medical: ['medical', 'healthcare', 'health care', 'clinical'],
+  serious: ['serious', 'data-critical', 'critical accessibility', 'conservative'],
+  finance: ['finance', 'financial', 'accounting', 'legal'],
+  corporate: ['corporate', 'professional services', 'enterprise'],
+  accessibility: ['critical accessibility', 'accessible public services', 'elderly'],
+  data: ['data grids', 'data-critical', 'data-heavy'],
+  education: ["children's apps"],
+  entertainment: ['entertainment'],
+};
 
 /**
  * The style each design direction resolves to when the prompt carries no style
@@ -247,11 +322,12 @@ function topScoring<T extends { keywords: string[] }>(
   items: readonly T[],
   tokens: readonly string[],
   text: string,
+  weigh: (item: T) => number = () => 0,
 ) {
   let best = 0;
   const winners: T[] = [];
   for (const item of items) {
-    const score = scoreKeywords(tokens, text, item.keywords);
+    const score = scoreKeywords(tokens, text, item.keywords) + weigh(item);
     if (score > best) {
       best = score;
       winners.length = 0;
@@ -259,6 +335,18 @@ function topScoring<T extends { keywords: string[] }>(
     if (score === best) winners.push(item);
   }
   return { winners, score: best };
+}
+
+/**
+ * An industry noun is worth three ordinary keyword hits.
+ *
+ * "a premium dental clinic" used to resolve to the Luxury palette: `premium`
+ * and `clinic` both scored 2 and Luxury is declared first in the array. The
+ * industry the site is in is not a tie with an adjective about how it should
+ * feel — the adjective is what the design *direction* is for.
+ */
+function weighIndustry(tokens: readonly string[], text: string) {
+  return (palette: ColorProfile) => scoreKeywords(tokens, text, palette.industry) * 3;
 }
 
 function pickByName<T extends { name: string }>(items: readonly T[], name: string) {
@@ -272,9 +360,27 @@ function pickScored<T extends { name: string; keywords: string[] }>(
   tokens: readonly string[],
   text: string,
   defaultName: string,
+  weigh?: (item: T) => number,
 ) {
-  const { winners, score } = topScoring(items, tokens, text);
+  const { winners, score } = topScoring(items, tokens, text, weigh);
   return score === 0 ? pickByName(items, defaultName) : winners[0];
+}
+
+/**
+ * Styles whose own `avoid:` prose rules them out for this palette's sector.
+ *
+ * Returns the full pool when the filter would empty it: a brief with no style is
+ * worse than a style the data mildly disapproves of, and an empty candidate list
+ * is the one outcome that would make generation fail outright.
+ */
+function compatibleStyles(palette: ColorProfile) {
+  const terms = palette.tags.flatMap((tag) => AVOID_TERMS[tag] ?? []);
+  if (terms.length === 0) return STYLES;
+  const survivors = STYLES.filter((style) => {
+    const avoid = style.avoid.toLowerCase();
+    return !terms.some((term) => avoid.includes(term));
+  });
+  return survivors.length > 0 ? survivors : STYLES;
 }
 
 function pickStyle(
@@ -282,6 +388,7 @@ function pickStyle(
   text: string,
   styleHint: string | undefined,
   direction: DesignDirectionId,
+  palette: ColorProfile,
 ) {
   const hint = (styleHint || '').toLowerCase().trim();
   if (hint) {
@@ -296,18 +403,30 @@ function pickStyle(
     if (exact) return exact;
   }
 
-  const preferred = pickByName(STYLES, STYLE_FOR_DIRECTION[direction]);
-  const { winners, score } = topScoring(STYLES, tokens, text);
+  // The sector filter runs before anything is scored, so a style the data
+  // declares wrong for this industry can never win on keyword count.
+  const pool = compatibleStyles(palette);
+  const directionStyle = pickByName(STYLES, STYLE_FOR_DIRECTION[direction]);
+  const preferred = pool.includes(directionStyle) ? directionStyle : pool[0];
+  const { winners, score } = topScoring(pool, tokens, text);
   if (score === 0) return preferred;
   // Keyword hits refine the direction; the direction breaks their ties.
   return winners.includes(preferred) ? preferred : winners[0];
 }
 
 export type UiUxProfiles = {
+  /** The direction the palette and style were reconciled against. */
+  direction: DesignDirectionId;
   style: StyleProfile;
   colors: ColorProfile;
   type: TypeProfile;
   landing: LandingProfile;
+  /**
+   * The project's real CSS variables: the direction's radius and depth, the
+   * palette's colour. One set of numbers, so the DESIGN DIRECTION block and this
+   * brief cannot describe two different sites.
+   */
+  tokens: DirectionTokens;
 };
 
 /**
@@ -327,8 +446,11 @@ export function selectUiUxProfiles(input: {
   const tokens = words.split(' ').filter(Boolean);
   const direction = resolveDirectionId(input.designDirection);
 
-  const style = pickStyle(tokens, text, input.styleHint, direction);
-  const scored = pickScored(COLORS, tokens, text, DEFAULT_COLOR);
+  // The palette is chosen first, because it carries the sector and the sector is
+  // what decides which styles are even candidates. Choosing the style first is
+  // how a medical site got a style whose own row says "avoid: serious/medical".
+  const scored = pickScored(COLORS, tokens, text, DEFAULT_COLOR, weighIndustry(tokens, text));
+  const style = pickStyle(tokens, text, input.styleHint, direction, scored);
   // A light style with a dark palette (or the reverse) puts two backgrounds and a
   // card rule that fights both into one "MANDATORY" block (F-831).
   const colors: ColorProfile =
@@ -337,10 +459,12 @@ export function selectUiUxProfiles(input: {
       : { ...scored, mode: style.surface, ...SURFACES[style.surface] };
 
   return {
+    direction,
     style,
     colors,
     type: pickScored(TYPEFACES, tokens, text, DEFAULT_TYPEFACE),
     landing: pickScored(LANDINGS, tokens, text, DEFAULT_LANDING),
+    tokens: resolveProjectTokens(getDirectionTokens(direction), colors),
   };
 }
 
@@ -358,7 +482,7 @@ export function buildUiUxProMaxBrief(input: {
   designDirection?: string | null;
   isEdit?: boolean;
 }): UiUxBriefResult {
-  const { style, colors, type, landing } = selectUiUxProfiles(input);
+  const { style, colors, landing, tokens } = selectUiUxProfiles(input);
 
   // The chosen style is the contract for later turns. Emitting it here means a
   // follow-up edit (where the user did not name a style again) re-selects the same
@@ -403,7 +527,6 @@ Mobile-friendly: ${style.mobile}
 
 ### Color system: ${colors.name}
 - Primary: ${colors.primary}
-- Accent / CTA: ${colors.accent}
 - Background: ${colors.background}
 - Foreground: ${colors.foreground}
 - ${cards}
@@ -411,12 +534,17 @@ Notes: ${colors.notes}
 These hex values belong in the project's token block in the global stylesheet, as the CSS variables the semantic classes read. Do not write them as arbitrary-value classes (bg-[#2563EB]) in components. Keep CTA contrast high.
 This is a ${colors.mode} interface: every surface, card, and text color derives from the background above.
 
-### Typography: ${type.name}
-- Headings: ${type.heading}
-- Body: ${type.body}
-- Import once: ${type.importUrl}
-- Tight heading tracking, readable body 16px+, line-height 1.5-1.7
-${type.notes ? `- ${type.notes}` : ''}
+### Token block (write these values, exactly, into the :root of the global stylesheet)
+The colours below are this palette; the radius and the shadow are the design direction's. This is the only palette in this prompt — the DESIGN DIRECTION block above describes type, spacing, radius and depth, and defers colour to here. Copy the block verbatim; do not round, re-derive, or "improve" a value.
+\`\`\`css
+:root {
+${renderTokenCss(tokens)}
+}
+\`\`\`
+Every colour a component needs is one of these variables through its semantic class (bg-background, text-foreground, bg-primary, text-primary-foreground, bg-card, text-muted-foreground, border-border). --primary-foreground is already the readable pair for --primary: never override a CTA's text colour by hand.
+
+### Typography
+The DESIGN DIRECTION block above names the type pairing. Use it, load those Google Fonts once in the root layout, and do not substitute another pairing here.
 
 ### Page structure: ${landing.name}
 ${landing.sections}
@@ -427,6 +555,8 @@ ${UX_RULES}
 
 ### Implementation checklist
 - Header + nav, hero, 3-5 content sections, footer
+- Every page named in the plan is a real route with real content. A nav link must never point at a route that does not exist, and never at "#" as a placeholder.
+- Shared header and footer live in one component each and are used by every page, so navigation is consistent everywhere.
 - Responsive grid, consistent 8px spacing rhythm
 - Hover, focus, and disabled states on interactive elements
 - No placeholder grey boxes where real UI should exist

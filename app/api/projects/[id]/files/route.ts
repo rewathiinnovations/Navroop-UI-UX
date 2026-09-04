@@ -26,6 +26,10 @@ async function getFiles(params: Promise<{ id: string }>) {
       id: true,
       stack: true,
       lastCode: true,
+      // Whether those files build. When they are known not to, `servedProjectFiles` answers
+      // with the last version proven to, so the preview never compiles a repair pass that
+      // failed (see `heldBack` below).
+      lastCodeValidated: true,
       contentVersion: true,
       // The in-browser preview needs it: it decides which token block the
       // starter stylesheet carries, and the files alone do not say.
@@ -61,6 +65,11 @@ async function getFiles(params: Promise<{ id: string }>) {
     designDirection: project.designDirection,
     contentVersion: project.contentVersion,
     previewing: served.previewing,
+    // Non-null only while the current files are known broken and an earlier proven-good
+    // version is being shown in their place. The workspace turns this into a banner: a
+    // silent substitution would leave someone staring at a site that does not have the
+    // change they just asked for, with nothing saying why.
+    heldBack: served.heldBack,
     files,
     structure: Object.keys(files).sort().join('\n'),
   });

@@ -34,6 +34,13 @@ export type CodeScanSignals = {
   axeViolations: Array<{ impact: string | null }> | null;
   tsErrors: number | null;
   buildOk: boolean | null;
+  /**
+   * Uncaught exceptions and console errors the page produced while the browser had it
+   * open. `0` is a page that mounted cleanly; `null` is a page nobody opened — the same
+   * distinction the three above carry, and the one that stops a scan that never launched
+   * a browser from being filed as a site that never throws.
+   */
+  runtimeErrors: number | null;
 };
 
 /**
@@ -162,6 +169,15 @@ export async function runCodeScan(input: {
   // then failed — hence the `toolFailed` test beside it.
   const a11yRan = full && !toolFailed(a11y, 'a11y');
   const aiRan = full && ai.usage !== null && !toolFailed(ai.findings, 'ai-review');
+  // The browser pass carries two checks in one array (see `runA11yAudit`). This one is
+  // gated on a `runtime` row being present rather than on `a11yRan`, because the row is
+  // the only positive evidence that the page was actually loaded: `runtimeFindings` always
+  // returns at least the `runtime:clean` pass row when a load happened, and returns nothing
+  // at all on every path where it did not — no preview URL, no browser on this deployment,
+  // a navigation that timed out. Counting it off `full` alone would let a deployment with
+  // no Chromium report a check that never opened anything.
+  const runtimeRows = a11y.filter((row) => row.category === 'runtime');
+  const runtimeRan = full && runtimeRows.length > 0;
   return {
     findings,
     metrics: metricsFromFindings(findings, bundle.bundleKb ?? totalBundleKb([])),
@@ -172,10 +188,23 @@ export async function runCodeScan(input: {
       // command and false with no runner to attempt it on.
       (bundle.ran ? 1 : 0) +
       (a11yRan ? 1 : 0) +
+      // Counted separately from the axe pass they share a page load with. "The page mounted
+      // without throwing" is a verdict about the code that no other check in this audit
+      // reaches — the import scan, the esbuild compile and the source heuristics all pass a
+      // component that dereferences null on first render — so a run that learned only that
+      // has still learned something, and `performCodeAudit` should store it.
+      //
+      // It does move the number: a full scan with a working browser now reports one more
+      // check than the same scan did before, because this arm is true on exactly the paths
+      // `a11yRan` is. That is a deliberate re-baselining rather than an accident — it does
+      // not touch the `checksRun === 0` gate in `actions.ts`, which is the only place the
+      // count changes an outcome, but a chart comparing scans across this change is
+      // comparing two different denominators.
+      (runtimeRan ? 1 : 0) +
       (aiRan ? 1 : 0),
     signals: {
       // `metrics` counts findings, and a check that never started contributes
-      // none — indistinguishable from a clean result. These three say which
+      // none — indistinguishable from a clean result. These four say which
       // checks actually produced a verdict, so the collector can record only
       // those (F-705) with axe's real impacts (F-816). A `static` run did not
       // start axe at all, so it asserts nothing about accessibility — the
@@ -188,6 +217,9 @@ export async function runCodeScan(input: {
         : staticFindings.filter((row) => row.category === 'typescript' && row.status !== 'pass')
             .length,
       buildOk: bundle.ran ? !bundle.findings.some((row) => row.id === 'bundle:build-failed') : null,
+      // The clean row is a `pass`, so a page that mounted with nothing thrown counts zero
+      // here rather than one — the same shape `axeViolations: []` has for a clean axe run.
+      runtimeErrors: runtimeRan ? runtimeRows.filter((row) => row.status !== 'pass').length : null,
     },
   };
 }
