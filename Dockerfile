@@ -114,8 +114,21 @@ ENV HOSTNAME=0.0.0.0
 ENV PORT=3000
 ARG GIT_SHA=unknown
 ENV GIT_SHA=${GIT_SHA}
+# Debian bookworm's default `postgresql-client` is 15, and pg_dump refuses to dump a
+# server newer than itself ("server version: 18.6; pg_dump version: 15.19"). The managed
+# Postgres is 18, so pre-migrate's backup — and therefore every deploy carrying a pending
+# migration — failed on that mismatch. Pull the client from PGDG and pin the major to
+# PG_MAJOR so this tracks the server deliberately rather than by Debian's default.
+ARG PG_MAJOR=18
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends postgresql-client \
+  && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
+  && install -d /usr/share/postgresql-common/pgdg \
+  && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+    -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+  && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
+    > /etc/apt/sources.list.d/pgdg.list \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends "postgresql-client-${PG_MAJOR}" \
   && rm -rf /var/lib/apt/lists/*
 
 # A real Chromium, because without one the Quality tab's two most valuable checks cannot
