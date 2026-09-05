@@ -6,12 +6,10 @@ import {
   a11yScoreFromAxe,
   buildSuccessScore,
   followupsToSettleScore,
-  looksLikeVisualEdit,
   runtimeErrorScore,
   seoScoreFromFindings,
   toolRefusalKind,
   typeSafetyScore,
-  visualEditRateScore,
 } from './score';
 
 const BUILD_KINDS = ['initial', 'followup'] as const;
@@ -309,39 +307,15 @@ export async function settleIdleProjects(now = new Date(), limit = SETTLE_BATCH)
   });
 }
 
-export async function recordVisualEditRate(
-  projectId: string,
-  visualEditCount: number,
-  generationEventId?: string | null,
-) {
-  return withSignalGuard('visual_edit_rate', async () => {
-    // Looked up, never fabricated: this branch used to invent
-    // `{ id, promptVersion: null }` from the caller's id, and the null then sent
-    // `writeSignal` to the active-version fallback.
-    const event = await signalSubject(projectId, generationEventId);
-    if (event?.id) {
-      const existing = await findSignal({
-        projectId,
-        kind: 'visual_edit_rate',
-        generationEventId: event.id,
-      });
-      if (existing) return existing;
-    }
-    return writeSignal({
-      projectId,
-      generationEventId: event?.id ?? null,
-      kind: 'visual_edit_rate',
-      value: visualEditRateScore(visualEditCount),
-      rawValue: { visualEditCount },
-      promptVersion: event?.promptVersion,
-    });
-  });
-}
-
-export function countVisualEditsFromSource(source?: string | null, sourceMessage?: string | null) {
-  if (source === 'visual-edit' || looksLikeVisualEdit(sourceMessage)) return 1;
-  return 0;
-}
+/*
+ * `recordVisualEditRate` / `countVisualEditsFromSource` were removed on
+ * 2026-09-05 along with the `visual_edit_rate` weight. Visual edits went on
+ * 2026-08-28, so the count was structurally always 0 and the signal recorded a
+ * perfect 1.0 for every project forever. Existing `QualitySignal` rows of that
+ * kind are left in place — `kind` is a plain string column and
+ * `composeOverallScore` iterates the weights, so rows nothing weights are
+ * simply never read.
+ */
 
 /** Per-tool `{ phase: 'result' }` counts for one generation. */
 export type ToolResultTally = Record<string, { results: number; refusals: number }>;

@@ -31,10 +31,7 @@ import { log } from '@/lib/logger';
 import { holdProjectLock } from '@/lib/projects/lock';
 import { lockConflictAction } from '@/lib/projects/lock-http';
 import { writeAudit } from '@/lib/audit/log';
-
-function canMutate(user: { id: string; role: string }, ownerId: string) {
-  return user.id === ownerId || user.role === 'ADMIN';
-}
+import { canMutateOwned as canMutate } from '@/lib/auth/ownership';
 
 async function loadMutableProject(projectId: string) {
   const user = await getSessionUser();

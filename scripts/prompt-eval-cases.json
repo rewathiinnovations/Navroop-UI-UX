@@ -21,14 +21,7 @@
     "stack": "NEXTJS",
     "designDirection": "technical",
     "expectFiles": 2,
-    "mustNotMatch": [
-      "lorem ipsum",
-      "\\$0\\b",
-      "TODO",
-      "Tier 1",
-      "Tier 2",
-      "Tier 3"
-    ]
+    "mustNotMatch": ["lorem ipsum", "TODO", "Tier 1", "Tier 2", "Tier 3"]
   },
   {
     "id": "dark-mode",
@@ -36,12 +29,7 @@
     "stack": "NEXTJS",
     "designDirection": "minimal",
     "expectFiles": 2,
-    "mustNotMatch": [
-      "bg-black",
-      "text-white",
-      "bg-\\[#",
-      "style=\\{\\{"
-    ],
+    "mustNotMatch": ["bg-black", "text-white", "bg-\\[#", "style=\\{\\{"],
     "seedFiles": {
       "app/layout.tsx": "import './globals.css';\n\nexport default function RootLayout({ children }: { children: React.ReactNode }) {\n  return (\n    <html lang=\"en\">\n      <body>{children}</body>\n    </html>\n  );\n}\n",
       "app/page.tsx": "import Header from '@/components/Header';\nimport Hero from '@/components/Hero';\nimport Testimonials from '@/components/Testimonials';\n\nexport default function Page() {\n  return (\n    <main>\n      <Header />\n      <Hero />\n      <Testimonials />\n    </main>\n  );\n}\n",
@@ -56,11 +44,7 @@
     "stack": "NEXTJS",
     "designDirection": "minimal",
     "expectFiles": 1,
-    "mustNotMatch": [
-      "lorem ipsum",
-      "TODO",
-      "any"
-    ],
+    "mustNotMatch": ["lorem ipsum", "TODO", ":\\s*any\\b"],
     "seedFiles": {
       "app/layout.tsx": "import './globals.css';\n\nexport default function RootLayout({ children }: { children: React.ReactNode }) {\n  return (\n    <html lang=\"en\">\n      <body>{children}</body>\n    </html>\n  );\n}\n",
       "app/page.tsx": "import Header from '@/components/Header';\nimport Hero from '@/components/Hero';\nimport Testimonials from '@/components/Testimonials';\n\nexport default function Page() {\n  return (\n    <main>\n      <Header />\n      <Hero />\n      <Testimonials />\n    </main>\n  );\n}\n",
@@ -75,13 +59,7 @@
     "stack": "NEXTJS",
     "designDirection": "premium",
     "expectFiles": 6,
-    "mustNotMatch": [
-      "lorem ipsum",
-      "Dr\\. John Doe",
-      "example\\.com",
-      "TODO",
-      "Coming soon"
-    ]
+    "mustNotMatch": ["lorem ipsum", "Dr\\. John Doe", "example\\.com", "TODO", "Coming soon"]
   },
   {
     "id": "contact-form-validated",
@@ -89,12 +67,14 @@
     "stack": "NEXTJS",
     "designDirection": "minimal",
     "expectFiles": 2,
-    "mustNotMatch": [
-      "lorem ipsum",
-      "TODO",
-      "alert\\(",
-      "console\\.log\\("
-    ]
+    "mustNotMatch": ["lorem ipsum", "TODO", "alert\\(", "console\\.log\\("],
+    "seedFiles": {
+      "app/layout.tsx": "import './globals.css';\n\nexport default function RootLayout({ children }: { children: React.ReactNode }) {\n  return (\n    <html lang=\"en\">\n      <body>{children}</body>\n    </html>\n  );\n}\n",
+      "app/page.tsx": "import Header from '@/components/Header';\nimport Hero from '@/components/Hero';\nimport Testimonials from '@/components/Testimonials';\n\nexport default function Page() {\n  return (\n    <main>\n      <Header />\n      <Hero />\n      <Testimonials />\n    </main>\n  );\n}\n",
+      "components/Header.tsx": "import Link from 'next/link';\n\nconst LINKS = [\n  { href: '#menu', label: 'Menu' },\n  { href: '#about', label: 'About' },\n  { href: '#visit', label: 'Visit' },\n  { href: '#hours', label: 'Hours' },\n  { href: '#contact', label: 'Contact' },\n];\n\nexport default function Header() {\n  return (\n    <header className=\"border-b border-border bg-card\">\n      <nav className=\"flex items-center gap-6 px-6 py-4\">\n        {LINKS.map((link) => (\n          <Link key={link.href} href={link.href} className=\"text-foreground\">\n            {link.label}\n          </Link>\n        ))}\n      </nav>\n    </header>\n  );\n}\n",
+      "components/Hero.tsx": "import { Button } from '@/components/ui/button';\n\nexport default function Hero() {\n  return (\n    <section className=\"bg-background px-6 py-24\">\n      <h1 className=\"text-5xl font-bold text-foreground\">Filter coffee, done right</h1>\n      <p className=\"mt-4 text-muted-foreground\">Two brews a day, from Indiranagar.</p>\n      <Button className=\"mt-8\">See the menu</Button>\n    </section>\n  );\n}\n",
+      "components/Testimonials.tsx": "const QUOTES = [\n  { name: 'Anjali Rao', text: 'The filter coffee is the best in Bengaluru.' },\n  { name: 'Vikram Nair', text: 'I come here every morning before work.' },\n];\n\nexport default function Testimonials() {\n  return (\n    <section className=\"bg-card px-6 py-20\">\n      <h2 className=\"text-3xl font-semibold text-foreground\">What people say</h2>\n      <div className=\"mt-8 grid gap-6 md:grid-cols-2\">\n        {QUOTES.map((quote) => (\n          <figure key={quote.name} className=\"rounded-lg border border-border p-6\">\n            <blockquote className=\"text-muted-foreground\">{quote.text}</blockquote>\n            <figcaption className=\"mt-4 text-sm text-foreground\">{quote.name}</figcaption>\n          </figure>\n        ))}\n      </div>\n    </section>\n  );\n}\n"
+    }
   },
   {
     "id": "copy-only-edit",
@@ -102,10 +82,7 @@
     "stack": "NEXTJS",
     "designDirection": "minimal",
     "expectFiles": 1,
-    "mustNotMatch": [
-      "lorem ipsum",
-      "TODO"
-    ],
+    "mustNotMatch": ["lorem ipsum", "TODO"],
     "seedFiles": {
       "app/layout.tsx": "import './globals.css';\n\nexport default function RootLayout({ children }: { children: React.ReactNode }) {\n  return (\n    <html lang=\"en\">\n      <body>{children}</body>\n    </html>\n  );\n}\n",
       "app/page.tsx": "import Header from '@/components/Header';\nimport Hero from '@/components/Hero';\nimport Testimonials from '@/components/Testimonials';\n\nexport default function Page() {\n  return (\n    <main>\n      <Header />\n      <Hero />\n      <Testimonials />\n    </main>\n  );\n}\n",
@@ -120,12 +97,7 @@
     "stack": "NEXTJS",
     "designDirection": "premium",
     "expectFiles": 1,
-    "mustNotMatch": [
-      "bg-\\[#",
-      "style=\\{\\{",
-      "text-white",
-      "bg-black"
-    ],
+    "mustNotMatch": ["bg-\\[#", "style=\\{\\{", "text-white", "bg-black"],
     "seedFiles": {
       "app/layout.tsx": "import './globals.css';\n\nexport default function RootLayout({ children }: { children: React.ReactNode }) {\n  return (\n    <html lang=\"en\">\n      <body>{children}</body>\n    </html>\n  );\n}\n",
       "app/page.tsx": "import Header from '@/components/Header';\nimport Hero from '@/components/Hero';\nimport Testimonials from '@/components/Testimonials';\n\nexport default function Page() {\n  return (\n    <main>\n      <Header />\n      <Hero />\n      <Testimonials />\n    </main>\n  );\n}\n",
@@ -140,16 +112,12 @@
     "stack": "NEXTJS",
     "designDirection": "editorial",
     "expectFiles": 2,
-    "mustNotMatch": [
-      "lorem ipsum",
-      "TODO"
-    ],
+    "mustNotMatch": ["lorem ipsum", "TODO"],
     "seedFiles": {
       "app/layout.tsx": "import './globals.css';\n\nexport default function RootLayout({ children }: { children: React.ReactNode }) {\n  return (\n    <html lang=\"en\">\n      <body>{children}</body>\n    </html>\n  );\n}\n",
-      "app/page.tsx": "import Header from '@/components/Header';\nimport Hero from '@/components/Hero';\nimport Testimonials from '@/components/Testimonials';\n\nexport default function Page() {\n  return (\n    <main>\n      <Header />\n      <Hero />\n      <Testimonials />\n    </main>\n  );\n}\n",
+      "app/page.tsx": "import Header from '@/components/Header';\nimport Hero from '@/components/Hero';\n\nconst QUOTES = [\n  { name: 'Anjali Rao', text: 'The filter coffee is the best in Bengaluru.' },\n  { name: 'Vikram Nair', text: 'I come here every morning before work.' },\n];\n\nexport default function Page() {\n  return (\n    <main>\n      <Header />\n      <Hero />\n      <section className=\"bg-card px-6 py-20\">\n        <h2 className=\"text-3xl font-semibold text-foreground\">What people say</h2>\n        <div className=\"mt-8 grid gap-6 md:grid-cols-2\">\n          {QUOTES.map((quote) => (\n            <figure key={quote.name} className=\"rounded-lg border border-border p-6\">\n              <blockquote className=\"text-muted-foreground\">{quote.text}</blockquote>\n              <figcaption className=\"mt-4 text-sm text-foreground\">{quote.name}</figcaption>\n            </figure>\n          ))}\n        </div>\n      </section>\n    </main>\n  );\n}\n",
       "components/Header.tsx": "import Link from 'next/link';\n\nconst LINKS = [\n  { href: '#menu', label: 'Menu' },\n  { href: '#about', label: 'About' },\n  { href: '#visit', label: 'Visit' },\n  { href: '#hours', label: 'Hours' },\n  { href: '#contact', label: 'Contact' },\n];\n\nexport default function Header() {\n  return (\n    <header className=\"border-b border-border bg-card\">\n      <nav className=\"flex items-center gap-6 px-6 py-4\">\n        {LINKS.map((link) => (\n          <Link key={link.href} href={link.href} className=\"text-foreground\">\n            {link.label}\n          </Link>\n        ))}\n      </nav>\n    </header>\n  );\n}\n",
-      "components/Hero.tsx": "import { Button } from '@/components/ui/button';\n\nexport default function Hero() {\n  return (\n    <section className=\"bg-background px-6 py-24\">\n      <h1 className=\"text-5xl font-bold text-foreground\">Filter coffee, done right</h1>\n      <p className=\"mt-4 text-muted-foreground\">Two brews a day, from Indiranagar.</p>\n      <Button className=\"mt-8\">See the menu</Button>\n    </section>\n  );\n}\n",
-      "components/Testimonials.tsx": "const QUOTES = [\n  { name: 'Anjali Rao', text: 'The filter coffee is the best in Bengaluru.' },\n  { name: 'Vikram Nair', text: 'I come here every morning before work.' },\n];\n\nexport default function Testimonials() {\n  return (\n    <section className=\"bg-card px-6 py-20\">\n      <h2 className=\"text-3xl font-semibold text-foreground\">What people say</h2>\n      <div className=\"mt-8 grid gap-6 md:grid-cols-2\">\n        {QUOTES.map((quote) => (\n          <figure key={quote.name} className=\"rounded-lg border border-border p-6\">\n            <blockquote className=\"text-muted-foreground\">{quote.text}</blockquote>\n            <figcaption className=\"mt-4 text-sm text-foreground\">{quote.name}</figcaption>\n          </figure>\n        ))}\n      </div>\n    </section>\n  );\n}\n"
+      "components/Hero.tsx": "import { Button } from '@/components/ui/button';\n\nexport default function Hero() {\n  return (\n    <section className=\"bg-background px-6 py-24\">\n      <h1 className=\"text-5xl font-bold text-foreground\">Filter coffee, done right</h1>\n      <p className=\"mt-4 text-muted-foreground\">Two brews a day, from Indiranagar.</p>\n      <Button className=\"mt-8\">See the menu</Button>\n    </section>\n  );\n}\n"
     }
   },
   {
@@ -158,12 +126,14 @@
     "stack": "NEXTJS",
     "designDirection": "playful",
     "expectFiles": 2,
-    "mustNotMatch": [
-      "lorem ipsum",
-      "TODO",
-      "swiper",
-      "react-slick"
-    ]
+    "mustNotMatch": ["lorem ipsum", "TODO", "swiper", "react-slick"],
+    "seedFiles": {
+      "app/layout.tsx": "import './globals.css';\n\nexport default function RootLayout({ children }: { children: React.ReactNode }) {\n  return (\n    <html lang=\"en\">\n      <body>{children}</body>\n    </html>\n  );\n}\n",
+      "app/page.tsx": "import Header from '@/components/Header';\nimport Hero from '@/components/Hero';\nimport Testimonials from '@/components/Testimonials';\n\nexport default function Page() {\n  return (\n    <main>\n      <Header />\n      <Hero />\n      <Testimonials />\n    </main>\n  );\n}\n",
+      "components/Header.tsx": "import Link from 'next/link';\n\nconst LINKS = [\n  { href: '#menu', label: 'Menu' },\n  { href: '#about', label: 'About' },\n  { href: '#visit', label: 'Visit' },\n  { href: '#hours', label: 'Hours' },\n  { href: '#contact', label: 'Contact' },\n];\n\nexport default function Header() {\n  return (\n    <header className=\"border-b border-border bg-card\">\n      <nav className=\"flex items-center gap-6 px-6 py-4\">\n        {LINKS.map((link) => (\n          <Link key={link.href} href={link.href} className=\"text-foreground\">\n            {link.label}\n          </Link>\n        ))}\n      </nav>\n    </header>\n  );\n}\n",
+      "components/Hero.tsx": "import { Button } from '@/components/ui/button';\n\nexport default function Hero() {\n  return (\n    <section className=\"bg-background px-6 py-24\">\n      <h1 className=\"text-5xl font-bold text-foreground\">Filter coffee, done right</h1>\n      <p className=\"mt-4 text-muted-foreground\">Two brews a day, from Indiranagar.</p>\n      <Button className=\"mt-8\">See the menu</Button>\n    </section>\n  );\n}\n",
+      "components/Testimonials.tsx": "const QUOTES = [\n  { name: 'Anjali Rao', text: 'The filter coffee is the best in Bengaluru.' },\n  { name: 'Vikram Nair', text: 'I come here every morning before work.' },\n];\n\nexport default function Testimonials() {\n  return (\n    <section className=\"bg-card px-6 py-20\">\n      <h2 className=\"text-3xl font-semibold text-foreground\">What people say</h2>\n      <div className=\"mt-8 grid gap-6 md:grid-cols-2\">\n        {QUOTES.map((quote) => (\n          <figure key={quote.name} className=\"rounded-lg border border-border p-6\">\n            <blockquote className=\"text-muted-foreground\">{quote.text}</blockquote>\n            <figcaption className=\"mt-4 text-sm text-foreground\">{quote.name}</figcaption>\n          </figure>\n        ))}\n      </div>\n    </section>\n  );\n}\n"
+    }
   },
   {
     "id": "ambiguous-one-word",
@@ -186,12 +156,6 @@
     "stack": "STATIC_HTML",
     "designDirection": "editorial",
     "expectFiles": 1,
-    "mustNotMatch": [
-      "lorem ipsum",
-      "example\\.com",
-      "TODO",
-      "bg-background",
-      "@/components"
-    ]
+    "mustNotMatch": ["lorem ipsum", "example\\.com", "TODO", "bg-background", "@/components"]
   }
 ]

@@ -9,6 +9,7 @@ import { buildRepoFiles } from '@/lib/deploy/repo-files';
 import { getCurrentProjectFiles } from './current-files';
 import { createPrivateRepo, pushViaGitDataApi, type GithubFetch } from './git-data';
 import { uniqueRepoName } from './repo-name';
+import { canMutateOwned as canMutate } from '@/lib/auth/ownership';
 
 export { CONNECT_FIRST_MESSAGE };
 
@@ -101,10 +102,6 @@ type PushDb = {
     }) => Promise<unknown>;
   };
 };
-
-function canMutate(user: PushActor, ownerId: string) {
-  return user.id === ownerId || user.role === 'ADMIN';
-}
 
 export async function pushProjectToGitHubForUser(
   db: PushDb,

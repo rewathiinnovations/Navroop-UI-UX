@@ -37,8 +37,6 @@ vi.mock('@/lib/memory/extract', () => ({
   extractMemoriesAfterGeneration: async () => undefined,
 }));
 vi.mock('@/lib/signals/collect', () => ({
-  countVisualEditsFromSource: () => 0,
-  recordVisualEditRate: async () => undefined,
   maybeSettleFollowups: async () => undefined,
   recordGenerationKept: async () => undefined,
 }));

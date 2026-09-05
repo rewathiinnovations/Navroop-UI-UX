@@ -10,10 +10,8 @@ import {
   a11yScoreFromAxe,
   buildSuccessScore,
   followupsToSettleScore,
-  looksLikeVisualEdit,
   seoScoreFromFindings,
   typeSafetyScore,
-  visualEditRateScore,
 } from '../lib/signals/score';
 import {
   BASELINE_PROMPT_LABEL,
@@ -248,24 +246,10 @@ async function main() {
       }
     }
 
-    const checkpoints = await prisma.checkpoint.findMany({
-      where: { projectId, trigger: { in: ['initial', 'followup'] } },
-      select: { sourceMessage: true, createdAt: true },
-    });
-    for (const event of events) {
-      if (hasEvent('visual_edit_rate', event.id)) continue;
-      const nearby = checkpoints.find(
-        (row) => Math.abs(row.createdAt.getTime() - event.createdAt.getTime()) < 5 * 60 * 1000,
-      );
-      const count = looksLikeVisualEdit(nearby?.sourceMessage) ? 1 : 0;
-      await emit({
-        projectId,
-        generationEventId: event.id,
-        kind: 'visual_edit_rate',
-        value: visualEditRateScore(count),
-        rawValue: { visualEditCount: count, backfill: true },
-      });
-    }
+    // The `visual_edit_rate` backfill was removed on 2026-09-05 with the signal
+    // itself: visual edits went on 2026-08-28, so `looksLikeVisualEdit` matched
+    // nothing and this loop wrote a perfect 1.0 onto every historical event.
+    // Backfilling a kind no weight reads would only add rows nothing scores.
   }
 
   console.log(

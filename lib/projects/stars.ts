@@ -1,7 +1,8 @@
 'use server';
 
 import { prisma } from '@/lib/db';
-import { getSessionUser, type SessionUser } from '@/lib/auth';
+import { getSessionUser } from '@/lib/auth';
+import { canMutateOwned as canMutate } from '@/lib/auth/ownership';
 
 function unauthorized() {
   return { ok: false as const, error: 'Sign in required', status: 401 };
@@ -13,10 +14,6 @@ function notFound() {
 
 function forbidden() {
   return { ok: false as const, error: 'Forbidden', status: 403 };
-}
-
-function canMutate(user: SessionUser, ownerId: string) {
-  return user.id === ownerId || user.role === 'ADMIN';
 }
 
 /**

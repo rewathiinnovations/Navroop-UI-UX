@@ -1,7 +1,7 @@
 'use server';
 
 import { prisma } from '@/lib/db';
-import { getSessionUser, type SessionUser } from '@/lib/auth';
+import { getSessionUser } from '@/lib/auth';
 import { peekActor } from '@/lib/projects/plan';
 import { captureFileSnapshot } from '@/lib/checkpoints/snapshot';
 import { getStack } from '@/lib/stacks';
@@ -24,6 +24,7 @@ import {
 import { holdProjectLock } from '@/lib/projects/lock';
 import { lockConflictAction } from '@/lib/projects/lock-http';
 import { SEO_AUDIT_STEP, auditRunFailureMessage } from '@/lib/audit/poll-state';
+import { canMutateOwned as canMutate } from '@/lib/auth/ownership';
 
 type ActionErr = { ok: false; error: string; status: number; details?: unknown };
 type ActionOk<T> = { ok: true; data: T };
@@ -76,10 +77,6 @@ function notFound(): ActionErr {
 
 function forbidden(): ActionErr {
   return { ok: false, error: 'Forbidden', status: 403 };
-}
-
-function canMutate(user: SessionUser, ownerId: string) {
-  return user.id === ownerId || user.role === 'ADMIN';
 }
 
 async function requireActor() {

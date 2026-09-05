@@ -13,6 +13,7 @@ import { adjustStorageBytes, WORKSPACE_ROW_ID } from '@/lib/storage/usage';
 import { asCreditActionErr } from '@/lib/plans/http';
 import { trackFailure } from '@/lib/observability/track';
 import { checkCredits, consumeCredits } from '@/lib/plans/limits';
+import { canMutateOwned as canMutate } from '@/lib/auth/ownership';
 
 export type ActionErr = { ok: false; error: string; status: number };
 export type ActionOk<T> = { ok: true; data: T };
@@ -39,10 +40,6 @@ function notFound(): ActionErr {
 
 function forbidden(): ActionErr {
   return { ok: false, error: 'Forbidden', status: 403 };
-}
-
-function canMutate(user: SessionUser, ownerId: string) {
-  return user.id === ownerId || user.role === 'ADMIN';
 }
 
 async function requireUser() {

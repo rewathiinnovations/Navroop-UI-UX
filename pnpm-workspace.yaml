@@ -18,13 +18,41 @@ allowBuilds:
 # resolving at all (F-638). `tests/unit/pnpm-overrides-in-sync.test.ts` keeps this
 # block equal to the `overrides` block pnpm records in pnpm-lock.yaml, because a
 # disagreement fails `pnpm install --frozen-lockfile` in both CI workflows.
+#
+# That test reads this block as flat text, so it must stay a comment-free run of
+# `key: value` lines — a `#` line between entries is parsed as an entry and fails
+# the run. Notes on individual pins therefore live here rather than inline:
+#
+#   '@xmldom/xmldom'          was ^0.8.13, one release inside the advisory's
+#                             `<=0.8.14` range, so the old floor did not protect.
+#   prismjs                   reaches the browser: refractor ->
+#                             react-syntax-highlighter renders the Code tab, which
+#                             displays model-generated source. 1.27.0 arrives via
+#                             refractor while react-syntax-highlighter's own
+#                             dependency is already 1.30.0.
+#   ajv@6                     ReDoS via `$data`; only the 6.x line is affected and
+#                             ajv 8 is also in the tree, so it is pinned per major.
+#   yaml@2                    stack overflow on deeply nested input; yaml 1.10.3 is
+#                             out of range and must not be dragged onto 2.x.
+#   '@humanfs/node'           recursive copy follows symlinked files (under eslint).
+#   postcss-selector-parser   DoS through uncontrolled AST recursion, pinned once
+#                             per affected major (6 and 7 are both installed).
+#
+# Deliberately NOT pinned: `ai` (>=5.0.52) and `@ai-sdk/provider-utils` (>=3.0.98),
+# the two low advisories `pnpm audit` still reports. Taking them pulls
+# `@ai-sdk/gateway`, whose `@ai-sdk/provider-utils` depends on undici 5.x, and the
+# undici WebSocket advisories are patched only in 6.24/6.27 — three **high**
+# findings this file cannot close without a cross-major undici override, which is
+# the one thing the same-major rule exists to prevent. Measured, not assumed:
+# bumping `ai` to 5.0.252 took the tree from 2 low to 3 high + 7 moderate + 3 low.
+# Revisit when @ai-sdk/provider-utils moves to undici 6.
 overrides:
   deepmerge-ts: ^8.0.0
   axios: ^1.16.0
   flatted: ^3.4.2
   picomatch@2: ^2.3.2
   lodash-es: ^4.17.24
-  '@xmldom/xmldom': ^0.8.13
+  '@xmldom/xmldom': ^0.8.15
   form-data: ^4.0.6
   js-yaml: ^4.3.1
   postcss: ^8.5.18
@@ -39,6 +67,12 @@ overrides:
   brace-expansion@2: ^2.1.4
   browserslist: ^4.28.7
   fast-uri: ^3.1.6
+  prismjs: ^1.30.0
+  ajv@6: ^6.14.0
+  yaml@2: ^2.8.3
+  '@humanfs/node': ^0.16.8
+  postcss-selector-parser@6: ^6.1.3
+  postcss-selector-parser@7: ^7.1.3
 
 # pnpm 11 otherwise runs an implicit install (purging node_modules on drift)
 # before every script - fatal to the running dev server, whose Next/Prisma

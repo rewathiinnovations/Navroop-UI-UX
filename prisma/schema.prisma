@@ -232,6 +232,7 @@ model Project {
   /// F-314: listProjects filters deletedAt and orders by updatedAt desc.
   @@index([deletedAt, updatedAt])
   @@index([lockedById, lockExpiresAt])
+  @@index([activeJobId])
   @@index([searchVector], type: Gin, map: "Project_searchVector_idx")
 }
 
@@ -374,6 +375,7 @@ model Workspace {
   customDomains           CustomDomain[]
   templates               Template[]
   jobs                    Job[]
+  @@index([planId])
 }
 
 model Plan {
@@ -467,6 +469,7 @@ model Invite {
   revokedAt   DateTime?
 
   @@index([email])
+  @@index([invitedById])
 }
 
 model ApiKey {
@@ -523,6 +526,7 @@ model Skill {
 
   @@index([enabled])
   @@index([usageCount])
+  @@index([createdById])
 }
 
 model MemoryEntry {
@@ -622,6 +626,7 @@ model Integration {
 
   @@unique([workspaceId, kind])
   @@index([workspaceId, status])
+  @@index([connectedById])
 }
 
 enum DeploymentKind {
@@ -693,6 +698,8 @@ model Deployment {
   @@unique([projectId, kind])
   @@unique([slug, kind])
   @@index([workspaceId, status])
+  @@index([serverId])
+  @@index([publishedById])
 }
 
 enum CustomDomainStatus {
@@ -755,6 +762,8 @@ model Template {
   createdAt       DateTime   @default(now())
 
   @@index([category, isActive])
+  @@index([workspaceId])
+  @@index([createdById])
 }
 
 /// DB dump, storage verify, and restore-test attempts (including failures).
@@ -831,6 +840,8 @@ model Job {
 
   @@index([projectId, createdAt])
   @@index([status, heartbeatAt])
+  @@index([workspaceId])
+  @@index([userId])
   @@map("GenerationJob")
 }
 

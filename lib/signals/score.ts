@@ -1,7 +1,6 @@
 export const QUALITY_SIGNAL_KINDS = [
   'revert_rate',
   'followups_to_settle',
-  'visual_edit_rate',
   'thumbs',
   'seo_score',
   'a11y_score',
@@ -21,16 +20,25 @@ export type QualitySignalKind = (typeof QUALITY_SIGNAL_KINDS)[number];
  * (which iterates the weights) never let a type-check failure move the number
  * an operator uses to judge a prompt change (F-760). The seven original weights
  * are rebalanced proportionally to make room rather than re-argued.
+ *
+ * `visual_edit_rate` was removed on 2026-09-05. Visual edits were deleted on
+ * 2026-08-28, so nothing could produce a visual-edit-sourced message any more:
+ * `'visual-edit'` survived only as a type-union member no code assigns, and the
+ * `looksLikeVisualEdit` heuristic matched strings the deleted inspector used to
+ * inject. Its count was therefore always 0, `visualEditRateScore(0)` always
+ * returned a perfect 1.0, and every project banked that free 0.04 on every
+ * persist — a constant that inflated the composite while spending 4% of the
+ * weight budget on a feature that no longer exists. The remaining seven are
+ * rebalanced proportionally, the same way they were when `type_safety` landed.
  */
 export const QUALITY_SCORE_WEIGHTS: Record<QualitySignalKind, number> = {
-  revert_rate: 0.28,
-  followups_to_settle: 0.22,
-  build_success: 0.12,
+  revert_rate: 0.29,
+  followups_to_settle: 0.23,
+  build_success: 0.13,
   type_safety: 0.1,
   seo_score: 0.1,
   a11y_score: 0.1,
-  thumbs: 0.04,
-  visual_edit_rate: 0.04,
+  thumbs: 0.05,
 };
 
 export const MIN_KIND_SAMPLES = 10;
@@ -47,11 +55,6 @@ export const SIGNAL_DEFINITIONS: Record<QualitySignalKind, { label: string; defi
       label: 'Follow-ups to settle',
       definition:
         'After 30 minutes with no new generation, count generations since the last settle. 1 → 1.0, 2 → 0.8, 3 → 0.6, 4 → 0.4, 5+ → 0.2.',
-    },
-    visual_edit_rate: {
-      label: 'Visual edit rate',
-      definition:
-        'Visual-edit-sourced messages per generation. 0 → 1.0, 1 → 0.8, 2 → 0.6, 3 → 0.4, 4+ → 0.2. Heavy correction means the generated design missed.',
     },
     thumbs: {
       label: 'Thumbs',
@@ -142,14 +145,6 @@ export function followupsToSettleScore(generations: number) {
   return 0.2;
 }
 
-export function visualEditRateScore(visualEditCount: number) {
-  if (visualEditCount <= 0) return 1;
-  if (visualEditCount === 1) return 0.8;
-  if (visualEditCount === 2) return 0.6;
-  if (visualEditCount === 3) return 0.4;
-  return 0.2;
-}
-
 export function seoScoreFromFindings(findings: Array<{ status?: string; ignored?: boolean }>) {
   // `info` findings record that a check could not run (an unreachable preview,
   // F-755). Counting them would let one of our outages lower the project's
@@ -225,9 +220,4 @@ export function composeOverallScore(
   }
   if (weightSum === 0) return null;
   return acc / weightSum;
-}
-
-export function looksLikeVisualEdit(text?: string | null) {
-  if (!text) return false;
-  return /approximate selector:/i.test(text) || /For the \S+ element containing/i.test(text);
 }

@@ -35,6 +35,7 @@ import { peekConversationState } from '@/lib/generation/conversation-state';
 import { writeAudit } from '@/lib/audit/log';
 import { logError } from '@/lib/logger';
 import { recordJobStepFailure } from '@/lib/jobs/step-failure';
+import { canMutateOwned as canMutate } from '@/lib/auth/ownership';
 
 type ActionErr = {
   ok: false;
@@ -142,10 +143,6 @@ function notFound(): ActionErr {
 
 function forbidden(): ActionErr {
   return { ok: false, error: 'Forbidden', status: 403 };
-}
-
-function canMutate(user: SessionUser, ownerId: string) {
-  return user.id === ownerId || user.role === 'ADMIN';
 }
 
 async function requireActor() {

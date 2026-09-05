@@ -20,10 +20,7 @@ import { toPublicCustomDomain, publishedHostFor } from './instructions';
 import { peekRootDomain } from '@/lib/integrations/store';
 import { writeAudit } from '@/lib/audit/log';
 import { log } from '@/lib/logger';
-
-function canMutate(user: { id: string; role: string }, ownerId: string) {
-  return user.id === ownerId || user.role === 'ADMIN';
-}
+import { canMutateOwned as canMutate } from '@/lib/auth/ownership';
 
 async function loadProject(projectId: string, mutate: boolean) {
   const user = await getSessionUser();

@@ -1,7 +1,7 @@
 import '../setup/env';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { testPrismaClient } from '../setup/db';
-import { recordRevertRate, recordThumbs, recordVisualEditRate } from '@/lib/signals/collect';
+import { recordRevertRate, recordThumbs } from '@/lib/signals/collect';
 
 /**
  * A quality signal belongs to the prompt version that produced the output it
@@ -148,16 +148,10 @@ describe('feedback signals carry the prompt version of the generation they judge
     expect(signal.promptVersion).toBe(OLD_VERSION);
   });
 
-  it('reads the supplied generation event instead of fabricating a null version', async () => {
-    const old = await addBuild(OLD_VERSION, new Date('2026-08-01T00:00:00Z'));
-    await addBuild(NEW_VERSION, new Date('2026-08-10T00:00:00Z'));
-
-    await recordVisualEditRate(PROJECT, 2, old.id);
-
-    const signal = await signalOf('visual_edit_rate');
-    expect(signal.generationEventId).toBe(old.id);
-    expect(signal.promptVersion).toBe(OLD_VERSION);
-  });
+  // The `visual_edit_rate` case that used to sit here went with the signal on
+  // 2026-09-05. It covered the same "read the supplied event, do not fabricate a
+  // null version" branch that the revert case above still covers, so removing it
+  // loses no coverage of F-815.
 
   it('falls back to the active version only when the project has no generation at all', async () => {
     await recordThumbs(PROJECT, 'up');

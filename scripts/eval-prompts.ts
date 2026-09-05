@@ -290,8 +290,23 @@ async function runCase(
     });
     base.buildStatus = build.status;
     if (build.status === 'failed') {
+      // Kinds alone are not a diagnosis. `BuildError` already carries the
+      // compiler's message and the file it named, and dropping both printed
+      // `build failed: unknown` for every failure whose errors were empty or
+      // classified `unknown` — the two cases where you most need the text.
+      // Kept to the first few so one broken run cannot flood the table.
+      const detail = build.errors
+        .slice(0, 3)
+        .map((problem) => {
+          const where = problem.file
+            ? ` (${problem.file}${problem.line == null ? '' : `:${problem.line}`})`
+            : '';
+          return `${problem.kind}: ${problem.message}${where}`;
+        })
+        .join('; ');
+      const more = build.errors.length > 3 ? ` [+${build.errors.length - 3} more]` : '';
       base.failures.push(
-        `build failed: ${build.errors.map((problem) => problem.kind).join(', ') || 'unknown'}`,
+        `build failed: ${detail || 'checkBuild reported failed with no errors'}${more}`,
       );
     }
   }

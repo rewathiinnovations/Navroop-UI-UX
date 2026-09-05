@@ -2,7 +2,7 @@
 
 import { Prisma } from '@/generated/prisma';
 import { prisma } from '@/lib/db';
-import { getSessionUser, type SessionUser } from '@/lib/auth';
+import { getSessionUser } from '@/lib/auth';
 import { inferDesignDirection } from '@/lib/design/infer-direction';
 import {
   createProjectSchema,
@@ -17,12 +17,7 @@ import { isStaleClientError } from '@/lib/projects/list-fallback';
 import { createCheckpointAfterGeneration } from '@/lib/checkpoints/actions';
 import { CHECKPOINT_NOT_SAVED_NOTICE } from '@/lib/checkpoints/labels';
 import { extractMemoriesAfterGeneration } from '@/lib/memory/extract';
-import {
-  countVisualEditsFromSource,
-  maybeSettleFollowups,
-  recordGenerationKept,
-  recordVisualEditRate,
-} from '@/lib/signals/collect';
+import { maybeSettleFollowups, recordGenerationKept } from '@/lib/signals/collect';
 import { decideUrlImportFlow } from '@/lib/import/pipeline';
 import { upsertImportSource } from '@/lib/import/persist';
 import { asCreditActionErr } from '@/lib/plans/http';
@@ -33,6 +28,7 @@ import { incrementUsageCount } from '@/lib/templates/usage';
 import { writeAudit } from '@/lib/audit/log';
 import { log, logError } from '@/lib/logger';
 import { capturePreviewAfterGeneration } from '@/lib/preview/after-generation';
+import { canMutateOwned as canMutate } from '@/lib/auth/ownership';
 
 export type ActionOk<T> = { ok: true; data: T };
 export type ActionErr = {
@@ -67,10 +63,6 @@ function notFound(): ActionErr {
 
 function forbidden(): ActionErr {
   return { ok: false, error: 'Forbidden', status: 403 };
-}
-
-function canMutate(user: SessionUser, ownerId: string) {
-  return user.id === ownerId || user.role === 'ADMIN';
 }
 
 /**
@@ -946,9 +938,6 @@ export async function persistProjectGeneration(id: string, input: GenerationPers
       logError('projects.checkpoint_after_generation_failed', error, { projectId: id });
       previewNotice = CHECKPOINT_NOT_SAVED_NOTICE;
     }
-    detachAfterGeneration(id, 'visual_edit_rate', () =>
-      recordVisualEditRate(id, countVisualEditsFromSource(input.source, input.sourceMessage)),
-    );
     detachAfterGeneration(id, 'settle_followups', () => maybeSettleFollowups(id));
     // The `revert_rate` population used to gain a row only when a restore rejected a
     // generation, or 30 minutes after a project stopped being touched. Pairing the kept

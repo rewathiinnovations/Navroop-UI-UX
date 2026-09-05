@@ -11,7 +11,6 @@ import {
   followupsToSettleScore,
   seoScoreFromFindings,
   typeSafetyScore,
-  visualEditRateScore,
 } from '../lib/signals/score';
 import { QUALITY_SCORE_WEIGHTS } from '../lib/signals/metrics';
 import { withSignalGuard } from '../lib/signals/collect';
@@ -36,10 +35,6 @@ assert(followupsToSettleScore(3) === 0.6, '3 generations → 0.6');
 assert(followupsToSettleScore(4) === 0.4, '4 generations → 0.4');
 assert(followupsToSettleScore(5) === 0.2, '5 generations → 0.2');
 assert(followupsToSettleScore(12) === 0.2, '5+ generations → 0.2');
-
-assert(visualEditRateScore(0) === 1, '0 visual edits → 1.0');
-assert(visualEditRateScore(1) === 0.8, '1 visual edit → 0.8');
-assert(visualEditRateScore(4) === 0.2, '4+ visual edits → 0.2');
 
 assert(
   seoScoreFromFindings([
@@ -91,7 +86,6 @@ const sampled = {
   seo_score: { mean: 0.5, n: 10 },
   a11y_score: { mean: 1, n: 10 },
   thumbs: { mean: 1, n: 10 },
-  visual_edit_rate: { mean: 1, n: 10 },
 };
 const overall = composeOverallScore(sampled);
 // Derived from the exported weights, not restated: the literals here used to be
